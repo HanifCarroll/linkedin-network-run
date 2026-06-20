@@ -15,6 +15,11 @@ function bodyContainsCandidateName(body, candidateName) {
   return Boolean(normalizedName) && normalizedBody.includes(normalizedName);
 }
 
+function salesProfileId(profileUrl) {
+  const match = String(profileUrl || "").match(/\/sales\/lead\/([^,/?#]+)/);
+  return match ? match[1] : null;
+}
+
 function configValue(name, fallback = null) {
   const config = globalThis.recruiterAgencyMessageConfig || state.recruiterAgencyMessageConfig || {};
   return Object.prototype.hasOwnProperty.call(config, name) ? config[name] : fallback;
@@ -57,6 +62,63 @@ async function findMessageAction() {
     return { found: false, reason: "message-action-missing" };
   });
   return result || { found: false, reason: "message-action-missing" };
+}
+
+async function clickSearchRowMessageAction(candidate) {
+  if (!candidate.searchUrl) {
+    return { found: false, reason: "search-url-missing" };
+  }
+  await state.page.goto(candidate.searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await state.page.waitForLoadState("domcontentloaded").catch(() => {});
+  await state.page.waitForTimeout(2500);
+  await state.page.waitForFunction(
+    () => document.querySelectorAll("li.artdeco-list__item").length > 0 || /No results|0 results/i.test(document.body.innerText || ""),
+    null,
+    { timeout: 15000 },
+  ).catch(() => {});
+
+  const profileId = salesProfileId(candidate.profileUrl);
+  return await state.page.evaluate(({ candidateName, profileId }) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const rows = Array.from(document.querySelectorAll("li.artdeco-list__item"));
+    const row = rows.find((item) => {
+      if (profileId && item.querySelector(`a[href*="/sales/lead/${profileId}"]`)) {
+        return true;
+      }
+      return clean(item.innerText || item.textContent || "").includes(candidateName);
+    });
+    if (!row) {
+      return { found: false, reason: "search-row-missing", profileId, candidateName };
+    }
+    const nodes = Array.from(row.querySelectorAll("button,a,[role=button]"));
+    let inmail = null;
+    for (let index = 0; index < nodes.length; index += 1) {
+      const element = nodes[index];
+      const rect = element.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0;
+      if (!visible || element.hasAttribute("disabled")) {
+        continue;
+      }
+      const text = clean(element.innerText || element.textContent || "");
+      const aria = element.getAttribute("aria-label") || "";
+      if (/^Message\b/i.test(text) || /^Message\b/i.test(aria)) {
+        element.click();
+        return { found: true, kind: "message", source: "search-row", index, text, aria, tag: element.tagName };
+      }
+      if (/^InMail\b/i.test(text) || /^InMail\b/i.test(aria)) {
+        inmail = { element, action: { found: true, kind: "inmail", source: "search-row", index, text, aria, tag: element.tagName } };
+      }
+    }
+    if (inmail) {
+      inmail.element.click();
+      return inmail.action;
+    }
+    return {
+      found: false,
+      reason: "search-row-message-action-missing",
+      rowText: clean(row.innerText || row.textContent || "").slice(0, 800),
+    };
+  }, { candidateName: candidate.name, profileId });
 }
 
 async function clickMarkedMessageAction() {
@@ -206,6 +268,13 @@ async function main() {
   }
 
   state.page = state.page || context.pages().find((page) => page.url().includes("/sales/lead/")) || await context.newPage();
+  const profileApiResponses = [];
+  const responseHandler = async (response) => {
+    if (/\/sales-api\/salesApiProfiles/i.test(response.url())) {
+      profileApiResponses.push({ url: response.url().slice(0, 260), status: response.status() });
+    }
+  };
+  state.page.on("response", responseHandler);
   let navigationError = null;
   try {
     await state.page.goto(candidate.profileUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
@@ -236,43 +305,68 @@ async function main() {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
+  const profileRateLimited = profileApiResponses.some((response) => response.status === 429);
+  let action = null;
+  let clickedAction = false;
   if (!bodyContainsCandidateName(body, candidate.name)) {
-    const result = { ...base, status: "identity-mismatch", reason: "loaded lead page does not contain candidate name", body: cleanText(body).slice(0, 1500) };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    return;
+    if (!body && profileRateLimited && candidate.searchUrl) {
+      action = await clickSearchRowMessageAction(candidate);
+      if (!action.found) {
+        const result = { ...base, status: "profile-rate-limited", reason: "lead profile API returned 429 and search-row fallback failed", profileApiResponses, action };
+        fs.writeFileSync(out, JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(result, null, 2));
+        state.page.off("response", responseHandler);
+        return;
+      }
+      clickedAction = true;
+      await state.page.waitForTimeout(1500);
+    } else {
+      const result = { ...base, status: "identity-mismatch", reason: "loaded lead page does not contain candidate name", body: cleanText(body).slice(0, 1500), profileApiResponses };
+      fs.writeFileSync(out, JSON.stringify(result, null, 2));
+      console.log(JSON.stringify(result, null, 2));
+      state.page.off("response", responseHandler);
+      return;
+    }
   }
 
-  const action = await findMessageAction();
+  if (!action) {
+    action = await findMessageAction();
+  }
   if (!action.found) {
-    const result = { ...base, status: "not-messageable", action };
+    const result = { ...base, status: "not-messageable", action, profileApiResponses };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
     return;
   }
 
-  await clickMarkedMessageAction();
-  await state.page.waitForTimeout(1500);
+  if (!clickedAction) {
+    await clickMarkedMessageAction();
+    await state.page.waitForTimeout(1500);
+  }
   const conversationCheck = action.kind === "message" ? await hasExistingConversation(candidate.name) : null;
   if (conversationCheck?.exists) {
-    const result = { ...base, status: "conversation-exists", action, conversationCheck };
+    const result = { ...base, status: "conversation-exists", action, conversationCheck, profileApiResponses };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
     return;
   }
   if (dryRun) {
-    const result = { ...base, status: "dry-run-messageable", action, conversationCheck };
+    const result = { ...base, status: "dry-run-messageable", action, conversationCheck, profileApiResponses };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
     return;
   }
 
   const composer = await findComposer();
   if (!composer) {
     const afterBody = await readBody(5000);
-    const result = { ...base, status: "composer-missing", action, body: cleanText(afterBody).slice(0, 1500) };
+    const result = { ...base, status: "composer-missing", action, body: cleanText(afterBody).slice(0, 1500), profileApiResponses };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
     return;
   }
 
@@ -281,15 +375,17 @@ async function main() {
   await state.page.waitForTimeout(500);
   const send = await clickSendButton();
   if (!send.clicked) {
-    const result = { ...base, status: "send-button-missing", action, composerSelector: composer.selector, subjectFill };
+    const result = { ...base, status: "send-button-missing", action, composerSelector: composer.selector, subjectFill, profileApiResponses };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
     return;
   }
   await state.page.waitForTimeout(2000);
-  const result = { ...base, status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, send };
+  const result = { ...base, status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, send, profileApiResponses };
   fs.writeFileSync(out, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
+  state.page.off("response", responseHandler);
 }
 
 await main();

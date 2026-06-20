@@ -25,6 +25,7 @@ type MessageCandidate struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
 	ProfileURL string  `json:"profileUrl"`
+	SearchURL  *string `json:"searchUrl,omitempty"`
 	Source     string  `json:"source"`
 	LeadType   string  `json:"leadType"`
 	Title      *string `json:"title,omitempty"`
@@ -88,6 +89,9 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 		LeadType:   string(lead.LeadType),
 		Title:      lead.Title,
 		Company:    lead.Company,
+	}
+	if cursor, ok := state.CaptureCursors[lead.Source]; ok && cursor.ResumeURL != nil && cleanText(*cursor.ResumeURL) != "" {
+		candidate.SearchURL = cursor.ResumeURL
 	}
 	config := map[string]any{
 		"candidate": candidate,
