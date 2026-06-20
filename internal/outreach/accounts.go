@@ -216,17 +216,17 @@ func classifyAgencyAccount(source string, name string, industry *string, evidenc
 		score += 10
 		reasons = append(reasons, "technical/product stack signal")
 	}
+	websiteBuildSignal := containsAny(accountText, "wordpress", "shopify", "webflow", "cms", "web design", "web designer", "web developer", "website design", "website development", "high-performing websites")
+	if websiteBuildSignal {
+		score += 35
+		reasons = append(reasons, "website/wordpress build account signal")
+	}
 	marketingOnly := containsAny(accountText, "seo", "paid media", "media buying", "advertising", "social media marketing", "performance marketing", "lead generation", "public relations", "branding agency") &&
+		!websiteBuildSignal &&
 		!containsAny(accountText, "software", "product", "web development", "application", "mobile app", "ux", "ui")
 	if marketingOnly {
 		score -= 40
 		rejects = append(rejects, "marketing/advertising-only account signal")
-	}
-	wordpressOnly := containsAny(accountText, "wordpress", "shopify", "web designer") &&
-		!containsAny(accountText, "custom software", "software development", "digital product", "product studio", "application", "mobile app", "react", "typescript", "saas", "platform", "ai")
-	if wordpressOnly {
-		score -= 25
-		rejects = append(rejects, "website/wordpress-only account signal")
 	}
 	if containsAny(accountText, "staffing", "recruiting", "recruitment", "talent solutions") {
 		score -= 20

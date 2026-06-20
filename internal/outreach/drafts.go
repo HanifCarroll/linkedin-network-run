@@ -82,10 +82,19 @@ func draftAngle(lead Lead) string {
 	case LeadTypeContractRecruiter:
 		return "contract recruiter routing for remote C2C/1099 product-engineering work"
 	case LeadTypeAgencyResource:
+		if isWebsiteAgencyLead(lead) {
+			return "web design/WordPress agency resource manager for senior frontend/CMS implementation support"
+		}
 		return "agency resource manager for immediate outside senior engineering coverage"
 	case LeadTypeAgencyDelivery:
+		if isWebsiteAgencyLead(lead) {
+			return "web design/WordPress agency delivery leader for frontend-heavy implementation overflow"
+		}
 		return "agency delivery or technical leader for overflow/rescue/prototyping support"
 	case LeadTypeAgencyFounder:
+		if isWebsiteAgencyLead(lead) {
+			return "web design/WordPress agency founder for senior frontend/CMS implementation capacity"
+		}
 		return "agency founder/partner for senior contractor capacity on active client work"
 	default:
 		return "general contract product-engineering availability"
@@ -134,11 +143,28 @@ func agencyDraft(lead Lead) string {
 	} else if company := companyForDraft(lead.Company); company != "" {
 		target = company
 	}
+	if isWebsiteAgencyLead(lead) {
+		return fmt.Sprintf("Hi %s, I saw %s works on website/CMS delivery. I’m a senior product engineer available now for frontend-heavy website builds, CMS integrations, performance cleanup, or rescue work: React/TypeScript, Node, forms/payments, and polished client launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Do you ever bring in outside senior engineers when client builds need extra capacity?", lead.FirstName, target)
+	}
 	need := "overflow, rescue, prototyping, or short-term product engineering work"
 	if lead.LeadType == LeadTypeAgencyResource {
 		need = "senior outside engineering coverage for active client projects"
 	}
 	return fmt.Sprintf("Hi %s, I saw %s works on digital/product delivery. I’m a senior product engineer available now for %s: React/TypeScript, Node, AI workflows, payments, and MVP launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Do you ever bring in outside senior engineers for client work?", lead.FirstName, target, need)
+}
+
+func isWebsiteAgencyLead(lead Lead) bool {
+	parts := []string{lead.AgencyAccountEvidence, lead.EvidenceText}
+	parts = append(parts, lead.AgencyAccountReasons...)
+	parts = append(parts, lead.FitReasons...)
+	if lead.AgencyAccountName != nil {
+		parts = append(parts, *lead.AgencyAccountName)
+	}
+	if lead.Company != nil {
+		parts = append(parts, *lead.Company)
+	}
+	text := strings.ToLower(strings.Join(parts, " "))
+	return containsAny(text, "website/wordpress build account signal", "wordpress", "shopify", "webflow", "cms", "web design", "web designer", "web developer", "website design", "website development", "high-performing websites")
 }
 
 func companyForDraft(company *string) string {

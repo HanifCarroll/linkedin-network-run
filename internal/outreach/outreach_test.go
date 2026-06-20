@@ -261,7 +261,7 @@ func TestImportAccountCaptureQualifiesAndRejectsAgencyAccounts(t *testing.T) {
 	}
 }
 
-func TestImportAccountCaptureDowngradesWordPressOnlyAccounts(t *testing.T) {
+func TestImportAccountCaptureQualifiesWordPressWebDesignAccounts(t *testing.T) {
 	source := AgencyAccountDevelopmentSource
 	state := OutreachState{}
 	capture := SalesNavAccountCapture{
@@ -277,11 +277,11 @@ func TestImportAccountCaptureDowngradesWordPressOnlyAccounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	account := state.AgencyAccounts[0]
-	if account.Status != AgencyAccountStatusNeedsReview {
+	if account.Status != AgencyAccountStatusQualified {
 		t.Fatalf("account = %#v", account)
 	}
-	if !containsAny(strings.Join(account.RejectReasons, "\n"), "website/wordpress-only") {
-		t.Fatalf("reject reasons = %#v", account.RejectReasons)
+	if !containsAny(strings.Join(account.FitReasons, "\n"), "website/wordpress build account signal") {
+		t.Fatalf("fit reasons = %#v", account.FitReasons)
 	}
 }
 
@@ -527,6 +527,25 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 	}
 	if !strings.Contains(body, "your team works") {
 		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
+	lead := Lead{
+		Name:                  "Quinn Owner",
+		FirstName:             "Quinn",
+		Company:               strPtr("QeWebby - WordPress Development Agency"),
+		AgencyAccountName:     strPtr("QeWebby - WordPress Development Agency"),
+		AgencyAccountReasons:  []string{"website/wordpress build account signal"},
+		AgencyAccountEvidence: "WordPress agency crafting high-performing websites with web designer and WordPress developer services",
+		LeadType:              LeadTypeAgencyFounder,
+	}
+	body := agencyDraft(lead)
+	if !strings.Contains(body, "website/CMS delivery") || !strings.Contains(body, "frontend-heavy website builds") {
+		t.Fatalf("body = %q", body)
+	}
+	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {
+		t.Fatalf("angle = %q", draftAngle(lead))
 	}
 }
 

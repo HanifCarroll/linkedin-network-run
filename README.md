@@ -83,6 +83,11 @@ Navigator `CURRENT_COMPANY` filter. The older person-first agency searches are
 kept as fallback sources only when the account-first path produces no contact
 captures in a round. Recruiter sourcing remains person-first.
 
+Website, Webflow/Shopify, and WordPress-focused agencies are valid agency
+targets. The classifier tags them with a website/CMS build signal and the draft
+generator uses a frontend-heavy website/CMS implementation pitch instead of the
+digital-product/MVP pitch.
+
 Validated source configuration:
 
 | Bucket | Source | Sales Navigator filters | Measured result |
