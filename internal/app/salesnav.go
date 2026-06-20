@@ -149,17 +149,25 @@ func LoadSalesNavCapture(path string) (SalesNavCapture, error) {
 type SalesNavCaptureRow struct {
 	Index        uint32                     `json:"index"`
 	Name         *string                    `json:"name"`
+	Text         *string                    `json:"text"`
 	ProfileURL   *string                    `json:"profileUrl"`
 	ScrollURN    *string                    `json:"scrollUrn"`
 	VisibleState json.RawMessage            `json:"visibleState"`
 	MenuState    *string                    `json:"menuState"`
 	MenuLabels   []SalesNavCaptureMenuLabel `json:"menuLabels"`
+	Links        []SalesNavCaptureLink      `json:"links"`
 	RowHTMLPath  *string                    `json:"rowHtmlPath"`
 }
 
 type SalesNavCaptureMenuLabel struct {
 	Text *string `json:"text"`
 	Aria *string `json:"aria"`
+}
+
+type SalesNavCaptureLink struct {
+	Text *string `json:"text"`
+	Aria *string `json:"aria"`
+	Href *string `json:"href"`
 }
 
 func CaptureStateCount(capture SalesNavCapture, state string) uint32 {

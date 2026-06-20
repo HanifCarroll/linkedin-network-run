@@ -33,6 +33,160 @@ go build -o /Users/hanifcarroll/.local/bin/linkedin-network-run ./cmd/linkedin-n
 The controller source lives in this repository. The installed binary should not
 live under `~/.cargo/bin` now that the Rust controller has been removed.
 
+## Recruiter And Agency Outreach
+
+The repo also includes a separate recruiter/agency workflow for the ASAP
+job-search outbound lane:
+
+```sh
+go run ./cmd/recruiter-agency-outreach -- report
+```
+
+This workflow is intentionally separate from `linkedin-network-run` state. It
+does not send connection requests, does not consume the generic networking run,
+and does not write into `~/Library/Application Support/linkedin-network-run/`.
+It can send already-drafted LinkedIn messages only through the guarded
+`send-message` command, and only when `--allow-send` is passed. Its default state
+lives at:
+
+```text
+~/Library/Application Support/recruiter-agency-outreach/outreach.json
+```
+
+Use it for recruiters and agencies only:
+
+```sh
+recruiter-agency-outreach run-daily \
+  --session <session> \
+  --target-agencies 5 \
+  --target-recruiters 5 \
+  --allow-send \
+  --print-markdown
+```
+
+`run-daily` resets the Playwriter session connection, refreshes or reads the
+Sales Navigator saved-search artifact, captures from `ASAP - Agency Owners
+Delivery` and `ASAP - Contract Recruiters Staffing`, imports and dedupes leads,
+drafts context-aware messages, validates messageability in the browser, sends up
+to 5 agency messages and 5 recruiter messages for the current run when
+`--allow-send` is present, and writes a Markdown dashboard under the outreach
+state directory. Use `--skip-session-reset` only when intentionally preserving a
+live Playwriter page connection.
+
+To force a fresh saved-search resolver before capture:
+
+```sh
+recruiter-agency-outreach run-daily \
+  --session <session> \
+  --target-agencies 5 \
+  --target-recruiters 5 \
+  --allow-send \
+  --refresh-saved-searches \
+  --print-markdown
+```
+
+The dashboard includes the visible source context, fit reasons, draft angle,
+draft evidence, message text, last send check, and run actions:
+
+```sh
+recruiter-agency-outreach dashboard --print-markdown
+```
+
+Revise a draft before sending by writing the revised body to a local file and
+resetting the lead to `drafted`:
+
+```sh
+recruiter-agency-outreach revise \
+  --lead-id <id> \
+  --body-file /tmp/revised-message.txt \
+  --angle "manual adjustment after dashboard review"
+```
+
+Send leads that have already passed a dry-run messageability check:
+
+```sh
+recruiter-agency-outreach send-ready \
+  --session <session> \
+  --target-agencies 5 \
+  --target-recruiters 5 \
+  --allow-send \
+  --print-markdown
+```
+
+Manual capture remains available for one-off recovery or inspection:
+
+```sh
+recruiter-agency-outreach capture \
+  --session <session> \
+  --source "ASAP - Contract Recruiters Staffing" \
+  --saved-searches /tmp/linkedin-network-run-saved-searches.json \
+  --pages 2 \
+  --limit 25
+
+recruiter-agency-outreach capture \
+  --session <session> \
+  --source "ASAP - Agency Owners Delivery" \
+  --saved-searches /tmp/linkedin-network-run-saved-searches.json \
+  --pages 2 \
+  --limit 25
+```
+
+If capture was run manually, import the artifact directly:
+
+```sh
+recruiter-agency-outreach import-capture /tmp/recruiter-agency-outreach-capture/page.json
+```
+
+Review eligible leads:
+
+```sh
+recruiter-agency-outreach queue --limit 20
+recruiter-agency-outreach queue --status needs_review --limit 20
+```
+
+Generate draft-only messages:
+
+```sh
+recruiter-agency-outreach draft --limit 20
+```
+
+The draft command writes Markdown under the outreach state directory and updates
+local message status to `drafted`. Dry-run messageability checks are the default
+for `send-message`; omitting `--allow-send` will not send:
+
+```sh
+recruiter-agency-outreach send-message \
+  --lead-id <id> \
+  --session <session>
+```
+
+Real message sends require an explicit flag and a visible Sales Navigator
+`Message` or `InMail` surface. The browser adapter refuses to click `Connect`.
+When a normal `Message` surface is available, the adapter opens it first and
+records `conversation_exists` instead of sending if a prior conversation is
+detected:
+
+```sh
+recruiter-agency-outreach send-message \
+  --lead-id <id> \
+  --session <session> \
+  --allow-send
+```
+
+Manual send/reply tracking remains explicit:
+
+```sh
+recruiter-agency-outreach mark-message --lead-id <id> --status manually_sent
+recruiter-agency-outreach mark-message --lead-id <id> --status replied
+recruiter-agency-outreach reject --lead-id <id> --reason "not a contract recruiter or agency resource target"
+```
+
+The classifier accepts contract recruiters, staffing/account-manager profiles,
+agency resource managers, delivery/technical directors, and agency
+founders/partners. Startup CTO/founder sources are rejected or held out of this
+workflow unless their profile clearly looks like a recruiter or agency/resource
+target.
+
 ## Architecture
 
 The Go controller is split by responsibility:
@@ -40,6 +194,7 @@ The Go controller is split by responsibility:
 | Module | Responsibility |
 | --- | --- |
 | `cmd/linkedin-network-run/main.go` | CLI entrypoint only. |
+| `cmd/recruiter-agency-outreach/main.go` | Recruiter/agency sourcing, drafting, and guarded message entrypoint. |
 | `internal/app/cli.go` | Cobra command/flag definitions. |
 | `internal/app/types.go` | Durable state types, source planning, quotas, acceptance ledger, and pending-cleanup run models. |
 | `internal/app/commands.go` | High-level command handlers. |
@@ -53,6 +208,7 @@ The Go controller is split by responsibility:
 | `internal/app/store.go` | Filesystem persistence and JSONL event logs. |
 | `internal/app/util.go` | Shared formatting and normalization helpers. |
 | `internal/app/app_test.go` | Behavioral parity tests for run planning, capture import, acceptance, reservoir, pending cleanup, and follow-up drafts. |
+| `internal/outreach/` | Recruiter/agency lead classification, queueing, drafting, guarded message recording, and separate outreach state. |
 
 ## Core Flow
 

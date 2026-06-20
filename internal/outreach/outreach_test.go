@@ -1,0 +1,483 @@
+package outreach
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/hanifcarroll/linkedin-network-run/internal/app"
+)
+
+func TestImportCaptureClassifiesContractRecruiter(t *testing.T) {
+	source := "ASAP - Contract Recruiters Staffing"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Riley Recruiter"),
+			Text:       strPtr("Riley Recruiter\nSenior Technical Recruiter\nAcme Staffing\nContract React TypeScript roles"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/abc?_ntb=x"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	summary, err := ImportCapture(&state, capture, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Eligible != 1 || len(state.Leads) != 1 {
+		t.Fatalf("summary=%#v leads=%#v", summary, state.Leads)
+	}
+	lead := state.Leads[0]
+	if lead.LeadType != LeadTypeContractRecruiter || lead.Status != LeadStatusEligible {
+		t.Fatalf("lead classification = %s/%s", lead.LeadType, lead.Status)
+	}
+	if lead.Title == nil || *lead.Title != "Senior Technical Recruiter" {
+		t.Fatalf("title = %v", lead.Title)
+	}
+}
+
+func TestImportCaptureClassifiesAgencyDeliveryAndDrafts(t *testing.T) {
+	source := "ASAP - Agency Owners Delivery"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Dana Delivery"),
+			Text:       strPtr("Dana Delivery\nHead of Delivery\nBright Product Studio\nReact TypeScript AI product agency"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/agency"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("Bright Product Studio"),
+				Href: strPtr("https://www.linkedin.com/sales/company/bright"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	report := DraftMessages(&state, 10)
+	if len(report.Items) != 1 {
+		t.Fatalf("draft count = %d", len(report.Items))
+	}
+	lead := state.Leads[0]
+	if lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted {
+		t.Fatalf("lead = %#v", lead)
+	}
+	if lead.Draft == nil || !containsAny(lead.Draft.Body, "outside senior engineers", "client work") {
+		t.Fatalf("draft = %#v", lead.Draft)
+	}
+}
+
+func TestImportCaptureUsesCompanyLinkInsteadOfLocationLine(t *testing.T) {
+	source := "ASAP - Agency Owners Delivery"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Dustin Overbeck"),
+			Text:       strPtr("Dustin Overbeck\n2nd degree connection\nOwner  Tweak Agency\nSturgeon Bay, Wisconsin, United States\nAbout:\nDigital product agency and product marketing work"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/dustin"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("Tweak Agency"),
+				Href: strPtr("https://www.linkedin.com/sales/company/3597948"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	report := DraftMessages(&state, 10)
+	if len(report.Items) != 1 {
+		t.Fatalf("draft count = %d", len(report.Items))
+	}
+	lead := state.Leads[0]
+	if lead.Title == nil || *lead.Title != "Owner" {
+		t.Fatalf("title = %v", lead.Title)
+	}
+	if lead.Company == nil || *lead.Company != "Tweak Agency" {
+		t.Fatalf("company = %v", lead.Company)
+	}
+	if lead.Draft == nil || strings.Contains(lead.Draft.Body, "Sturgeon Bay, Wisconsin, United States works") {
+		t.Fatalf("draft = %#v", lead.Draft)
+	}
+	if !strings.Contains(lead.Draft.Body, "Tweak Agency works") {
+		t.Fatalf("draft = %q", lead.Draft.Body)
+	}
+}
+
+func TestImportCaptureRejectsAgencySourceWithoutProfileAgencySignal(t *testing.T) {
+	source := "ASAP - Agency Owners Delivery"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Vin Curto"),
+			Text:       strPtr("Vin Curto\n2nd degree connection\nFounder  TEN26.ai\nNew York City Metropolitan Area\nAbout:\nAI growth strategist and performance marketer"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/vin"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("TEN26.ai"),
+				Href: strPtr("https://www.linkedin.com/sales/company/123"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusRejected || lead.LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", lead)
+	}
+}
+
+func TestImportCaptureRejectsAgencyCompanyWithoutPersonaTitle(t *testing.T) {
+	source := "ASAP - Agency Owners Delivery"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Troy Hipolito"),
+			Text:       strPtr("Troy Hipolito\n2nd degree connection\nThe Not-So-Boring LinkedIn Guy\nLas Vegas, Nevada, United States\nAbout:\nSales Training & Outreach for coaches and consultants"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/troy"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("The Troy Agency"),
+				Href: strPtr("https://www.linkedin.com/sales/company/troy-agency"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusRejected || lead.LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", lead)
+	}
+}
+
+func TestImportCaptureRejectsStudioInTitleWithoutCompanyLink(t *testing.T) {
+	source := "ASAP - Agency Owners Delivery"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Aaron Francis"),
+			Text:       strPtr("Aaron Francis\n2nd degree connection\nCo-Founder Try Hard Studios\nDallas, Texas, United States\nAbout:\nWe make videos developers want to watch"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/aaron"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusRejected || lead.LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", lead)
+	}
+}
+
+func TestImportCaptureRejectsNonRecruiterAgencySource(t *testing.T) {
+	source := "ASAP - Startup CTO Eng Leaders"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Casey CTO"),
+			Text:       strPtr("Casey CTO\nCTO\nSaaS Company"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/cto"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if state.Leads[0].Status != LeadStatusRejected || state.Leads[0].LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", state.Leads[0])
+	}
+}
+
+func TestImportCaptureRejectsRecruiterSourceWithoutRecruiterSignal(t *testing.T) {
+	source := "ASAP - Contract Recruiters Staffing"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Jacques Nack"),
+			Text:       strPtr("Jacques Nack\nFounder & CEO\nc² (cSquare)\nAI GRC Platform and payments"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/jacques"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("c² (cSquare)"),
+				Href: strPtr("https://www.linkedin.com/sales/company/csquare"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusRejected || lead.LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", lead)
+	}
+}
+
+func TestImportCaptureRejectsRecruitingMentionWithoutRecruiterTitle(t *testing.T) {
+	source := "ASAP - Contract Recruiters Staffing"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Brenna Lasky"),
+			Text:       strPtr("Brenna Lasky\nFounder\nBrenna Lasky Coaching\nAbout:\nEx-Meta, Salesforce, Google Recruiting; sharing my journey into big tech"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/brenna"),
+			MenuState:  strPtr("connectable"),
+			Links: []app.SalesNavCaptureLink{{
+				Text: strPtr("Brenna Lasky Coaching"),
+				Href: strPtr("https://www.linkedin.com/sales/company/brenna-coaching"),
+			}},
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusRejected || lead.LeadType != LeadTypeBadFit {
+		t.Fatalf("lead = %#v", lead)
+	}
+}
+
+func TestImportCaptureDedupesNormalizedProfileURL(t *testing.T) {
+	source := "ASAP - Contract Recruiters Staffing"
+	state := OutreachState{}
+	first := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Riley Recruiter"),
+			Text:       strPtr("Riley Recruiter\nTechnical Recruiter\nAcme Staffing"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/abc?_ntb=x"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	second := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      1,
+			Name:       strPtr("Riley Recruiter"),
+			Text:       strPtr("Riley Recruiter\nTechnical Recruiter\nAcme Staffing\nC2C contract"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/abc"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	if _, err := ImportCapture(&state, first, ImportOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ImportCapture(&state, second, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Updated != 1 || len(state.Leads) != 1 {
+		t.Fatalf("summary=%#v leads=%#v", summary, state.Leads)
+	}
+}
+
+func TestApplyMessageSendResultMapsStatuses(t *testing.T) {
+	lead := Lead{ID: "lead_1", Name: "Riley Recruiter", MessageStatus: MessageStatusDrafted}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "dry-run-messageable"}, "/tmp/dry-run.json")
+	if lead.MessageStatus != MessageStatusDryRunReady || len(lead.SendAttempts) != 1 {
+		t.Fatalf("dry-run lead = %#v", lead)
+	}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "sent-clicked"}, "/tmp/sent.json")
+	if lead.MessageStatus != MessageStatusSent || len(lead.SendAttempts) != 2 {
+		t.Fatalf("sent lead = %#v", lead)
+	}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "not-messageable"}, "/tmp/not-messageable.json")
+	if lead.MessageStatus != MessageStatusNotMessageable || len(lead.SendAttempts) != 3 {
+		t.Fatalf("not-messageable lead = %#v", lead)
+	}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "conversation-exists"}, "/tmp/conversation.json")
+	if lead.MessageStatus != MessageStatusConversationExists || len(lead.SendAttempts) != 4 {
+		t.Fatalf("conversation-exists lead = %#v", lead)
+	}
+}
+
+func TestApplyMessageSendResultMapsBlockedAndFailure(t *testing.T) {
+	lead := Lead{ID: "lead_1", Name: "Riley Recruiter", MessageStatus: MessageStatusDrafted}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "blocked"}, "/tmp/blocked.json")
+	if lead.MessageStatus != MessageStatusBlocked {
+		t.Fatalf("blocked status = %s", lead.MessageStatus)
+	}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "composer-missing"}, "/tmp/fail.json")
+	if lead.MessageStatus != MessageStatusSendFailed {
+		t.Fatalf("failed status = %s", lead.MessageStatus)
+	}
+}
+
+func TestDraftMessagesSkipsTerminalMessageStatuses(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{ID: "lead_1", Name: "Ready Recruiter", FirstName: "Ready", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusNone, FitScore: 90},
+		{ID: "lead_2", Name: "Existing Thread", FirstName: "Existing", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusConversationExists, FitScore: 95},
+		{ID: "lead_3", Name: "Already Sent", FirstName: "Already", LeadType: LeadTypeAgencyDelivery, Status: LeadStatusEligible, MessageStatus: MessageStatusSent, FitScore: 92},
+	}}
+	report := DraftMessages(&state, 10)
+	if len(report.Items) != 1 || report.Items[0].ID != "lead_1" {
+		t.Fatalf("report items = %#v", report.Items)
+	}
+}
+
+func TestDraftMessagesStoresAngleAndEvidence(t *testing.T) {
+	state := OutreachState{Leads: []Lead{{
+		ID:            "lead_1",
+		Name:          "Morgan Manager",
+		FirstName:     "Morgan",
+		Title:         strPtr("Resource Manager"),
+		Company:       strPtr("Bright Product Studio"),
+		LeadType:      LeadTypeAgencyResource,
+		Status:        LeadStatusEligible,
+		MessageStatus: MessageStatusNone,
+		FitScore:      96,
+		FitReasons:    []string{"agency resource/resourcing title", "software/product/AI signal"},
+		EvidenceText:  "Resource Manager at Bright Product Studio working on React and AI product delivery",
+	}}}
+	report := DraftMessages(&state, 10)
+	if len(report.Items) != 1 {
+		t.Fatalf("draft count = %d", len(report.Items))
+	}
+	lead := state.Leads[0]
+	if lead.Draft == nil {
+		t.Fatal("expected draft")
+	}
+	if !strings.Contains(lead.Draft.Angle, "agency resource manager") {
+		t.Fatalf("angle = %q", lead.Draft.Angle)
+	}
+	if len(lead.Draft.Evidence) < 3 {
+		t.Fatalf("evidence = %#v", lead.Draft.Evidence)
+	}
+	if !strings.Contains(lead.Draft.Body, "HC Studio LLC") {
+		t.Fatalf("body = %q", lead.Draft.Body)
+	}
+}
+
+func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
+	lead := Lead{
+		Name:      "Troy Hipolito",
+		FirstName: "Troy",
+		Company:   strPtr("Las Vegas, Nevada, United States"),
+		LeadType:  LeadTypeAgencyDelivery,
+	}
+	body := agencyDraft(lead)
+	if strings.Contains(body, "Las Vegas, Nevada, United States works") {
+		t.Fatalf("body = %q", body)
+	}
+	if !strings.Contains(body, "your team works") {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{
+			ID:            "agency_1",
+			Name:          "Dana Delivery",
+			FirstName:     "Dana",
+			LeadType:      LeadTypeAgencyDelivery,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDryRunReady,
+			FitScore:      91,
+			FitReasons:    []string{"agency delivery/technical leadership title"},
+			Draft:         &MessageDraft{Body: "Agency draft", Angle: "agency delivery", Evidence: []string{"Title: Head of Delivery"}},
+		},
+		{
+			ID:            "recruiter_1",
+			Name:          "Riley Recruiter",
+			FirstName:     "Riley",
+			LeadType:      LeadTypeContractRecruiter,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDryRunReady,
+			FitScore:      93,
+			FitReasons:    []string{"recruiter/staffing signal"},
+			Draft:         &MessageDraft{Body: "Recruiter draft", Angle: "contract recruiter", Evidence: []string{"Title: Technical Recruiter"}},
+		},
+	}}
+	report := BuildDashboardReport(state, "/tmp/outreach.json", 5, 5, true, nil)
+	if len(report.ReadyAgencies) != 1 || report.ReadyAgencies[0].ID != "agency_1" {
+		t.Fatalf("ready agencies = %#v", report.ReadyAgencies)
+	}
+	if len(report.ReadyRecruiters) != 1 || report.ReadyRecruiters[0].ID != "recruiter_1" {
+		t.Fatalf("ready recruiters = %#v", report.ReadyRecruiters)
+	}
+	markdown := RenderDashboardMarkdown(report)
+	if !strings.Contains(markdown, "## Agencies") || !strings.Contains(markdown, "## Recruiters") || !strings.Contains(markdown, "- Draft evidence:") {
+		t.Fatalf("markdown = %s", markdown)
+	}
+}
+
+func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{
+			ID:            "old_sent",
+			Name:          "Old Sent",
+			LeadType:      LeadTypeAgencyDelivery,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusSent,
+			FitScore:      99,
+		},
+		{
+			ID:            "ready_now",
+			Name:          "Ready Now",
+			LeadType:      LeadTypeAgencyDelivery,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDryRunReady,
+			FitScore:      95,
+		},
+	}}
+	if bucketCompleteForRun(state, "agency", 1, true, nil) {
+		t.Fatal("historical sent lead should not satisfy a real-send daily quota")
+	}
+	if !bucketCompleteForRun(state, "agency", 1, false, nil) {
+		t.Fatal("ready lead should satisfy a draft/validation daily quota")
+	}
+	actions := []DailyLeadAction{{Bucket: "agency", Result: "sent-clicked"}}
+	if !bucketCompleteForRun(state, "agency", 1, true, actions) {
+		t.Fatal("current run sent action should satisfy a real-send daily quota")
+	}
+}
+
+func TestLeadsForMessageValidationOnlyReturnsDraftableStatuses(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{ID: "drafted", Name: "Drafted", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 90, ProfileURL: strPtr("https://linkedin.com/sales/lead/a"), Draft: &MessageDraft{Body: "body"}},
+		{ID: "failed", Name: "Failed", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusSendFailed, FitScore: 95, ProfileURL: strPtr("https://linkedin.com/sales/lead/b"), Draft: &MessageDraft{Body: "body"}},
+		{ID: "ready", Name: "Ready", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusDryRunReady, FitScore: 99, ProfileURL: strPtr("https://linkedin.com/sales/lead/c"), Draft: &MessageDraft{Body: "body"}},
+		{ID: "thread", Name: "Thread", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusConversationExists, FitScore: 100, ProfileURL: strPtr("https://linkedin.com/sales/lead/d"), Draft: &MessageDraft{Body: "body"}},
+		{ID: "agency", Name: "Agency", LeadType: LeadTypeAgencyDelivery, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 100, ProfileURL: strPtr("https://linkedin.com/sales/lead/e"), Draft: &MessageDraft{Body: "body"}},
+	}}
+	leads := leadsForMessageValidation(state, "recruiter")
+	if len(leads) != 2 {
+		t.Fatalf("leads = %#v", leads)
+	}
+	if leads[0].ID != "failed" || leads[1].ID != "drafted" {
+		t.Fatalf("validation order = %#v", leads)
+	}
+}
+
+func TestMessageSubjectByLeadType(t *testing.T) {
+	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != "Contract product engineering availability" {
+		t.Fatalf("recruiter subject = %q", got)
+	}
+	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != "Senior product engineering support" {
+		t.Fatalf("agency subject = %q", got)
+	}
+}
+
+func strPtr(value string) *string {
+	return &value
+}

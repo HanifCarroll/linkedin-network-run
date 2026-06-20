@@ -1,0 +1,249 @@
+package outreach
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+)
+
+func DraftMessages(state *OutreachState, limit int) DraftReport {
+	state.Normalize()
+	items := draftableQueue(*state, limit)
+	now := time.Now()
+	for i := range items {
+		index := findLeadByID(state.Leads, items[i].ID)
+		if index < 0 {
+			continue
+		}
+		draft := BuildMessageDraftRecord(state.Leads[index], now)
+		state.Leads[index].Draft = &draft
+		state.Leads[index].MessageStatus = MessageStatusDrafted
+		state.Leads[index].UpdatedAt = now
+		items[i].MessageStatus = MessageStatusDrafted
+		items[i].Draft = &draft.Body
+	}
+	return DraftReport{GeneratedAt: now, Items: items}
+}
+
+func draftableQueue(state OutreachState, limit int) []QueueItem {
+	items := Queue(state, []LeadStatus{LeadStatusEligible}, 0, false)
+	filtered := []QueueItem{}
+	for _, item := range items {
+		if isTerminalMessageStatus(item.MessageStatus) {
+			continue
+		}
+		filtered = append(filtered, item)
+		if limit > 0 && len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered
+}
+
+func isTerminalMessageStatus(status MessageStatus) bool {
+	switch status {
+	case MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func BuildMessageDraft(lead Lead) string {
+	return BuildMessageDraftRecord(lead, time.Now()).Body
+}
+
+func BuildMessageDraftRecord(lead Lead, generatedAt time.Time) MessageDraft {
+	angle := draftAngle(lead)
+	return MessageDraft{
+		Body:        messageBodyForAngle(lead, angle),
+		Angle:       angle,
+		Evidence:    draftEvidence(lead),
+		GeneratedAt: generatedAt,
+	}
+}
+
+func messageBodyForAngle(lead Lead, angle string) string {
+	switch lead.LeadType {
+	case LeadTypeContractRecruiter:
+		return recruiterDraft(lead)
+	case LeadTypeAgencyResource, LeadTypeAgencyDelivery, LeadTypeAgencyFounder:
+		return agencyDraft(lead)
+	default:
+		return generalDraft(lead)
+	}
+}
+
+func draftAngle(lead Lead) string {
+	switch lead.LeadType {
+	case LeadTypeContractRecruiter:
+		return "contract recruiter routing for remote C2C/1099 product-engineering work"
+	case LeadTypeAgencyResource:
+		return "agency resource manager for immediate outside senior engineering coverage"
+	case LeadTypeAgencyDelivery:
+		return "agency delivery or technical leader for overflow/rescue/prototyping support"
+	case LeadTypeAgencyFounder:
+		return "agency founder/partner for senior contractor capacity on active client work"
+	default:
+		return "general contract product-engineering availability"
+	}
+}
+
+func draftEvidence(lead Lead) []string {
+	evidence := []string{}
+	if lead.Title != nil {
+		evidence = append(evidence, "Title: "+*lead.Title)
+	}
+	if company := companyForDraft(lead.Company); company != "" {
+		evidence = append(evidence, "Company: "+company)
+	}
+	if len(lead.FitReasons) > 0 {
+		evidence = append(evidence, "Fit reasons: "+strings.Join(lead.FitReasons, "; "))
+	}
+	if lead.EvidenceText != "" {
+		evidence = append(evidence, "Sales Nav evidence: "+lead.EvidenceText)
+	}
+	return evidence
+}
+
+func recruiterDraft(lead Lead) string {
+	proof := "Recent work includes taking Palabruno from founder idea to live iOS/Android/web launch, and helping Genrupt add billing, async jobs, and agent/MCP workflows."
+	context := ""
+	if lead.Title != nil {
+		context = fmt.Sprintf(" I saw your profile mentions %s.", lowerFirst(*lead.Title))
+	}
+	return fmt.Sprintf("Hi %s,%s I’m a senior product engineer with 8 years across React, TypeScript, Node, AI product workflows, payments, and product UX. %s I’m available now for contract work through HC Studio LLC as a US W-9 vendor, working EST/CST hours from Buenos Aires. Are you seeing remote C2C/1099 roles where that background fits?", lead.FirstName, context, proof)
+}
+
+func agencyDraft(lead Lead) string {
+	target := "your team"
+	if company := companyForDraft(lead.Company); company != "" {
+		target = company
+	}
+	need := "overflow, rescue, prototyping, or short-term product engineering work"
+	if lead.LeadType == LeadTypeAgencyResource {
+		need = "senior outside engineering coverage for active client projects"
+	}
+	return fmt.Sprintf("Hi %s, I saw %s works on digital/product delivery. I’m a senior product engineer available now for %s: React/TypeScript, Node, AI workflows, payments, and MVP launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Do you ever bring in outside senior engineers for client work?", lead.FirstName, target, need)
+}
+
+func companyForDraft(company *string) string {
+	if company == nil {
+		return ""
+	}
+	value := cleanText(*company)
+	if value == "" || isLikelyLocation(value) {
+		return ""
+	}
+	return value
+}
+
+func isLikelyLocation(value string) bool {
+	lower := strings.ToLower(cleanText(value))
+	return containsAny(lower, "metropolitan area", "bay area", "united states") || strings.Count(value, ",") >= 2
+}
+
+func generalDraft(lead Lead) string {
+	return fmt.Sprintf("Hi %s, I’m a senior product engineer available now for contract product engineering work: React/TypeScript, Node, AI workflows, payments, and MVP launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Would it be useful to compare fit?", lead.FirstName)
+}
+
+func RenderDraftMarkdown(report DraftReport) string {
+	lines := []string{
+		fmt.Sprintf("# Recruiter And Agency Drafts %s", report.GeneratedAt.Format("2006-01-02")),
+		"",
+		fmt.Sprintf("- Generated: `%s`", report.GeneratedAt.Format(time.RFC3339)),
+		fmt.Sprintf("- Draft count: %d", len(report.Items)),
+		"- Send policy: draft-only. No connection request or LinkedIn message was sent by this command.",
+	}
+	if len(report.Items) == 0 {
+		lines = append(lines, "", "No eligible recruiter or agency leads need drafts.")
+		return strings.Join(lines, "\n")
+	}
+	for _, item := range report.Items {
+		lines = append(lines, "")
+		lines = append(lines, "## "+cleanInline(item.Name))
+		lines = append(lines, "- ID: `"+item.ID+"`")
+		lines = append(lines, "- Source: "+cleanInline(item.Source))
+		lines = append(lines, "- Type: `"+string(item.LeadType)+"`")
+		lines = append(lines, fmt.Sprintf("- Fit score: `%d`", item.FitScore))
+		if item.ProfileURL != nil {
+			lines = append(lines, "- Profile: "+cleanInline(*item.ProfileURL))
+		}
+		if item.Title != nil {
+			lines = append(lines, "- Title: "+cleanInline(*item.Title))
+		}
+		if item.Company != nil {
+			lines = append(lines, "- Company: "+cleanInline(*item.Company))
+		}
+		if len(item.FitReasons) > 0 {
+			lines = append(lines, "- Fit reasons: "+cleanInline(strings.Join(item.FitReasons, "; ")))
+		}
+		if item.Draft != nil {
+			if leadDraftAngle := draftAngleFromQueueItem(item); leadDraftAngle != "" {
+				lines = append(lines, "- Draft angle: "+cleanInline(leadDraftAngle))
+			}
+		}
+		if strings.TrimSpace(item.EvidenceText) != "" {
+			lines = append(lines, "- Evidence: "+cleanInline(item.EvidenceText))
+		}
+		lines = append(lines, "", "Draft:", "")
+		if item.Draft != nil {
+			lines = append(lines, "> "+cleanInline(*item.Draft))
+		} else {
+			lines = append(lines, "> No draft generated.")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func WriteDraftMarkdown(path string, report DraftReport) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(RenderDraftMarkdown(report)), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+func findLeadByID(leads []Lead, id string) int {
+	for i, lead := range leads {
+		if lead.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func lowerFirst(value string) string {
+	if value == "" {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) > 1 && unicode.IsUpper(runes[0]) && unicode.IsUpper(runes[1]) {
+		return value
+	}
+	return strings.ToLower(value[:1]) + value[1:]
+}
+
+func cleanInline(value string) string {
+	return strings.ReplaceAll(cleanText(value), "`", "'")
+}
+
+func draftAngleFromQueueItem(item QueueItem) string {
+	switch item.LeadType {
+	case LeadTypeContractRecruiter:
+		return "contract recruiter routing for remote C2C/1099 product-engineering work"
+	case LeadTypeAgencyResource:
+		return "agency resource manager for immediate outside senior engineering coverage"
+	case LeadTypeAgencyDelivery:
+		return "agency delivery or technical leader for overflow/rescue/prototyping support"
+	case LeadTypeAgencyFounder:
+		return "agency founder/partner for senior contractor capacity on active client work"
+	default:
+		return ""
+	}
+}
