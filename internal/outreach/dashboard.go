@@ -68,6 +68,12 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		fmt.Sprintf("- Ready now: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
 		fmt.Sprintf("- Sent: `%d` agencies, `%d` recruiters", len(report.SentAgencies), len(report.SentRecruiters)),
 		fmt.Sprintf("- Checked/skipped: `%d` agencies, `%d` recruiters", len(report.SkippedAgencies), len(report.SkippedRecruiters)),
+		fmt.Sprintf("- Agency accounts: `%d` qualified, `%d` needs review, `%d` rejected, `%d` exhausted",
+			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusQualified],
+			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusNeedsReview],
+			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusRejected],
+			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusExhausted],
+		),
 		"",
 	}
 	if len(report.Actions) > 0 {
@@ -163,6 +169,18 @@ func renderLeadCards(label string, leads []Lead) []string {
 		}
 		if lead.Company != nil {
 			lines = append(lines, "- Company: "+cleanInline(*lead.Company))
+		}
+		if lead.AgencyAccountName != nil {
+			lines = append(lines, "- Agency account: "+cleanInline(*lead.AgencyAccountName))
+		}
+		if lead.AgencyAccountURL != nil {
+			lines = append(lines, "- Agency account URL: "+cleanInline(*lead.AgencyAccountURL))
+		}
+		if len(lead.AgencyAccountReasons) > 0 {
+			lines = append(lines, "- Agency account reasons: "+cleanInline(strings.Join(lead.AgencyAccountReasons, "; ")))
+		}
+		if lead.AgencyAccountEvidence != "" {
+			lines = append(lines, "- Agency account evidence: "+cleanInline(lead.AgencyAccountEvidence))
 		}
 		if len(lead.FitReasons) > 0 {
 			lines = append(lines, "- Why chosen: "+cleanInline(strings.Join(lead.FitReasons, "; ")))

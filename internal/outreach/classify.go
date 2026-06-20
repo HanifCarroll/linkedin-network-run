@@ -17,6 +17,7 @@ const (
 
 type ImportOptions struct {
 	OnlyConnectable bool
+	AgencyAccount   *AgencyAccount
 }
 
 func ImportCapture(state *OutreachState, capture app.SalesNavCapture, options ImportOptions) (ImportSummary, error) {
@@ -43,7 +44,7 @@ func ImportCapture(state *OutreachState, capture app.SalesNavCapture, options Im
 		if options.OnlyConnectable && menuState != "connectable" {
 			continue
 		}
-		lead := buildLead(source, row, capture.CapturedAt, now)
+		lead := buildLead(source, row, capture.CapturedAt, now, options.AgencyAccount)
 		index := findLeadIndex(state.Leads, lead)
 		if index >= 0 {
 			lead.ID = state.Leads[index].ID
@@ -53,6 +54,13 @@ func ImportCapture(state *OutreachState, capture app.SalesNavCapture, options Im
 			lead.SendAttempts = state.Leads[index].SendAttempts
 			if len(state.Leads[index].Notes) > 0 {
 				lead.Notes = state.Leads[index].Notes
+			}
+			if options.AgencyAccount == nil && state.Leads[index].AgencyAccountID != nil {
+				lead.AgencyAccountID = state.Leads[index].AgencyAccountID
+				lead.AgencyAccountName = state.Leads[index].AgencyAccountName
+				lead.AgencyAccountURL = state.Leads[index].AgencyAccountURL
+				lead.AgencyAccountReasons = state.Leads[index].AgencyAccountReasons
+				lead.AgencyAccountEvidence = state.Leads[index].AgencyAccountEvidence
 			}
 			state.Leads[index] = lead
 			summary.Updated++
@@ -74,7 +82,7 @@ func ImportCapture(state *OutreachState, capture app.SalesNavCapture, options Im
 	return summary, nil
 }
 
-func buildLead(source string, row app.SalesNavCaptureRow, capturedAt *string, importedAt time.Time) Lead {
+func buildLead(source string, row app.SalesNavCaptureRow, capturedAt *string, importedAt time.Time, agencyAccount *AgencyAccount) Lead {
 	name := cleanText(pointerValue(row.Name))
 	profileURL := row.ProfileURL
 	if profileURL == nil && row.ScrollURN != nil {
@@ -83,15 +91,18 @@ func buildLead(source string, row app.SalesNavCaptureRow, capturedAt *string, im
 	rawText := rawEvidenceText(row)
 	text := truncateEvidence(rawText)
 	company := extractCompanyFromLinks(row.Links)
+	if agencyAccount != nil && companyForDraft(company) == "" {
+		company = &agencyAccount.Name
+	}
 	title := extractTitleCompany(name, rawText, company)
-	leadType, score, reasons, rejects := classifyLead(source, title, company, text)
+	leadType, score, reasons, rejects := classifyLead(source, title, company, text, agencyAccount)
 	status := LeadStatusEligible
 	if leadType == LeadTypeBadFit || score < defaultReviewScore {
 		status = LeadStatusRejected
 	} else if score < defaultEligibleScore {
 		status = LeadStatusNeedsReview
 	}
-	return Lead{
+	lead := Lead{
 		ID:              stableLeadID(source, name, profileURL, row.ScrollURN),
 		Source:          source,
 		Name:            name,
@@ -113,9 +124,13 @@ func buildLead(source string, row app.SalesNavCaptureRow, capturedAt *string, im
 		UpdatedAt:       importedAt,
 		Notes:           []string{},
 	}
+	if agencyAccount != nil {
+		linkLeadToAgencyAccount(&lead, *agencyAccount)
+	}
+	return lead
 }
 
-func classifyLead(source string, title *string, company *string, evidence string) (LeadType, int, []string, []string) {
+func classifyLead(source string, title *string, company *string, evidence string, agencyAccount *AgencyAccount) (LeadType, int, []string, []string) {
 	titleText := strings.ToLower(pointerValue(title))
 	companyText := strings.ToLower(pointerValue(company))
 	evidenceLower := strings.ToLower(evidence)
@@ -129,7 +144,8 @@ func classifyLead(source string, title *string, company *string, evidence string
 	titleLooksAgencyDelivery := containsAny(titleText, "delivery", "technical director", "engineering director", "head of engineering", "vp engineering")
 	titleLooksAgencyFounder := containsAny(titleText, "founder", "partner", "principal", "owner", "ceo")
 	titleLooksAgencyPersona := titleLooksAgencyResource || titleLooksAgencyDelivery || titleLooksAgencyFounder
-	companyLooksAgency := containsAny(companyText, "product studio", "digital product", "digital agency", "software agency", "development agency", "design agency", "dev shop", "studio", "consultancy", "consulting", "agency")
+	accountLooksAgency := agencyAccount != nil && agencyAccount.Status == AgencyAccountStatusQualified
+	companyLooksAgency := accountLooksAgency || containsAny(companyText, "product studio", "digital product", "digital agency", "software agency", "development agency", "design agency", "dev shop", "studio", "consultancy", "consulting", "agency")
 	companyLooksStaffing := containsAny(companyText, "staffing", "recruiting", "recruitment", "talent solutions", "consulting firm")
 	contractSignal := containsAny(profileText, "contract", "c2c", "1099", "consultant", "fractional", "freelance", "temporary", "staff augmentation")
 	softwareSignal := containsAny(profileText, "react", "typescript", "node", "frontend", "front-end", "full-stack", "full stack", "product engineer", "software engineer", "ai", "genai", "saas")
@@ -175,6 +191,10 @@ func classifyLead(source string, title *string, company *string, evidence string
 	if companyLooksAgency || companyLooksStaffing {
 		score += 10
 		reasons = append(reasons, "company/source matches target market")
+	}
+	if accountLooksAgency {
+		score += 10
+		reasons = append(reasons, "qualified agency account context")
 	}
 	if containsAny(profileText, "onsite only", "clearance", "secret clearance", "top secret", "w2 only", "local candidates only") {
 		score -= 35
@@ -261,19 +281,23 @@ func Queue(state OutreachState, statuses []LeadStatus, limit int, includeDraft b
 			draft = &lead.Draft.Body
 		}
 		items = append(items, QueueItem{
-			ID:            lead.ID,
-			Name:          lead.Name,
-			ProfileURL:    lead.ProfileURL,
-			Title:         lead.Title,
-			Company:       lead.Company,
-			Source:        lead.Source,
-			LeadType:      lead.LeadType,
-			Status:        lead.Status,
-			MessageStatus: lead.MessageStatus,
-			FitScore:      lead.FitScore,
-			FitReasons:    lead.FitReasons,
-			EvidenceText:  lead.EvidenceText,
-			Draft:         draft,
+			ID:                    lead.ID,
+			Name:                  lead.Name,
+			ProfileURL:            lead.ProfileURL,
+			Title:                 lead.Title,
+			Company:               lead.Company,
+			AgencyAccountName:     lead.AgencyAccountName,
+			AgencyAccountURL:      lead.AgencyAccountURL,
+			AgencyAccountReasons:  lead.AgencyAccountReasons,
+			AgencyAccountEvidence: lead.AgencyAccountEvidence,
+			Source:                lead.Source,
+			LeadType:              lead.LeadType,
+			Status:                lead.Status,
+			MessageStatus:         lead.MessageStatus,
+			FitScore:              lead.FitScore,
+			FitReasons:            lead.FitReasons,
+			EvidenceText:          lead.EvidenceText,
+			Draft:                 draft,
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -291,16 +315,20 @@ func Queue(state OutreachState, statuses []LeadStatus, limit int, includeDraft b
 func Counts(state OutreachState) StatusCounts {
 	state.Normalize()
 	counts := StatusCounts{
-		ByStatus:        map[LeadStatus]int{},
-		ByLeadType:      map[LeadType]int{},
-		ByMessageStatus: map[MessageStatus]int{},
-		BySource:        map[string]int{},
+		ByStatus:              map[LeadStatus]int{},
+		ByLeadType:            map[LeadType]int{},
+		ByMessageStatus:       map[MessageStatus]int{},
+		BySource:              map[string]int{},
+		ByAgencyAccountStatus: map[AgencyAccountStatus]int{},
 	}
 	for _, lead := range state.Leads {
 		counts.ByStatus[lead.Status]++
 		counts.ByLeadType[lead.LeadType]++
 		counts.ByMessageStatus[lead.MessageStatus]++
 		counts.BySource[lead.Source]++
+	}
+	for _, account := range state.AgencyAccounts {
+		counts.ByAgencyAccountStatus[account.Status]++
 	}
 	return counts
 }

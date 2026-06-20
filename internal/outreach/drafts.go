@@ -100,8 +100,17 @@ func draftEvidence(lead Lead) []string {
 	if company := companyForDraft(lead.Company); company != "" {
 		evidence = append(evidence, "Company: "+company)
 	}
+	if lead.AgencyAccountName != nil {
+		evidence = append(evidence, "Agency account: "+*lead.AgencyAccountName)
+	}
+	if len(lead.AgencyAccountReasons) > 0 {
+		evidence = append(evidence, "Agency account reasons: "+strings.Join(lead.AgencyAccountReasons, "; "))
+	}
 	if len(lead.FitReasons) > 0 {
 		evidence = append(evidence, "Fit reasons: "+strings.Join(lead.FitReasons, "; "))
+	}
+	if lead.AgencyAccountEvidence != "" {
+		evidence = append(evidence, "Agency account evidence: "+lead.AgencyAccountEvidence)
 	}
 	if lead.EvidenceText != "" {
 		evidence = append(evidence, "Sales Nav evidence: "+lead.EvidenceText)
@@ -120,7 +129,9 @@ func recruiterDraft(lead Lead) string {
 
 func agencyDraft(lead Lead) string {
 	target := "your team"
-	if company := companyForDraft(lead.Company); company != "" {
+	if lead.AgencyAccountName != nil && cleanText(*lead.AgencyAccountName) != "" {
+		target = cleanText(*lead.AgencyAccountName)
+	} else if company := companyForDraft(lead.Company); company != "" {
 		target = company
 	}
 	need := "overflow, rescue, prototyping, or short-term product engineering work"
@@ -178,8 +189,20 @@ func RenderDraftMarkdown(report DraftReport) string {
 		if item.Company != nil {
 			lines = append(lines, "- Company: "+cleanInline(*item.Company))
 		}
+		if item.AgencyAccountName != nil {
+			lines = append(lines, "- Agency account: "+cleanInline(*item.AgencyAccountName))
+		}
+		if item.AgencyAccountURL != nil {
+			lines = append(lines, "- Agency account URL: "+cleanInline(*item.AgencyAccountURL))
+		}
+		if len(item.AgencyAccountReasons) > 0 {
+			lines = append(lines, "- Agency account reasons: "+cleanInline(strings.Join(item.AgencyAccountReasons, "; ")))
+		}
 		if len(item.FitReasons) > 0 {
 			lines = append(lines, "- Fit reasons: "+cleanInline(strings.Join(item.FitReasons, "; ")))
+		}
+		if item.AgencyAccountEvidence != "" {
+			lines = append(lines, "- Agency account evidence: "+cleanInline(item.AgencyAccountEvidence))
 		}
 		if item.Draft != nil {
 			if leadDraftAngle := draftAngleFromQueueItem(item); leadDraftAngle != "" {

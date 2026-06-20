@@ -26,6 +26,15 @@ const (
 	LeadStatusRejected    LeadStatus = "rejected"
 )
 
+type AgencyAccountStatus string
+
+const (
+	AgencyAccountStatusQualified   AgencyAccountStatus = "qualified"
+	AgencyAccountStatusNeedsReview AgencyAccountStatus = "needs_review"
+	AgencyAccountStatusRejected    AgencyAccountStatus = "rejected"
+	AgencyAccountStatusExhausted   AgencyAccountStatus = "exhausted"
+)
+
 type MessageStatus string
 
 const (
@@ -47,6 +56,7 @@ const (
 type OutreachState struct {
 	SchemaVersion  int                      `json:"schema_version"`
 	Leads          []Lead                   `json:"leads"`
+	AgencyAccounts []AgencyAccount          `json:"agency_accounts"`
 	CaptureCursors map[string]CaptureCursor `json:"capture_cursors"`
 	UpdatedAt      time.Time                `json:"updated_at"`
 }
@@ -66,28 +76,56 @@ type CaptureCursor struct {
 }
 
 type Lead struct {
-	ID              string        `json:"id"`
-	Source          string        `json:"source"`
-	Name            string        `json:"name"`
-	FirstName       string        `json:"first_name"`
-	ProfileURL      *string       `json:"profile_url"`
-	SalesProfileURN *string       `json:"sales_profile_urn"`
-	Title           *string       `json:"title"`
-	Company         *string       `json:"company"`
-	LeadType        LeadType      `json:"lead_type"`
-	Status          LeadStatus    `json:"status"`
-	MessageStatus   MessageStatus `json:"message_status"`
-	FitScore        int           `json:"fit_score"`
-	FitReasons      []string      `json:"fit_reasons"`
-	RejectReasons   []string      `json:"reject_reasons"`
-	EvidenceText    string        `json:"evidence_text"`
-	MenuState       string        `json:"menu_state"`
-	CapturedAt      *string       `json:"captured_at"`
-	ImportedAt      time.Time     `json:"imported_at"`
-	UpdatedAt       time.Time     `json:"updated_at"`
-	Draft           *MessageDraft `json:"draft"`
-	SendAttempts    []SendAttempt `json:"send_attempts"`
-	Notes           []string      `json:"notes"`
+	ID                    string        `json:"id"`
+	Source                string        `json:"source"`
+	Name                  string        `json:"name"`
+	FirstName             string        `json:"first_name"`
+	ProfileURL            *string       `json:"profile_url"`
+	SalesProfileURN       *string       `json:"sales_profile_urn"`
+	Title                 *string       `json:"title"`
+	Company               *string       `json:"company"`
+	AgencyAccountID       *string       `json:"agency_account_id,omitempty"`
+	AgencyAccountName     *string       `json:"agency_account_name,omitempty"`
+	AgencyAccountURL      *string       `json:"agency_account_url,omitempty"`
+	AgencyAccountReasons  []string      `json:"agency_account_reasons,omitempty"`
+	AgencyAccountEvidence string        `json:"agency_account_evidence,omitempty"`
+	LeadType              LeadType      `json:"lead_type"`
+	Status                LeadStatus    `json:"status"`
+	MessageStatus         MessageStatus `json:"message_status"`
+	FitScore              int           `json:"fit_score"`
+	FitReasons            []string      `json:"fit_reasons"`
+	RejectReasons         []string      `json:"reject_reasons"`
+	EvidenceText          string        `json:"evidence_text"`
+	MenuState             string        `json:"menu_state"`
+	CapturedAt            *string       `json:"captured_at"`
+	ImportedAt            time.Time     `json:"imported_at"`
+	UpdatedAt             time.Time     `json:"updated_at"`
+	Draft                 *MessageDraft `json:"draft"`
+	SendAttempts          []SendAttempt `json:"send_attempts"`
+	Notes                 []string      `json:"notes"`
+}
+
+type AgencyAccount struct {
+	ID                   string              `json:"id"`
+	Source               string              `json:"source"`
+	Name                 string              `json:"name"`
+	AccountURL           *string             `json:"account_url"`
+	Website              *string             `json:"website"`
+	Domain               *string             `json:"domain"`
+	Industry             *string             `json:"industry"`
+	Headcount            *string             `json:"headcount"`
+	Location             *string             `json:"location"`
+	Status               AgencyAccountStatus `json:"status"`
+	FitScore             int                 `json:"fit_score"`
+	FitReasons           []string            `json:"fit_reasons"`
+	RejectReasons        []string            `json:"reject_reasons"`
+	EvidenceText         string              `json:"evidence_text"`
+	CapturedAt           *string             `json:"captured_at"`
+	ImportedAt           time.Time           `json:"imported_at"`
+	UpdatedAt            time.Time           `json:"updated_at"`
+	LastContactCaptureAt *time.Time          `json:"last_contact_capture_at"`
+	ContactCaptureCount  int                 `json:"contact_capture_count"`
+	Notes                []string            `json:"notes"`
 }
 
 type MessageDraft struct {
@@ -117,19 +155,23 @@ type ImportSummary struct {
 }
 
 type QueueItem struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	ProfileURL    *string       `json:"profile_url"`
-	Title         *string       `json:"title"`
-	Company       *string       `json:"company"`
-	Source        string        `json:"source"`
-	LeadType      LeadType      `json:"lead_type"`
-	Status        LeadStatus    `json:"status"`
-	MessageStatus MessageStatus `json:"message_status"`
-	FitScore      int           `json:"fit_score"`
-	FitReasons    []string      `json:"fit_reasons"`
-	EvidenceText  string        `json:"evidence_text"`
-	Draft         *string       `json:"draft,omitempty"`
+	ID                    string        `json:"id"`
+	Name                  string        `json:"name"`
+	ProfileURL            *string       `json:"profile_url"`
+	Title                 *string       `json:"title"`
+	Company               *string       `json:"company"`
+	AgencyAccountName     *string       `json:"agency_account_name,omitempty"`
+	AgencyAccountURL      *string       `json:"agency_account_url,omitempty"`
+	AgencyAccountReasons  []string      `json:"agency_account_reasons,omitempty"`
+	AgencyAccountEvidence string        `json:"agency_account_evidence,omitempty"`
+	Source                string        `json:"source"`
+	LeadType              LeadType      `json:"lead_type"`
+	Status                LeadStatus    `json:"status"`
+	MessageStatus         MessageStatus `json:"message_status"`
+	FitScore              int           `json:"fit_score"`
+	FitReasons            []string      `json:"fit_reasons"`
+	EvidenceText          string        `json:"evidence_text"`
+	Draft                 *string       `json:"draft,omitempty"`
 }
 
 type DraftReport struct {
@@ -138,10 +180,11 @@ type DraftReport struct {
 }
 
 type StatusCounts struct {
-	ByStatus        map[LeadStatus]int    `json:"by_status"`
-	ByLeadType      map[LeadType]int      `json:"by_lead_type"`
-	ByMessageStatus map[MessageStatus]int `json:"by_message_status"`
-	BySource        map[string]int        `json:"by_source"`
+	ByStatus              map[LeadStatus]int          `json:"by_status"`
+	ByLeadType            map[LeadType]int            `json:"by_lead_type"`
+	ByMessageStatus       map[MessageStatus]int       `json:"by_message_status"`
+	BySource              map[string]int              `json:"by_source"`
+	ByAgencyAccountStatus map[AgencyAccountStatus]int `json:"by_agency_account_status"`
 }
 
 func (s *OutreachState) Normalize() {
@@ -151,8 +194,14 @@ func (s *OutreachState) Normalize() {
 	if s.Leads == nil {
 		s.Leads = []Lead{}
 	}
+	if s.AgencyAccounts == nil {
+		s.AgencyAccounts = []AgencyAccount{}
+	}
 	if s.CaptureCursors == nil {
 		s.CaptureCursors = map[string]CaptureCursor{}
+	}
+	for i := range s.AgencyAccounts {
+		s.AgencyAccounts[i].Normalize()
 	}
 	for i := range s.Leads {
 		s.Leads[i].Normalize()
@@ -183,7 +232,29 @@ func (l *Lead) Normalize() {
 	if l.SendAttempts == nil {
 		l.SendAttempts = []SendAttempt{}
 	}
+	if l.AgencyAccountReasons == nil {
+		l.AgencyAccountReasons = []string{}
+	}
 	l.EvidenceText = truncateEvidence(l.EvidenceText)
+	l.AgencyAccountEvidence = truncateEvidence(l.AgencyAccountEvidence)
+}
+
+func (a *AgencyAccount) Normalize() {
+	a.Name = cleanText(a.Name)
+	a.Source = cleanText(a.Source)
+	if a.Status == "" {
+		a.Status = AgencyAccountStatusNeedsReview
+	}
+	if a.FitReasons == nil {
+		a.FitReasons = []string{}
+	}
+	if a.RejectReasons == nil {
+		a.RejectReasons = []string{}
+	}
+	if a.Notes == nil {
+		a.Notes = []string{}
+	}
+	a.EvidenceText = truncateEvidence(a.EvidenceText)
 }
 
 func cleanText(value string) string {

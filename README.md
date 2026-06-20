@@ -65,25 +65,34 @@ recruiter-agency-outreach run-daily \
 ```
 
 `run-daily` resets the Playwriter session connection, opens generated Sales
-Navigator searches for the validated recruiter/agency source mix, imports and
-dedupes leads, drafts context-aware messages, validates messageability in the
-browser, sends up to 5 agency messages and 5 recruiter messages for the current
-run when `--allow-send` is present, and writes a Markdown dashboard under the
-outreach state directory. Use `--skip-session-reset` only when intentionally
-preserving a live Playwriter page connection.
+Navigator searches, imports and dedupes accounts/leads, drafts context-aware
+messages, validates messageability in the browser, sends up to 5 agency
+messages and 5 recruiter messages for the current run when `--allow-send` is
+present, and writes a Markdown dashboard under the outreach state directory.
+Use `--skip-session-reset` only when intentionally preserving a live Playwriter
+page connection.
 
 The built-in daily sources do not depend on stale Sales Navigator saved-search
 names. After a source has been captured once, the workflow still uses its saved
 resume cursor so later rounds continue from the next result page.
+
+Agency sourcing is account-first. The daily runner captures agency account
+searches, qualifies accounts into `qualified`, `needs_review`, `rejected`, or
+`exhausted`, then searches people scoped to qualified accounts with a Sales
+Navigator `CURRENT_COMPANY` filter. The older person-first agency searches are
+kept as fallback sources only when the account-first path produces no contact
+captures in a round. Recruiter sourcing remains person-first.
 
 Validated source configuration:
 
 | Bucket | Source | Sales Navigator filters | Measured result |
 | --- | --- | --- | --- |
 | Recruiters | `ASAP - Contract Recruiter Titles` | United States, 2nd-degree, Posted on LinkedIn, current title in `Contract Recruiter`, `Senior Contract Recruiter`, `Contract Technical Recruiter`, `Senior Technical Recruiter Contract` | 66 eligible and 3 needs-review from 75 captured; 43 eligible and 3 needs-review from a 50-row daily-depth stress capture |
-| Agencies primary | `ASAP - Agency Development Agency Leaders` | United States, 2nd-degree, Posted on LinkedIn, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director`; keyword `development agency` | 11 eligible from 75 captured; 8 eligible from a 50-row daily-depth stress capture, including 7 agency-bucket leads |
-| Agencies backup | `ASAP - Agency Digital Agency Leaders` | Same agency title filters; industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`; keyword `digital agency` | 8 eligible from 75 captured |
-| Agencies backup | `ASAP - Agency Product Studio Leaders` | Same agency title/industry filters; keyword `product studio` | 6 eligible from 75 captured; added 6 eligible leads in the 50-row combined stress capture after agency-source dedupe |
+| Agency accounts primary | `ASAP - Agency Accounts Development Agency` | United States, industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`, company headcount `11-50`, `51-200`, `201-500`; keyword `custom software development agency` | Used to build the qualified account reservoir before contact capture |
+| Agency accounts backup | `ASAP - Agency Accounts Digital Agency` | Same account filters; keyword `digital product agency` | Used to build the qualified account reservoir before contact capture |
+| Agency accounts backup | `ASAP - Agency Accounts Product Studio` | Same account filters; keyword `product studio` | Used to build the qualified account reservoir before contact capture |
+| Agency contacts | `ASAP - Agency Account Contacts - <account>` | United States, 2nd-degree, Posted on LinkedIn, `CURRENT_COMPANY` set to the qualified agency account, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director` | Produces drafted agency people with account-level evidence attached |
+| Agencies fallback | `ASAP - Agency Development Agency Leaders`, `ASAP - Agency Digital Agency Leaders`, `ASAP - Agency Product Studio Leaders` | Person-first agency searches retained from the previous source-quality run | Used only when account-first contact capture yields no candidates in a round |
 
 The latest source-quality test captured 956 visible Sales Navigator rows across
 13 recruiter/agency source configurations, with no real sends. The final
@@ -111,8 +120,8 @@ recruiter-agency-outreach run-daily \
   --print-markdown
 ```
 
-The dashboard includes the visible source context, fit reasons, draft angle,
-draft evidence, message text, last send check, and run actions:
+The dashboard includes the visible source context, account context, fit reasons,
+draft angle, draft evidence, message text, last send check, and run actions:
 
 ```sh
 recruiter-agency-outreach dashboard --print-markdown
@@ -155,10 +164,24 @@ recruiter-agency-outreach capture \
   --limit 25
 ```
 
+Manual agency account capture and review are separate:
+
+```sh
+recruiter-agency-outreach capture-accounts \
+  --session <session> \
+  --source "ASAP - Agency Accounts Development Agency" \
+  --pages 2 \
+  --limit 25
+
+recruiter-agency-outreach accounts --status qualified --limit 20
+recruiter-agency-outreach accounts --status needs_review --limit 20
+```
+
 If capture was run manually, import the artifact directly:
 
 ```sh
 recruiter-agency-outreach import-capture /tmp/recruiter-agency-outreach-capture/page.json
+recruiter-agency-outreach import-accounts /tmp/recruiter-agency-outreach-account-capture/page.json
 ```
 
 Review eligible leads:

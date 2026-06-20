@@ -15,13 +15,15 @@ import (
 )
 
 const (
-	defaultPlaywriter          = "/Users/hanifcarroll/.bun/bin/playwriter"
-	defaultCaptureScript       = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js"
-	defaultMessageScript       = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-message-one.js"
-	defaultSavedSearchesScript = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-saved-searches.js"
-	defaultSavedSearches       = "/tmp/linkedin-network-run-saved-searches.json"
-	defaultCaptureOutDir       = "/tmp/recruiter-agency-outreach-capture"
-	defaultMessageOutDir       = "/tmp/recruiter-agency-outreach-message"
+	defaultPlaywriter           = "/Users/hanifcarroll/.bun/bin/playwriter"
+	defaultCaptureScript        = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js"
+	defaultAccountCaptureScript = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-account-capture.js"
+	defaultMessageScript        = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-message-one.js"
+	defaultSavedSearchesScript  = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-saved-searches.js"
+	defaultSavedSearches        = "/tmp/linkedin-network-run-saved-searches.json"
+	defaultCaptureOutDir        = "/tmp/recruiter-agency-outreach-capture"
+	defaultAccountCaptureOutDir = "/tmp/recruiter-agency-outreach-account-capture"
+	defaultMessageOutDir        = "/tmp/recruiter-agency-outreach-message"
 )
 
 func Execute(ctx context.Context, args []string) error {
@@ -46,7 +48,10 @@ func Execute(ctx context.Context, args []string) error {
 
 	root.AddCommand(runDailyCommand(withStore))
 	root.AddCommand(captureCommand(withStore))
+	root.AddCommand(captureAccountsCommand(withStore))
 	root.AddCommand(importCaptureCommand(withStore))
+	root.AddCommand(importAccountsCommand(withStore))
+	root.AddCommand(accountsCommand(withStore))
 	root.AddCommand(queueCommand(withStore))
 	root.AddCommand(draftCommand(withStore))
 	root.AddCommand(dashboardCommand(withStore))
@@ -107,6 +112,48 @@ func captureCommand(withStore func(func(*Store) error) func(*cobra.Command, []st
 	return cmd
 }
 
+func captureAccountsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var session, playwriter, script, savedSearches, source, rawURL, outDir string
+	var pages, limit, rowScrollDelayMS, timeoutMS uint32
+	cmd := &cobra.Command{
+		Use: "capture-accounts",
+		RunE: withStore(func(store *Store) error {
+			if strings.TrimSpace(session) == "" {
+				return fmt.Errorf("--session is required")
+			}
+			if strings.TrimSpace(source) == "" {
+				return fmt.Errorf("--source is required")
+			}
+			resolvedURL, err := resolveDailyAccountCaptureURL(app.OptionalString(rawURL), savedSearches, source)
+			if err != nil {
+				return err
+			}
+			path, err := RunPlaywriterAccountCapture(playwriter, session, script, outDir, source, resolvedURL, AccountCaptureRunOptions{
+				Pages:            pages,
+				Limit:            limit,
+				RowScrollDelayMS: rowScrollDelayMS,
+				TimeoutMS:        timeoutMS,
+			})
+			if err != nil {
+				return err
+			}
+			return importAccountsPath(store, path)
+		}),
+	}
+	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	addPlaywriterFlag(cmd.Flags(), &playwriter)
+	cmd.Flags().StringVar(&script, "script", defaultAccountCaptureScript, "Sales Navigator account capture script")
+	cmd.Flags().StringVar(&savedSearches, "saved-searches", defaultSavedSearches, "saved-search resolver artifact")
+	cmd.Flags().StringVar(&source, "source", "", "Sales Navigator account source name")
+	cmd.Flags().StringVar(&rawURL, "url", "", "explicit Sales Navigator account URL")
+	cmd.Flags().StringVar(&outDir, "out-dir", defaultAccountCaptureOutDir, "account capture output directory")
+	cmd.Flags().Uint32Var(&pages, "pages", 2, "pages to capture")
+	cmd.Flags().Uint32Var(&limit, "limit", 25, "rows per page")
+	cmd.Flags().Uint32Var(&rowScrollDelayMS, "row-scroll-delay-ms", 250, "row scroll delay")
+	cmd.Flags().Uint32Var(&timeoutMS, "timeout-ms", 90000, "Playwriter timeout")
+	return cmd
+}
+
 func importCaptureCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var onlyConnectable bool
 	cmd := &cobra.Command{
@@ -119,6 +166,19 @@ func importCaptureCommand(withStore func(func(*Store) error) func(*cobra.Command
 		},
 	}
 	cmd.Flags().BoolVar(&onlyConnectable, "only-connectable", false, "import only connectable rows")
+	return cmd
+}
+
+func importAccountsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:  "import-accounts <path>",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(func(store *Store) error {
+				return importAccountsPath(store, args[0])
+			})(cmd, args)
+		},
+	}
 	return cmd
 }
 
@@ -142,36 +202,60 @@ func importCapturePath(store *Store, path string, onlyConnectable bool) error {
 	return nil
 }
 
+func importAccountsPath(store *Store, path string) error {
+	capture, err := LoadSalesNavAccountCapture(path)
+	if err != nil {
+		return err
+	}
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	summary, err := ImportAccountCapture(&state, capture)
+	if err != nil {
+		return err
+	}
+	if err := store.Save(state); err != nil {
+		return err
+	}
+	fmt.Printf("source=%s stored=%d updated=%d qualified=%d needs_review=%d rejected=%d total=%d\n", summary.Source, summary.Stored, summary.Updated, summary.Qualified, summary.NeedsReview, summary.Rejected, summary.Total)
+	return nil
+}
+
 func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
-	var session, playwriter, captureScript, messageScript, savedSearchesScript, savedSearches, captureOutDir, messageOutDir, dashboardPath string
+	var session, playwriter, captureScript, accountCaptureScript, messageScript, savedSearchesScript, savedSearches, captureOutDir, accountCaptureOutDir, messageOutDir, dashboardPath string
 	var targetAgencies, targetRecruiters, maxCaptureRounds int
-	var pages, limit, stopAfterConnectable, rowScrollDelayMS, timeoutMS uint32
+	var pages, accountPages, limit, accountLimit, stopAfterConnectable, rowScrollDelayMS, timeoutMS uint32
 	var allowSend, refreshSavedSearches, skipSessionReset, printMarkdown bool
 	cmd := &cobra.Command{
 		Use: "run-daily",
 		RunE: withStore(func(store *Store) error {
 			result, err := RunDaily(store, DailyOptions{
-				Session:              session,
-				Playwriter:           playwriter,
-				CaptureScript:        captureScript,
-				MessageScript:        messageScript,
-				SavedSearchesScript:  savedSearchesScript,
-				SavedSearches:        savedSearches,
-				TargetAgencies:       targetAgencies,
-				TargetRecruiters:     targetRecruiters,
-				PagesPerCapture:      pages,
-				Limit:                limit,
-				StopAfterConnectable: stopAfterConnectable,
-				RowScrollDelayMS:     rowScrollDelayMS,
-				MaxCaptureRounds:     maxCaptureRounds,
-				AllowSend:            allowSend,
-				RefreshSavedSearches: refreshSavedSearches,
-				SkipSessionReset:     skipSessionReset,
-				CaptureOutDir:        captureOutDir,
-				MessageOutDir:        messageOutDir,
-				DashboardPath:        dashboardPath,
-				PrintMarkdown:        printMarkdown,
-				TimeoutMS:            timeoutMS,
+				Session:                session,
+				Playwriter:             playwriter,
+				CaptureScript:          captureScript,
+				AccountCaptureScript:   accountCaptureScript,
+				MessageScript:          messageScript,
+				SavedSearchesScript:    savedSearchesScript,
+				SavedSearches:          savedSearches,
+				TargetAgencies:         targetAgencies,
+				TargetRecruiters:       targetRecruiters,
+				PagesPerCapture:        pages,
+				AccountPagesPerCapture: accountPages,
+				Limit:                  limit,
+				AccountLimit:           accountLimit,
+				StopAfterConnectable:   stopAfterConnectable,
+				RowScrollDelayMS:       rowScrollDelayMS,
+				MaxCaptureRounds:       maxCaptureRounds,
+				AllowSend:              allowSend,
+				RefreshSavedSearches:   refreshSavedSearches,
+				SkipSessionReset:       skipSessionReset,
+				CaptureOutDir:          captureOutDir,
+				AccountCaptureOutDir:   accountCaptureOutDir,
+				MessageOutDir:          messageOutDir,
+				DashboardPath:          dashboardPath,
+				PrintMarkdown:          printMarkdown,
+				TimeoutMS:              timeoutMS,
 			})
 			if err != nil {
 				return err
@@ -183,7 +267,7 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 			return nil
 		}),
 	}
-	addDailyFlags(cmd, &session, &playwriter, &captureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &messageOutDir, &dashboardPath, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &pages, &limit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown)
+	addDailyFlags(cmd, &session, &playwriter, &captureScript, &accountCaptureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &accountCaptureOutDir, &messageOutDir, &dashboardPath, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &pages, &accountPages, &limit, &accountLimit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown)
 	return cmd
 }
 
@@ -219,6 +303,40 @@ func queueCommand(withStore func(func(*Store) error) func(*cobra.Command, []stri
 	cmd.Flags().StringSliceVar(&statuses, "status", []string{string(LeadStatusEligible)}, "lead status filter")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&includeDrafts, "include-drafts", false, "include draft text")
+	return cmd
+}
+
+func accountsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var limit int
+	var statuses []string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use: "accounts",
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			parsed, err := parseAgencyAccountStatuses(statuses)
+			if err != nil {
+				return err
+			}
+			items := agencyAccountQueue(state, parsed, limit)
+			if asJSON {
+				raw, err := json.MarshalIndent(items, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			printAgencyAccounts(items)
+			return nil
+		}),
+	}
+	cmd.Flags().IntVar(&limit, "limit", 20, "max rows")
+	cmd.Flags().StringSliceVar(&statuses, "status", []string{string(AgencyAccountStatusQualified)}, "account status filter")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
 
@@ -525,6 +643,7 @@ func reportCommand(withStore func(func(*Store) error) func(*cobra.Command, []str
 			printMap("by status", counts.ByStatus)
 			printMap("by lead type", counts.ByLeadType)
 			printMap("by message status", counts.ByMessageStatus)
+			printMap("by agency account status", counts.ByAgencyAccountStatus)
 			printStringMap("by source", counts.BySource)
 			return nil
 		}),
@@ -558,6 +677,42 @@ func parseMessageStatus(value string) (MessageStatus, error) {
 	}
 }
 
+func parseAgencyAccountStatuses(values []string) ([]AgencyAccountStatus, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	statuses := []AgencyAccountStatus{}
+	for _, value := range values {
+		switch AgencyAccountStatus(value) {
+		case AgencyAccountStatusQualified, AgencyAccountStatusNeedsReview, AgencyAccountStatusRejected, AgencyAccountStatusExhausted:
+			statuses = append(statuses, AgencyAccountStatus(value))
+		default:
+			return nil, fmt.Errorf("invalid account status %q", value)
+		}
+	}
+	return statuses, nil
+}
+
+func agencyAccountQueue(state OutreachState, statuses []AgencyAccountStatus, limit int) []AgencyAccount {
+	state.Normalize()
+	statusSet := map[AgencyAccountStatus]bool{}
+	for _, status := range statuses {
+		statusSet[status] = true
+	}
+	items := []AgencyAccount{}
+	for _, account := range state.AgencyAccounts {
+		if len(statusSet) > 0 && !statusSet[account.Status] {
+			continue
+		}
+		items = append(items, account)
+	}
+	sortAgencyAccounts(items)
+	if limit > 0 && len(items) > limit {
+		return items[:limit]
+	}
+	return items
+}
+
 func printQueue(items []QueueItem) {
 	for _, item := range items {
 		title := "-"
@@ -568,11 +723,29 @@ func printQueue(items []QueueItem) {
 		if item.Company != nil {
 			company = *item.Company
 		}
+		account := "-"
+		if item.AgencyAccountName != nil {
+			account = *item.AgencyAccountName
+		}
 		url := "-"
 		if item.ProfileURL != nil {
 			url = *item.ProfileURL
 		}
-		fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\t%s\n", item.ID, item.FitScore, item.LeadType, item.Name, title, company, url)
+		fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", item.ID, item.FitScore, item.LeadType, item.Name, title, company, account, url)
+	}
+}
+
+func printAgencyAccounts(items []AgencyAccount) {
+	for _, item := range items {
+		accountURL := "-"
+		if item.AccountURL != nil {
+			accountURL = *item.AccountURL
+		}
+		website := "-"
+		if item.Website != nil {
+			website = *item.Website
+		}
+		fmt.Printf("%s\t%d\t%s\t%s\t%s\t%s\n", item.ID, item.FitScore, item.Status, item.Name, website, accountURL)
 	}
 }
 
@@ -605,21 +778,25 @@ func addPlaywriterFlag(flags *pflag.FlagSet, target *string) {
 	flags.StringVar(target, "bunx", defaultPlaywriter, "Playwriter executable alias")
 }
 
-func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, limit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool) {
+func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool) {
 	cmd.Flags().StringVar(session, "session", "", "Playwriter session")
 	addPlaywriterFlag(cmd.Flags(), playwriter)
 	cmd.Flags().StringVar(captureScript, "capture-script", defaultCaptureScript, "Sales Navigator capture script")
+	cmd.Flags().StringVar(accountCaptureScript, "account-capture-script", defaultAccountCaptureScript, "Sales Navigator account capture script")
 	cmd.Flags().StringVar(messageScript, "message-script", defaultMessageScript, "message script")
 	cmd.Flags().StringVar(savedSearchesScript, "saved-searches-script", defaultSavedSearchesScript, "saved searches discovery script")
 	cmd.Flags().StringVar(savedSearches, "saved-searches", defaultSavedSearches, "saved-search resolver artifact")
 	cmd.Flags().StringVar(captureOutDir, "capture-out-dir", defaultCaptureOutDir, "capture output directory")
+	cmd.Flags().StringVar(accountCaptureOutDir, "account-capture-out-dir", defaultAccountCaptureOutDir, "account capture output directory")
 	cmd.Flags().StringVar(messageOutDir, "message-out-dir", defaultMessageOutDir, "message result output directory")
 	cmd.Flags().StringVar(dashboardPath, "dashboard", "", "dashboard output path")
 	cmd.Flags().IntVar(targetAgencies, "target-agencies", 5, "agency target")
 	cmd.Flags().IntVar(targetRecruiters, "target-recruiters", 5, "recruiter target")
 	cmd.Flags().IntVar(maxCaptureRounds, "max-capture-rounds", 4, "max capture and validation rounds per bucket")
 	cmd.Flags().Uint32Var(pages, "pages", 2, "pages to capture per round")
+	cmd.Flags().Uint32Var(accountPages, "account-pages", 2, "account pages to capture per round")
 	cmd.Flags().Uint32Var(limit, "limit", 25, "rows per page")
+	cmd.Flags().Uint32Var(accountLimit, "account-limit", 25, "account rows per page")
 	cmd.Flags().Uint32Var(stopAfterConnectable, "stop-after-connectable", 0, "stop after N connectable rows")
 	cmd.Flags().Uint32Var(rowScrollDelayMS, "row-scroll-delay-ms", 250, "row scroll delay")
 	cmd.Flags().Uint32Var(timeoutMS, "timeout-ms", 90000, "Playwriter timeout")

@@ -21,30 +21,38 @@ const (
 	AgencySoftwareConsultingSource = "ASAP - Agency Software Consulting Leaders"
 	AgencyDevelopmentAgencySource  = "ASAP - Agency Development Agency Leaders"
 	AgencyProductStudioSource      = "ASAP - Agency Product Studio Leaders"
+	AgencyAccountSource            = "ASAP - Agency Accounts Digital Agency"
+	AgencyAccountDevelopmentSource = "ASAP - Agency Accounts Development Agency"
+	AgencyAccountProductSource     = "ASAP - Agency Accounts Product Studio"
+	AgencyAccountContactsSource    = "ASAP - Agency Account Contacts"
 )
 
 type DailyOptions struct {
-	Session              string
-	Playwriter           string
-	CaptureScript        string
-	MessageScript        string
-	SavedSearchesScript  string
-	SavedSearches        string
-	TargetAgencies       int
-	TargetRecruiters     int
-	PagesPerCapture      uint32
-	Limit                uint32
-	StopAfterConnectable uint32
-	RowScrollDelayMS     uint32
-	MaxCaptureRounds     int
-	AllowSend            bool
-	RefreshSavedSearches bool
-	SkipSessionReset     bool
-	CaptureOutDir        string
-	MessageOutDir        string
-	DashboardPath        string
-	PrintMarkdown        bool
-	TimeoutMS            uint32
+	Session                string
+	Playwriter             string
+	CaptureScript          string
+	AccountCaptureScript   string
+	MessageScript          string
+	SavedSearchesScript    string
+	SavedSearches          string
+	TargetAgencies         int
+	TargetRecruiters       int
+	PagesPerCapture        uint32
+	AccountPagesPerCapture uint32
+	Limit                  uint32
+	AccountLimit           uint32
+	StopAfterConnectable   uint32
+	RowScrollDelayMS       uint32
+	MaxCaptureRounds       int
+	AllowSend              bool
+	RefreshSavedSearches   bool
+	SkipSessionReset       bool
+	CaptureOutDir          string
+	AccountCaptureOutDir   string
+	MessageOutDir          string
+	DashboardPath          string
+	PrintMarkdown          bool
+	TimeoutMS              uint32
 }
 
 type DailyResult struct {
@@ -79,6 +87,15 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 bucketLoop:
 	for _, bucket := range buckets {
 		if bucket.Target <= 0 {
+			continue
+		}
+		if bucket.Name == "agency" {
+			if err := runAgencyAccountBucket(store, options, bucket, &actions); err != nil {
+				if errors.Is(err, errBlankLeadPageValidation) {
+					break bucketLoop
+				}
+				return DailyResult{}, err
+			}
 			continue
 		}
 		if len(bucket.Sources) == 0 {
@@ -228,11 +245,220 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 	return store.Save(state)
 }
 
+func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBucket, actions *[]DailyLeadAction) error {
+	if len(bucket.Sources) == 0 {
+		return fmt.Errorf("daily bucket %q has no fallback sources", bucket.Name)
+	}
+	for round := 0; round < options.MaxCaptureRounds; round++ {
+		state, err := store.Load()
+		if err != nil {
+			return err
+		}
+		if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, *actions) {
+			return nil
+		}
+		if err := ensureAgencyAccountReservoir(store, options, bucket.Target, round+1); err != nil {
+			return err
+		}
+		captured, err := captureAgencyContactsFromAccounts(store, options, bucket.Target, round+1)
+		if err != nil {
+			return err
+		}
+		if captured == 0 {
+			for _, source := range bucket.Sources {
+				state, err := store.Load()
+				if err != nil {
+					return err
+				}
+				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, *actions) {
+					return nil
+				}
+				if err := captureSource(store, options, source, round+1); err != nil {
+					return err
+				}
+				if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func draftValidateAndMaybeSendBucket(store *Store, options DailyOptions, bucket string, target int, actions *[]DailyLeadAction) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	DraftMessages(&state, 0)
+	if err := store.Save(state); err != nil {
+		return err
+	}
+	if err := validateBucket(store, options, bucket, target, actions); err != nil {
+		return err
+	}
+	if options.AllowSend {
+		return sendBucket(store, options, bucket, target, actions)
+	}
+	return nil
+}
+
+func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int, round int) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	if len(agencyAccountsForContactCapture(state, target*2)) >= target {
+		return nil
+	}
+	for _, source := range defaultAgencyAccountSources() {
+		if err := captureAgencyAccountSource(store, options, source, round); err != nil {
+			return err
+		}
+		state, err = store.Load()
+		if err != nil {
+			return err
+		}
+		if len(agencyAccountsForContactCapture(state, target*2)) >= target*2 {
+			return nil
+		}
+	}
+	return nil
+}
+
+func captureAgencyAccountSource(store *Store, options DailyOptions, source string, round int) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	var explicitURL *string
+	if cursor, ok := state.CaptureCursors[source]; ok && cursor.ResumeURL != nil {
+		explicitURL = cursor.ResumeURL
+	}
+	captureURL, err := resolveDailyAccountCaptureURL(explicitURL, options.SavedSearches, source)
+	if err != nil {
+		return err
+	}
+	outDir := filepath.Join(options.AccountCaptureOutDir, safePathSegment(source), fmt.Sprintf("round-%02d", round))
+	path, err := RunPlaywriterAccountCapture(options.Playwriter, options.Session, options.AccountCaptureScript, outDir, source, captureURL, AccountCaptureRunOptions{
+		Pages:            options.AccountPagesPerCapture,
+		Limit:            options.AccountLimit,
+		RowScrollDelayMS: options.RowScrollDelayMS,
+		TimeoutMS:        options.TimeoutMS,
+	})
+	if err != nil {
+		return err
+	}
+	capture, err := LoadSalesNavAccountCapture(path)
+	if err != nil {
+		return err
+	}
+	state, err = store.Load()
+	if err != nil {
+		return err
+	}
+	if _, err := ImportAccountCapture(&state, capture); err != nil {
+		return err
+	}
+	return store.Save(state)
+}
+
+func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, target int, round int) (int, error) {
+	state, err := store.Load()
+	if err != nil {
+		return 0, err
+	}
+	needed := target - readyCount(state, "agency")
+	if needed <= 0 {
+		return 0, nil
+	}
+	accounts := agencyAccountsForContactCapture(state, agencyContactAccountLimit(needed))
+	capturedContacts := 0
+	for _, account := range accounts {
+		if account.AccountURL == nil {
+			continue
+		}
+		contactURL, err := agencyAccountContactSearchURL(account)
+		if err != nil {
+			continue
+		}
+		source := agencyContactSource(account)
+		outDir := filepath.Join(options.CaptureOutDir, safePathSegment(AgencyAccountContactsSource), safePathSegment(account.ID), fmt.Sprintf("round-%02d", round))
+		path, err := app.RunPlaywriterCapture(options.Playwriter, options.Session, options.CaptureScript, outDir, source, contactURL, app.CaptureRunOptions{
+			Pages:                options.PagesPerCapture,
+			StopAfterConnectable: options.StopAfterConnectable,
+			Limit:                options.Limit,
+			RowScrollDelayMS:     options.RowScrollDelayMS,
+			OnlyConnectable:      false,
+		})
+		if err != nil {
+			return capturedContacts, err
+		}
+		capture, err := app.LoadSalesNavCapture(path)
+		if err != nil {
+			return capturedContacts, err
+		}
+		state, err = store.Load()
+		if err != nil {
+			return capturedContacts, err
+		}
+		index := findAgencyAccountByID(state.AgencyAccounts, account.ID)
+		if index < 0 {
+			continue
+		}
+		accountForImport := state.AgencyAccounts[index]
+		if _, err := ImportCapture(&state, capture, ImportOptions{AgencyAccount: &accountForImport}); err != nil {
+			return capturedContacts, err
+		}
+		now := time.Now()
+		state.AgencyAccounts[index].ContactCaptureCount++
+		state.AgencyAccounts[index].LastContactCaptureAt = &now
+		state.AgencyAccounts[index].UpdatedAt = now
+		if len(capture.Rows) == 0 && state.AgencyAccounts[index].ContactCaptureCount >= 2 {
+			state.AgencyAccounts[index].Status = AgencyAccountStatusExhausted
+		}
+		if err := store.Save(state); err != nil {
+			return capturedContacts, err
+		}
+		capturedContacts += len(capture.Rows)
+		state, err = store.Load()
+		if err != nil {
+			return capturedContacts, err
+		}
+		if readyCount(state, "agency") >= target {
+			return capturedContacts, nil
+		}
+	}
+	return capturedContacts, nil
+}
+
+func agencyContactAccountLimit(needed int) int {
+	limit := needed * 2
+	if limit < 5 {
+		return 5
+	}
+	return limit
+}
+
 func resolveDailyCaptureURL(explicitURL *string, savedSearches string, source string) (string, error) {
 	if explicitURL != nil && cleanText(*explicitURL) != "" {
 		return app.ResolveCaptureURL(explicitURL, savedSearches, source, "--url")
 	}
 	if generatedURL, ok := defaultOutreachSourceURL(source); ok {
+		return generatedURL, nil
+	}
+	return app.ResolveCaptureURL(nil, savedSearches, source, "--url")
+}
+
+func resolveDailyAccountCaptureURL(explicitURL *string, savedSearches string, source string) (string, error) {
+	if explicitURL != nil && cleanText(*explicitURL) != "" {
+		return app.ResolveCaptureURL(explicitURL, savedSearches, source, "--url")
+	}
+	if generatedURL, ok := defaultOutreachAccountSourceURL(source); ok {
 		return generatedURL, nil
 	}
 	return app.ResolveCaptureURL(nil, savedSearches, source, "--url")
@@ -357,6 +583,9 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 	if options.CaptureScript == "" {
 		options.CaptureScript = defaultCaptureScript
 	}
+	if options.AccountCaptureScript == "" {
+		options.AccountCaptureScript = defaultAccountCaptureScript
+	}
 	if options.MessageScript == "" {
 		options.MessageScript = defaultMessageScript
 	}
@@ -366,17 +595,23 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 	if options.SavedSearches == "" {
 		options.SavedSearches = defaultSavedSearches
 	}
-	if options.TargetAgencies == 0 {
-		options.TargetAgencies = 5
+	if options.TargetAgencies < 0 {
+		options.TargetAgencies = 0
 	}
-	if options.TargetRecruiters == 0 {
-		options.TargetRecruiters = 5
+	if options.TargetRecruiters < 0 {
+		options.TargetRecruiters = 0
 	}
 	if options.PagesPerCapture == 0 {
 		options.PagesPerCapture = 2
 	}
+	if options.AccountPagesPerCapture == 0 {
+		options.AccountPagesPerCapture = 2
+	}
 	if options.Limit == 0 {
 		options.Limit = 25
+	}
+	if options.AccountLimit == 0 {
+		options.AccountLimit = 25
 	}
 	if options.RowScrollDelayMS == 0 {
 		options.RowScrollDelayMS = 250
@@ -386,6 +621,9 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 	}
 	if options.CaptureOutDir == "" {
 		options.CaptureOutDir = defaultCaptureOutDir
+	}
+	if options.AccountCaptureOutDir == "" {
+		options.AccountCaptureOutDir = defaultAccountCaptureOutDir
 	}
 	if options.MessageOutDir == "" {
 		options.MessageOutDir = defaultMessageOutDir
@@ -463,18 +701,112 @@ type salesNavFilterValue struct {
 }
 
 func defaultOutreachSourceURL(source string) (string, bool) {
+	switch source {
+	case RecruiterSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), contractRecruiterTitleFilter()), ""), true
+	case AgencySource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), agencyLeaderTitleFilter(), agencyIndustryFilter()), "digital agency"), true
+	case AgencySoftwareConsultingSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), agencyLeaderTitleFilter(), agencyIndustryFilter()), "software consulting"), true
+	case AgencyDevelopmentAgencySource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), agencyLeaderTitleFilter()), "development agency"), true
+	case AgencyProductStudioSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), agencyLeaderTitleFilter(), agencyIndustryFilter()), "product studio"), true
+	default:
+		return "", false
+	}
+}
+
+func defaultAgencyAccountSources() []string {
+	return []string{AgencyAccountDevelopmentSource, AgencyAccountSource, AgencyAccountProductSource}
+}
+
+func defaultOutreachAccountSourceURL(source string) (string, bool) {
 	base := []salesNavFilter{
+		{Type: "REGION", Values: []salesNavFilterValue{{ID: "103644278", Text: "United States"}}},
+		agencyIndustryFilter(),
+		{Type: "COMPANY_HEADCOUNT", Values: []salesNavFilterValue{
+			{ID: "C", Text: "11-50"},
+			{ID: "D", Text: "51-200"},
+			{ID: "E", Text: "201-500"},
+		}},
+	}
+	switch source {
+	case AgencyAccountSource:
+		return salesNavAccountSearchURL(base, "digital product agency"), true
+	case AgencyAccountDevelopmentSource:
+		return salesNavAccountSearchURL(base, "custom software development agency"), true
+	case AgencyAccountProductSource:
+		return salesNavAccountSearchURL(base, "product studio"), true
+	default:
+		return "", false
+	}
+}
+
+func agencyAccountContactSearchURL(account AgencyAccount) (string, error) {
+	companyID := salesNavCompanyID(account)
+	if companyID == "" {
+		return "", fmt.Errorf("agency account %s has no Sales Navigator company id", account.ID)
+	}
+	company := salesNavFilter{Type: "CURRENT_COMPANY", Values: []salesNavFilterValue{{ID: companyID, Text: account.Name}}}
+	return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), company, agencyLeaderTitleFilter()), ""), nil
+}
+
+func agencyContactSource(account AgencyAccount) string {
+	return cleanText(AgencyAccountContactsSource + " - " + account.Name)
+}
+
+func salesNavCompanyID(account AgencyAccount) string {
+	if account.AccountURL == nil {
+		return ""
+	}
+	raw := cleanText(*account.AccountURL)
+	if parsed, err := url.Parse(raw); err == nil {
+		path := strings.Trim(parsed.Path, "/")
+		parts := strings.Split(path, "/")
+		for i := 0; i+1 < len(parts); i++ {
+			if parts[i] == "sales" && parts[i+1] == "company" && i+2 < len(parts) {
+				return cleanText(parts[i+2])
+			}
+		}
+	}
+	marker := "/sales/company/"
+	if index := strings.Index(raw, marker); index >= 0 {
+		rest := raw[index+len(marker):]
+		rest = strings.Split(strings.Split(rest, "?")[0], "#")[0]
+		return strings.Trim(rest, "/")
+	}
+	return ""
+}
+
+func findAgencyAccountByID(accounts []AgencyAccount, id string) int {
+	for i, account := range accounts {
+		if account.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func basePeopleFilters() []salesNavFilter {
+	return []salesNavFilter{
 		{Type: "REGION", Values: []salesNavFilterValue{{ID: "103644278", Text: "United States"}}},
 		{Type: "RELATIONSHIP", Values: []salesNavFilterValue{{ID: "S", Text: "2nd degree connections"}}},
 		{Type: "POSTED_ON_LINKEDIN", Values: []salesNavFilterValue{{ID: "RPOL", Text: "Posted on LinkedIn"}}},
 	}
-	contractRecruiterTitles := salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
+}
+
+func contractRecruiterTitleFilter() salesNavFilter {
+	return salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
 		{ID: "1711", Text: "Contract Recruiter"},
 		{ID: "8379", Text: "Senior Contract Recruiter"},
 		{ID: "16659", Text: "Contract Technical Recruiter"},
 		{ID: "21060", Text: "Senior Technical Recruiter Contract"},
 	}}
-	agencyLeaderTitles := salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
+}
+
+func agencyLeaderTitleFilter() salesNavFilter {
+	return salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
 		{ID: "35", Text: "Founder"},
 		{ID: "103", Text: "Co-Founder"},
 		{ID: "1", Text: "Owner"},
@@ -483,26 +815,14 @@ func defaultOutreachSourceURL(source string) (string, bool) {
 		{ID: "182", Text: "Principal Consultant"},
 		{ID: "200", Text: "Technical Director"},
 	}}
-	agencyIndustries := salesNavFilter{Type: "INDUSTRY", Values: []salesNavFilterValue{
+}
+
+func agencyIndustryFilter() salesNavFilter {
+	return salesNavFilter{Type: "INDUSTRY", Values: []salesNavFilterValue{
 		{ID: "4", Text: "Software Development"},
 		{ID: "96", Text: "IT Services and IT Consulting"},
 		{ID: "99", Text: "Design Services"},
 	}}
-
-	switch source {
-	case RecruiterSource:
-		return salesNavPeopleSearchURL(appendSalesNavFilters(base, contractRecruiterTitles), ""), true
-	case AgencySource:
-		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "digital agency"), true
-	case AgencySoftwareConsultingSource:
-		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "software consulting"), true
-	case AgencyDevelopmentAgencySource:
-		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles), "development agency"), true
-	case AgencyProductStudioSource:
-		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "product studio"), true
-	default:
-		return "", false
-	}
 }
 
 func appendSalesNavFilters(base []salesNavFilter, extra ...salesNavFilter) []salesNavFilter {
@@ -523,6 +843,19 @@ func salesNavPeopleSearchURL(filters []salesNavFilter, keywords string) string {
 	}
 	query := fmt.Sprintf("(%s)", body)
 	return "https://www.linkedin.com/sales/search/people?query=" + url.QueryEscape(query)
+}
+
+func salesNavAccountSearchURL(filters []salesNavFilter, keywords string) string {
+	parts := make([]string, 0, len(filters))
+	for _, filter := range filters {
+		parts = append(parts, salesNavFilterExpression(filter))
+	}
+	body := fmt.Sprintf("filters:List(%s)", strings.Join(parts, ","))
+	if cleanText(keywords) != "" {
+		body += ",keywords:" + salesNavValueEscape(keywords)
+	}
+	query := fmt.Sprintf("(%s)", body)
+	return "https://www.linkedin.com/sales/search/company?query=" + url.QueryEscape(query)
 }
 
 func salesNavFilterExpression(filter salesNavFilter) string {

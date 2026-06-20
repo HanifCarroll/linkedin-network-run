@@ -215,6 +215,120 @@ func TestImportCaptureRejectsStudioInTitleWithoutCompanyLink(t *testing.T) {
 	}
 }
 
+func TestImportAccountCaptureQualifiesAndRejectsAgencyAccounts(t *testing.T) {
+	source := AgencyAccountProductSource
+	state := OutreachState{}
+	capture := SalesNavAccountCapture{
+		Source: &source,
+		URL:    strPtr("https://www.linkedin.com/sales/search/company"),
+		Rows: []SalesNavAccountCaptureRow{
+			{
+				Index:      0,
+				Name:       strPtr("Bright Product Studio"),
+				Text:       strPtr("Bright Product Studio\nSoftware Development\nCustom software, React, TypeScript, AI and MVP product launches"),
+				AccountURL: strPtr("https://www.linkedin.com/sales/company/12345?_ntb=x"),
+				Website:    strPtr("https://bright.example.com"),
+				Industry:   strPtr("Software Development"),
+			},
+			{
+				Index:      1,
+				Name:       strPtr("Growth Ads Agency"),
+				Text:       strPtr("Growth Ads Agency\nAdvertising services\nPaid media, SEO, social media marketing, and lead generation"),
+				AccountURL: strPtr("https://www.linkedin.com/sales/company/99999"),
+			},
+		},
+	}
+	summary, err := ImportAccountCapture(&state, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Qualified != 1 || summary.Rejected != 1 || len(state.AgencyAccounts) != 2 {
+		t.Fatalf("summary=%#v accounts=%#v", summary, state.AgencyAccounts)
+	}
+	qualified := state.AgencyAccounts[0]
+	if qualified.Name != "Bright Product Studio" || qualified.Status != AgencyAccountStatusQualified {
+		t.Fatalf("qualified account = %#v", qualified)
+	}
+	if qualified.Domain == nil || *qualified.Domain != "bright.example.com" {
+		t.Fatalf("domain = %v", qualified.Domain)
+	}
+	rejected := state.AgencyAccounts[1]
+	if rejected.Name != "Growth Ads Agency" || rejected.Status != AgencyAccountStatusRejected {
+		t.Fatalf("rejected account = %#v", rejected)
+	}
+	if state.CaptureCursors[source].OutputRowCount != 2 {
+		t.Fatalf("cursor = %#v", state.CaptureCursors[source])
+	}
+}
+
+func TestImportAccountCaptureDowngradesWordPressOnlyAccounts(t *testing.T) {
+	source := AgencyAccountDevelopmentSource
+	state := OutreachState{}
+	capture := SalesNavAccountCapture{
+		Source: &source,
+		Rows: []SalesNavAccountCaptureRow{{
+			Index:      0,
+			Name:       strPtr("QeWebby - WordPress Development Agency"),
+			Text:       strPtr("QeWebby - WordPress Development Agency\nIT Services and IT Consulting\nWordPress agency crafting high-performing websites with web designer and WordPress developer services"),
+			AccountURL: strPtr("https://www.linkedin.com/sales/company/79865165"),
+		}},
+	}
+	if _, err := ImportAccountCapture(&state, capture); err != nil {
+		t.Fatal(err)
+	}
+	account := state.AgencyAccounts[0]
+	if account.Status != AgencyAccountStatusNeedsReview {
+		t.Fatalf("account = %#v", account)
+	}
+	if !containsAny(strings.Join(account.RejectReasons, "\n"), "website/wordpress-only") {
+		t.Fatalf("reject reasons = %#v", account.RejectReasons)
+	}
+}
+
+func TestImportCaptureUsesQualifiedAgencyAccountContext(t *testing.T) {
+	account := AgencyAccount{
+		ID:           "acct_bright",
+		Name:         "Bright Product Studio",
+		AccountURL:   strPtr("https://www.linkedin.com/sales/company/12345"),
+		Status:       AgencyAccountStatusQualified,
+		FitScore:     90,
+		FitReasons:   []string{"software/product delivery account signal"},
+		EvidenceText: "Bright Product Studio Software Development Custom software and MVP product delivery",
+	}
+	source := agencyContactSource(account)
+	state := OutreachState{AgencyAccounts: []AgencyAccount{account}}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{{
+			Index:      0,
+			Name:       strPtr("Dana Founder"),
+			Text:       strPtr("Dana Founder\nFounder\nNew York City Metropolitan Area\nAbout:\nProduct delivery leadership"),
+			ProfileURL: strPtr("https://www.linkedin.com/sales/lead/dana"),
+			MenuState:  strPtr("connectable"),
+		}},
+	}
+	if _, err := ImportCapture(&state, capture, ImportOptions{AgencyAccount: &account}); err != nil {
+		t.Fatal(err)
+	}
+	lead := state.Leads[0]
+	if lead.Status != LeadStatusEligible || lead.LeadType != LeadTypeAgencyFounder {
+		t.Fatalf("lead = %#v", lead)
+	}
+	if lead.AgencyAccountName == nil || *lead.AgencyAccountName != "Bright Product Studio" {
+		t.Fatalf("agency account context = %#v", lead)
+	}
+	report := DraftMessages(&state, 10)
+	if len(report.Items) != 1 {
+		t.Fatalf("draft count = %d", len(report.Items))
+	}
+	if state.Leads[0].Draft == nil || !strings.Contains(state.Leads[0].Draft.Body, "Bright Product Studio works") {
+		t.Fatalf("draft = %#v", state.Leads[0].Draft)
+	}
+	if !strings.Contains(strings.Join(state.Leads[0].Draft.Evidence, "\n"), "Agency account reasons") {
+		t.Fatalf("draft evidence = %#v", state.Leads[0].Draft.Evidence)
+	}
+}
+
 func TestImportCaptureRejectsNonRecruiterAgencySource(t *testing.T) {
 	source := "ASAP - Startup CTO Eng Leaders"
 	state := OutreachState{}
@@ -419,15 +533,19 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{
-			ID:            "agency_1",
-			Name:          "Dana Delivery",
-			FirstName:     "Dana",
-			LeadType:      LeadTypeAgencyDelivery,
-			Status:        LeadStatusEligible,
-			MessageStatus: MessageStatusDryRunReady,
-			FitScore:      91,
-			FitReasons:    []string{"agency delivery/technical leadership title"},
-			Draft:         &MessageDraft{Body: "Agency draft", Angle: "agency delivery", Evidence: []string{"Title: Head of Delivery"}},
+			ID:                    "agency_1",
+			Name:                  "Dana Delivery",
+			FirstName:             "Dana",
+			LeadType:              LeadTypeAgencyDelivery,
+			Status:                LeadStatusEligible,
+			MessageStatus:         MessageStatusDryRunReady,
+			FitScore:              91,
+			FitReasons:            []string{"agency delivery/technical leadership title"},
+			AgencyAccountName:     strPtr("Bright Product Studio"),
+			AgencyAccountURL:      strPtr("https://www.linkedin.com/sales/company/12345"),
+			AgencyAccountReasons:  []string{"software/product delivery account signal"},
+			AgencyAccountEvidence: "Bright Product Studio Software Development",
+			Draft:                 &MessageDraft{Body: "Agency draft", Angle: "agency delivery", Evidence: []string{"Title: Head of Delivery", "Agency account: Bright Product Studio"}},
 		},
 		{
 			ID:            "recruiter_1",
@@ -440,7 +558,11 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 			FitReasons:    []string{"recruiter/staffing signal"},
 			Draft:         &MessageDraft{Body: "Recruiter draft", Angle: "contract recruiter", Evidence: []string{"Title: Technical Recruiter"}},
 		},
-	}}
+	}, AgencyAccounts: []AgencyAccount{{
+		ID:     "acct_bright",
+		Name:   "Bright Product Studio",
+		Status: AgencyAccountStatusQualified,
+	}}}
 	report := BuildDashboardReport(state, "/tmp/outreach.json", 5, 5, true, nil)
 	if len(report.ReadyAgencies) != 1 || report.ReadyAgencies[0].ID != "agency_1" {
 		t.Fatalf("ready agencies = %#v", report.ReadyAgencies)
@@ -449,7 +571,7 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 		t.Fatalf("ready recruiters = %#v", report.ReadyRecruiters)
 	}
 	markdown := RenderDashboardMarkdown(report)
-	if !strings.Contains(markdown, "## Agencies") || !strings.Contains(markdown, "## Recruiters") || !strings.Contains(markdown, "- Draft evidence:") {
+	if !strings.Contains(markdown, "## Agencies") || !strings.Contains(markdown, "## Recruiters") || !strings.Contains(markdown, "- Draft evidence:") || !strings.Contains(markdown, "Agency account: Bright Product Studio") || !strings.Contains(markdown, "Agency accounts: `1` qualified") {
 		t.Fatalf("markdown = %s", markdown)
 	}
 }
@@ -635,6 +757,89 @@ func TestDailyBucketsUseValidatedAgencySourceOrder(t *testing.T) {
 	want := []string{AgencyDevelopmentAgencySource, AgencySource, AgencyProductStudioSource}
 	if strings.Join(buckets[0].Sources, "|") != strings.Join(want, "|") {
 		t.Fatalf("agency sources = %#v, want %#v", buckets[0].Sources, want)
+	}
+}
+
+func TestNormalizeDailyOptionsAllowsZeroTargets(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	options := normalizeDailyOptions(&store, DailyOptions{TargetAgencies: 0, TargetRecruiters: -1})
+	if options.TargetAgencies != 0 || options.TargetRecruiters != 0 {
+		t.Fatalf("targets = agencies:%d recruiters:%d", options.TargetAgencies, options.TargetRecruiters)
+	}
+}
+
+func TestDefaultOutreachAccountSourceURLUsesAccountFilters(t *testing.T) {
+	got, ok := defaultOutreachAccountSourceURL(AgencyAccountDevelopmentSource)
+	if !ok {
+		t.Fatal("account source URL missing")
+	}
+	for _, want := range []string{
+		"/sales/search/company",
+		"type%3AINDUSTRY",
+		"id%3A4",
+		"type%3ACOMPANY_HEADCOUNT",
+		"id%3AC",
+		"id%3AD",
+		"keywords%3Acustom%2520software%2520development%2520agency",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("account URL missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestAgencyAccountContactSearchURLUsesCurrentCompany(t *testing.T) {
+	got, err := agencyAccountContactSearchURL(AgencyAccount{
+		ID:         "acct_bright",
+		Name:       "Bright Product Studio",
+		AccountURL: strPtr("https://www.linkedin.com/sales/company/12345?_ntb=x"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"/sales/search/people",
+		"type%3ACURRENT_COMPANY",
+		"id%3A12345",
+		"Bright%2520Product%2520Studio",
+		"type%3ACURRENT_TITLE",
+		"id%3A35",
+		"type%3APOSTED_ON_LINKEDIN",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("contact URL missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestAgencyAccountsForContactCapturePrefersAccountsWithoutActiveLeads(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{
+			{ID: "acct_active", Name: "Active Studio", Status: AgencyAccountStatusQualified, FitScore: 100},
+			{ID: "acct_fresh", Name: "Fresh Studio", Status: AgencyAccountStatusQualified, FitScore: 80},
+		},
+		Leads: []Lead{{
+			ID:                "lead_active",
+			Name:              "Active Founder",
+			Status:            LeadStatusEligible,
+			MessageStatus:     MessageStatusDrafted,
+			LeadType:          LeadTypeAgencyFounder,
+			AgencyAccountID:   strPtr("acct_active"),
+			AgencyAccountName: strPtr("Active Studio"),
+		}},
+	}
+	accounts := agencyAccountsForContactCapture(state, 2)
+	if len(accounts) != 2 || accounts[0].ID != "acct_fresh" {
+		t.Fatalf("accounts = %#v", accounts)
+	}
+}
+
+func TestAgencyContactAccountLimitUsesBuffer(t *testing.T) {
+	if got := agencyContactAccountLimit(1); got != 5 {
+		t.Fatalf("limit for one needed = %d", got)
+	}
+	if got := agencyContactAccountLimit(5); got != 10 {
+		t.Fatalf("limit for five needed = %d", got)
 	}
 }
 
