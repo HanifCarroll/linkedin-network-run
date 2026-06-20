@@ -15,19 +15,23 @@ compatibility alias.
 
 ## Build And Install
 
+For local verification:
+
 ```sh
 go test ./...
 go build -o linkedin-network-run ./cmd/linkedin-network-run
-go install ./cmd/linkedin-network-run
 ```
 
-For the local automation path that previously used the installed controller
-from `~/.cargo/bin`, build the Go binary directly to that path when replacing
-the local executable:
+For the installed automation executable, build the Go binary into the user-local
+bin directory:
 
 ```sh
-go build -o /Users/hanifcarroll/.cargo/bin/linkedin-network-run ./cmd/linkedin-network-run
+mkdir -p /Users/hanifcarroll/.local/bin
+go build -o /Users/hanifcarroll/.local/bin/linkedin-network-run ./cmd/linkedin-network-run
 ```
+
+The controller source lives in this repository. The installed binary should not
+live under `~/.cargo/bin` now that the Rust controller has been removed.
 
 ## Architecture
 
