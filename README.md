@@ -109,7 +109,7 @@ playwriter -s <session> -e 'state.salesNavCaptureConfig = {
 }'
 
 playwriter -s <session> --timeout <capture.playwriter_timeout_ms> \
-  -f /Users/hanifcarroll/projects/tool/scripts/salesnav-capture.js
+  -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js
 
 linkedin-network-run import-capture /tmp/salesnav-capture/page.json --only-connectable
 linkedin-network-run candidates --status connectable
@@ -192,7 +192,7 @@ playwriter -s <session> -e 'state.salesNavSavedSearchConfig = {
 }'
 
 playwriter -s <session> --timeout 45000 \
-  -f /Users/hanifcarroll/projects/tool/scripts/salesnav-saved-searches.js
+  -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-saved-searches.js
 ```
 
 The artifact includes `savedSearchId`, display name, `viewUrl`, and `freshUrl`
@@ -212,7 +212,7 @@ playwriter -s <session> -e 'state.salesNavSendConfig = {
   candidate: JSON.parse(require("node:fs").readFileSync("/tmp/next-candidate.json", "utf8"))
 }'
 
-playwriter -s <session> --timeout 45000 -f /Users/hanifcarroll/projects/tool/scripts/salesnav-send-one.js
+playwriter -s <session> --timeout 45000 -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-one.js
 ```
 
 For a real send, change the config to:
@@ -277,7 +277,7 @@ playwriter -s <session> -e 'state.salesNavAuditConfig = {
 }'
 
 playwriter -s <session> --timeout 45000 \
-  -f /Users/hanifcarroll/projects/tool/scripts/salesnav-audit.js
+  -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-audit.js
 
 linkedin-network-run import-audit /tmp/linkedin-network-run-audit.json
 ```
@@ -371,7 +371,7 @@ playwriter -s <session> -e 'state.salesNavAcceptanceConfig = {
 }'
 
 playwriter -s <session> --timeout 45000 \
-  -f /Users/hanifcarroll/projects/tool/scripts/salesnav-acceptance-outcomes.js
+  -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-acceptance-outcomes.js
 ```
 
 Import the browser outcome artifact and report acceptance by source:
@@ -500,7 +500,7 @@ playwriter -s <session> -e 'state.salesNavPendingCaptureConfig = {
 }'
 
 playwriter -s <session> --timeout 45000 \
-  -f /Users/hanifcarroll/projects/tool/scripts/salesnav-pending-capture.js
+  -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-pending-capture.js
 ```
 
 The pending cleanup sender is also one candidate at a time. It refuses fresh

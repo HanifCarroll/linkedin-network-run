@@ -11,11 +11,11 @@ import (
 
 const (
 	defaultPlaywriter                = "/Users/hanifcarroll/.bun/bin/playwriter"
-	defaultSendScript                = "/Users/hanifcarroll/projects/tool/scripts/salesnav-send-one.js"
-	defaultAuditScript               = "/Users/hanifcarroll/projects/tool/scripts/salesnav-audit.js"
-	defaultCaptureScript             = "/Users/hanifcarroll/projects/tool/scripts/salesnav-capture.js"
-	defaultAcceptedResearchScript    = "/Users/hanifcarroll/projects/tool/scripts/salesnav-accepted-research.js"
-	defaultPendingWithdrawScript     = "/Users/hanifcarroll/projects/tool/scripts/salesnav-pending-withdraw-one.js"
+	defaultSendScript                = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-one.js"
+	defaultAuditScript               = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-audit.js"
+	defaultCaptureScript             = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js"
+	defaultAcceptedResearchScript    = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-accepted-research.js"
+	defaultPendingWithdrawScript     = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-pending-withdraw-one.js"
 	defaultSavedSearches             = "/tmp/linkedin-network-run-saved-searches.json"
 	defaultSendNextOutDir            = "/tmp/linkedin-network-run-send-next"
 	defaultSendGuardedOutDir         = "/tmp/linkedin-network-run-send-guarded"
