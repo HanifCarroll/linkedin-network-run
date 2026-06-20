@@ -344,6 +344,15 @@ that was actually sent by the run: normal `pending` sends plus adapter-only
 `audit-top-up` sends. The ledger is stored beside controller state as
 `acceptance-ledger.json` and is separate from daily send completion.
 
+Automation ownership is intentionally split:
+
+- `linkedin-network` sends and reconciles new connection requests only.
+- `linkedin-acceptance-daily` checks accepted outcomes, imports the acceptance
+  artifact, and writes draft-only follow-up Markdown for newly accepted people.
+- `linkedin-acceptance-weekly` is report-only. It summarizes the acceptance
+  ledger and does not open LinkedIn, run Playwriter classification, import
+  outcomes, or draft messages.
+
 Backfill the ledger from historical controller JSONL run logs before checking
 older outcomes:
 
@@ -355,8 +364,8 @@ Export older invites for a later outcome check:
 
 ```sh
 linkedin-network-run acceptance export \
-  --min-age-days 7 \
-  --max-age-days 21 \
+  --min-age-days 1 \
+  --max-age-days 45 \
   --out /tmp/linkedin-acceptance-candidates.json
 ```
 
@@ -366,8 +375,8 @@ Classify those exported candidates with Playwriter:
 playwriter -s <session> -e 'state.salesNavAcceptanceConfig = {
   in: "/tmp/linkedin-acceptance-candidates.json",
   out: "/tmp/linkedin-acceptance-outcomes.json",
-  limit: 50,
-  delayMs: 500
+  limit: 0,
+  delayMs: 750
 }'
 
 playwriter -s <session> --timeout 45000 \
@@ -378,7 +387,7 @@ Import the browser outcome artifact and report acceptance by source:
 
 ```sh
 linkedin-network-run acceptance import /tmp/linkedin-acceptance-outcomes.json
-linkedin-network-run acceptance report --min-age-days 7 --max-age-days 21
+linkedin-network-run acceptance report --min-age-days 1 --max-age-days 45
 ```
 
 Generate draft-only first messages for newly accepted connections:
