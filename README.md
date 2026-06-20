@@ -13,41 +13,57 @@ Playwriter-backed controller commands default to the installed executable at
 and invokes it as `bunx playwriter@latest`. The older `--bunx` flag remains a
 compatibility alias.
 
+## Build And Install
+
+```sh
+go test ./...
+go build -o linkedin-network-run ./cmd/linkedin-network-run
+go install ./cmd/linkedin-network-run
+```
+
+For the local automation path that previously used the installed controller
+from `~/.cargo/bin`, build the Go binary directly to that path when replacing
+the local executable:
+
+```sh
+go build -o /Users/hanifcarroll/.cargo/bin/linkedin-network-run ./cmd/linkedin-network-run
+```
+
 ## Architecture
 
-The Rust controller is split by responsibility:
+The Go controller is split by responsibility:
 
 | Module | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI bootstrap and module wiring only. |
-| `src/cli.rs` | Clap command/flag definitions. |
-| `src/model.rs` | Durable state types, source planning, quotas, acceptance ledger, and pending-cleanup run models. |
-| `src/commands.rs` | Command dispatch and high-level command handlers. |
-| `src/run_ops.rs` | Core run mutations such as audits, send-result recording, and stale-candidate draining. |
-| `src/browser_ops.rs` | Playwriter-backed send, capture, reconcile, top-up, and accepted-research orchestration. |
-| `src/playwriter.rs` | Low-level Playwriter process invocation helpers. |
-| `src/salesnav.rs` | Sales Navigator artifact parsing, candidate import, reservoir import/fill, and source-yield calculations. |
-| `src/pending.rs` | Pending-invitation cleanup artifact parsing and withdrawal bookkeeping. |
-| `src/acceptance.rs` | Acceptance outcome artifact parsing, acceptance reports, and acceptance export rows. |
-| `src/accepted_drafts.rs` | Accepted-connection follow-up draft strategy, idempotence ledger, and Markdown rendering. |
-| `src/reports.rs` | Human-readable run reports and status printers. |
-| `src/store.rs` | Filesystem persistence and JSONL event logs. |
-| `src/util.rs` | Shared formatting and normalization helpers. |
+| `cmd/linkedin-network-run/main.go` | CLI entrypoint only. |
+| `internal/app/cli.go` | Cobra command/flag definitions. |
+| `internal/app/types.go` | Durable state types, source planning, quotas, acceptance ledger, and pending-cleanup run models. |
+| `internal/app/commands.go` | High-level command handlers. |
+| `internal/app/run_ops.go` | Core run mutations such as audits, send-result recording, acceptance import, and stale-candidate draining. |
+| `internal/app/browser_ops.go` | Playwriter-backed send, capture, reconcile, top-up, and accepted-research orchestration. |
+| `internal/app/playwriter.go` | Low-level Playwriter process invocation helpers. |
+| `internal/app/salesnav.go` | Sales Navigator artifact parsing, candidate import, reservoir import/fill, and source-yield calculations. |
+| `internal/app/pending.go` | Pending-invitation cleanup artifact parsing and withdrawal bookkeeping. |
+| `internal/app/accepted_drafts.go` | Accepted-connection follow-up draft strategy, idempotence ledger, and Markdown rendering. |
+| `internal/app/reports.go` | Human-readable run reports and status printers. |
+| `internal/app/store.go` | Filesystem persistence and JSONL event logs. |
+| `internal/app/util.go` | Shared formatting and normalization helpers. |
+| `internal/app/app_test.go` | Behavioral parity tests for run planning, capture import, acceptance, reservoir, pending cleanup, and follow-up drafts. |
 
 ## Core Flow
 
 ```sh
-cargo run -- start --target 30 --max-real-sends 30
-cargo run -- audit 913
-cargo run -- plan --json
-cargo run -- record \
+go run ./cmd/linkedin-network-run -- start --target 30 --max-real-sends 30
+go run ./cmd/linkedin-network-run -- audit 913
+go run ./cmd/linkedin-network-run -- plan --json
+go run ./cmd/linkedin-network-run -- record \
   --source "ASAP - Agency Owners Delivery" \
   --name "Example Lead" \
   --status pending
-cargo run -- needs-reaudit --reason "Agent Browser command hung after row action"
-cargo run -- audit 914
-cargo run -- report
-cargo run -- finish
+go run ./cmd/linkedin-network-run -- needs-reaudit --reason "Agent Browser command hung after row action"
+go run ./cmd/linkedin-network-run -- audit 914
+go run ./cmd/linkedin-network-run -- report
+go run ./cmd/linkedin-network-run -- finish
 ```
 
 The default 30-request source mix is weighted for the current ASAP
@@ -402,7 +418,8 @@ Use `--state-dir <dir>` for dry runs, tests, or isolated experiments.
 ## Contract
 
 - `start` creates the run with the current 30-request weighted source mix.
-- `start --max-real-sends N` sets a hard cap enforced by `send-next`.
+- `start --max-real-sends N` sets a hard cap enforced by `send-next` and
+  `send-guarded`.
 - `audit` records the Sales Navigator sent invitations `People (N)` count.
 - `import-audit` imports the `salesnav-audit.js` artifact.
 - `record --status pending` is the only status that increments verified sends.
