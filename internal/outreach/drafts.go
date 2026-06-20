@@ -45,7 +45,7 @@ func draftableQueue(state OutreachState, limit int) []QueueItem {
 
 func isTerminalMessageStatus(status MessageStatus) bool {
 	switch status {
-	case MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
+	case MessageStatusDryRunReady, MessageStatusSendFailed, MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
 		return true
 	default:
 		return false

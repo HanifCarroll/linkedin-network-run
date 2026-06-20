@@ -461,11 +461,62 @@ func TestLeadsForMessageValidationOnlyReturnsDraftableStatuses(t *testing.T) {
 		{ID: "agency", Name: "Agency", LeadType: LeadTypeAgencyDelivery, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 100, ProfileURL: strPtr("https://linkedin.com/sales/lead/e"), Draft: &MessageDraft{Body: "body"}},
 	}}
 	leads := leadsForMessageValidation(state, "recruiter")
-	if len(leads) != 2 {
+	if len(leads) != 1 {
 		t.Fatalf("leads = %#v", leads)
 	}
-	if leads[0].ID != "failed" || leads[1].ID != "drafted" {
+	if leads[0].ID != "drafted" {
 		t.Fatalf("validation order = %#v", leads)
+	}
+}
+
+func TestDraftMessagesDoesNotResetDryRunReadyLeads(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{
+			ID:            "ready",
+			Name:          "Ready",
+			FirstName:     "Ready",
+			LeadType:      LeadTypeAgencyFounder,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDryRunReady,
+			FitScore:      95,
+			Draft:         &MessageDraft{Body: "approved body"},
+		},
+		{
+			ID:            "new",
+			Name:          "New",
+			FirstName:     "New",
+			LeadType:      LeadTypeAgencyFounder,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusNone,
+			FitScore:      90,
+		},
+		{
+			ID:            "failed",
+			Name:          "Failed",
+			FirstName:     "Failed",
+			LeadType:      LeadTypeAgencyFounder,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusSendFailed,
+			FitScore:      85,
+			Draft:         &MessageDraft{Body: "failed body"},
+		},
+	}}
+	report := DraftMessages(&state, 0)
+	if len(report.Items) != 1 || report.Items[0].ID != "new" {
+		t.Fatalf("drafted items = %#v", report.Items)
+	}
+	if state.Leads[0].MessageStatus != MessageStatusDryRunReady {
+		t.Fatalf("ready lead status = %q", state.Leads[0].MessageStatus)
+	}
+	if state.Leads[0].Draft == nil || state.Leads[0].Draft.Body != "approved body" {
+		t.Fatalf("ready lead draft = %#v", state.Leads[0].Draft)
+	}
+	failedIndex := findLeadByID(state.Leads, "failed")
+	if failedIndex < 0 {
+		t.Fatal("failed lead missing")
+	}
+	if state.Leads[failedIndex].MessageStatus != MessageStatusSendFailed {
+		t.Fatalf("failed lead status = %q", state.Leads[failedIndex].MessageStatus)
 	}
 }
 
@@ -475,6 +526,48 @@ func TestMessageSubjectByLeadType(t *testing.T) {
 	}
 	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != "Senior product engineering support" {
 		t.Fatalf("agency subject = %q", got)
+	}
+}
+
+func TestDefaultOutreachSourceURLUsesValidatedRecruiterFilters(t *testing.T) {
+	got, ok := defaultOutreachSourceURL(RecruiterSource)
+	if !ok {
+		t.Fatal("recruiter source URL missing")
+	}
+	for _, want := range []string{
+		"type%3ACURRENT_TITLE",
+		"id%3A1711",
+		"Contract%2520Recruiter",
+		"id%3A16659",
+		"Contract%2520Technical%2520Recruiter",
+		"type%3APOSTED_ON_LINKEDIN",
+		"id%3ARPOL",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("recruiter URL missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestDefaultOutreachSourceURLUsesValidatedAgencyFilters(t *testing.T) {
+	got, ok := defaultOutreachSourceURL(AgencySource)
+	if !ok {
+		t.Fatal("agency source URL missing")
+	}
+	for _, want := range []string{
+		"type%3ACURRENT_TITLE",
+		"id%3A35",
+		"Founder",
+		"id%3A154",
+		"Managing%2520Partner",
+		"type%3AINDUSTRY",
+		"id%3A4",
+		"Software%2520Development",
+		"keywords%3Adigital%2520agency",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agency URL missing %q: %s", want, got)
+		}
 	}
 }
 

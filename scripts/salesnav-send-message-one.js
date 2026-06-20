@@ -95,12 +95,22 @@ async function hasExistingConversation(candidateName) {
       return true;
     });
     const body = clean(dialog.innerText || dialog.textContent);
-    const hasHistoryText = /(Today|Yesterday|Mon|Tue|Wed|Thu|Fri|Sat|Sun|\b\d{1,2}:\d{2}\b|\bAM\b|\bPM\b|You:|sent you|replied)/i.test(body);
+    const historyScopes = Array.from(dialog.querySelectorAll([
+      ".msg-s-message-list",
+      ".msg-s-message-list-content",
+      ".msg-s-message-list__event",
+      ".msg-s-event-listitem",
+      ".msg-s-message-group",
+    ].join(",")));
+    const historyBody = clean(historyScopes.map((node) => node.innerText || node.textContent).join(" "));
+    const hasHistoryText = historyBody.length > 0
+      && /(Today|Yesterday|Mon|Tue|Wed|Thu|Fri|Sat|Sun|\b\d{1,2}:\d{2}\b|\bAM\b|\bPM\b|You:|sent you|replied)/i.test(historyBody);
     return {
       exists: uniqueEvents.length > 0 || hasHistoryText,
       eventCount: uniqueEvents.length,
       sample: uniqueEvents.slice(0, 3),
       bodySample: body.slice(0, 600),
+      historySample: historyBody.slice(0, 600),
       candidateName: name,
     };
   }, candidateName).catch((error) => ({
@@ -137,7 +147,7 @@ async function fillSubjectIfPresent(subject) {
     if ((await locator.count()) && (await locator.isVisible().catch(() => false))) {
       await locator.fill(subject, { timeout: 8000 }).catch(async () => {
         await locator.click({ timeout: 8000 });
-        await state.page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+        await state.page.keyboard.press("Meta+A");
         await state.page.keyboard.type(subject, { delay: 0 });
       });
       return { filled: true, selector, subject };
@@ -149,7 +159,7 @@ async function fillSubjectIfPresent(subject) {
 async function fillComposer(composer, message) {
   await composer.locator.click({ timeout: 8000 });
   await composer.locator.fill(message, { timeout: 8000 }).catch(async () => {
-    await state.page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+    await state.page.keyboard.press("Meta+A");
     await state.page.keyboard.type(message, { delay: 0 });
   });
 }

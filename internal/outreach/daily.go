@@ -3,6 +3,7 @@ package outreach
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +13,10 @@ import (
 )
 
 const (
-	RecruiterSource = "ASAP - Contract Recruiters Staffing"
-	AgencySource    = "ASAP - Agency Owners Delivery"
+	RecruiterSource                = "ASAP - Contract Recruiter Titles"
+	AgencySource                   = "ASAP - Agency Digital Agency Leaders"
+	AgencySoftwareConsultingSource = "ASAP - Agency Software Consulting Leaders"
+	AgencyDevelopmentAgencySource  = "ASAP - Agency Development Agency Leaders"
 )
 
 type DailyOptions struct {
@@ -46,6 +49,12 @@ type DailyResult struct {
 	Markdown      string          `json:"markdown"`
 }
 
+type dailyBucket struct {
+	Name    string
+	Sources []string
+	Target  int
+}
+
 func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 	options = normalizeDailyOptions(store, options)
 	if strings.TrimSpace(options.Session) == "" {
@@ -56,50 +65,57 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 			return DailyResult{}, err
 		}
 	}
-	if err := EnsureSavedSearches(options); err != nil {
-		return DailyResult{}, err
+	buckets := dailyBuckets(options)
+	if dailySourcesNeedSavedSearches(buckets) {
+		if err := EnsureSavedSearches(options); err != nil {
+			return DailyResult{}, err
+		}
 	}
 	actions := []DailyLeadAction{}
-	buckets := []struct {
-		Name   string
-		Source string
-		Target int
-	}{
-		{Name: "agency", Source: AgencySource, Target: options.TargetAgencies},
-		{Name: "recruiter", Source: RecruiterSource, Target: options.TargetRecruiters},
-	}
 	for _, bucket := range buckets {
 		if bucket.Target <= 0 {
 			continue
 		}
+		if len(bucket.Sources) == 0 {
+			return DailyResult{}, fmt.Errorf("daily bucket %q has no sources", bucket.Name)
+		}
 		for round := 0; round < options.MaxCaptureRounds; round++ {
-			state, err := store.Load()
-			if err != nil {
-				return DailyResult{}, err
-			}
-			if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
-				break
-			}
-			if err := captureSource(store, options, bucket.Source, round+1); err != nil {
-				return DailyResult{}, err
-			}
-			state, err = store.Load()
-			if err != nil {
-				return DailyResult{}, err
-			}
-			DraftMessages(&state, 0)
-			if err := store.Save(state); err != nil {
-				return DailyResult{}, err
-			}
-			if err := validateBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
-				return DailyResult{}, err
-			}
-			if options.AllowSend {
-				if err := sendBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
+			for _, source := range bucket.Sources {
+				state, err := store.Load()
+				if err != nil {
 					return DailyResult{}, err
 				}
+				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
+					break
+				}
+				if err := captureSource(store, options, source, round+1); err != nil {
+					return DailyResult{}, err
+				}
+				state, err = store.Load()
+				if err != nil {
+					return DailyResult{}, err
+				}
+				DraftMessages(&state, 0)
+				if err := store.Save(state); err != nil {
+					return DailyResult{}, err
+				}
+				if err := validateBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
+					return DailyResult{}, err
+				}
+				if options.AllowSend {
+					if err := sendBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
+						return DailyResult{}, err
+					}
+				}
+				state, err = store.Load()
+				if err != nil {
+					return DailyResult{}, err
+				}
+				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
+					break
+				}
 			}
-			state, err = store.Load()
+			state, err := store.Load()
 			if err != nil {
 				return DailyResult{}, err
 			}
@@ -118,6 +134,32 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 		return DailyResult{}, err
 	}
 	return DailyResult{Report: report, DashboardPath: options.DashboardPath, Markdown: markdown}, nil
+}
+
+func dailyBuckets(options DailyOptions) []dailyBucket {
+	return []dailyBucket{
+		{
+			Name:    "agency",
+			Sources: []string{AgencySource, AgencySoftwareConsultingSource, AgencyDevelopmentAgencySource},
+			Target:  options.TargetAgencies,
+		},
+		{
+			Name:    "recruiter",
+			Sources: []string{RecruiterSource},
+			Target:  options.TargetRecruiters,
+		},
+	}
+}
+
+func dailySourcesNeedSavedSearches(buckets []dailyBucket) bool {
+	for _, bucket := range buckets {
+		for _, source := range bucket.Sources {
+			if _, ok := defaultOutreachSourceURL(source); !ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func EnsureSavedSearches(options DailyOptions) error {
@@ -149,7 +191,7 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 	if cursor, ok := state.CaptureCursors[source]; ok && cursor.ResumeURL != nil {
 		explicitURL = cursor.ResumeURL
 	}
-	url, err := app.ResolveCaptureURL(explicitURL, options.SavedSearches, source, "--url")
+	url, err := resolveDailyCaptureURL(explicitURL, options.SavedSearches, source)
 	if err != nil {
 		return err
 	}
@@ -176,6 +218,16 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 		return err
 	}
 	return store.Save(state)
+}
+
+func resolveDailyCaptureURL(explicitURL *string, savedSearches string, source string) (string, error) {
+	if explicitURL != nil && cleanText(*explicitURL) != "" {
+		return app.ResolveCaptureURL(explicitURL, savedSearches, source, "--url")
+	}
+	if generatedURL, ok := defaultOutreachSourceURL(source); ok {
+		return generatedURL, nil
+	}
+	return app.ResolveCaptureURL(nil, savedSearches, source, "--url")
 }
 
 func validateBucket(store *Store, options DailyOptions, bucket string, target int, actions *[]DailyLeadAction) error {
@@ -343,7 +395,7 @@ func leadsForMessageValidation(state OutreachState, bucket string) []Lead {
 		if lead.Status != LeadStatusEligible || bucketForLead(lead) != bucket || lead.ProfileURL == nil || lead.Draft == nil {
 			continue
 		}
-		if lead.MessageStatus != MessageStatusDrafted && lead.MessageStatus != MessageStatusSendFailed {
+		if lead.MessageStatus != MessageStatusDrafted {
 			continue
 		}
 		leads = append(leads, lead)
@@ -367,4 +419,91 @@ func safePathSegment(value string) string {
 	cleaned := strings.ToLower(cleanText(value))
 	cleaned = strings.NewReplacer("/", "-", "\\", "-", " ", "-", ":", "-").Replace(cleaned)
 	return cleaned
+}
+
+type salesNavFilter struct {
+	Type   string
+	Values []salesNavFilterValue
+}
+
+type salesNavFilterValue struct {
+	ID   string
+	Text string
+}
+
+func defaultOutreachSourceURL(source string) (string, bool) {
+	base := []salesNavFilter{
+		{Type: "REGION", Values: []salesNavFilterValue{{ID: "103644278", Text: "United States"}}},
+		{Type: "RELATIONSHIP", Values: []salesNavFilterValue{{ID: "S", Text: "2nd degree connections"}}},
+		{Type: "POSTED_ON_LINKEDIN", Values: []salesNavFilterValue{{ID: "RPOL", Text: "Posted on LinkedIn"}}},
+	}
+	contractRecruiterTitles := salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
+		{ID: "1711", Text: "Contract Recruiter"},
+		{ID: "8379", Text: "Senior Contract Recruiter"},
+		{ID: "16659", Text: "Contract Technical Recruiter"},
+		{ID: "21060", Text: "Senior Technical Recruiter Contract"},
+	}}
+	agencyLeaderTitles := salesNavFilter{Type: "CURRENT_TITLE", Values: []salesNavFilterValue{
+		{ID: "35", Text: "Founder"},
+		{ID: "103", Text: "Co-Founder"},
+		{ID: "1", Text: "Owner"},
+		{ID: "18", Text: "Partner"},
+		{ID: "154", Text: "Managing Partner"},
+		{ID: "182", Text: "Principal Consultant"},
+		{ID: "200", Text: "Technical Director"},
+	}}
+	agencyIndustries := salesNavFilter{Type: "INDUSTRY", Values: []salesNavFilterValue{
+		{ID: "4", Text: "Software Development"},
+		{ID: "96", Text: "IT Services and IT Consulting"},
+		{ID: "99", Text: "Design Services"},
+	}}
+
+	switch source {
+	case RecruiterSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(base, contractRecruiterTitles), ""), true
+	case AgencySource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "digital agency"), true
+	case AgencySoftwareConsultingSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "software consulting"), true
+	case AgencyDevelopmentAgencySource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles), "development agency"), true
+	default:
+		return "", false
+	}
+}
+
+func appendSalesNavFilters(base []salesNavFilter, extra ...salesNavFilter) []salesNavFilter {
+	filters := make([]salesNavFilter, 0, len(base)+len(extra))
+	filters = append(filters, base...)
+	filters = append(filters, extra...)
+	return filters
+}
+
+func salesNavPeopleSearchURL(filters []salesNavFilter, keywords string) string {
+	parts := make([]string, 0, len(filters))
+	for _, filter := range filters {
+		parts = append(parts, salesNavFilterExpression(filter))
+	}
+	body := fmt.Sprintf("filters:List(%s)", strings.Join(parts, ","))
+	if cleanText(keywords) != "" {
+		body += ",keywords:" + salesNavValueEscape(keywords)
+	}
+	query := fmt.Sprintf("(%s)", body)
+	return "https://www.linkedin.com/sales/search/people?query=" + url.QueryEscape(query)
+}
+
+func salesNavFilterExpression(filter salesNavFilter) string {
+	values := make([]string, 0, len(filter.Values))
+	for _, value := range filter.Values {
+		values = append(values, fmt.Sprintf(
+			"(id:%s,text:%s,selectionType:INCLUDED)",
+			salesNavValueEscape(value.ID),
+			salesNavValueEscape(value.Text),
+		))
+	}
+	return fmt.Sprintf("(type:%s,values:List(%s))", filter.Type, strings.Join(values, ","))
+}
+
+func salesNavValueEscape(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }

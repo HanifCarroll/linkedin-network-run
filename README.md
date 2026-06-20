@@ -64,16 +64,34 @@ recruiter-agency-outreach run-daily \
   --print-markdown
 ```
 
-`run-daily` resets the Playwriter session connection, refreshes or reads the
-Sales Navigator saved-search artifact, captures from `ASAP - Agency Owners
-Delivery` and `ASAP - Contract Recruiters Staffing`, imports and dedupes leads,
-drafts context-aware messages, validates messageability in the browser, sends up
-to 5 agency messages and 5 recruiter messages for the current run when
-`--allow-send` is present, and writes a Markdown dashboard under the outreach
-state directory. Use `--skip-session-reset` only when intentionally preserving a
-live Playwriter page connection.
+`run-daily` resets the Playwriter session connection, opens generated Sales
+Navigator searches for the validated recruiter/agency source mix, imports and
+dedupes leads, drafts context-aware messages, validates messageability in the
+browser, sends up to 5 agency messages and 5 recruiter messages for the current
+run when `--allow-send` is present, and writes a Markdown dashboard under the
+outreach state directory. Use `--skip-session-reset` only when intentionally
+preserving a live Playwriter page connection.
 
-To force a fresh saved-search resolver before capture:
+The built-in daily sources do not depend on stale Sales Navigator saved-search
+names. After a source has been captured once, the workflow still uses its saved
+resume cursor so later rounds continue from the next result page.
+
+Validated source configuration:
+
+| Bucket | Source | Sales Navigator filters | Measured result |
+| --- | --- | --- | --- |
+| Recruiters | `ASAP - Contract Recruiter Titles` | United States, 2nd-degree, Posted on LinkedIn, current title in `Contract Recruiter`, `Senior Contract Recruiter`, `Contract Technical Recruiter`, `Senior Technical Recruiter Contract` | 5 eligible from 12 captured; 5/5 dry-run messageable |
+| Agencies primary | `ASAP - Agency Digital Agency Leaders` | United States, 2nd-degree, Posted on LinkedIn, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director`; industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`; keyword `digital agency` | 4 eligible from 12 captured; 4/4 dry-run messageable |
+| Agencies backup | `ASAP - Agency Software Consulting Leaders` | Same agency title/industry filters; keyword `software consulting` | 1 eligible from 12 captured; dry-run messageable |
+| Agencies backup | `ASAP - Agency Development Agency Leaders` | Same agency title filters; keyword `development agency` | 2 eligible from 12 captured; 2/2 dry-run messageable |
+
+If validation reports `identity-mismatch` with an empty body for every lead,
+Sales Navigator lead pages are rendering as blank in the browser session even if
+search capture still works. Re-run validation after confirming a Sales Navigator
+lead page renders normally, or preserve a known-good browser session with
+`--skip-session-reset`.
+
+To force a fresh saved-search resolver for a custom/manual saved-search source:
 
 ```sh
 recruiter-agency-outreach run-daily \
@@ -118,15 +136,13 @@ Manual capture remains available for one-off recovery or inspection:
 ```sh
 recruiter-agency-outreach capture \
   --session <session> \
-  --source "ASAP - Contract Recruiters Staffing" \
-  --saved-searches /tmp/linkedin-network-run-saved-searches.json \
+  --source "ASAP - Contract Recruiter Titles" \
   --pages 2 \
   --limit 25
 
 recruiter-agency-outreach capture \
   --session <session> \
-  --source "ASAP - Agency Owners Delivery" \
-  --saved-searches /tmp/linkedin-network-run-saved-searches.json \
+  --source "ASAP - Agency Digital Agency Leaders" \
   --pages 2 \
   --limit 25
 ```
