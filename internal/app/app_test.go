@@ -225,6 +225,14 @@ func TestImportCaptureDedupesSalesNavURLsWithTrackingParams(t *testing.T) {
 	}
 }
 
+func TestNormalizeLinkedInURLDedupesSalesNavLeadAuthTokens(t *testing.T) {
+	left := "https://www.linkedin.com/sales/lead/abc123,NAME_SEARCH,token-one?_ntb=session"
+	right := "https://www.linkedin.com/sales/lead/abc123,SEARCH,token-two"
+	if NormalizeLinkedInURL(left) != NormalizeLinkedInURL(right) {
+		t.Fatalf("normalized urls differ: %q vs %q", NormalizeLinkedInURL(left), NormalizeLinkedInURL(right))
+	}
+}
+
 func TestCandidateMatchingIgnoresSalesNavTrackingParams(t *testing.T) {
 	candidateURL := "https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token?_ntb=session"
 	candidate := CandidateEvent{

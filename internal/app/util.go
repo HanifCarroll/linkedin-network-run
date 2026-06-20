@@ -50,9 +50,24 @@ func NormalizeLinkedInURL(value string) string {
 	if parsed, err := url.Parse(trimmed); err == nil && parsed.Scheme != "" {
 		parsed.RawQuery = ""
 		parsed.Fragment = ""
+		if strings.EqualFold(parsed.Hostname(), "www.linkedin.com") || strings.EqualFold(parsed.Hostname(), "linkedin.com") {
+			if strings.HasPrefix(parsed.Path, "/sales/lead/") {
+				leadPath := strings.TrimPrefix(parsed.Path, "/sales/lead/")
+				if profileID := strings.Split(leadPath, ",")[0]; strings.TrimSpace(profileID) != "" {
+					parsed.Path = "/sales/lead/" + profileID
+				}
+			}
+		}
 		return strings.TrimRight(parsed.String(), "/")
 	}
 	head := strings.Split(strings.Split(trimmed, "?")[0], "#")[0]
+	if strings.HasPrefix(head, "https://www.linkedin.com/sales/lead/") || strings.HasPrefix(head, "https://linkedin.com/sales/lead/") {
+		prefix := head[:strings.Index(head, "/sales/lead/")+len("/sales/lead/")]
+		leadPath := strings.TrimPrefix(head, prefix)
+		if profileID := strings.Split(leadPath, ",")[0]; strings.TrimSpace(profileID) != "" {
+			head = prefix + profileID
+		}
+	}
 	return strings.TrimRight(head, "/")
 }
 

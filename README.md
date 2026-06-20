@@ -80,16 +80,24 @@ Validated source configuration:
 
 | Bucket | Source | Sales Navigator filters | Measured result |
 | --- | --- | --- | --- |
-| Recruiters | `ASAP - Contract Recruiter Titles` | United States, 2nd-degree, Posted on LinkedIn, current title in `Contract Recruiter`, `Senior Contract Recruiter`, `Contract Technical Recruiter`, `Senior Technical Recruiter Contract` | 5 eligible from 12 captured; 5/5 dry-run messageable |
-| Agencies primary | `ASAP - Agency Digital Agency Leaders` | United States, 2nd-degree, Posted on LinkedIn, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director`; industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`; keyword `digital agency` | 4 eligible from 12 captured; 4/4 dry-run messageable |
-| Agencies backup | `ASAP - Agency Software Consulting Leaders` | Same agency title/industry filters; keyword `software consulting` | 1 eligible from 12 captured; dry-run messageable |
-| Agencies backup | `ASAP - Agency Development Agency Leaders` | Same agency title filters; keyword `development agency` | 2 eligible from 12 captured; 2/2 dry-run messageable |
+| Recruiters | `ASAP - Contract Recruiter Titles` | United States, 2nd-degree, Posted on LinkedIn, current title in `Contract Recruiter`, `Senior Contract Recruiter`, `Contract Technical Recruiter`, `Senior Technical Recruiter Contract` | 66 eligible and 3 needs-review from 75 captured; 43 eligible and 3 needs-review from a 50-row daily-depth stress capture |
+| Agencies primary | `ASAP - Agency Development Agency Leaders` | United States, 2nd-degree, Posted on LinkedIn, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director`; keyword `development agency` | 11 eligible from 75 captured; 8 eligible from a 50-row daily-depth stress capture, including 7 agency-bucket leads |
+| Agencies backup | `ASAP - Agency Digital Agency Leaders` | Same agency title filters; industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`; keyword `digital agency` | 8 eligible from 75 captured |
+| Agencies backup | `ASAP - Agency Product Studio Leaders` | Same agency title/industry filters; keyword `product studio` | 6 eligible from 75 captured; added 6 eligible leads in the 50-row combined stress capture after agency-source dedupe |
+
+The latest source-quality test captured 956 visible Sales Navigator rows across
+13 recruiter/agency source configurations, with no real sends. The final
+2-page daily-depth stress test captured the default source mix into one deduped
+state and drafted 16 agency-bucket eligible leads plus 44 recruiter-bucket
+eligible leads.
 
 If validation reports `identity-mismatch` with an empty body for every lead,
 Sales Navigator lead pages are rendering as blank in the browser session even if
 search capture still works. Re-run validation after confirming a Sales Navigator
 lead page renders normally, or preserve a known-good browser session with
-`--skip-session-reset`.
+`--skip-session-reset`. The daily runner stops validation after the first blank
+lead-page failure so the remaining drafted leads stay reviewable instead of
+being marked failed by the broken browser session.
 
 To force a fresh saved-search resolver for a custom/manual saved-search source:
 

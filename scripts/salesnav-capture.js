@@ -317,7 +317,9 @@ async function main() {
       row.visibleState = classifyVisibleRow(row.text, row.visibleButtons);
       row.menuLabels = [];
       row.menuState = "not-opened";
-      applyApiState(row, apiRowsByUrn);
+      if (!openMenus) {
+        applyApiState(row, apiRowsByUrn);
+      }
       fillProfileUrl(row);
 
       if (saveHtml) {
@@ -333,13 +335,6 @@ async function main() {
       for (let index = 0; index < Math.min(rows.length, rowLocators.length); index += 1) {
         const row = rows[index];
         const rowLocator = rowLocators[index];
-        if (applyApiState(row, apiRowsByUrn)) {
-          if (stopAfterConnectable > 0 && connectableCount(allRows) + connectableCount(rows) >= stopAfterConnectable) {
-            stopReason = `stopAfterConnectable reached by API state at page ${pageNumber}, row ${index}`;
-            break;
-          }
-          continue;
-        }
         await state.page.keyboard.press("Escape").catch(() => {});
         await rowLocator.scrollIntoViewIfNeeded().catch(() => {});
         if (rowScrollDelayMs > 0) {

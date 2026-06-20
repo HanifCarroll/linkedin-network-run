@@ -1,6 +1,8 @@
 package outreach
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,6 +35,37 @@ func TestImportCaptureClassifiesContractRecruiter(t *testing.T) {
 	}
 	if lead.Title == nil || *lead.Title != "Senior Technical Recruiter" {
 		t.Fatalf("title = %v", lead.Title)
+	}
+}
+
+func TestImportCaptureDedupesSalesNavLeadAuthTokens(t *testing.T) {
+	source := "ASAP - Contract Recruiters Staffing"
+	state := OutreachState{}
+	capture := app.SalesNavCapture{
+		Source: &source,
+		Rows: []app.SalesNavCaptureRow{
+			{
+				Index:      0,
+				Name:       strPtr("Riley Recruiter"),
+				Text:       strPtr("Riley Recruiter\nSenior Technical Recruiter\nAcme Staffing\nContract React TypeScript roles"),
+				ProfileURL: strPtr("https://www.linkedin.com/sales/lead/abc123,NAME_SEARCH,token-one?_ntb=x"),
+				MenuState:  strPtr("connectable"),
+			},
+			{
+				Index:      1,
+				Name:       strPtr("Riley Recruiter"),
+				Text:       strPtr("Riley Recruiter\nSenior Technical Recruiter\nAcme Staffing\nContract React TypeScript roles"),
+				ProfileURL: strPtr("https://www.linkedin.com/sales/lead/abc123,SEARCH,token-two"),
+				MenuState:  strPtr("connectable"),
+			},
+		},
+	}
+	summary, err := ImportCapture(&state, capture, ImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Leads) != 1 || summary.Stored != 1 || summary.Updated != 1 {
+		t.Fatalf("summary=%#v leads=%#v", summary, state.Leads)
 	}
 }
 
@@ -520,6 +553,29 @@ func TestDraftMessagesDoesNotResetDryRunReadyLeads(t *testing.T) {
 	}
 }
 
+func TestLatestAttemptIsBlankLeadPageFailure(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	outPath := filepath.Join(store.Dir, "message-result.json")
+	if err := os.WriteFile(outPath, []byte(`{"status":"identity-mismatch","body":""}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := OutreachState{Leads: []Lead{{
+		ID:            "lead",
+		Name:          "Lead",
+		MessageStatus: MessageStatusSendFailed,
+		SendAttempts: []SendAttempt{{
+			Status:  "identity-mismatch",
+			OutPath: outPath,
+		}},
+	}}}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if !latestAttemptIsBlankLeadPageFailure(&store, "lead") {
+		t.Fatal("expected blank lead-page failure")
+	}
+}
+
 func TestMessageSubjectByLeadType(t *testing.T) {
 	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != "Contract product engineering availability" {
 		t.Fatalf("recruiter subject = %q", got)
@@ -567,6 +623,36 @@ func TestDefaultOutreachSourceURLUsesValidatedAgencyFilters(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("agency URL missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestDailyBucketsUseValidatedAgencySourceOrder(t *testing.T) {
+	buckets := dailyBuckets(DailyOptions{TargetAgencies: 5, TargetRecruiters: 5})
+	if len(buckets) == 0 || buckets[0].Name != "agency" {
+		t.Fatalf("buckets = %#v", buckets)
+	}
+	want := []string{AgencyDevelopmentAgencySource, AgencySource, AgencyProductStudioSource}
+	if strings.Join(buckets[0].Sources, "|") != strings.Join(want, "|") {
+		t.Fatalf("agency sources = %#v, want %#v", buckets[0].Sources, want)
+	}
+}
+
+func TestDefaultOutreachSourceURLUsesProductStudioFallback(t *testing.T) {
+	got, ok := defaultOutreachSourceURL(AgencyProductStudioSource)
+	if !ok {
+		t.Fatal("product studio source URL missing")
+	}
+	for _, want := range []string{
+		"type%3ACURRENT_TITLE",
+		"id%3A35",
+		"type%3AINDUSTRY",
+		"id%3A99",
+		"Design%2520Services",
+		"keywords%3Aproduct%2520studio",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("product studio URL missing %q: %s", want, got)
 		}
 	}
 }

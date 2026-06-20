@@ -2,6 +2,7 @@ package outreach
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,11 +13,14 @@ import (
 	"github.com/hanifcarroll/linkedin-network-run/internal/app"
 )
 
+var errBlankLeadPageValidation = errors.New("sales navigator lead page rendered blank during validation")
+
 const (
 	RecruiterSource                = "ASAP - Contract Recruiter Titles"
 	AgencySource                   = "ASAP - Agency Digital Agency Leaders"
 	AgencySoftwareConsultingSource = "ASAP - Agency Software Consulting Leaders"
 	AgencyDevelopmentAgencySource  = "ASAP - Agency Development Agency Leaders"
+	AgencyProductStudioSource      = "ASAP - Agency Product Studio Leaders"
 )
 
 type DailyOptions struct {
@@ -72,6 +76,7 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 		}
 	}
 	actions := []DailyLeadAction{}
+bucketLoop:
 	for _, bucket := range buckets {
 		if bucket.Target <= 0 {
 			continue
@@ -100,6 +105,9 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 					return DailyResult{}, err
 				}
 				if err := validateBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
+					if errors.Is(err, errBlankLeadPageValidation) {
+						break bucketLoop
+					}
 					return DailyResult{}, err
 				}
 				if options.AllowSend {
@@ -140,7 +148,7 @@ func dailyBuckets(options DailyOptions) []dailyBucket {
 	return []dailyBucket{
 		{
 			Name:    "agency",
-			Sources: []string{AgencySource, AgencySoftwareConsultingSource, AgencyDevelopmentAgencySource},
+			Sources: []string{AgencyDevelopmentAgencySource, AgencySource, AgencyProductStudioSource},
 			Target:  options.TargetAgencies,
 		},
 		{
@@ -257,6 +265,9 @@ func validateBucket(store *Store, options DailyOptions, bucket string, target in
 			return err
 		}
 		recordLatestAction(store, bucket, lead.ID, "dry-run-message", actions)
+		if latestAttemptIsBlankLeadPageFailure(store, lead.ID) {
+			return errBlankLeadPageValidation
+		}
 	}
 }
 
@@ -317,6 +328,26 @@ func recordLatestAction(store *Store, bucket string, leadID string, action strin
 		Result:        result,
 		Note:          note,
 	})
+}
+
+func latestAttemptIsBlankLeadPageFailure(store *Store, leadID string) bool {
+	state, err := store.Load()
+	if err != nil {
+		return false
+	}
+	index := findLeadByID(state.Leads, leadID)
+	if index < 0 || len(state.Leads[index].SendAttempts) == 0 {
+		return false
+	}
+	attempt := state.Leads[index].SendAttempts[len(state.Leads[index].SendAttempts)-1]
+	if attempt.Status != "identity-mismatch" || cleanText(attempt.OutPath) == "" {
+		return false
+	}
+	result, err := LoadMessageSendResult(attempt.OutPath)
+	if err != nil {
+		return false
+	}
+	return result.Status == "identity-mismatch" && result.Body != nil && cleanText(*result.Body) == ""
 }
 
 func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
@@ -467,6 +498,8 @@ func defaultOutreachSourceURL(source string) (string, bool) {
 		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "software consulting"), true
 	case AgencyDevelopmentAgencySource:
 		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles), "development agency"), true
+	case AgencyProductStudioSource:
+		return salesNavPeopleSearchURL(appendSalesNavFilters(base, agencyLeaderTitles, agencyIndustries), "product studio"), true
 	default:
 		return "", false
 	}
