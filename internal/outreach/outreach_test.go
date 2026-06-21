@@ -97,7 +97,7 @@ func TestImportCaptureClassifiesAgencyDeliveryAndDrafts(t *testing.T) {
 	if lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted {
 		t.Fatalf("lead = %#v", lead)
 	}
-	if lead.Draft == nil || !containsAny(lead.Draft.Body, "outside senior engineers", "client work") {
+	if lead.Draft == nil || !containsAny(lead.Draft.Body, "contractor bench", "overflow") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
 }
@@ -136,7 +136,7 @@ func TestImportCaptureUsesCompanyLinkInsteadOfLocationLine(t *testing.T) {
 	if lead.Draft == nil || strings.Contains(lead.Draft.Body, "Sturgeon Bay, Wisconsin, United States works") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
-	if !strings.Contains(lead.Draft.Body, "Tweak Agency works") {
+	if !strings.Contains(lead.Draft.Body, "I saw that Tweak Agency works") {
 		t.Fatalf("draft = %q", lead.Draft.Body)
 	}
 }
@@ -512,6 +512,29 @@ func TestDraftMessagesStoresAngleAndEvidence(t *testing.T) {
 	if !strings.Contains(lead.Draft.Body, "HC Studio LLC") {
 		t.Fatalf("body = %q", lead.Draft.Body)
 	}
+	if !strings.Contains(lead.Draft.Body, "Worth adding me to your contractor bench?") {
+		t.Fatalf("body = %q", lead.Draft.Body)
+	}
+}
+
+func TestRecruiterDraftUsesCompleteSentenceOpenerAndShortAsk(t *testing.T) {
+	lead := Lead{
+		Name:      "Jackie Recruiter",
+		FirstName: "Jackie",
+		Title:     strPtr("Sr. Recruiter (Contract)"),
+		Company:   strPtr("FTI Consulting"),
+		LeadType:  LeadTypeContractRecruiter,
+	}
+	body := recruiterDraft(lead)
+	if !strings.Contains(body, "I saw that you handle contract recruiting for FTI Consulting.") {
+		t.Fatalf("body = %q", body)
+	}
+	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "Should I send the resume/portfolio?") {
+		t.Fatalf("body = %q", body)
+	}
+	if len(body) > 400 {
+		t.Fatalf("body too long: %d %q", len(body), body)
+	}
 }
 
 func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
@@ -525,7 +548,7 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 	if strings.Contains(body, "Las Vegas, Nevada, United States works") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "your team works") {
+	if !strings.Contains(body, "I saw that your team works") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -541,7 +564,7 @@ func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
 		LeadType:              LeadTypeAgencyFounder,
 	}
 	body := agencyDraft(lead)
-	if !strings.Contains(body, "website/CMS delivery") || !strings.Contains(body, "frontend-heavy website builds") {
+	if !strings.Contains(body, "I saw that QeWebby - WordPress Development Agency works on website/CMS delivery") || !strings.Contains(body, "frontend-heavy website builds") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {
@@ -718,10 +741,10 @@ func TestLatestAttemptIsBlankLeadPageFailure(t *testing.T) {
 }
 
 func TestMessageSubjectByLeadType(t *testing.T) {
-	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != "Contract product engineering availability" {
+	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != "react/node c2c" {
 		t.Fatalf("recruiter subject = %q", got)
 	}
-	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != "Senior product engineering support" {
+	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != "overflow support" {
 		t.Fatalf("agency subject = %q", got)
 	}
 }

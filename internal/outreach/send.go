@@ -127,11 +127,11 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 func messageSubject(lead Lead) string {
 	switch lead.LeadType {
 	case LeadTypeContractRecruiter:
-		return "Contract product engineering availability"
+		return "react/node c2c"
 	case LeadTypeAgencyResource, LeadTypeAgencyDelivery, LeadTypeAgencyFounder:
-		return "Senior product engineering support"
+		return "overflow support"
 	default:
-		return "Product engineering availability"
+		return "contract support"
 	}
 }
 

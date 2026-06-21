@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 )
 
 func DraftMessages(state *OutreachState, limit int) DraftReport {
@@ -128,12 +127,11 @@ func draftEvidence(lead Lead) []string {
 }
 
 func recruiterDraft(lead Lead) string {
-	proof := "Recent work includes taking Palabruno from founder idea to live iOS/Android/web launch, and helping Genrupt add billing, async jobs, and agent/MCP workflows."
-	context := ""
-	if lead.Title != nil {
-		context = fmt.Sprintf(" I saw your profile mentions %s.", lowerFirst(*lead.Title))
+	context := "I saw that you're recruiting for contract roles."
+	if company := companyForDraft(lead.Company); company != "" {
+		context = fmt.Sprintf("I saw that you handle contract recruiting for %s.", company)
 	}
-	return fmt.Sprintf("Hi %s,%s I’m a senior product engineer with 8 years across React, TypeScript, Node, AI product workflows, payments, and product UX. %s I’m available now for contract work through HC Studio LLC as a US W-9 vendor, working EST/CST hours from Buenos Aires. Are you seeing remote C2C/1099 roles where that background fits?", lead.FirstName, context, proof)
+	return fmt.Sprintf("Hi %s, %s I’m a senior React/TypeScript/Node product engineer available now for remote C2C/1099 work. Recent proof: Palabruno mobile/web launch + Genrupt billing/AI workflows. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Should I send the resume/portfolio?", lead.FirstName, context)
 }
 
 func agencyDraft(lead Lead) string {
@@ -144,13 +142,13 @@ func agencyDraft(lead Lead) string {
 		target = company
 	}
 	if isWebsiteAgencyLead(lead) {
-		return fmt.Sprintf("Hi %s, I saw %s works on website/CMS delivery. I’m a senior product engineer available now for frontend-heavy website builds, CMS integrations, performance cleanup, or rescue work: React/TypeScript, Node, forms/payments, and polished client launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Do you ever bring in outside senior engineers when client builds need extra capacity?", lead.FirstName, target)
+		return fmt.Sprintf("Hi %s, I saw that %s works on website/CMS delivery. I’m a senior frontend/product engineer available for frontend-heavy website builds, CMS integrations, performance cleanup, and rescue work. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Worth adding me to your contractor bench?", lead.FirstName, target)
 	}
 	need := "overflow, rescue, prototyping, or short-term product engineering work"
 	if lead.LeadType == LeadTypeAgencyResource {
 		need = "senior outside engineering coverage for active client projects"
 	}
-	return fmt.Sprintf("Hi %s, I saw %s works on digital/product delivery. I’m a senior product engineer available now for %s: React/TypeScript, Node, AI workflows, payments, and MVP launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Do you ever bring in outside senior engineers for client work?", lead.FirstName, target, need)
+	return fmt.Sprintf("Hi %s, I saw that %s works on digital/product delivery. I’m a senior product engineer available for %s: React/TypeScript/Node plus AI workflow work. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Worth adding me to your contractor bench?", lead.FirstName, target, need)
 }
 
 func isWebsiteAgencyLead(lead Lead) bool {
@@ -184,7 +182,7 @@ func isLikelyLocation(value string) bool {
 }
 
 func generalDraft(lead Lead) string {
-	return fmt.Sprintf("Hi %s, I’m a senior product engineer available now for contract product engineering work: React/TypeScript, Node, AI workflows, payments, and MVP launches. I’m a US citizen, W-9 vendor through HC Studio LLC, working EST/CST hours from Buenos Aires. Would it be useful to compare fit?", lead.FirstName)
+	return fmt.Sprintf("Hi %s, I’m a senior React/TypeScript/Node product engineer available now for contract product work. Recent proof: Palabruno mobile/web launch + Genrupt billing/AI workflows. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Would it be useful to compare fit?", lead.FirstName)
 }
 
 func RenderDraftMarkdown(report DraftReport) string {
@@ -265,17 +263,6 @@ func findLeadByID(leads []Lead, id string) int {
 		}
 	}
 	return -1
-}
-
-func lowerFirst(value string) string {
-	if value == "" {
-		return value
-	}
-	runes := []rune(value)
-	if len(runes) > 1 && unicode.IsUpper(runes[0]) && unicode.IsUpper(runes[1]) {
-		return value
-	}
-	return strings.ToLower(value[:1]) + value[1:]
 }
 
 func cleanInline(value string) string {
