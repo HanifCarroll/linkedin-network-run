@@ -198,6 +198,18 @@ async function findComposer() {
   return null;
 }
 
+async function waitForComposer(timeoutMS = 5000) {
+  const deadline = Date.now() + timeoutMS;
+  while (Date.now() < deadline) {
+    const composer = await findComposer();
+    if (composer) {
+      return composer;
+    }
+    await state.page.waitForTimeout(250);
+  }
+  return null;
+}
+
 async function fillSubjectIfPresent(subject) {
   const selectors = [
     "input[name='subject']",
@@ -249,6 +261,71 @@ async function clickSendButton() {
   return clicked || { clicked: false };
 }
 
+async function openProfileAndClickMessageAction(candidate, profileApiResponses) {
+  let navigationError = null;
+  try {
+    await state.page.goto(candidate.profileUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await state.page.waitForLoadState("domcontentloaded");
+  } catch (error) {
+    navigationError = String(error).slice(0, 500);
+    await state.page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+  }
+  await state.page.waitForTimeout(2000);
+
+  const body = await readBody(10000);
+  if (navigationError && !body) {
+    return { ok: false, result: { status: "navigation-failed", reason: navigationError } };
+  }
+  if (isHardBlocker(state.page.url(), body)) {
+    return {
+      ok: false,
+      result: { status: "blocked", reason: "checkpoint-login-or-limit", body: cleanText(body).slice(0, 1500) },
+    };
+  }
+
+  const profileRateLimited = profileApiResponses.some((response) => response.status === 429);
+  if (!bodyContainsCandidateName(body, candidate.name)) {
+    if (!body && profileRateLimited) {
+      return {
+        ok: false,
+        result: {
+          status: "profile-rate-limited",
+          reason: "lead profile API returned 429 after search-row message path failed",
+          body: "",
+        },
+      };
+    }
+    return {
+      ok: false,
+      result: {
+        status: "identity-mismatch",
+        reason: "loaded lead page does not contain candidate name",
+        body: cleanText(body).slice(0, 1500),
+      },
+    };
+  }
+
+  const action = await findMessageAction();
+  if (!action.found) {
+    return { ok: false, result: { status: "not-messageable", action } };
+  }
+  await clickMarkedMessageAction();
+  await state.page.waitForTimeout(1500);
+  const composer = await waitForComposer(5000);
+  if (!composer) {
+    const afterBody = await readBody(5000);
+    return {
+      ok: false,
+      result: {
+        status: "composer-missing",
+        action,
+        body: cleanText(afterBody).slice(0, 1500),
+      },
+    };
+  }
+  return { ok: true, action, composer };
+}
+
 async function main() {
   const candidate = configValue("candidate", null);
   const message = cleanText(configValue("message", ""));
@@ -267,7 +344,10 @@ async function main() {
     throw new Error("real send requires allowSend=true");
   }
 
-  state.page = state.page || context.pages().find((page) => page.url().includes("/sales/lead/")) || await context.newPage();
+  state.page = state.page
+    || context.pages().find((page) => page.url().includes("/sales/search/people"))
+    || context.pages().find((page) => page.url().includes("/sales/lead/"))
+    || await context.newPage();
   const profileApiResponses = [];
   const responseHandler = async (response) => {
     if (/\/sales-api\/salesApiProfiles/i.test(response.url())) {
@@ -275,99 +355,59 @@ async function main() {
     }
   };
   state.page.on("response", responseHandler);
-  let navigationError = null;
-  try {
-    await state.page.goto(candidate.profileUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-    await state.page.waitForLoadState("domcontentloaded");
-  } catch (error) {
-    navigationError = String(error).slice(0, 500);
-    await state.page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
-  }
-  await state.page.waitForTimeout(2000);
 
-  const body = await readBody(10000);
-  const base = {
+  const base = () => ({
     candidate,
     dryRun,
     url: state.page.url(),
     messageLength: message.length,
     status: "unknown",
+  });
+  const complete = (payload) => {
+    const result = { ...base(), ...payload };
+    fs.writeFileSync(out, JSON.stringify(result, null, 2));
+    console.log(JSON.stringify(result, null, 2));
+    state.page.off("response", responseHandler);
   };
-  if (navigationError && !body) {
-    const result = { ...base, status: "navigation-failed", reason: navigationError };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-  if (isHardBlocker(state.page.url(), body)) {
-    const result = { ...base, status: "blocked", reason: "checkpoint-login-or-limit", body: cleanText(body).slice(0, 1500) };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-  const profileRateLimited = profileApiResponses.some((response) => response.status === 429);
+
   let action = null;
-  let clickedAction = false;
-  if (!bodyContainsCandidateName(body, candidate.name)) {
-    if (!body && profileRateLimited && candidate.searchUrl) {
-      action = await clickSearchRowMessageAction(candidate);
-      if (!action.found) {
-        const result = { ...base, status: "profile-rate-limited", reason: "lead profile API returned 429 and search-row fallback failed", profileApiResponses, action };
-        fs.writeFileSync(out, JSON.stringify(result, null, 2));
-        console.log(JSON.stringify(result, null, 2));
-        state.page.off("response", responseHandler);
-        return;
-      }
-      clickedAction = true;
+  let composer = null;
+  let searchRowAction = null;
+
+  if (candidate.searchUrl) {
+    searchRowAction = await clickSearchRowMessageAction(candidate);
+    if (searchRowAction.found) {
+      action = searchRowAction;
       await state.page.waitForTimeout(1500);
-    } else {
-      const result = { ...base, status: "identity-mismatch", reason: "loaded lead page does not contain candidate name", body: cleanText(body).slice(0, 1500), profileApiResponses };
-      fs.writeFileSync(out, JSON.stringify(result, null, 2));
-      console.log(JSON.stringify(result, null, 2));
-      state.page.off("response", responseHandler);
-      return;
+      composer = await waitForComposer(5000);
+      if (!composer) {
+        searchRowAction = { ...searchRowAction, found: false, reason: "search-row-composer-missing" };
+        action = null;
+      }
     }
   }
 
   if (!action) {
-    action = await findMessageAction();
-  }
-  if (!action.found) {
-    const result = { ...base, status: "not-messageable", action, profileApiResponses };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    state.page.off("response", responseHandler);
-    return;
+    const fallback = await openProfileAndClickMessageAction(candidate, profileApiResponses);
+    if (!fallback.ok) {
+      return complete({ ...fallback.result, searchRowAction, profileApiResponses });
+    }
+    action = fallback.action;
+    composer = fallback.composer;
   }
 
-  if (!clickedAction) {
-    await clickMarkedMessageAction();
-    await state.page.waitForTimeout(1500);
-  }
   const conversationCheck = action.kind === "message" ? await hasExistingConversation(candidate.name) : null;
   if (conversationCheck?.exists) {
-    const result = { ...base, status: "conversation-exists", action, conversationCheck, profileApiResponses };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    state.page.off("response", responseHandler);
-    return;
+    return complete({ status: "conversation-exists", action, conversationCheck, profileApiResponses, composerSelector: composer?.selector });
   }
   if (dryRun) {
-    const result = { ...base, status: "dry-run-messageable", action, conversationCheck, profileApiResponses };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    state.page.off("response", responseHandler);
-    return;
+    return complete({ status: "dry-run-messageable", action, conversationCheck, profileApiResponses, composerSelector: composer?.selector });
   }
 
-  const composer = await findComposer();
+  composer = composer || await waitForComposer(5000);
   if (!composer) {
     const afterBody = await readBody(5000);
-    const result = { ...base, status: "composer-missing", action, body: cleanText(afterBody).slice(0, 1500), profileApiResponses };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    state.page.off("response", responseHandler);
-    return;
+    return complete({ status: "composer-missing", action, body: cleanText(afterBody).slice(0, 1500), profileApiResponses });
   }
 
   const subjectFill = action.kind === "inmail" ? await fillSubjectIfPresent(subject) : { filled: false };
@@ -375,17 +415,10 @@ async function main() {
   await state.page.waitForTimeout(500);
   const send = await clickSendButton();
   if (!send.clicked) {
-    const result = { ...base, status: "send-button-missing", action, composerSelector: composer.selector, subjectFill, profileApiResponses };
-    fs.writeFileSync(out, JSON.stringify(result, null, 2));
-    console.log(JSON.stringify(result, null, 2));
-    state.page.off("response", responseHandler);
-    return;
+    return complete({ status: "send-button-missing", action, composerSelector: composer.selector, subjectFill, profileApiResponses });
   }
   await state.page.waitForTimeout(2000);
-  const result = { ...base, status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, send, profileApiResponses };
-  fs.writeFileSync(out, JSON.stringify(result, null, 2));
-  console.log(JSON.stringify(result, null, 2));
-  state.page.off("response", responseHandler);
+  return complete({ status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, send, profileApiResponses });
 }
 
 await main();

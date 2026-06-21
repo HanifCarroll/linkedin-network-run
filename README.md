@@ -105,13 +105,12 @@ The latest source-quality test captured 956 visible Sales Navigator rows across
 state and drafted 16 agency-bucket eligible leads plus 44 recruiter-bucket
 eligible leads.
 
-If validation reports `identity-mismatch` with an empty body for every lead,
-Sales Navigator lead pages are rendering as blank in the browser session even if
-search capture still works. Re-run validation after confirming a Sales Navigator
-lead page renders normally, or preserve a known-good browser session with
-`--skip-session-reset`. The daily runner stops validation after the first blank
-lead-page failure so the remaining drafted leads stay reviewable instead of
-being marked failed by the broken browser session.
+For guarded sends, the workflow reopens the saved Sales Navigator people search
+and clicks the matching row-level `Message` or `InMail` action first. Sales
+Navigator lead detail pages are now only a fallback when the saved search row is
+missing or cannot open a composer. This keeps validation usable when direct
+lead pages render blank or return profile API 429 responses while search results
+still render normally.
 
 To force a fresh saved-search resolver for a custom/manual saved-search source:
 
