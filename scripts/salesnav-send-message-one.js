@@ -436,7 +436,7 @@ async function main() {
     return complete({ status: "composer-missing", action, body: cleanText(afterBody).slice(0, 1500), profileApiResponses });
   }
 
-  const subjectFill = action.kind === "inmail" ? await fillSubjectIfPresent(subject) : { filled: false };
+  const subjectFill = await fillSubjectIfPresent(subject);
   await fillComposer(composer, message);
   await state.page.waitForTimeout(500);
   const send = await clickSendButton();

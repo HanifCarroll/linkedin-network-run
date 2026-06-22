@@ -75,8 +75,8 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 	if lead.ProfileURL == nil || cleanText(*lead.ProfileURL) == "" {
 		return fmt.Errorf("lead %s has no profile URL", lead.ID)
 	}
-	if !dryRun && lead.MessageStatus != MessageStatusApproved {
-		return fmt.Errorf("lead %s is %s; real sends require %s", lead.ID, lead.MessageStatus, MessageStatusApproved)
+	if !dryRun && lead.MessageStatus != MessageStatusDryRunReady {
+		return fmt.Errorf("lead %s is %s; real sends require %s", lead.ID, lead.MessageStatus, MessageStatusDryRunReady)
 	}
 	if !dryRun && !options.AllowSend {
 		return fmt.Errorf("real send requires --allow-send")

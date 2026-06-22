@@ -69,8 +69,8 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		fmt.Sprintf("- State: `%s`", report.StatePath),
 		fmt.Sprintf("- Target: `%d` agencies, `%d` recruiters", report.TargetAgencies, report.TargetRecruiters),
 		fmt.Sprintf("- Real sends enabled: `%t`", report.AllowSend),
-		fmt.Sprintf("- Messageable, not approved: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
-		fmt.Sprintf("- Approved to send: `%d` agencies, `%d` recruiters", len(report.ApprovedAgencies), len(report.ApprovedRecruiters)),
+		fmt.Sprintf("- Messageable/sendable: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
+		fmt.Sprintf("- Manually approved: `%d` agencies, `%d` recruiters", len(report.ApprovedAgencies), len(report.ApprovedRecruiters)),
 		fmt.Sprintf("- Sent: `%d` agencies, `%d` recruiters", len(report.SentAgencies), len(report.SentRecruiters)),
 		fmt.Sprintf("- Checked/skipped: `%d` agencies, `%d` recruiters", len(report.SkippedAgencies), len(report.SkippedRecruiters)),
 		fmt.Sprintf("- Agency accounts: `%d` qualified, `%d` needs review, `%d` rejected, `%d` exhausted",
@@ -94,13 +94,13 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines, "## Agencies", "")
-	lines = append(lines, renderLeadCards("messageable, not approved", report.ReadyAgencies)...)
-	lines = append(lines, renderLeadCards("approved to send", report.ApprovedAgencies)...)
+	lines = append(lines, renderLeadCards("messageable/sendable", report.ReadyAgencies)...)
+	lines = append(lines, renderLeadCards("manually approved", report.ApprovedAgencies)...)
 	lines = append(lines, renderLeadCards("sent", report.SentAgencies)...)
 	lines = append(lines, renderLeadCards("checked/skipped", report.SkippedAgencies)...)
 	lines = append(lines, "## Recruiters", "")
-	lines = append(lines, renderLeadCards("messageable, not approved", report.ReadyRecruiters)...)
-	lines = append(lines, renderLeadCards("approved to send", report.ApprovedRecruiters)...)
+	lines = append(lines, renderLeadCards("messageable/sendable", report.ReadyRecruiters)...)
+	lines = append(lines, renderLeadCards("manually approved", report.ApprovedRecruiters)...)
 	lines = append(lines, renderLeadCards("sent", report.SentRecruiters)...)
 	lines = append(lines, renderLeadCards("checked/skipped", report.SkippedRecruiters)...)
 	if len(report.ReadyAgencies)+len(report.ReadyRecruiters)+len(report.ApprovedAgencies)+len(report.ApprovedRecruiters)+len(report.SentAgencies)+len(report.SentRecruiters)+len(report.SkippedAgencies)+len(report.SkippedRecruiters) == 0 {

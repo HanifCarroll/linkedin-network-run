@@ -652,8 +652,8 @@ func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 	if !bucketCompleteForRun(state, "agency", 1, true, actions) {
 		t.Fatal("current run sent action should satisfy a real-send daily quota")
 	}
-	if got := approvedLeads(state, "agency"); len(got) != 0 {
-		t.Fatalf("dry-run-ready lead should not be an approved send candidate: %#v", got)
+	if got := readyLeads(state, "agency"); len(got) != 1 || got[0].ID != "ready_now" {
+		t.Fatalf("ready leads = %#v", got)
 	}
 	state.Leads = append(state.Leads, Lead{
 		ID:            "approved",
@@ -663,8 +663,8 @@ func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 		MessageStatus: MessageStatusApproved,
 		FitScore:      100,
 	})
-	if got := approvedLeads(state, "agency"); len(got) != 1 || got[0].ID != "approved" {
-		t.Fatalf("approved leads = %#v", got)
+	if got := readyLeads(state, "agency"); len(got) != 1 || got[0].ID != "ready_now" {
+		t.Fatalf("approved lead should not replace messageable send candidate: %#v", got)
 	}
 }
 
@@ -781,14 +781,14 @@ func TestRenderDraftMarkdownPreservesDraftWhitespace(t *testing.T) {
 	}
 }
 
-func TestSendMessageRequiresApprovalForRealSend(t *testing.T) {
+func TestSendMessageRequiresDryRunReadyForRealSend(t *testing.T) {
 	store := Store{Dir: t.TempDir()}
 	state := OutreachState{Leads: []Lead{{
 		ID:            "lead",
 		Name:          "Lead",
 		LeadType:      LeadTypeContractRecruiter,
 		Status:        LeadStatusEligible,
-		MessageStatus: MessageStatusDryRunReady,
+		MessageStatus: MessageStatusDrafted,
 		ProfileURL:    strPtr("https://linkedin.com/sales/lead/lead"),
 		Draft: &MessageDraft{
 			Subject: "Subject",
@@ -805,7 +805,7 @@ func TestSendMessageRequiresApprovalForRealSend(t *testing.T) {
 		AllowSend: true,
 		OutDir:    t.TempDir(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "real sends require approved") {
+	if err == nil || !strings.Contains(err.Error(), "real sends require dry_run_ready") {
 		t.Fatalf("SendMessage error = %v", err)
 	}
 }
