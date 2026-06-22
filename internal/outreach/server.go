@@ -24,6 +24,8 @@ type reviewListPage struct {
 	Status      string
 	Bucket      string
 	Query       string
+	Sort        string
+	Dir         string
 	Counts      map[string]int
 	Leads       []Lead
 }
@@ -114,14 +116,24 @@ func (s *reviewServer) handleLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	bucket := cleanText(r.URL.Query().Get("bucket"))
 	query := strings.ToLower(cleanText(r.URL.Query().Get("q")))
+	sortKey := cleanText(r.URL.Query().Get("sort"))
+	if sortKey == "" {
+		sortKey = "score"
+	}
+	dir := cleanText(r.URL.Query().Get("dir"))
+	if dir != "asc" {
+		dir = "desc"
+	}
 	page := reviewListPage{
 		GeneratedAt: time.Now(),
 		StatePath:   s.store.StatePath(),
 		Status:      status,
 		Bucket:      bucket,
 		Query:       r.URL.Query().Get("q"),
+		Sort:        sortKey,
+		Dir:         dir,
 		Counts:      reviewMessageCounts(state),
-		Leads:       reviewLeads(state, MessageStatus(status), bucket, query),
+		Leads:       reviewLeads(state, MessageStatus(status), bucket, query, sortKey, dir),
 	}
 	if err := s.template.ExecuteTemplate(w, "list", page); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -279,7 +291,7 @@ func reviewMessageCounts(state OutreachState) map[string]int {
 	return counts
 }
 
-func reviewLeads(state OutreachState, status MessageStatus, bucket string, query string) []Lead {
+func reviewLeads(state OutreachState, status MessageStatus, bucket string, query string, sortKey string, dir string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
 		leadBucket := bucketForLead(lead)
@@ -298,12 +310,62 @@ func reviewLeads(state OutreachState, status MessageStatus, bucket string, query
 		leads = append(leads, lead)
 	}
 	sort.SliceStable(leads, func(i, j int) bool {
-		if leads[i].FitScore == leads[j].FitScore {
-			return leads[i].Name < leads[j].Name
+		cmp := compareReviewLeads(leads[i], leads[j], sortKey)
+		if cmp == 0 {
+			cmp = strings.Compare(strings.ToLower(leads[i].Name), strings.ToLower(leads[j].Name))
 		}
-		return leads[i].FitScore > leads[j].FitScore
+		if dir == "asc" {
+			return cmp < 0
+		}
+		return cmp > 0
 	})
 	return leads
+}
+
+func compareReviewLeads(left Lead, right Lead, sortKey string) int {
+	switch sortKey {
+	case "name":
+		return strings.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name))
+	case "bucket":
+		return strings.Compare(bucketForLead(left), bucketForLead(right))
+	case "status":
+		return strings.Compare(statusLabel(left.MessageStatus), statusLabel(right.MessageStatus))
+	case "title":
+		return strings.Compare(strings.ToLower(pointerValue(left.Title)), strings.ToLower(pointerValue(right.Title)))
+	case "company":
+		return strings.Compare(strings.ToLower(pointerValue(left.Company)), strings.ToLower(pointerValue(right.Company)))
+	case "sent":
+		return compareTimes(lastSentAt(left), lastSentAt(right))
+	case "score":
+		fallthrough
+	default:
+		if left.FitScore < right.FitScore {
+			return -1
+		}
+		if left.FitScore > right.FitScore {
+			return 1
+		}
+		return 0
+	}
+}
+
+func compareTimes(left *time.Time, right *time.Time) int {
+	if left == nil && right == nil {
+		return 0
+	}
+	if left == nil {
+		return -1
+	}
+	if right == nil {
+		return 1
+	}
+	if left.Before(*right) {
+		return -1
+	}
+	if left.After(*right) {
+		return 1
+	}
+	return 0
 }
 
 func reviewLeadMatches(lead Lead, query string) bool {
@@ -325,6 +387,86 @@ func reviewBackURL(r *http.Request) string {
 	return "/leads?status=dry_run_ready"
 }
 
+func statusLabel(status MessageStatus) string {
+	switch status {
+	case MessageStatusNone:
+		return "Not drafted"
+	case MessageStatusDrafted:
+		return "Draft"
+	case MessageStatusNeedsEdit:
+		return "Needs edit"
+	case MessageStatusApproved:
+		return "Approved"
+	case MessageStatusDryRunReady:
+		return "Ready to send"
+	case MessageStatusSent:
+		return "Sent"
+	case MessageStatusManuallySent:
+		return "Manually sent"
+	case MessageStatusNotMessageable:
+		return "Not messageable"
+	case MessageStatusConversationExists:
+		return "Conversation exists"
+	case MessageStatusSendFailed:
+		return "Send failed"
+	case MessageStatusBlocked:
+		return "Blocked"
+	case MessageStatusReplied:
+		return "Replied"
+	case MessageStatusRepliedNotFit:
+		return "Replied, not fit"
+	case MessageStatusRepliedFuture:
+		return "Replied, future"
+	case MessageStatusRepliedUnknown:
+		return "Replied, unknown"
+	default:
+		return titleLabel(strings.ReplaceAll(string(status), "_", " "))
+	}
+}
+
+func statusClass(status MessageStatus) string {
+	switch status {
+	case MessageStatusDryRunReady:
+		return "ready"
+	case MessageStatusSent, MessageStatusManuallySent:
+		return "sent"
+	case MessageStatusDrafted:
+		return "draft"
+	case MessageStatusNeedsEdit, MessageStatusSendFailed, MessageStatusBlocked:
+		return "attention"
+	case MessageStatusConversationExists, MessageStatusNotMessageable:
+		return "muted"
+	default:
+		return "neutral"
+	}
+}
+
+func lastSentAt(lead Lead) *time.Time {
+	for i := len(lead.SendAttempts) - 1; i >= 0; i-- {
+		if lead.SendAttempts[i].Status == "sent-clicked" {
+			return &lead.SendAttempts[i].At
+		}
+	}
+	return nil
+}
+
+func relativeTime(value *time.Time, now time.Time) string {
+	if value == nil {
+		return ""
+	}
+	delta := now.Sub(*value)
+	if delta < time.Minute {
+		return "just now"
+	}
+	if delta < time.Hour {
+		return fmt.Sprintf("%dm ago", int(delta.Minutes()))
+	}
+	if delta < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(delta.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(delta.Hours()/24))
+}
+
 const reviewTemplateHTML = `
 {{define "list"}}
 <!doctype html>
@@ -332,43 +474,55 @@ const reviewTemplateHTML = `
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Recruiter Outreach Review</title>
+<title>Outreach Command Center</title>
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;color:#17202a;background:#f7f8fa}
-a{color:#1455d9;text-decoration:none}
-header{background:#fff;border-bottom:1px solid #d9dee7;padding:16px 24px}
-main{padding:20px 24px}
-h1{font-size:28px;line-height:1.15;margin:8px 0 10px}
-.meta{color:#5c6675;font-size:13px}
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
-.tabs a,.pill{border:1px solid #c8d0dc;background:#fff;border-radius:6px;padding:7px 10px;font-size:13px;color:#1d2733}
-.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-input,textarea,select{font:inherit;border:1px solid #b9c3d1;border-radius:6px;padding:8px;background:#fff}
-button{font:inherit;border:1px solid #1f5fd6;background:#1f5fd6;color:#fff;border-radius:6px;padding:8px 12px;cursor:pointer}
-.table-wrap{overflow-x:auto;border:1px solid #d9dee7;background:#fff}
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9dee7}
-th,td{padding:10px;border-bottom:1px solid #e4e8ef;text-align:left;vertical-align:top;font-size:14px}
-th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;background:#fbfcfd}
-.status{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-.empty{background:#fff;border:1px solid #d9dee7;padding:20px}
-@media (max-width:720px){header,main{padding:14px 16px}h1{font-size:24px}.filters{display:grid}.filters input,.filters select,.filters button{width:100%;box-sizing:border-box}th,td{font-size:13px;padding:8px}}
+:root{--bg:#f5f5f7;--panel:#fff;--text:#1d1d1f;--muted:#6e6e73;--line:#d2d2d7;--soft:#e8e8ed;--blue:#0066cc;--green:#1f7a4d;--orange:#9a5b00}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;margin:0;color:var(--text);background:var(--bg)}
+a{color:var(--blue);text-decoration:none}
+header{background:rgba(255,255,255,.86);border-bottom:1px solid var(--line);padding:22px 32px;backdrop-filter:saturate(180%) blur(18px);position:sticky;top:0;z-index:2}
+main{padding:24px 32px}
+h1{font-size:34px;letter-spacing:0;line-height:1.08;margin:4px 0 8px;font-weight:720}
+.meta{color:var(--muted);font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0}
+.tabs a{border:1px solid var(--line);background:rgba(255,255,255,.72);border-radius:999px;padding:7px 12px;font-size:13px;color:var(--text)}
+.tabs a.active{background:var(--text);border-color:var(--text);color:#fff}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+input,textarea,select{font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff;color:var(--text)}
+input[name=q]{min-width:280px}
+button{font:inherit;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:10px;padding:9px 14px;cursor:pointer}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);background:var(--panel);border-radius:14px}
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel)}
+th,td{padding:11px 14px;border-bottom:1px solid var(--soft);text-align:left;vertical-align:middle;font-size:14px;white-space:nowrap}
+td.title,td.company{white-space:normal;min-width:220px}
+tr:last-child td{border-bottom:0}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;background:#fbfbfd;font-weight:650}
+th a{color:var(--muted)}
+.badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:600;border:1px solid var(--line);background:#f5f5f7;color:var(--muted)}
+.badge.ready{background:#eef5ff;color:#064f9e;border-color:#c8ddff}.badge.sent{background:#edf8f2;color:var(--green);border-color:#c7ead8}.badge.draft{background:#f7f7f8;color:#515154}.badge.attention{background:#fff7ed;color:var(--orange);border-color:#fed7aa}.badge.muted{background:#f2f2f2;color:#6e6e73}
+.empty{background:#fff;border:1px solid var(--line);border-radius:14px;padding:24px;color:var(--muted)}
+.age{color:var(--muted);font-size:13px}
+@media (max-width:720px){header,main{padding:16px}h1{font-size:28px}.filters{display:grid}.filters input,.filters select,.filters button{width:100%;min-width:0}th,td{font-size:13px;padding:9px 10px}}
 </style>
 </head>
 <body>
 <header>
-<h1>Recruiter Outreach Review</h1>
-<div class="meta">State: {{.StatePath}} · Generated: {{.GeneratedAt.Format "2006-01-02 15:04:05"}}</div>
+<h1>Outreach Command Center</h1>
+<div class="meta">Recruiter and agency outreach queue · {{.StatePath}} · Updated {{.GeneratedAt.Format "2006-01-02 15:04:05"}}</div>
 </header>
 <main>
 <nav class="tabs">
-<a href="/leads?status=dry_run_ready">Messageable {{index .Counts "dry_run_ready"}}</a>
-<a href="/leads?status=drafted">Drafted {{index .Counts "drafted"}}</a>
-<a href="/leads?status=needs_edit">Needs Edit {{index .Counts "needs_edit"}}</a>
-<a href="/leads?status=approved">Approved {{index .Counts "approved"}}</a>
-<a href="/leads?status=send_failed">Send Failed {{index .Counts "send_failed"}}</a>
+<a class="{{if eq .Status "dry_run_ready"}}active{{end}}" href="{{statusURL "dry_run_ready" .Bucket .Query}}">Ready to send {{index .Counts "dry_run_ready"}}</a>
+<a class="{{if eq .Status "drafted"}}active{{end}}" href="{{statusURL "drafted" .Bucket .Query}}">Draft {{index .Counts "drafted"}}</a>
+<a class="{{if eq .Status "sent"}}active{{end}}" href="{{statusURL "sent" .Bucket .Query}}">Sent {{index .Counts "sent"}}</a>
+<a class="{{if eq .Status "conversation_exists"}}active{{end}}" href="{{statusURL "conversation_exists" .Bucket .Query}}">Conversation exists {{index .Counts "conversation_exists"}}</a>
+<a class="{{if eq .Status "needs_edit"}}active{{end}}" href="{{statusURL "needs_edit" .Bucket .Query}}">Needs edit {{index .Counts "needs_edit"}}</a>
+<a class="{{if eq .Status "send_failed"}}active{{end}}" href="{{statusURL "send_failed" .Bucket .Query}}">Send failed {{index .Counts "send_failed"}}</a>
 </nav>
 <form class="filters" method="get" action="/leads">
 <input type="hidden" name="status" value="{{.Status}}">
+<input type="hidden" name="sort" value="{{.Sort}}">
+<input type="hidden" name="dir" value="{{.Dir}}">
 <select name="bucket">
 <option value="">All buckets</option>
 <option value="agency" {{if eq .Bucket "agency"}}selected{{end}}>Agencies</option>
@@ -379,16 +533,25 @@ th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;ba
 </form>
 {{if .Leads}}
 <div class="table-wrap"><table>
-<thead><tr><th>Name</th><th>Bucket</th><th>Status</th><th>Title</th><th>Company</th><th>Score</th><th></th></tr></thead>
+<thead><tr>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "name"}}">Name{{sortMark .Sort .Dir "name"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "bucket"}}">Lane{{sortMark .Sort .Dir "bucket"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "status"}}">Status{{sortMark .Sort .Dir "status"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "title"}}">Title{{sortMark .Sort .Dir "title"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "company"}}">Company{{sortMark .Sort .Dir "company"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "score"}}">Score{{sortMark .Sort .Dir "score"}}</a></th>
+<th><a href="{{sortURL .Status .Bucket .Query .Sort .Dir "sent"}}">Sent{{sortMark .Sort .Dir "sent"}}</a></th>
+<th></th></tr></thead>
 <tbody>
 {{range .Leads}}
 <tr>
 <td><strong>{{.Name}}</strong></td>
 <td>{{bucket .}}</td>
-<td><span class="status">{{.MessageStatus}}</span></td>
-<td>{{ptr .Title}}</td>
-<td>{{ptr .Company}}</td>
+<td><span class="badge {{statusClass .MessageStatus}}">{{statusLabel .MessageStatus}}</span></td>
+<td class="title">{{ptr .Title}}</td>
+<td class="company">{{ptr .Company}}</td>
 <td>{{.FitScore}}</td>
+<td class="age" title="{{sentAt .}}">{{sentAgo . $.GeneratedAt}}</td>
 <td><a href="/leads/{{.ID}}?back={{backURL $.Status $.Bucket $.Query}}">Review</a></td>
 </tr>
 {{end}}
@@ -435,7 +598,7 @@ button{font:inherit;border:1px solid #1f5fd6;background:#1f5fd6;color:#fff;borde
 <header>
 <a href="{{.BackURL}}">Back to list</a>
 <h1>{{.Lead.Name}}</h1>
-<div class="meta">State: {{.StatePath}} · Status: {{.Lead.MessageStatus}} · Generated: {{.GeneratedAt.Format "2006-01-02 15:04:05"}}</div>
+<div class="meta">State: {{.StatePath}} · Status: {{statusLabel .Lead.MessageStatus}} · Generated: {{.GeneratedAt.Format "2006-01-02 15:04:05"}}</div>
 </header>
 <main>
 <section class="summary">
@@ -475,20 +638,61 @@ func reviewTemplateFuncs() template.FuncMap {
 		"bucket": func(lead Lead) string {
 			return bucketForLead(lead)
 		},
+		"statusLabel": func(status MessageStatus) string {
+			return statusLabel(status)
+		},
+		"statusClass": func(status MessageStatus) string {
+			return statusClass(status)
+		},
+		"sentAgo": func(lead Lead, now time.Time) string {
+			return relativeTime(lastSentAt(lead), now)
+		},
+		"sentAt": func(lead Lead) string {
+			value := lastSentAt(lead)
+			if value == nil {
+				return ""
+			}
+			return value.Format("2006-01-02 15:04")
+		},
+		"sortURL": func(status string, bucket string, query string, currentSort string, currentDir string, column string) string {
+			dir := "asc"
+			if currentSort == column && currentDir == "asc" {
+				dir = "desc"
+			}
+			parts := reviewQueryParts(status, bucket, query)
+			parts = append(parts, "sort="+urlQueryEscape(column), "dir="+urlQueryEscape(dir))
+			return "/leads?" + strings.Join(parts, "&")
+		},
+		"sortMark": func(currentSort string, currentDir string, column string) string {
+			if currentSort != column {
+				return ""
+			}
+			if currentDir == "asc" {
+				return " ↑"
+			}
+			return " ↓"
+		},
+		"statusURL": func(status string, bucket string, query string) string {
+			return "/leads?" + strings.Join(reviewQueryParts(status, bucket, query), "&")
+		},
 		"backURL": func(status string, bucket string, query string) string {
-			parts := []string{}
-			if status != "" {
-				parts = append(parts, "status="+urlQueryEscape(status))
-			}
-			if bucket != "" {
-				parts = append(parts, "bucket="+urlQueryEscape(bucket))
-			}
-			if query != "" {
-				parts = append(parts, "q="+urlQueryEscape(query))
-			}
-			return url.QueryEscape("/leads?" + strings.Join(parts, "&"))
+			return url.QueryEscape("/leads?" + strings.Join(reviewQueryParts(status, bucket, query), "&"))
 		},
 	}
+}
+
+func reviewQueryParts(status string, bucket string, query string) []string {
+	parts := []string{}
+	if status != "" {
+		parts = append(parts, "status="+urlQueryEscape(status))
+	}
+	if bucket != "" {
+		parts = append(parts, "bucket="+urlQueryEscape(bucket))
+	}
+	if query != "" {
+		parts = append(parts, "q="+urlQueryEscape(query))
+	}
+	return parts
 }
 
 func urlQueryEscape(value string) string {
