@@ -128,7 +128,7 @@ func draftEvidence(lead Lead) []string {
 }
 
 func recruiterDraft(lead Lead) string {
-	return contractPipelineDraft(lead.FirstName)
+	return recruiterContractDraft(lead.FirstName)
 }
 
 func agencyDraft(lead Lead) string {
@@ -139,7 +139,7 @@ func agencyDraft(lead Lead) string {
 		target = company
 	}
 	_ = target
-	return contractPipelineDraft(lead.FirstName)
+	return agencyProjectDraft(lead.FirstName)
 }
 
 func isWebsiteAgencyLead(lead Lead) bool {
@@ -173,11 +173,15 @@ func isLikelyLocation(value string) bool {
 }
 
 func generalDraft(lead Lead) string {
-	return contractPipelineDraft(lead.FirstName)
+	return recruiterContractDraft(lead.FirstName)
 }
 
-func contractPipelineDraft(firstName string) string {
-	return fmt.Sprintf("Hi %s,\n\nI'm a full-stack product engineer with 8 years of experience building and launching web, mobile, and AI-driven products. I'd like to be considered for contract, project overflow, or short-term product engineering work.\n\nRecent work includes:\n\n• Turning an AI media MVP into a full production agent platform for Amazon sellers (enabled the first 100 paying customers)\n• Building and launching a Spanish reading app (iOS, Android, and web) from concept to App Store — including teacher workflows, AI features, subscriptions, and billing\n• Shipping an AI tool that helps remote workers find suitable 2–8 week furnished stays\n\nI'm a US citizen contracting through my own LLC (1099 or C2C) and available for US-hours work from Buenos Aires. I focus on end-to-end product builds with strong AI/agent workflows.\n\nWould you be open to me sending over my resume and a couple of project examples for your files? Happy to jump on a quick call if that’s easier.\n\nBest regards,\nHanif Carroll", firstName)
+func agencyProjectDraft(firstName string) string {
+	return fmt.Sprintf("Hi %s,\n\nFull-stack product engineer (8 YoE) who builds and launches AI-powered web & mobile products. I'm reaching out about project or overflow work.\n\nRecent projects:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires. Comfortable collaborating with design and product teams.\n\nWould you like me to send my resume and project examples?\n\nBest,\nHanif Carroll", firstName)
+}
+
+func recruiterContractDraft(firstName string) string {
+	return fmt.Sprintf("Hi %s,\n\nFull-stack product engineer (8 YoE) building and launching AI-powered web & mobile products. I'm reaching out about contract, project, or overflow work.\n\nRecent wins:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires.\n\nWould you like me to send my resume and project examples?\n\nBest,\nHanif Carroll", firstName)
 }
 
 func RenderDraftMarkdown(report DraftReport) string {

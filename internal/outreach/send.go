@@ -129,7 +129,12 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 }
 
 func messageSubject(lead Lead) string {
-	return "Contract Full-Stack/AI Engineer Available – US Hours from Buenos Aires"
+	switch lead.LeadType {
+	case LeadTypeAgencyResource, LeadTypeAgencyDelivery, LeadTypeAgencyFounder:
+		return "Full-Stack Product Engineer Available for Project Work"
+	default:
+		return "Full-Stack + AI Product Engineer | Open to Contract Work"
+	}
 }
 
 func draftSubject(lead Lead) string {
