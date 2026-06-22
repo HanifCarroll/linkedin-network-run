@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -998,6 +999,7 @@ func (l *AcceptanceLedger) ImportOutcomes(artifact AcceptanceOutcomeArtifact) Ac
 			if row.CheckedAt != nil {
 				checkedAt = *row.CheckedAt
 			}
+			row = sanitizeAcceptanceOutcome(row, l.Invitations[i])
 			event := AcceptanceOutcomeEvent{
 				At:           checkedAt,
 				Status:       row.Status,
@@ -1017,6 +1019,75 @@ func (l *AcceptanceLedger) ImportOutcomes(artifact AcceptanceOutcomeArtifact) Ac
 		}
 	}
 	return summary
+}
+
+func sanitizeAcceptanceOutcome(row AcceptanceOutcomeRow, invitation AcceptanceInvitation) AcceptanceOutcomeRow {
+	if row.Status != AcceptanceStatusAccepted || row.Evidence == nil {
+		return row
+	}
+	if acceptanceEvidenceMatchesCandidate(*row.Evidence, row.Name) || acceptanceEvidenceMatchesCandidate(*row.Evidence, invitation.Name) {
+		return row
+	}
+	note := "accepted outcome evidence did not match candidate identity; downgraded to unknown"
+	if row.Note != nil && strings.TrimSpace(*row.Note) != "" {
+		note = strings.TrimSpace(*row.Note) + "; " + note
+	}
+	row.Status = AcceptanceStatusUnknown
+	row.Note = &note
+	return row
+}
+
+func acceptanceEvidenceMatchesCandidate(evidence string, name string) bool {
+	evidenceTokens := acceptanceNameTokens(evidence)
+	nameTokens := acceptanceNameTokens(name)
+	if len(evidenceTokens) == 0 || len(nameTokens) == 0 {
+		return false
+	}
+	evidenceText := strings.Join(evidenceTokens, " ")
+	nameText := strings.Join(nameTokens, " ")
+	if strings.Contains(evidenceText, nameText) {
+		return true
+	}
+	if len(nameTokens) == 1 {
+		return acceptanceTokenIn(nameTokens[0], evidenceTokens)
+	}
+	first := nameTokens[0]
+	last := nameTokens[len(nameTokens)-1]
+	if !acceptanceTokenIn(first, evidenceTokens) {
+		return false
+	}
+	if len(last) == 1 {
+		for _, token := range evidenceTokens {
+			if strings.HasPrefix(token, last) {
+				return true
+			}
+		}
+		return false
+	}
+	return acceptanceTokenIn(last, evidenceTokens)
+}
+
+func acceptanceNameTokens(value string) []string {
+	normalized := strings.ToLower(value)
+	fields := strings.FieldsFunc(normalized, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	result := []string{}
+	for _, field := range fields {
+		if field != "" {
+			result = append(result, field)
+		}
+	}
+	return result
+}
+
+func acceptanceTokenIn(needle string, haystack []string) bool {
+	for _, item := range haystack {
+		if item == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (l AcceptanceLedger) EligibleForCheck(minAgeDays int64, maxAgeDays *int64) []AcceptanceInvitation {

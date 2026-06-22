@@ -5,6 +5,44 @@ function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function normalizeName(value) {
+  return cleanText(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function nameTokens(value) {
+  return normalizeName(value).split(/\s+/).filter(Boolean);
+}
+
+function namesCompatible(candidateName, loadedName) {
+  const candidateTokens = nameTokens(candidateName);
+  const loadedTokens = nameTokens(loadedName);
+  if (!candidateTokens.length || !loadedTokens.length) {
+    return false;
+  }
+  const loadedText = loadedTokens.join(" ");
+  const candidateText = candidateTokens.join(" ");
+  if (loadedText.includes(candidateText)) {
+    return true;
+  }
+  if (candidateTokens.length === 1) {
+    return loadedTokens.includes(candidateTokens[0]);
+  }
+  const first = candidateTokens[0];
+  const last = candidateTokens[candidateTokens.length - 1];
+  if (!loadedTokens.includes(first)) {
+    return false;
+  }
+  if (last.length === 1) {
+    return loadedTokens.some((token) => token.startsWith(last));
+  }
+  return loadedTokens.includes(last);
+}
+
+function salesProfileId(profileUrl) {
+  const match = String(profileUrl || "").match(/\/sales\/lead\/([^,/?#]+)/);
+  return match ? match[1] : null;
+}
+
 function configValue(name, fallback = null) {
   const config = globalThis.salesNavAcceptanceConfig || state.salesNavAcceptanceConfig || {};
   return Object.prototype.hasOwnProperty.call(config, name) ? config[name] : fallback;
@@ -28,6 +66,98 @@ function isHardBlocker(url, body) {
 function relationshipFromBody(body) {
   const match = cleanText(body).match(/\b(1st|2nd|3rd)\b/);
   return match ? match[1] : null;
+}
+
+function relationshipFromDegree(degree) {
+  const value = String(degree || "").toLowerCase();
+  if (value === "1" || value === "1st" || value.includes("first")) {
+    return "1st";
+  }
+  if (value === "2" || value === "2nd" || value.includes("second")) {
+    return "2nd";
+  }
+  if (value === "3" || value === "3rd" || value.includes("third")) {
+    return "3rd";
+  }
+  return null;
+}
+
+function extractProfileIdentity(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const stack = [payload];
+  const seen = new Set();
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    const fullName = cleanText(value.fullName || [value.firstName, value.lastName].filter(Boolean).join(" "));
+    if (fullName) {
+      return {
+        fullName,
+        degree: value.degree || value.relationship || value.connectionDegree || null,
+      };
+    }
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object") {
+        stack.push(child);
+      }
+    }
+  }
+  return null;
+}
+
+async function waitForTargetProfileIdentity(page, profileId) {
+  if (!profileId) {
+    return null;
+  }
+  const response = await page.waitForResponse((item) => (
+    /\/sales-api\/salesApiProfiles/i.test(item.url())
+      && item.url().includes(`profileId:${profileId}`)
+      && item.status() < 500
+  ), { timeout: 8000 }).catch(() => null);
+  if (!response) {
+    return null;
+  }
+  const payload = await response.json().catch(() => null);
+  const identity = extractProfileIdentity(payload);
+  return identity ? { ...identity, responseUrl: response.url().slice(0, 260) } : null;
+}
+
+async function textFromFirst(page, selectors) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (!(await locator.count().catch(() => 0))) {
+      continue;
+    }
+    const text = cleanText(await locator.textContent({ timeout: 1500 }).catch(() => ""));
+    if (text) {
+      return text;
+    }
+  }
+  return null;
+}
+
+function identityCheck(candidate, body, displayedName, profileIdentity) {
+  const candidateName = cleanText(candidate.name);
+  const apiMatches = profileIdentity?.fullName ? namesCompatible(candidateName, profileIdentity.fullName) : null;
+  const displayedMatches = displayedName ? namesCompatible(candidateName, displayedName) : null;
+  const bodyMatches = namesCompatible(candidateName, body);
+  const checked = {
+    candidateName,
+    apiName: profileIdentity?.fullName || null,
+    displayedName: displayedName || null,
+    apiMatches,
+    displayedMatches,
+    bodyMatches,
+  };
+  if (apiMatches === true || displayedMatches === true) {
+    return { matched: true, ...checked };
+  }
+  return { matched: false, ...checked };
 }
 
 async function menuLabelsForCurrentLead(page) {
@@ -58,7 +188,10 @@ async function menuLabelsForCurrentLead(page) {
 }
 
 async function classifyCandidate(page, candidate) {
-  await page.goto(candidate.profile_url || candidate.profileUrl, {
+  const url = candidate.profile_url || candidate.profileUrl;
+  const targetProfileId = salesProfileId(url);
+  const identityPromise = waitForTargetProfileIdentity(page, targetProfileId);
+  await page.goto(url, {
     waitUntil: "domcontentloaded",
     timeout: 45000,
   });
@@ -66,13 +199,27 @@ async function classifyCandidate(page, candidate) {
   await page.waitForTimeout(1800);
 
   const body = await page.locator("body").innerText({ timeout: 12000 }).catch(() => "");
-  const relationship = relationshipFromBody(body);
+  const displayedName = await textFromFirst(page, [
+    '[data-anonymize="person-name"]',
+    '[data-anonymize="name"]',
+  ]);
+  const profileIdentity = await identityPromise;
+  const relationship = relationshipFromDegree(profileIdentity?.degree) || relationshipFromBody(body);
+  const identity = identityCheck(candidate, body, displayedName, profileIdentity);
   if (isHardBlocker(page.url(), body)) {
     return {
       status: "blocked",
       relationship,
       evidence: cleanText(body).slice(0, 800),
       note: "checkpoint, login, security, or limit page detected",
+    };
+  }
+  if (!identity.matched) {
+    return {
+      status: "unknown",
+      relationship,
+      evidence: JSON.stringify({ identity, url: page.url(), body: cleanText(body).slice(0, 500) }),
+      note: "loaded lead identity did not match candidate; refusing accepted classification",
     };
   }
   if (relationship === "1st") {

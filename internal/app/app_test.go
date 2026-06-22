@@ -561,6 +561,33 @@ func TestAcceptanceImportUpdatesSourceReport(t *testing.T) {
 	}
 }
 
+func TestAcceptanceImportDowngradesAcceptedEvidenceForDifferentLead(t *testing.T) {
+	run := testRun(t, 22)
+	run.Candidates = append(run.Candidates,
+		CandidateEvent{At: time.Now().Add(-8 * 24 * time.Hour), Source: "Ops-overwhelmed small team operator", Name: "Adam Spencer", ProfileURL: ptr("https://www.linkedin.com/sales/lead/adam?_ntb=abc"), Status: CandidateStatusPending},
+	)
+	ledger := AcceptanceLedger{}
+	ledger.UpsertFromRun(run)
+	checkedAt := time.Now()
+	evidence := "Basic lead information for Oluwagbenga Agunbiade Oluwagbenga Agunbiade 1st CEO at Vepay"
+	summary := ledger.ImportOutcomes(AcceptanceOutcomeArtifact{Rows: []AcceptanceOutcomeRow{
+		{Source: "Ops-overwhelmed small team operator", Name: "Adam Spencer", ProfileURL: ptr("https://www.linkedin.com/sales/lead/adam"), Status: AcceptanceStatusAccepted, CheckedAt: &checkedAt, Relationship: ptr("1st"), Evidence: &evidence, Note: ptr("lead page shows 1st-degree relationship")},
+	}})
+	if summary.Matched != 1 || len(ledger.Invitations) != 1 {
+		t.Fatalf("summary=%#v ledger=%#v", summary, ledger)
+	}
+	invitation := ledger.Invitations[0]
+	if invitation.LatestStatus != AcceptanceStatusUnknown {
+		t.Fatalf("latest status = %s, want %s", invitation.LatestStatus, AcceptanceStatusUnknown)
+	}
+	if got := ledger.AcceptedForFollowup(AcceptanceFollowupLedger{}, false); len(got) != 0 {
+		t.Fatalf("mismatched accepted evidence should not create follow-up candidates: %#v", got)
+	}
+	if invitation.History[0].Note == nil || !strings.Contains(*invitation.History[0].Note, "downgraded to unknown") {
+		t.Fatalf("history note missing downgrade reason: %#v", invitation.History[0].Note)
+	}
+}
+
 func TestRenderAcceptanceReportFormatsMaxAgeDays(t *testing.T) {
 	maxAgeDays := int64(45)
 	report := AcceptanceReport{MinAgeDays: 1, MaxAgeDays: &maxAgeDays}
