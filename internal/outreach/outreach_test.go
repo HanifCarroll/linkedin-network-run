@@ -102,7 +102,7 @@ func TestImportCaptureClassifiesAgencyDeliveryAndDrafts(t *testing.T) {
 	if lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted {
 		t.Fatalf("lead = %#v", lead)
 	}
-	if lead.Draft == nil || !strings.Contains(lead.Draft.Body, "I'm reaching out about project or overflow work.") {
+	if lead.Draft == nil || !strings.Contains(lead.Draft.Body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products.") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
 }
@@ -326,7 +326,7 @@ func TestImportCaptureUsesQualifiedAgencyAccountContext(t *testing.T) {
 	if len(report.Items) != 1 {
 		t.Fatalf("draft count = %d", len(report.Items))
 	}
-	if state.Leads[0].Draft == nil || !strings.Contains(state.Leads[0].Draft.Body, "Full-stack product engineer (8 YoE)") {
+	if state.Leads[0].Draft == nil || !strings.Contains(state.Leads[0].Draft.Body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products.") {
 		t.Fatalf("draft = %#v", state.Leads[0].Draft)
 	}
 	if !strings.Contains(strings.Join(state.Leads[0].Draft.Evidence, "\n"), "Agency account reasons") {
@@ -534,7 +534,7 @@ func TestRecruiterDraftUsesApprovedContractTemplate(t *testing.T) {
 	if !strings.Contains(body, "Hi Jackie,") {
 		t.Fatalf("body = %q", body)
 	}
-	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'm reaching out about contract, project, or overflow work.") {
+	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract, project, or overflow work.") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(body, "Turned an AI media MVP into a production agent platform") || !strings.Contains(body, "Best,\nHanif Carroll") {
@@ -553,7 +553,7 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 	if strings.Contains(body, "Las Vegas, Nevada, United States works") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "I'm reaching out about project or overflow work.") {
+	if !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract, project, or overflow work.") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -569,7 +569,7 @@ func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
 		LeadType:              LeadTypeAgencyFounder,
 	}
 	body := agencyDraft(lead)
-	if !strings.Contains(body, "I'm reaching out about project or overflow work.") || !strings.Contains(body, "Comfortable collaborating with design and product teams.") {
+	if !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract, project, or overflow work.") || !strings.Contains(body, "Comfortable collaborating with design and product teams.") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {

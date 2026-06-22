@@ -316,24 +316,10 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 	angle := chooseAngle(candidate.Source, title, company, webResult)
 	draft := ""
 	switch angle.kind {
-	case draftAngleRecruiter:
-		draft = fmt.Sprintf("Thanks for connecting, %s. I am actively looking for contract or freelance work: US citizen, operating through HC Studio LLC, based in Buenos Aires and working EST/CST hours. Best fit is senior product engineering, AI workflow automation, and fast MVP/prototype work. If you handle contract roles where that maps, I can send a concise proof sheet.", first)
-	case draftAngleAgency:
-		draft = fmt.Sprintf("Thanks for connecting, %s. I am opening up contract/freelance capacity through HC Studio LLC. If your team needs senior product-engineering help on AI workflow automation, MVPs, prototypes, or client delivery overflow, I can plug in quickly and work US hours from Buenos Aires.", first)
 	case draftAngleTechnicalLeader:
-		companyText := ""
-		if company != nil {
-			companyText = " at " + *company
-		}
-		titleText := ""
-		if title != nil {
-			titleText = " (" + *title + ")"
-		}
-		draft = fmt.Sprintf("Thanks for connecting, %s. I am taking on contract/freelance work through HC Studio LLC: senior product engineering, AI workflow automation, and fast prototype-to-production work. Based on your work%s%s, the useful angle is probably helping ship a concrete workflow or product slice without adding a full-time hire.", first, companyText, titleText)
-	case draftAngleProofMatched:
-		draft = fmt.Sprintf("Thanks for connecting, %s. I am taking on contract/freelance work through HC Studio LLC and thought the fit may be around proof-matched product work: marketplaces, ecommerce workflows, events/discovery, language-learning, or AI-assisted operations. If there is a concrete workflow or product slice you want moved faster, I can help on a contractor basis.", first)
+		draft = technicalAcceptedFollowupDraft(first, company)
 	default:
-		draft = fmt.Sprintf("Thanks for connecting, %s. I am actively taking on contract/freelance work through HC Studio LLC. I am strongest where product engineering, AI workflow automation, and fast prototyping meet. If you have a concrete workflow, MVP, or internal tool you want shipped quickly without a full-time hire, I would be glad to compare notes.", first)
+		draft = generalAcceptedFollowupDraft(first)
 	}
 	evidence := []string{}
 	if title != nil {
@@ -389,6 +375,18 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 		warnings = append(warnings, "Sales Nav title/company were not extracted; review before sending.")
 	}
 	return DraftItem{Candidate: candidate, Angle: angle.label, Draft: draft, Evidence: evidence, Warnings: warnings}
+}
+
+func generalAcceptedFollowupDraft(first string) string {
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\nIf that ever becomes relevant, would you like me to send over my resume and a couple of project examples?", first)
+}
+
+func technicalAcceptedFollowupDraft(first string, company *string) string {
+	context := "Given your work"
+	if company != nil && cleanInline(*company) != "" {
+		context = "Given your work at " + cleanInline(*company)
+	}
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\n%s, I thought the most relevant overlap would be helping ship a product, workflow, or internal tool quickly.\n\nWould you like me to send over my resume and a couple of project examples?", first, context)
 }
 
 func chooseAngle(source string, title *string, company *string, webResult *WebResult) draftAngle {

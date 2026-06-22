@@ -806,7 +806,7 @@ func TestFollowupLedgerDedupesByNormalizedLinkedInURL(t *testing.T) {
 
 func TestRecruiterSourceGetsContractAvailabilityMessage(t *testing.T) {
 	report := BuildDraftReport([]AcceptedDraftCandidate{draftCandidate("ASAP - Contract Recruiters Staffing")}, nil, DraftStrategyAsapContractV1, nil)
-	if !strings.Contains(report.Items[0].Draft, "contract roles") || !strings.Contains(report.Items[0].Draft, "HC Studio LLC") {
+	if !strings.Contains(report.Items[0].Draft, "contract product engineering work through HC Studio LLC") || !strings.Contains(report.Items[0].Draft, "resume and a couple of project examples") {
 		t.Fatalf("draft=%q", report.Items[0].Draft)
 	}
 }
@@ -825,6 +825,9 @@ func TestResearchTitleAndCompanyAreUsedAsEvidence(t *testing.T) {
 	report := BuildDraftReport([]AcceptedDraftCandidate{draftCandidate("ASAP - Startup CTO Eng Leaders")}, &artifact, DraftStrategyAsapContractV1, nil)
 	if !strings.Contains(report.Items[0].Angle, "Acme AI") {
 		t.Fatalf("angle=%q", report.Items[0].Angle)
+	}
+	if !strings.Contains(report.Items[0].Draft, "Given your work at Acme AI") || strings.Contains(report.Items[0].Draft, "useful fit may be") || strings.Contains(report.Items[0].Draft, "concrete product slice") {
+		t.Fatalf("draft=%q", report.Items[0].Draft)
 	}
 	found := false
 	for _, evidence := range report.Items[0].Evidence {
