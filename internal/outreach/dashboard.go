@@ -122,7 +122,7 @@ func WriteDashboardMarkdown(path string, report DashboardReport) error {
 func dashboardLeads(state OutreachState, bucket string, messageStatus MessageStatus) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if lead.Status != LeadStatusEligible || lead.MessageStatus != messageStatus || bucketForLead(lead) != bucket {
+		if !leadMatchesSendableBucket(state, lead, bucket) || lead.MessageStatus != messageStatus {
 			continue
 		}
 		leads = append(leads, lead)
@@ -139,7 +139,7 @@ func dashboardLeads(state OutreachState, bucket string, messageStatus MessageSta
 func dashboardSkippedLeads(state OutreachState, bucket string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if lead.Status != LeadStatusEligible || bucketForLead(lead) != bucket {
+		if !leadMatchesSendableBucket(state, lead, bucket) {
 			continue
 		}
 		switch lead.MessageStatus {

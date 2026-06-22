@@ -165,7 +165,7 @@ func dailyBuckets(options DailyOptions) []dailyBucket {
 	return []dailyBucket{
 		{
 			Name:    "agency",
-			Sources: []string{AgencyDevelopmentAgencySource, AgencySource, AgencyProductStudioSource},
+			Sources: []string{},
 			Target:  options.TargetAgencies,
 		},
 		{
@@ -246,9 +246,6 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 }
 
 func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBucket, actions *[]DailyLeadAction) error {
-	if len(bucket.Sources) == 0 {
-		return fmt.Errorf("daily bucket %q has no fallback sources", bucket.Name)
-	}
 	for round := 0; round < options.MaxCaptureRounds; round++ {
 		state, err := store.Load()
 		if err != nil {
@@ -264,26 +261,10 @@ func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBuck
 		if err != nil {
 			return err
 		}
-		if captured == 0 {
-			for _, source := range bucket.Sources {
-				state, err := store.Load()
-				if err != nil {
-					return err
-				}
-				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, *actions) {
-					return nil
-				}
-				if err := captureSource(store, options, source, round+1); err != nil {
-					return err
-				}
-				if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
-					return err
-				}
+		if captured > 0 {
+			if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
+				return err
 			}
-			continue
-		}
-		if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -661,7 +642,7 @@ func sentCountFromActions(actions []DailyLeadAction, bucket string) int {
 func leadsForMessageValidation(state OutreachState, bucket string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if lead.Status != LeadStatusEligible || bucketForLead(lead) != bucket || lead.ProfileURL == nil || lead.Draft == nil {
+		if !leadMatchesSendableBucket(state, lead, bucket) || lead.ProfileURL == nil || lead.Draft == nil {
 			continue
 		}
 		if lead.MessageStatus != MessageStatusDrafted {
@@ -676,12 +657,30 @@ func leadsForMessageValidation(state OutreachState, bucket string) []Lead {
 func readyLeads(state OutreachState, bucket string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if lead.Status == LeadStatusEligible && bucketForLead(lead) == bucket && lead.MessageStatus == MessageStatusDryRunReady {
+		if leadMatchesSendableBucket(state, lead, bucket) && lead.MessageStatus == MessageStatusDryRunReady {
 			leads = append(leads, lead)
 		}
 	}
 	sortLeads(leads)
 	return leads
+}
+
+func leadMatchesSendableBucket(state OutreachState, lead Lead, bucket string) bool {
+	if lead.Status != LeadStatusEligible || bucketForLead(lead) != bucket {
+		return false
+	}
+	if bucket != "agency" {
+		return true
+	}
+	return leadHasQualifiedAgencyAccount(state, lead)
+}
+
+func leadHasQualifiedAgencyAccount(state OutreachState, lead Lead) bool {
+	if lead.AgencyAccountID == nil || cleanText(*lead.AgencyAccountID) == "" {
+		return false
+	}
+	index := findAgencyAccountByID(state.AgencyAccounts, cleanText(*lead.AgencyAccountID))
+	return index >= 0 && state.AgencyAccounts[index].Status == AgencyAccountStatusQualified
 }
 
 func safePathSegment(value string) string {

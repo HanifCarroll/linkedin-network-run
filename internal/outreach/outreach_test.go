@@ -588,6 +588,7 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 			MessageStatus:         MessageStatusDryRunReady,
 			FitScore:              91,
 			FitReasons:            []string{"agency delivery/technical leadership title"},
+			AgencyAccountID:       strPtr("acct_bright"),
 			AgencyAccountName:     strPtr("Bright Product Studio"),
 			AgencyAccountURL:      strPtr("https://www.linkedin.com/sales/company/12345"),
 			AgencyAccountReasons:  []string{"software/product delivery account signal"},
@@ -626,22 +627,28 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{
-			ID:            "old_sent",
-			Name:          "Old Sent",
-			LeadType:      LeadTypeAgencyDelivery,
-			Status:        LeadStatusEligible,
-			MessageStatus: MessageStatusSent,
-			FitScore:      99,
+			ID:              "old_sent",
+			Name:            "Old Sent",
+			LeadType:        LeadTypeAgencyDelivery,
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusSent,
+			FitScore:        99,
+			AgencyAccountID: strPtr("acct_active"),
 		},
 		{
-			ID:            "ready_now",
-			Name:          "Ready Now",
-			LeadType:      LeadTypeAgencyDelivery,
-			Status:        LeadStatusEligible,
-			MessageStatus: MessageStatusDryRunReady,
-			FitScore:      95,
+			ID:              "ready_now",
+			Name:            "Ready Now",
+			LeadType:        LeadTypeAgencyDelivery,
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusDryRunReady,
+			FitScore:        95,
+			AgencyAccountID: strPtr("acct_active"),
 		},
-	}}
+	}, AgencyAccounts: []AgencyAccount{{
+		ID:     "acct_active",
+		Name:   "Active Studio",
+		Status: AgencyAccountStatusQualified,
+	}}}
 	if bucketCompleteForRun(state, "agency", 1, true, nil) {
 		t.Fatal("historical sent lead should not satisfy a real-send daily quota")
 	}
@@ -656,12 +663,13 @@ func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 		t.Fatalf("ready leads = %#v", got)
 	}
 	state.Leads = append(state.Leads, Lead{
-		ID:            "approved",
-		Name:          "Approved",
-		LeadType:      LeadTypeAgencyDelivery,
-		Status:        LeadStatusEligible,
-		MessageStatus: MessageStatusApproved,
-		FitScore:      100,
+		ID:              "approved",
+		Name:            "Approved",
+		LeadType:        LeadTypeAgencyDelivery,
+		Status:          LeadStatusEligible,
+		MessageStatus:   MessageStatusApproved,
+		FitScore:        100,
+		AgencyAccountID: strPtr("acct_active"),
 	})
 	if got := readyLeads(state, "agency"); len(got) != 1 || got[0].ID != "ready_now" {
 		t.Fatalf("approved lead should not replace messageable send candidate: %#v", got)
@@ -1007,14 +1015,13 @@ func TestDefaultOutreachSourceURLUsesValidatedAgencyFilters(t *testing.T) {
 	}
 }
 
-func TestDailyBucketsUseValidatedAgencySourceOrder(t *testing.T) {
+func TestDailyBucketsUseAccountFirstAgencySourcing(t *testing.T) {
 	buckets := dailyBuckets(DailyOptions{TargetAgencies: 5, TargetRecruiters: 5})
 	if len(buckets) == 0 || buckets[0].Name != "agency" {
 		t.Fatalf("buckets = %#v", buckets)
 	}
-	want := []string{AgencyDevelopmentAgencySource, AgencySource, AgencyProductStudioSource}
-	if strings.Join(buckets[0].Sources, "|") != strings.Join(want, "|") {
-		t.Fatalf("agency sources = %#v, want %#v", buckets[0].Sources, want)
+	if len(buckets[0].Sources) != 0 {
+		t.Fatalf("agency people-search fallback sources = %#v", buckets[0].Sources)
 	}
 }
 

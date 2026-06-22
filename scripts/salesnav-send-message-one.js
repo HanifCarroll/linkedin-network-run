@@ -242,26 +242,32 @@ async function fillSubjectIfPresent(subject) {
 }
 
 async function fillComposer(composer, message) {
-  await composer.locator.evaluate((element, value) => {
-    element.focus();
-    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-      element.value = value;
-    } else {
-      element.textContent = value;
-    }
-    element.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      inputType: "insertText",
-      data: value,
-    }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-  }, message).catch(async () => {
-    await composer.locator.fill(message, { timeout: 8000 }).catch(async () => {
+  const normalizeNewlines = (value) => String(value || "").replace(/\r\n/g, "\n");
+  await composer.locator.fill(message, { timeout: 8000 }).catch(async () => {
+    await composer.locator.evaluate((element, value) => {
+      element.focus();
+      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+        element.value = value;
+      } else {
+        element.textContent = value;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    }, message).catch(async () => {
       await composer.locator.focus({ timeout: 8000 });
       await state.page.keyboard.press("Meta+A");
       await state.page.keyboard.type(message, { delay: 0 });
     });
   });
+  const actual = await composer.locator.evaluate((element) => {
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      return element.value;
+    }
+    return element.textContent || "";
+  });
+  if (normalizeNewlines(actual) !== normalizeNewlines(message)) {
+    throw new Error("composer body mismatch after fill");
+  }
 }
 
 async function clickSendButton() {

@@ -271,7 +271,7 @@ func (s *reviewServer) handleStatusSave(w http.ResponseWriter, r *http.Request, 
 func reviewMessageCounts(state OutreachState) map[string]int {
 	counts := map[string]int{}
 	for _, lead := range state.Leads {
-		if lead.Status != LeadStatusEligible || bucketForLead(lead) == "" {
+		if !leadMatchesSendableBucket(state, lead, bucketForLead(lead)) {
 			continue
 		}
 		counts[string(lead.MessageStatus)]++
@@ -282,13 +282,14 @@ func reviewMessageCounts(state OutreachState) map[string]int {
 func reviewLeads(state OutreachState, status MessageStatus, bucket string, query string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if lead.Status != LeadStatusEligible || bucketForLead(lead) == "" {
+		leadBucket := bucketForLead(lead)
+		if !leadMatchesSendableBucket(state, lead, leadBucket) {
 			continue
 		}
 		if status != "" && lead.MessageStatus != status {
 			continue
 		}
-		if bucket != "" && bucketForLead(lead) != bucket {
+		if bucket != "" && leadBucket != bucket {
 			continue
 		}
 		if query != "" && !reviewLeadMatches(lead, query) {

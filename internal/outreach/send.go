@@ -78,6 +78,9 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 	if !dryRun && lead.MessageStatus != MessageStatusDryRunReady {
 		return fmt.Errorf("lead %s is %s; real sends require %s", lead.ID, lead.MessageStatus, MessageStatusDryRunReady)
 	}
+	if !dryRun && !leadMatchesSendableBucket(state, lead, bucketForLead(lead)) {
+		return fmt.Errorf("lead %s is not sendable for %s; agency sends require qualified account context", lead.ID, bucketForLead(lead))
+	}
 	if !dryRun && !options.AllowSend {
 		return fmt.Errorf("real send requires --allow-send")
 	}
