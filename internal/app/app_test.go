@@ -612,7 +612,7 @@ func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
 	}
 	draft := report.Items[0].Draft
 	for _, want := range []string{
-		"Thanks for connecting, Avery.",
+		"Hey, Avery. Thanks for connecting.",
 		"\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.",
 		"\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.",
 		"\n\nBest,\nHanif Carroll",
@@ -626,7 +626,7 @@ func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
 		t.Fatalf("rendered markdown missing follow-up id:\n%s", rendered)
 	}
 	for _, want := range []string{
-		"> Thanks for connecting, Avery.",
+		"> Hey, Avery. Thanks for connecting.",
 		">\n> I'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.",
 		">\n> If it would be helpful, I'm happy to send over my resume and a couple of project examples.",
 		">\n> Best,\n> Hanif Carroll",

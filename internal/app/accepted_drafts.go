@@ -528,23 +528,23 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 }
 
 func generalAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Hey, %s. Thanks for connecting.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
 }
 
 func technicalAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds, AI workflows, and prototype-to-production work.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Hey, %s. Thanks for connecting.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds, AI workflows, and prototype-to-production work.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
 }
 
 func investorAdvisorAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping teams ship full-stack products and AI workflows.\n\nIf someone in your network ever needs that kind of help, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Hey, %s. Thanks for connecting.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping teams ship full-stack products and AI workflows.\n\nIf someone in your network ever needs that kind of help, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
 }
 
 func agencyAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping with project overflow, prototypes, and AI-enabled product builds.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Hey, %s. Thanks for connecting.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping with project overflow, prototypes, and AI-enabled product builds.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
 }
 
 func recruiterAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, focused on full-stack product builds and AI workflows.\n\nIf useful, I'm happy to send over my resume and a couple of project examples for your files.\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Hey, %s. Thanks for connecting.\n\nI'm available for contract product engineering work through HC Studio LLC, focused on full-stack product builds and AI workflows.\n\nIf useful, I'm happy to send over my resume and a couple of project examples for your files.\n\nBest,\nHanif Carroll", first)
 }
 
 func chooseAngle(source string, title *string, company *string, webResult *WebResult) draftAngle {
