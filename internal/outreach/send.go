@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hanifcarroll/linkedin-network-run/internal/app"
@@ -74,6 +75,9 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 	if lead.ProfileURL == nil || cleanText(*lead.ProfileURL) == "" {
 		return fmt.Errorf("lead %s has no profile URL", lead.ID)
 	}
+	if !dryRun && lead.MessageStatus != MessageStatusApproved {
+		return fmt.Errorf("lead %s is %s; real sends require %s", lead.ID, lead.MessageStatus, MessageStatusApproved)
+	}
 	if !dryRun && !options.AllowSend {
 		return fmt.Errorf("real send requires --allow-send")
 	}
@@ -96,7 +100,7 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 	config := map[string]any{
 		"candidate": candidate,
 		"message":   lead.Draft.Body,
-		"subject":   messageSubject(lead),
+		"subject":   draftSubject(lead),
 		"out":       outPath,
 		"dryRun":    dryRun,
 		"allowSend": options.AllowSend,
@@ -125,14 +129,14 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 }
 
 func messageSubject(lead Lead) string {
-	switch lead.LeadType {
-	case LeadTypeContractRecruiter:
-		return "react/node c2c"
-	case LeadTypeAgencyResource, LeadTypeAgencyDelivery, LeadTypeAgencyFounder:
-		return "overflow support"
-	default:
-		return "contract support"
+	return "Contract Full-Stack/AI Engineer Available – US Hours from Buenos Aires"
+}
+
+func draftSubject(lead Lead) string {
+	if lead.Draft != nil && cleanText(lead.Draft.Subject) != "" {
+		return strings.TrimSpace(lead.Draft.Subject)
 	}
+	return messageSubject(lead)
 }
 
 func LoadMessageSendResult(path string) (MessageSendResult, error) {

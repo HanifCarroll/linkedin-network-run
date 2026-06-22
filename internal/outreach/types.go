@@ -40,6 +40,8 @@ type MessageStatus string
 const (
 	MessageStatusNone               MessageStatus = "none"
 	MessageStatusDrafted            MessageStatus = "drafted"
+	MessageStatusNeedsEdit          MessageStatus = "needs_edit"
+	MessageStatusApproved           MessageStatus = "approved"
 	MessageStatusDryRunReady        MessageStatus = "dry_run_ready"
 	MessageStatusSent               MessageStatus = "sent"
 	MessageStatusManuallySent       MessageStatus = "manually_sent"
@@ -129,6 +131,7 @@ type AgencyAccount struct {
 }
 
 type MessageDraft struct {
+	Subject     string    `json:"subject,omitempty"`
 	Body        string    `json:"body"`
 	Angle       string    `json:"angle"`
 	Evidence    []string  `json:"evidence"`

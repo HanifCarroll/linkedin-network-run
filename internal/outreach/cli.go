@@ -56,6 +56,7 @@ func Execute(ctx context.Context, args []string) error {
 	root.AddCommand(draftCommand(withStore))
 	root.AddCommand(dashboardCommand(withStore))
 	root.AddCommand(reviseCommand(withStore))
+	root.AddCommand(serveCommand(ctx, withStore))
 	root.AddCommand(sendReadyCommand(withStore))
 	root.AddCommand(sendMessageCommand(withStore))
 	root.AddCommand(markMessageCommand(withStore))
@@ -419,7 +420,7 @@ func dashboardCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 }
 
 func reviseCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
-	var id, bodyFile, angle string
+	var id, bodyFile, angle, subject string
 	cmd := &cobra.Command{
 		Use: "revise",
 		RunE: withStore(func(store *Store) error {
@@ -427,7 +428,7 @@ func reviseCommand(withStore func(func(*Store) error) func(*cobra.Command, []str
 			if err != nil {
 				return fmt.Errorf("reading %s: %w", bodyFile, err)
 			}
-			body := cleanText(string(raw))
+			body := strings.TrimSpace(strings.ReplaceAll(string(raw), "\r\n", "\n"))
 			if body == "" {
 				return fmt.Errorf("revision body is empty")
 			}
@@ -442,7 +443,14 @@ func reviseCommand(withStore func(func(*Store) error) func(*cobra.Command, []str
 			if angle == "" && state.Leads[index].Draft != nil {
 				angle = state.Leads[index].Draft.Angle
 			}
+			if subject == "" && state.Leads[index].Draft != nil {
+				subject = state.Leads[index].Draft.Subject
+			}
+			if strings.TrimSpace(subject) == "" {
+				subject = messageSubject(state.Leads[index])
+			}
 			state.Leads[index].Draft = &MessageDraft{
+				Subject:     strings.TrimSpace(subject),
 				Body:        body,
 				Angle:       angle,
 				Evidence:    draftEvidence(state.Leads[index]),
@@ -459,6 +467,7 @@ func reviseCommand(withStore func(func(*Store) error) func(*cobra.Command, []str
 	}
 	cmd.Flags().StringVar(&id, "lead-id", "", "lead id")
 	cmd.Flags().StringVar(&bodyFile, "body-file", "", "file with revised message body")
+	cmd.Flags().StringVar(&subject, "subject", "", "revised message subject")
 	cmd.Flags().StringVar(&angle, "angle", "", "revision angle note")
 	must(cmd.MarkFlagRequired("lead-id"))
 	must(cmd.MarkFlagRequired("body-file"))
@@ -670,7 +679,7 @@ func parseStatuses(values []string) ([]LeadStatus, error) {
 
 func parseMessageStatus(value string) (MessageStatus, error) {
 	switch MessageStatus(value) {
-	case MessageStatusNone, MessageStatusDrafted, MessageStatusDryRunReady, MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusSendFailed, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
+	case MessageStatusNone, MessageStatusDrafted, MessageStatusNeedsEdit, MessageStatusApproved, MessageStatusDryRunReady, MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusSendFailed, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
 		return MessageStatus(value), nil
 	default:
 		return "", fmt.Errorf("invalid message status %q", value)

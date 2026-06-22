@@ -219,8 +219,19 @@ async function fillSubjectIfPresent(subject) {
   for (const selector of selectors) {
     const locator = state.page.locator(selector).last();
     if ((await locator.count()) && (await locator.isVisible().catch(() => false))) {
-      await locator.fill(subject, { timeout: 8000 }).catch(async () => {
-        await locator.click({ timeout: 8000 });
+      await locator.evaluate((element, value) => {
+        element.focus();
+        element.value = value;
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+      }, subject).catch(async () => {
+        await locator.fill(subject, { timeout: 8000 }).catch(async () => {
+          await locator.focus({ timeout: 8000 });
+          await state.page.keyboard.press("Meta+A");
+          await state.page.keyboard.type(subject, { delay: 0 });
+        });
+      }).catch(async () => {
+        await locator.focus({ timeout: 8000 });
         await state.page.keyboard.press("Meta+A");
         await state.page.keyboard.type(subject, { delay: 0 });
       });
@@ -231,10 +242,25 @@ async function fillSubjectIfPresent(subject) {
 }
 
 async function fillComposer(composer, message) {
-  await composer.locator.click({ timeout: 8000 });
-  await composer.locator.fill(message, { timeout: 8000 }).catch(async () => {
-    await state.page.keyboard.press("Meta+A");
-    await state.page.keyboard.type(message, { delay: 0 });
+  await composer.locator.evaluate((element, value) => {
+    element.focus();
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      element.value = value;
+    } else {
+      element.textContent = value;
+    }
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: value,
+    }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  }, message).catch(async () => {
+    await composer.locator.fill(message, { timeout: 8000 }).catch(async () => {
+      await composer.locator.focus({ timeout: 8000 });
+      await state.page.keyboard.press("Meta+A");
+      await state.page.keyboard.type(message, { delay: 0 });
+    });
   });
 }
 

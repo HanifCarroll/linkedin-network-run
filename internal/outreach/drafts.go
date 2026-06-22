@@ -44,7 +44,7 @@ func draftableQueue(state OutreachState, limit int) []QueueItem {
 
 func isTerminalMessageStatus(status MessageStatus) bool {
 	switch status {
-	case MessageStatusDryRunReady, MessageStatusSendFailed, MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
+	case MessageStatusDryRunReady, MessageStatusNeedsEdit, MessageStatusApproved, MessageStatusSendFailed, MessageStatusSent, MessageStatusManuallySent, MessageStatusNotMessageable, MessageStatusConversationExists, MessageStatusBlocked, MessageStatusReplied, MessageStatusRepliedNotFit, MessageStatusRepliedFuture, MessageStatusRepliedUnknown:
 		return true
 	default:
 		return false
@@ -58,6 +58,7 @@ func BuildMessageDraft(lead Lead) string {
 func BuildMessageDraftRecord(lead Lead, generatedAt time.Time) MessageDraft {
 	angle := draftAngle(lead)
 	return MessageDraft{
+		Subject:     messageSubject(lead),
 		Body:        messageBodyForAngle(lead, angle),
 		Angle:       angle,
 		Evidence:    draftEvidence(lead),
@@ -127,11 +128,7 @@ func draftEvidence(lead Lead) []string {
 }
 
 func recruiterDraft(lead Lead) string {
-	context := "I saw that you're recruiting for contract roles."
-	if company := companyForDraft(lead.Company); company != "" {
-		context = fmt.Sprintf("I saw that you handle contract recruiting for %s.", company)
-	}
-	return fmt.Sprintf("Hi %s, %s I’m a senior React/TypeScript/Node product engineer available now for remote C2C/1099 work. Recent proof: Palabruno mobile/web launch + Genrupt billing/AI workflows. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Should I send the resume/portfolio?", lead.FirstName, context)
+	return contractPipelineDraft(lead.FirstName)
 }
 
 func agencyDraft(lead Lead) string {
@@ -141,14 +138,8 @@ func agencyDraft(lead Lead) string {
 	} else if company := companyForDraft(lead.Company); company != "" {
 		target = company
 	}
-	if isWebsiteAgencyLead(lead) {
-		return fmt.Sprintf("Hi %s, I saw that %s works on website/CMS delivery. I’m a senior frontend/product engineer available for frontend-heavy website builds, CMS integrations, performance cleanup, and rescue work. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Worth adding me to your contractor bench?", lead.FirstName, target)
-	}
-	need := "overflow, rescue, prototyping, or short-term product engineering work"
-	if lead.LeadType == LeadTypeAgencyResource {
-		need = "senior outside engineering coverage for active client projects"
-	}
-	return fmt.Sprintf("Hi %s, I saw that %s works on digital/product delivery. I’m a senior product engineer available for %s: React/TypeScript/Node plus AI workflow work. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Worth adding me to your contractor bench?", lead.FirstName, target, need)
+	_ = target
+	return contractPipelineDraft(lead.FirstName)
 }
 
 func isWebsiteAgencyLead(lead Lead) bool {
@@ -182,7 +173,11 @@ func isLikelyLocation(value string) bool {
 }
 
 func generalDraft(lead Lead) string {
-	return fmt.Sprintf("Hi %s, I’m a senior React/TypeScript/Node product engineer available now for contract product work. Recent proof: Palabruno mobile/web launch + Genrupt billing/AI workflows. US citizen, W-9 via HC Studio LLC, working US hours from Buenos Aires. Would it be useful to compare fit?", lead.FirstName)
+	return contractPipelineDraft(lead.FirstName)
+}
+
+func contractPipelineDraft(firstName string) string {
+	return fmt.Sprintf("Hi %s,\n\nI'm a full-stack product engineer with 8 years of experience building and launching web, mobile, and AI-driven products. I'd like to be considered for your contract pipeline.\n\nRecent work includes:\n\n• Turning an AI media MVP into a full production agent platform for Amazon sellers (enabled the first 100 paying customers)\n• Building and launching a Spanish reading app (iOS, Android, and web) from concept to App Store — including teacher workflows, AI features, subscriptions, and billing\n• Shipping an AI tool that helps remote workers find suitable 2–8 week furnished stays\n\nI'm a US citizen contracting through my own LLC (1099 or C2C) and available for US-hours work from Buenos Aires. I focus on end-to-end product builds with strong AI/agent workflows.\n\nWould you be open to me sending over my resume and a couple of project examples for your files? Happy to jump on a quick call if that’s easier.\n\nBest regards,\nHanif Carroll", firstName)
 }
 
 func RenderDraftMarkdown(report DraftReport) string {
@@ -238,7 +233,7 @@ func RenderDraftMarkdown(report DraftReport) string {
 		}
 		lines = append(lines, "", "Draft:", "")
 		if item.Draft != nil {
-			lines = append(lines, "> "+cleanInline(*item.Draft))
+			lines = append(lines, renderMarkdownQuote(*item.Draft)...)
 		} else {
 			lines = append(lines, "> No draft generated.")
 		}
@@ -267,6 +262,21 @@ func findLeadByID(leads []Lead, id string) int {
 
 func cleanInline(value string) string {
 	return strings.ReplaceAll(cleanText(value), "`", "'")
+}
+
+func renderMarkdownQuote(value string) []string {
+	lines := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n")), "\n") {
+		if strings.TrimSpace(line) == "" {
+			lines = append(lines, ">")
+			continue
+		}
+		lines = append(lines, "> "+strings.ReplaceAll(line, "`", "'"))
+	}
+	if len(lines) == 0 {
+		return []string{">"}
+	}
+	return lines
 }
 
 func draftAngleFromQueueItem(item QueueItem) string {

@@ -1,10 +1,15 @@
 package outreach
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanifcarroll/linkedin-network-run/internal/app"
 )
@@ -97,7 +102,7 @@ func TestImportCaptureClassifiesAgencyDeliveryAndDrafts(t *testing.T) {
 	if lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted {
 		t.Fatalf("lead = %#v", lead)
 	}
-	if lead.Draft == nil || !containsAny(lead.Draft.Body, "contractor bench", "overflow") {
+	if lead.Draft == nil || !strings.Contains(lead.Draft.Body, "I'd like to be considered for your contract pipeline.") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
 }
@@ -136,7 +141,7 @@ func TestImportCaptureUsesCompanyLinkInsteadOfLocationLine(t *testing.T) {
 	if lead.Draft == nil || strings.Contains(lead.Draft.Body, "Sturgeon Bay, Wisconsin, United States works") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
-	if !strings.Contains(lead.Draft.Body, "I saw that Tweak Agency works") {
+	if !strings.Contains(lead.Draft.Body, "Recent work includes:") {
 		t.Fatalf("draft = %q", lead.Draft.Body)
 	}
 }
@@ -321,7 +326,7 @@ func TestImportCaptureUsesQualifiedAgencyAccountContext(t *testing.T) {
 	if len(report.Items) != 1 {
 		t.Fatalf("draft count = %d", len(report.Items))
 	}
-	if state.Leads[0].Draft == nil || !strings.Contains(state.Leads[0].Draft.Body, "Bright Product Studio works") {
+	if state.Leads[0].Draft == nil || !strings.Contains(state.Leads[0].Draft.Body, "full-stack product engineer with 8 years of experience") {
 		t.Fatalf("draft = %#v", state.Leads[0].Draft)
 	}
 	if !strings.Contains(strings.Join(state.Leads[0].Draft.Evidence, "\n"), "Agency account reasons") {
@@ -509,15 +514,15 @@ func TestDraftMessagesStoresAngleAndEvidence(t *testing.T) {
 	if len(lead.Draft.Evidence) < 3 {
 		t.Fatalf("evidence = %#v", lead.Draft.Evidence)
 	}
-	if !strings.Contains(lead.Draft.Body, "HC Studio LLC") {
+	if !strings.Contains(lead.Draft.Body, "I'm a US citizen contracting through my own LLC (1099 or C2C)") {
 		t.Fatalf("body = %q", lead.Draft.Body)
 	}
-	if !strings.Contains(lead.Draft.Body, "Worth adding me to your contractor bench?") {
+	if !strings.Contains(lead.Draft.Body, "Would you be open to me sending over my resume and a couple of project examples for your files?") {
 		t.Fatalf("body = %q", lead.Draft.Body)
 	}
 }
 
-func TestRecruiterDraftUsesCompleteSentenceOpenerAndShortAsk(t *testing.T) {
+func TestRecruiterDraftUsesApprovedContractPipelineTemplate(t *testing.T) {
 	lead := Lead{
 		Name:      "Jackie Recruiter",
 		FirstName: "Jackie",
@@ -526,14 +531,14 @@ func TestRecruiterDraftUsesCompleteSentenceOpenerAndShortAsk(t *testing.T) {
 		LeadType:  LeadTypeContractRecruiter,
 	}
 	body := recruiterDraft(lead)
-	if !strings.Contains(body, "I saw that you handle contract recruiting for FTI Consulting.") {
+	if !strings.Contains(body, "Hi Jackie,") {
 		t.Fatalf("body = %q", body)
 	}
-	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "Should I send the resume/portfolio?") {
+	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'd like to be considered for your contract pipeline.") {
 		t.Fatalf("body = %q", body)
 	}
-	if len(body) > 400 {
-		t.Fatalf("body too long: %d %q", len(body), body)
+	if !strings.Contains(body, "Turning an AI media MVP into a full production agent platform") || !strings.Contains(body, "Best regards,\nHanif Carroll") {
+		t.Fatalf("body = %q", body)
 	}
 }
 
@@ -548,7 +553,7 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 	if strings.Contains(body, "Las Vegas, Nevada, United States works") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "I saw that your team works") {
+	if !strings.Contains(body, "I'd like to be considered for your contract pipeline.") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -564,7 +569,7 @@ func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
 		LeadType:              LeadTypeAgencyFounder,
 	}
 	body := agencyDraft(lead)
-	if !strings.Contains(body, "I saw that QeWebby - WordPress Development Agency works on website/CMS delivery") || !strings.Contains(body, "frontend-heavy website builds") {
+	if !strings.Contains(body, "I'd like to be considered for your contract pipeline.") || !strings.Contains(body, "Shipping an AI tool that helps remote workers") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {
@@ -647,6 +652,20 @@ func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 	if !bucketCompleteForRun(state, "agency", 1, true, actions) {
 		t.Fatal("current run sent action should satisfy a real-send daily quota")
 	}
+	if got := approvedLeads(state, "agency"); len(got) != 0 {
+		t.Fatalf("dry-run-ready lead should not be an approved send candidate: %#v", got)
+	}
+	state.Leads = append(state.Leads, Lead{
+		ID:            "approved",
+		Name:          "Approved",
+		LeadType:      LeadTypeAgencyDelivery,
+		Status:        LeadStatusEligible,
+		MessageStatus: MessageStatusApproved,
+		FitScore:      100,
+	})
+	if got := approvedLeads(state, "agency"); len(got) != 1 || got[0].ID != "approved" {
+		t.Fatalf("approved leads = %#v", got)
+	}
 }
 
 func TestLeadsForMessageValidationOnlyReturnsDraftableStatuses(t *testing.T) {
@@ -697,6 +716,26 @@ func TestDraftMessagesDoesNotResetDryRunReadyLeads(t *testing.T) {
 			FitScore:      85,
 			Draft:         &MessageDraft{Body: "failed body"},
 		},
+		{
+			ID:            "approved",
+			Name:          "Approved",
+			FirstName:     "Approved",
+			LeadType:      LeadTypeAgencyFounder,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusApproved,
+			FitScore:      80,
+			Draft:         &MessageDraft{Body: "approved body"},
+		},
+		{
+			ID:            "needs_edit",
+			Name:          "Needs Edit",
+			FirstName:     "Needs",
+			LeadType:      LeadTypeAgencyFounder,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusNeedsEdit,
+			FitScore:      75,
+			Draft:         &MessageDraft{Body: "needs edit body"},
+		},
 	}}
 	report := DraftMessages(&state, 0)
 	if len(report.Items) != 1 || report.Items[0].ID != "new" {
@@ -714,6 +753,123 @@ func TestDraftMessagesDoesNotResetDryRunReadyLeads(t *testing.T) {
 	}
 	if state.Leads[failedIndex].MessageStatus != MessageStatusSendFailed {
 		t.Fatalf("failed lead status = %q", state.Leads[failedIndex].MessageStatus)
+	}
+	for _, id := range []string{"approved", "needs_edit"} {
+		index := findLeadByID(state.Leads, id)
+		if index < 0 {
+			t.Fatalf("%s lead missing", id)
+		}
+		if state.Leads[index].MessageStatus == MessageStatusDrafted {
+			t.Fatalf("%s lead was redrafted", id)
+		}
+	}
+}
+
+func TestRenderDraftMarkdownPreservesDraftWhitespace(t *testing.T) {
+	body := "Hi Lead,\n\nLine two\nLine three"
+	report := DraftReport{Items: []QueueItem{{
+		ID:     "lead",
+		Name:   "Lead",
+		Draft:  &body,
+		Status: LeadStatusEligible,
+	}}}
+	markdown := RenderDraftMarkdown(report)
+	for _, want := range []string{"> Hi Lead,", ">", "> Line two", "> Line three"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestSendMessageRequiresApprovalForRealSend(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	state := OutreachState{Leads: []Lead{{
+		ID:            "lead",
+		Name:          "Lead",
+		LeadType:      LeadTypeContractRecruiter,
+		Status:        LeadStatusEligible,
+		MessageStatus: MessageStatusDryRunReady,
+		ProfileURL:    strPtr("https://linkedin.com/sales/lead/lead"),
+		Draft: &MessageDraft{
+			Subject: "Subject",
+			Body:    "Body",
+		},
+	}}}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	err := SendMessage(&store, SendMessageOptions{
+		LeadID:    "lead",
+		Session:   "1",
+		Script:    "/tmp/send.js",
+		AllowSend: true,
+		OutDir:    t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "real sends require approved") {
+		t.Fatalf("SendMessage error = %v", err)
+	}
+}
+
+func TestReviewUIUpdatesDraftAndApproval(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	state := OutreachState{Leads: []Lead{{
+		ID:            "lead",
+		Name:          "Lead",
+		FirstName:     "Lead",
+		LeadType:      LeadTypeContractRecruiter,
+		Status:        LeadStatusEligible,
+		MessageStatus: MessageStatusDryRunReady,
+		ProfileURL:    strPtr("https://linkedin.com/sales/lead/lead"),
+		Draft: &MessageDraft{
+			Subject: "Old subject",
+			Body:    "Old body",
+			Angle:   "contract recruiter routing for remote C2C/1099 product-engineering work",
+		},
+	}}}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	server, err := newReviewServer(&store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.routes()
+
+	form := url.Values{}
+	form.Set("subject", "New subject")
+	form.Set("body", "Line one\n\nLine two")
+	req := httptest.NewRequest(http.MethodPost, "/leads/lead/draft", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("draft save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := loaded.Leads[findLeadByID(loaded.Leads, "lead")]
+	if lead.MessageStatus != MessageStatusDrafted || lead.Draft == nil || lead.Draft.Subject != "New subject" || lead.Draft.Body != "Line one\n\nLine two" {
+		t.Fatalf("saved lead = %#v", lead)
+	}
+
+	form = url.Values{}
+	form.Set("status", string(MessageStatusApproved))
+	req = httptest.NewRequest(http.MethodPost, "/leads/lead/status", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("approval status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead = loaded.Leads[findLeadByID(loaded.Leads, "lead")]
+	if lead.MessageStatus != MessageStatusApproved {
+		t.Fatalf("message status = %q", lead.MessageStatus)
 	}
 }
 
@@ -740,11 +896,70 @@ func TestLatestAttemptIsBlankLeadPageFailure(t *testing.T) {
 	}
 }
 
+func TestStoreImportsLegacyJSONAndPersistsSQLite(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	state := OutreachState{
+		SchemaVersion: 1,
+		Leads: []Lead{{
+			ID:            "lead",
+			Name:          "Dana Delivery",
+			FirstName:     "Dana",
+			LeadType:      LeadTypeAgencyDelivery,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDrafted,
+			Draft: &MessageDraft{
+				Body:        "draft body",
+				Angle:       "agency delivery",
+				Evidence:    []string{"Title: Head of Delivery"},
+				GeneratedAt: time.Date(2026, time.June, 22, 10, 0, 0, 0, time.UTC),
+			},
+			SendAttempts: []SendAttempt{{
+				At:      time.Date(2026, time.June, 22, 10, 1, 0, 0, time.UTC),
+				DryRun:  true,
+				Status:  "dry-run-messageable",
+				OutPath: "/tmp/result.json",
+			}},
+		}},
+		CaptureCursors: map[string]CaptureCursor{
+			"source": {Source: "source", RawRowCount: 3},
+		},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.JSONStatePath(), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(store.DatabasePath()); err != nil {
+		t.Fatalf("sqlite database was not created: %v", err)
+	}
+	if len(loaded.Leads) != 1 || loaded.Leads[0].Draft == nil || loaded.Leads[0].Draft.Body != "draft body" || len(loaded.Leads[0].SendAttempts) != 1 {
+		t.Fatalf("loaded state = %#v", loaded)
+	}
+	loaded.Leads[0].Draft.Body = "updated draft"
+	if err := store.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Leads[0].Draft == nil || reloaded.Leads[0].Draft.Body != "updated draft" {
+		t.Fatalf("reloaded state = %#v", reloaded)
+	}
+}
+
 func TestMessageSubjectByLeadType(t *testing.T) {
-	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != "react/node c2c" {
+	want := "Contract Full-Stack/AI Engineer Available – US Hours from Buenos Aires"
+	if got := messageSubject(Lead{LeadType: LeadTypeContractRecruiter}); got != want {
 		t.Fatalf("recruiter subject = %q", got)
 	}
-	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != "overflow support" {
+	if got := messageSubject(Lead{LeadType: LeadTypeAgencyFounder}); got != want {
 		t.Fatalf("agency subject = %q", got)
 	}
 }

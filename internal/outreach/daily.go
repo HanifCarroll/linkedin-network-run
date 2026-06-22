@@ -503,7 +503,7 @@ func sendBucket(store *Store, options DailyOptions, bucket string, target int, a
 		if err != nil {
 			return err
 		}
-		candidates := readyLeads(state, bucket)
+		candidates := approvedLeads(state, bucket)
 		if len(candidates) == 0 {
 			return nil
 		}
@@ -677,6 +677,17 @@ func readyLeads(state OutreachState, bucket string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
 		if lead.Status == LeadStatusEligible && bucketForLead(lead) == bucket && lead.MessageStatus == MessageStatusDryRunReady {
+			leads = append(leads, lead)
+		}
+	}
+	sortLeads(leads)
+	return leads
+}
+
+func approvedLeads(state OutreachState, bucket string) []Lead {
+	leads := []Lead{}
+	for _, lead := range state.Leads {
+		if lead.Status == LeadStatusEligible && bucketForLead(lead) == bucket && lead.MessageStatus == MessageStatusApproved {
 			leads = append(leads, lead)
 		}
 	}

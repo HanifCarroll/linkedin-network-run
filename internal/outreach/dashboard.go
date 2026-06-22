@@ -10,19 +10,21 @@ import (
 )
 
 type DashboardReport struct {
-	GeneratedAt       time.Time         `json:"generated_at"`
-	StatePath         string            `json:"state_path"`
-	TargetAgencies    int               `json:"target_agencies"`
-	TargetRecruiters  int               `json:"target_recruiters"`
-	AllowSend         bool              `json:"allow_send"`
-	Actions           []DailyLeadAction `json:"actions"`
-	Counts            StatusCounts      `json:"counts"`
-	ReadyAgencies     []Lead            `json:"ready_agencies"`
-	ReadyRecruiters   []Lead            `json:"ready_recruiters"`
-	SentAgencies      []Lead            `json:"sent_agencies"`
-	SentRecruiters    []Lead            `json:"sent_recruiters"`
-	SkippedAgencies   []Lead            `json:"skipped_agencies"`
-	SkippedRecruiters []Lead            `json:"skipped_recruiters"`
+	GeneratedAt        time.Time         `json:"generated_at"`
+	StatePath          string            `json:"state_path"`
+	TargetAgencies     int               `json:"target_agencies"`
+	TargetRecruiters   int               `json:"target_recruiters"`
+	AllowSend          bool              `json:"allow_send"`
+	Actions            []DailyLeadAction `json:"actions"`
+	Counts             StatusCounts      `json:"counts"`
+	ReadyAgencies      []Lead            `json:"ready_agencies"`
+	ReadyRecruiters    []Lead            `json:"ready_recruiters"`
+	ApprovedAgencies   []Lead            `json:"approved_agencies"`
+	ApprovedRecruiters []Lead            `json:"approved_recruiters"`
+	SentAgencies       []Lead            `json:"sent_agencies"`
+	SentRecruiters     []Lead            `json:"sent_recruiters"`
+	SkippedAgencies    []Lead            `json:"skipped_agencies"`
+	SkippedRecruiters  []Lead            `json:"skipped_recruiters"`
 }
 
 type DailyLeadAction struct {
@@ -41,19 +43,21 @@ type DailyLeadAction struct {
 func BuildDashboardReport(state OutreachState, statePath string, targetAgencies int, targetRecruiters int, allowSend bool, actions []DailyLeadAction) DashboardReport {
 	state.Normalize()
 	return DashboardReport{
-		GeneratedAt:       time.Now(),
-		StatePath:         statePath,
-		TargetAgencies:    targetAgencies,
-		TargetRecruiters:  targetRecruiters,
-		AllowSend:         allowSend,
-		Actions:           actions,
-		Counts:            Counts(state),
-		ReadyAgencies:     dashboardLeads(state, "agency", MessageStatusDryRunReady),
-		ReadyRecruiters:   dashboardLeads(state, "recruiter", MessageStatusDryRunReady),
-		SentAgencies:      dashboardLeads(state, "agency", MessageStatusSent),
-		SentRecruiters:    dashboardLeads(state, "recruiter", MessageStatusSent),
-		SkippedAgencies:   dashboardSkippedLeads(state, "agency"),
-		SkippedRecruiters: dashboardSkippedLeads(state, "recruiter"),
+		GeneratedAt:        time.Now(),
+		StatePath:          statePath,
+		TargetAgencies:     targetAgencies,
+		TargetRecruiters:   targetRecruiters,
+		AllowSend:          allowSend,
+		Actions:            actions,
+		Counts:             Counts(state),
+		ReadyAgencies:      dashboardLeads(state, "agency", MessageStatusDryRunReady),
+		ReadyRecruiters:    dashboardLeads(state, "recruiter", MessageStatusDryRunReady),
+		ApprovedAgencies:   dashboardLeads(state, "agency", MessageStatusApproved),
+		ApprovedRecruiters: dashboardLeads(state, "recruiter", MessageStatusApproved),
+		SentAgencies:       dashboardLeads(state, "agency", MessageStatusSent),
+		SentRecruiters:     dashboardLeads(state, "recruiter", MessageStatusSent),
+		SkippedAgencies:    dashboardSkippedLeads(state, "agency"),
+		SkippedRecruiters:  dashboardSkippedLeads(state, "recruiter"),
 	}
 }
 
@@ -65,7 +69,8 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		fmt.Sprintf("- State: `%s`", report.StatePath),
 		fmt.Sprintf("- Target: `%d` agencies, `%d` recruiters", report.TargetAgencies, report.TargetRecruiters),
 		fmt.Sprintf("- Real sends enabled: `%t`", report.AllowSend),
-		fmt.Sprintf("- Ready now: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
+		fmt.Sprintf("- Messageable, not approved: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
+		fmt.Sprintf("- Approved to send: `%d` agencies, `%d` recruiters", len(report.ApprovedAgencies), len(report.ApprovedRecruiters)),
 		fmt.Sprintf("- Sent: `%d` agencies, `%d` recruiters", len(report.SentAgencies), len(report.SentRecruiters)),
 		fmt.Sprintf("- Checked/skipped: `%d` agencies, `%d` recruiters", len(report.SkippedAgencies), len(report.SkippedRecruiters)),
 		fmt.Sprintf("- Agency accounts: `%d` qualified, `%d` needs review, `%d` rejected, `%d` exhausted",
@@ -89,15 +94,17 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		lines = append(lines, "")
 	}
 	lines = append(lines, "## Agencies", "")
-	lines = append(lines, renderLeadCards("ready", report.ReadyAgencies)...)
+	lines = append(lines, renderLeadCards("messageable, not approved", report.ReadyAgencies)...)
+	lines = append(lines, renderLeadCards("approved to send", report.ApprovedAgencies)...)
 	lines = append(lines, renderLeadCards("sent", report.SentAgencies)...)
 	lines = append(lines, renderLeadCards("checked/skipped", report.SkippedAgencies)...)
 	lines = append(lines, "## Recruiters", "")
-	lines = append(lines, renderLeadCards("ready", report.ReadyRecruiters)...)
+	lines = append(lines, renderLeadCards("messageable, not approved", report.ReadyRecruiters)...)
+	lines = append(lines, renderLeadCards("approved to send", report.ApprovedRecruiters)...)
 	lines = append(lines, renderLeadCards("sent", report.SentRecruiters)...)
 	lines = append(lines, renderLeadCards("checked/skipped", report.SkippedRecruiters)...)
-	if len(report.ReadyAgencies)+len(report.ReadyRecruiters)+len(report.SentAgencies)+len(report.SentRecruiters)+len(report.SkippedAgencies)+len(report.SkippedRecruiters) == 0 {
-		lines = append(lines, "No ready or sent recruiter/agency leads yet.")
+	if len(report.ReadyAgencies)+len(report.ReadyRecruiters)+len(report.ApprovedAgencies)+len(report.ApprovedRecruiters)+len(report.SentAgencies)+len(report.SentRecruiters)+len(report.SkippedAgencies)+len(report.SkippedRecruiters) == 0 {
+		lines = append(lines, "No messageable, approved, or sent recruiter/agency leads yet.")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -186,6 +193,9 @@ func renderLeadCards(label string, leads []Lead) []string {
 			lines = append(lines, "- Why chosen: "+cleanInline(strings.Join(lead.FitReasons, "; ")))
 		}
 		if lead.Draft != nil {
+			if lead.Draft.Subject != "" {
+				lines = append(lines, "- Subject: "+cleanInline(lead.Draft.Subject))
+			}
 			lines = append(lines, "- Draft angle: "+cleanInline(lead.Draft.Angle))
 			if len(lead.Draft.Evidence) > 0 {
 				lines = append(lines, "- Draft evidence:")
@@ -194,7 +204,8 @@ func renderLeadCards(label string, leads []Lead) []string {
 				}
 			}
 			lines = append(lines, "", "Draft:", "")
-			lines = append(lines, "> "+cleanInline(lead.Draft.Body), "")
+			lines = append(lines, renderMarkdownQuote(lead.Draft.Body)...)
+			lines = append(lines, "")
 		}
 		if len(lead.SendAttempts) > 0 {
 			last := lead.SendAttempts[len(lead.SendAttempts)-1]
