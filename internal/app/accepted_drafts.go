@@ -304,6 +304,7 @@ type draftAngleKind string
 const (
 	draftAngleRecruiter       draftAngleKind = "recruiter"
 	draftAngleAgency          draftAngleKind = "agency"
+	draftAngleInvestorAdvisor draftAngleKind = "investor-advisor"
 	draftAngleTechnicalLeader draftAngleKind = "technical-leader"
 	draftAngleProofMatched    draftAngleKind = "proof-matched"
 	draftAngleGeneralFounder  draftAngleKind = "general-founder"
@@ -333,8 +334,14 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 	angle := chooseAngle(candidate.Source, title, company, webResult)
 	draft := ""
 	switch angle.kind {
+	case draftAngleRecruiter:
+		draft = recruiterAcceptedFollowupDraft(first)
+	case draftAngleAgency:
+		draft = agencyAcceptedFollowupDraft(first)
+	case draftAngleInvestorAdvisor:
+		draft = investorAdvisorAcceptedFollowupDraft(first)
 	case draftAngleTechnicalLeader:
-		draft = technicalAcceptedFollowupDraft(first, company)
+		draft = technicalAcceptedFollowupDraft(first)
 	default:
 		draft = generalAcceptedFollowupDraft(first)
 	}
@@ -395,15 +402,23 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 }
 
 func generalAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\nIf that ever becomes relevant, would you like me to send over my resume and a couple of project examples?\n\nBest,\nHanif Carroll", first)
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
 }
 
-func technicalAcceptedFollowupDraft(first string, company *string) string {
-	context := "Given your work"
-	if company != nil && cleanInline(*company) != "" {
-		context = "Given your work at " + cleanInline(*company)
-	}
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\n%s, I thought the most relevant overlap would be helping ship a product, workflow, or internal tool quickly.\n\nWould you like me to send over my resume and a couple of project examples?\n\nBest,\nHanif Carroll", first, context)
+func technicalAcceptedFollowupDraft(first string) string {
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds, AI workflows, and prototype-to-production work.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+}
+
+func investorAdvisorAcceptedFollowupDraft(first string) string {
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping teams ship full-stack products and AI workflows.\n\nIf someone in your network ever needs that kind of help, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+}
+
+func agencyAcceptedFollowupDraft(first string) string {
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, mostly helping with project overflow, prototypes, and AI-enabled product builds.\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.\n\nBest,\nHanif Carroll", first)
+}
+
+func recruiterAcceptedFollowupDraft(first string) string {
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC, focused on full-stack product builds and AI workflows.\n\nIf useful, I'm happy to send over my resume and a couple of project examples for your files.\n\nBest,\nHanif Carroll", first)
 }
 
 func chooseAngle(source string, title *string, company *string, webResult *WebResult) draftAngle {
@@ -420,18 +435,30 @@ func chooseAngle(source string, title *string, company *string, webResult *WebRe
 	if webResult != nil && webResult.Title != nil {
 		webSuffix = "; public result: " + cleanInline(*webResult.Title)
 	}
+	combined := strings.ToLower(strings.Join([]string{sourceLower, titleLower, companySuffix, webSuffix}, " "))
 	switch {
-	case strings.Contains(sourceLower, "recruiter") || strings.Contains(sourceLower, "staffing"):
+	case containsAny(combined, "recruit", "staffing", "talent acquisition", "headhunter", "hire recruiters"):
 		return draftAngle{kind: draftAngleRecruiter, label: "contract-role availability ask" + companySuffix + webSuffix}
-	case strings.Contains(sourceLower, "agency") || strings.Contains(sourceLower, "delivery"):
+	case containsAny(combined, "agency", "studio", "digital transformation", "custom ai solutions", "web design", "ux/ui", "cro", "seo", "implementation partner", "technology services", "software agency", "development agency", "consulting partners", "consulting services"):
 		return draftAngle{kind: draftAngleAgency, label: "agency overflow or specialist contractor capacity" + companySuffix + webSuffix}
-	case strings.Contains(sourceLower, "cto") || strings.Contains(sourceLower, "engineering") || strings.Contains(titleLower, "cto") || strings.Contains(titleLower, "engineering"):
+	case containsAny(combined, "cto", "cpo", "chief product", "product lead", "product manager", "ai product", "platform", "llm", "agentic", "software engineer", "developer", "technical", "data", "automation", "workflow", "internal tools", "voice agents", "enterprise ai", "ai-native", "product leader") || strings.Contains(sourceLower, "product leaders"):
 		return draftAngle{kind: draftAngleTechnicalLeader, label: "senior product-engineering contractor help" + companySuffix + webSuffix}
+	case containsAny(combined, "investor", "investment", "m&a", "broker", "fundraising", "private equity", "advisor", "coach", "mentor", "board", "career coach"):
+		return draftAngle{kind: draftAngleInvestorAdvisor, label: "network referral for contract product-engineering help" + companySuffix + webSuffix}
 	case strings.Contains(sourceLower, "vertical") || strings.Contains(sourceLower, "proof"):
 		return draftAngle{kind: draftAngleProofMatched, label: "proof-matched product/workflow help" + companySuffix + webSuffix}
 	default:
 		return draftAngle{kind: draftAngleGeneralFounder, label: "fast contract product-engineering help" + companySuffix + webSuffix}
 	}
+}
+
+func containsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstName(name string) string {

@@ -613,8 +613,8 @@ func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
 	draft := report.Items[0].Draft
 	for _, want := range []string{
 		"Thanks for connecting, Avery.",
-		"\n\nI'm available for contract product engineering work",
-		"\n\nIf that ever becomes relevant",
+		"\n\nI'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.",
+		"\n\nIf it would be helpful, I'm happy to send over my resume and a couple of project examples.",
 		"\n\nBest,\nHanif Carroll",
 	} {
 		if !strings.Contains(draft, want) {
@@ -624,13 +624,65 @@ func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
 	rendered := RenderMarkdown(report)
 	for _, want := range []string{
 		"> Thanks for connecting, Avery.",
-		">\n> I'm available for contract product engineering work",
-		">\n> If that ever becomes relevant",
+		">\n> I'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.",
+		">\n> If it would be helpful, I'm happy to send over my resume and a couple of project examples.",
 		">\n> Best,\n> Hanif Carroll",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered markdown missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestAcceptedFollowupDraftVariantsByRecipientGroup(t *testing.T) {
+	acceptedAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		row   AcceptedResearchRow
+		want  string
+		angle draftAngleKind
+	}{
+		{
+			name:  "technical product",
+			row:   AcceptedResearchRow{Name: "Taylor Product", Source: "Network - Product Leaders (11-200)", SalesNav: &SalesNavResearch{Title: ptr("AI Product Leader"), Company: ptr("Acme AI")}},
+			want:  "mostly around full-stack product builds, AI workflows, and prototype-to-production work.",
+			angle: draftAngleTechnicalLeader,
+		},
+		{
+			name:  "investor advisor",
+			row:   AcceptedResearchRow{Name: "Jordan Advisor", Source: "Network - Founder Operators (11-50)", SalesNav: &SalesNavResearch{Title: ptr("Investor and Board Advisor"), Company: ptr("Advisory Co")}},
+			want:  "If someone in your network ever needs that kind of help",
+			angle: draftAngleInvestorAdvisor,
+		},
+		{
+			name:  "agency services",
+			row:   AcceptedResearchRow{Name: "Sam Agency", Source: "Network - AI-Curious Founders (1-50)", SalesNav: &SalesNavResearch{Title: ptr("Founder of Charly Agency"), Company: ptr("Charly Agency")}},
+			want:  "mostly helping with project overflow, prototypes, and AI-enabled product builds.",
+			angle: draftAngleAgency,
+		},
+		{
+			name:  "recruiter staffing",
+			row:   AcceptedResearchRow{Name: "Casey Recruiter", Source: "Network - Founder Operators (11-50)", SalesNav: &SalesNavResearch{Title: ptr("Strategic Partner - Help recruiters hire faster"), Company: ptr("Technical Recruiters")}},
+			want:  "for your files.",
+			angle: draftAngleRecruiter,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := []AcceptedDraftCandidate{{Source: tc.row.Source, Name: tc.row.Name, AcceptedAt: acceptedAt, Relationship: ptr("1st")}}
+			artifact := AcceptedResearchArtifact{Rows: []AcceptedResearchRow{tc.row}}
+			report := BuildDraftReport(candidates, &artifact, DraftStrategyAsapContractV1, nil)
+			if len(report.Items) != 1 {
+				t.Fatalf("items = %d", len(report.Items))
+			}
+			if !strings.Contains(report.Items[0].Draft, tc.want) {
+				t.Fatalf("draft missing %q:\n%s", tc.want, report.Items[0].Draft)
+			}
+			angle := chooseAngle(tc.row.Source, tc.row.SalesNav.Title, tc.row.SalesNav.Company, nil)
+			if angle.kind != tc.angle {
+				t.Fatalf("angle = %s, want %s", angle.kind, tc.angle)
+			}
+		})
 	}
 }
 
@@ -862,7 +914,7 @@ func TestResearchTitleAndCompanyAreUsedAsEvidence(t *testing.T) {
 	if !strings.Contains(report.Items[0].Angle, "Acme AI") {
 		t.Fatalf("angle=%q", report.Items[0].Angle)
 	}
-	if !strings.Contains(report.Items[0].Draft, "Given your work at Acme AI") || strings.Contains(report.Items[0].Draft, "useful fit may be") || strings.Contains(report.Items[0].Draft, "concrete product slice") {
+	if !strings.Contains(report.Items[0].Draft, "prototype-to-production work") || strings.Contains(report.Items[0].Draft, "useful fit may be") || strings.Contains(report.Items[0].Draft, "concrete product slice") {
 		t.Fatalf("draft=%q", report.Items[0].Draft)
 	}
 	found := false
