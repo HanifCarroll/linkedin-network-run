@@ -36,7 +36,198 @@ async function readBody(timeout = 10000) {
 }
 
 function isHardBlocker(url, body) {
-  return /checkpoint|security verification|weekly invitation limit|sign in|uas\/login/i.test(`${url}\n${body.slice(0, 1500)}`);
+  return Boolean(hardBlockReason(url, body));
+}
+
+function hardBlockReason(url, body) {
+  const text = `${url}\n${body.slice(0, 2500)}`;
+  if (/checkpoint|security verification|verify your identity|uas\/login/i.test(text)) {
+    return "checkpoint-login-or-security";
+  }
+  if (/sign in|sign back in|session expired/i.test(text)) {
+    return "login-required";
+  }
+  if (/weekly invitation limit|invitation limit|limit.*invitations|too many invitations|temporarily restricted/i.test(text)) {
+    return "invitation-limit-or-restriction";
+  }
+  if (/could(?:n’t|n't| not) send|unable to send|invitation (?:was )?not sent|something went wrong|try again later/i.test(text)) {
+    return "send-rejected";
+  }
+  return null;
+}
+
+async function visibleDialogInfos() {
+  return state.page.evaluate(() => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    return Array.from(document.querySelectorAll("[role='dialog'], .artdeco-modal, [data-test-modal]"))
+      .filter(visible)
+      .map((dialog, index) => ({
+        index,
+        text: clean(dialog.innerText || dialog.textContent).slice(0, 1500),
+        buttons: Array.from(dialog.querySelectorAll("button"))
+          .filter(visible)
+          .map((button, buttonIndex) => ({
+            index: buttonIndex,
+            text: clean(button.innerText || button.textContent || button.getAttribute("aria-label")),
+            disabled: button.disabled || button.hasAttribute("disabled") || button.getAttribute("aria-disabled") === "true",
+          }))
+          .filter((button) => button.text),
+      }));
+  });
+}
+
+async function visibleFeedbackInfos() {
+  return state.page.evaluate(() => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    return Array.from(document.querySelectorAll("[role='alert'], .artdeco-toast-item, .artdeco-toast-item__message, .artdeco-inline-feedback"))
+      .filter(visible)
+      .map((element, index) => ({ index, text: clean(element.innerText || element.textContent).slice(0, 1000) }))
+      .filter((item) => item.text);
+  });
+}
+
+function summarizeDialogText(dialogs, feedbacks) {
+  const parts = [];
+  for (const dialog of dialogs || []) {
+    if (dialog.text) {
+      parts.push(`Dialog ${dialog.index}: ${dialog.text}`);
+    }
+  }
+  for (const feedback of feedbacks || []) {
+    if (feedback.text) {
+      parts.push(`Feedback ${feedback.index}: ${feedback.text}`);
+    }
+  }
+  return cleanText(parts.join(" ")).slice(0, 1500);
+}
+
+async function responseTextSnippet(response, timeoutMs = 1000) {
+  return Promise.race([
+    response.text().catch(() => ""),
+    new Promise((resolve) => setTimeout(() => resolve(""), timeoutMs)),
+  ]).then((text) => cleanText(text).slice(0, 1200));
+}
+
+function shouldCaptureSendNetwork(url, method, postData) {
+  if (!/linkedin\.com\/(voyager|sales-api|salesApi|graphql|api)/i.test(url)) {
+    return false;
+  }
+  const haystack = `${method}\n${url}\n${postData}`;
+  return /invite|invitation|connect|connection|relationship|salesProfile/i.test(haystack);
+}
+
+async function collectSendNetworkDuring(action, waitMs = 2500) {
+  const events = [];
+  const listener = async (response) => {
+    try {
+      const request = response.request();
+      const method = request.method();
+      const url = response.url();
+      const postData = request.postData() || "";
+      if (!shouldCaptureSendNetwork(url, method, postData)) {
+        return;
+      }
+      const event = {
+        method,
+        url,
+        status: response.status(),
+        request: cleanText(postData).slice(0, 800),
+      };
+      if (response.status() >= 400 || /invite|invitation|connect|connection/i.test(url)) {
+        event.body = await responseTextSnippet(response);
+      }
+      events.push(event);
+    } catch {
+      // Best-effort diagnostics only; send safety is enforced by DOM/audit verification.
+    }
+  };
+  state.page.on("response", listener);
+  try {
+    await action();
+    await state.page.waitForTimeout(waitMs);
+  } finally {
+    state.page.off("response", listener);
+  }
+  return events.slice(-12);
+}
+
+function classifySendNetworkProblem(networkEvents) {
+  if (!networkEvents || networkEvents.length === 0) {
+    return null;
+  }
+  const combined = networkEvents.map((event) => `${event.status} ${event.url} ${event.request || ""} ${event.body || ""}`).join("\n");
+  const blockReason = hardBlockReason("", combined);
+  if (blockReason) {
+    return { state: "blocked", reason: blockReason, body: cleanText(combined).slice(0, 1500) };
+  }
+  const rejected = networkEvents.find((event) => event.status === 403 || event.status === 429 || event.status >= 500);
+  if (rejected) {
+    return {
+      state: "blocked",
+      reason: `send-network-${rejected.status}`,
+      body: cleanText(`${rejected.url} ${rejected.body || rejected.request || ""}`).slice(0, 1500),
+    };
+  }
+  const errorBody = networkEvents.find((event) => /"errors?"\s*:|error|exception|fail/i.test(`${event.body || ""} ${event.request || ""}`));
+  if (errorBody) {
+    return {
+      state: "send-not-accepted",
+      reason: "send-network-error",
+      body: cleanText(`${errorBody.url} ${errorBody.body || errorBody.request || ""}`).slice(0, 1500),
+    };
+  }
+  return null;
+}
+
+function hasAcceptedConnectNetwork(networkEvents) {
+  return (networkEvents || []).some((event) =>
+    event.status >= 200 &&
+    event.status < 300 &&
+    /salesApiConnection/i.test(event.url || "") &&
+    /connectV2/i.test(event.url || "")
+  );
+}
+
+async function classifyPostClickProblem(options = {}) {
+  const includeOpenInviteDialog = options.includeOpenInviteDialog !== false;
+  const body = cleanText(await readBody(10000));
+  const dialogs = await visibleDialogInfos();
+  const feedbacks = await visibleFeedbackInfos();
+  const focusedText = summarizeDialogText(dialogs, feedbacks);
+  const text = `${focusedText}\n${body}`;
+  if (/email address|required email|enter.*email/i.test(text)) {
+    return { state: "email-required", labels: [], body: cleanText(text).slice(0, 1500), dialogs, feedbacks };
+  }
+  const blockReason = hardBlockReason(state.page.url(), text);
+  if (blockReason) {
+    return { state: "blocked", reason: blockReason, labels: [], body: cleanText(text).slice(0, 1500), dialogs, feedbacks };
+  }
+  if (includeOpenInviteDialog) {
+    const inviteDialog = dialogs.find((dialog) =>
+      /send invitation/i.test(dialog.text) ||
+      dialog.buttons.some((button) => /^(Send Invitation|Send invite|Send now|Send)$/i.test(button.text))
+    );
+    if (inviteDialog) {
+      return {
+        state: "send-not-accepted",
+        labels: inviteDialog.buttons,
+        body: inviteDialog.text,
+        dialogs,
+        feedbacks,
+      };
+    }
+  }
+  return null;
 }
 
 async function menuLabelsForCurrentLead() {
@@ -88,14 +279,9 @@ async function verifyAfterSend() {
       await state.page.waitForTimeout(1000);
     }
 
-    const body = await readBody(10000);
-    if (/email address|required email|enter.*email/i.test(body)) {
-      last = { state: "email-required", labels: [], phase: attempt.phase, body: cleanText(body).slice(0, 1000) };
-      checks.push({ phase: attempt.phase, state: last.state });
-      return { ...last, checks };
-    }
-    if (isHardBlocker(state.page.url(), body)) {
-      last = { state: "blocked", labels: [], phase: attempt.phase, body: cleanText(body).slice(0, 1000) };
+    const problem = await classifyPostClickProblem();
+    if (problem) {
+      last = { ...problem, phase: attempt.phase };
       checks.push({ phase: attempt.phase, state: last.state });
       return { ...last, checks };
     }
@@ -148,25 +334,102 @@ async function clickSendInvitation(candidate) {
   if (/email address|required email|enter.*email/i.test(body)) {
     return { status: "email-required", detail: "email required in invite flow" };
   }
-  const clicked = await state.page.evaluate(() => {
-    const candidates = Array.from(document.querySelectorAll("button"));
-    const button = candidates.find((element) => {
-      const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+  const dialogs = await visibleDialogInfos();
+  const feedbacks = await visibleFeedbackInfos();
+  const focusedText = summarizeDialogText(dialogs, feedbacks);
+  const blockReason = hardBlockReason(state.page.url(), `${focusedText}\n${body}`);
+  if (blockReason) {
+    return { status: "blocked", reason: blockReason, body: focusedText || cleanText(body).slice(0, 1500), dialogs, feedbacks };
+  }
+  const inviteDialogs = dialogs.filter((dialog) =>
+    /send invitation/i.test(dialog.text) ||
+    dialog.buttons.some((button) => /^(Send Invitation|Send invite|Send now|Send)$/i.test(button.text))
+  );
+  const candidateInviteDialogs = inviteDialogs.filter((dialog) => bodyContainsCandidateName(dialog.text, candidate.name));
+  const selectedDialog = candidateInviteDialogs.at(-1) || inviteDialogs.at(-1);
+  if (selectedDialog && !bodyContainsCandidateName(selectedDialog.text, candidate.name)) {
+    return {
+      status: "identity-mismatch",
+      detail: "invite dialog does not contain candidate name",
+      body: selectedDialog.text,
+      dialogs,
+      feedbacks,
+    };
+  }
+  if (selectedDialog) {
+    const sendButtonInfo = selectedDialog.buttons.find((button) => /^(Send Invitation|Send invite|Send now|Send)$/i.test(button.text));
+    if (sendButtonInfo && sendButtonInfo.disabled) {
+      return {
+        status: "send-button-disabled",
+        detail: selectedDialog.text,
+        dialogs,
+        feedbacks,
+      };
+    }
+  }
+
+  const clickTarget = await state.page.evaluate((candidateName) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const normalizeName = (value) => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const bodyContainsCandidateName = (text, name) => {
+      const normalizedName = normalizeName(name);
+      return Boolean(normalizedName) && normalizeName(text).includes(normalizedName);
+    };
+    const visible = (element) => {
       const rect = element.getBoundingClientRect();
-      const visible = rect.width > 0 && rect.height > 0;
-      return visible && /^(Send Invitation|Send invite|Send now|Send)$/.test(text);
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog'], .artdeco-modal, [data-test-modal]")).filter(visible);
+    const inviteDialogs = dialogs.filter((dialog) => {
+      const text = clean(dialog.innerText || dialog.textContent);
+      return /send invitation/i.test(text) ||
+        Array.from(dialog.querySelectorAll("button")).some((button) => /^(Send Invitation|Send invite|Send now|Send)$/i.test(clean(button.innerText || button.textContent)));
     });
+    const candidateInviteDialogs = inviteDialogs.filter((dialog) => bodyContainsCandidateName(clean(dialog.innerText || dialog.textContent), candidateName));
+    const dialog = candidateInviteDialogs.at(-1) || inviteDialogs.at(-1);
+    if (!dialog) {
+      return null;
+    }
+    const button = Array.from(dialog.querySelectorAll("button"))
+      .filter(visible)
+      .find((element) => /^(Send Invitation|Send invite|Send now|Send)$/i.test(clean(element.innerText || element.textContent)));
     if (!button) {
       return null;
     }
-    const label = (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim();
-    button.click();
-    return label;
-  });
-  if (!clicked) {
-    return { status: "send-button-missing", detail: cleanText(body).slice(0, 1000) };
+    const label = clean(button.innerText || button.textContent);
+    const rect = button.getBoundingClientRect();
+    return {
+      label,
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }, candidate.name).catch(() => null);
+  if (!clickTarget) {
+    return { status: "send-button-missing", detail: focusedText || cleanText(body).slice(0, 1000), dialogs, feedbacks };
   }
-  return { status: "clicked-send", label: clicked };
+  const network = await collectSendNetworkDuring(() => state.page.mouse.click(clickTarget.x, clickTarget.y));
+  const networkProblem = classifySendNetworkProblem(network);
+  if (networkProblem) {
+    if (networkProblem.state === "blocked") {
+      return { status: "blocked", label: clickTarget.label, reason: networkProblem.reason, body: networkProblem.body, network };
+    }
+    return { status: networkProblem.state, label: clickTarget.label, detail: networkProblem.body, network };
+  }
+  const postClickProblem = await classifyPostClickProblem({ includeOpenInviteDialog: false });
+  if (postClickProblem) {
+    if (postClickProblem.state === "blocked") {
+      return { status: "blocked", label: clickTarget.label, reason: postClickProblem.reason, body: postClickProblem.body, dialogs: postClickProblem.dialogs, feedbacks: postClickProblem.feedbacks, network };
+    }
+    if (postClickProblem.state === "email-required") {
+      if (!hasAcceptedConnectNetwork(network)) {
+        return { status: "email-required", label: clickTarget.label, detail: postClickProblem.body, dialogs: postClickProblem.dialogs, feedbacks: postClickProblem.feedbacks, network };
+      }
+      return { status: "clicked-send", label: clickTarget.label, detail: postClickProblem.body, dialogs: postClickProblem.dialogs, feedbacks: postClickProblem.feedbacks, network };
+    }
+    return { status: postClickProblem.state, label: clickTarget.label, detail: postClickProblem.body, dialogs: postClickProblem.dialogs, feedbacks: postClickProblem.feedbacks, network };
+  }
+  return { status: "clicked-send", label: clickTarget.label, network };
 }
 
 async function main() {
@@ -253,10 +516,13 @@ async function main() {
     result.send = await clickSendInvitation(candidate);
     if (result.send.status === "email-required") {
       result.status = "email-required";
-      result.after = { state: "email-required", labels: [] };
+      result.after = { state: "email-required", labels: [], body: result.send.detail, dialogs: result.send.dialogs, feedbacks: result.send.feedbacks };
+    } else if (result.send.status === "blocked") {
+      result.status = "blocked";
+      result.after = { state: "blocked", labels: [], reason: result.send.reason, body: result.send.body, dialogs: result.send.dialogs, feedbacks: result.send.feedbacks };
     } else if (result.send.status === "identity-mismatch") {
       result.status = "identity-mismatch";
-      result.after = { state: "identity-mismatch", labels: [], body: result.send.body };
+      result.after = { state: "identity-mismatch", labels: [], body: result.send.body, dialogs: result.send.dialogs, feedbacks: result.send.feedbacks };
     } else if (result.send.status === "send-button-missing") {
       result.status = "unverified:send-button-missing";
       result.after = await menuLabelsForCurrentLead().catch((error) => ({
@@ -264,6 +530,9 @@ async function main() {
         labels: [],
         error: String(error).slice(0, 500),
       }));
+    } else if (result.send.status === "send-button-disabled" || result.send.status === "send-not-accepted") {
+      result.status = `unverified:${result.send.status}`;
+      result.after = { state: result.send.status, labels: [], body: result.send.detail, dialogs: result.send.dialogs, feedbacks: result.send.feedbacks };
     } else {
       result.after = await verifyAfterSend();
       if (result.after.state === "already-pending") {
@@ -272,6 +541,8 @@ async function main() {
         result.status = "blocked";
       } else if (result.after.state === "email-required") {
         result.status = "email-required";
+      } else if (result.after.state === "send-not-accepted") {
+        result.status = "unverified:send-not-accepted";
       } else {
         result.status = `unverified:${result.send.status}`;
       }

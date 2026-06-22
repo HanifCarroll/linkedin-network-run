@@ -117,15 +117,30 @@ async function main() {
   const input = path.resolve(configValue("in", "/tmp/linkedin-acceptance-candidates.json"));
   const out = path.resolve(configValue("out", "/tmp/linkedin-acceptance-outcomes.json"));
   const limit = Number(configValue("limit", 0));
+  const offset = Number(configValue("offset", 0));
   const delayMs = Number(configValue("delayMs", 500));
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   const candidates = JSON.parse(fs.readFileSync(input, "utf8"));
-  const selected = limit > 0 ? candidates.slice(0, limit) : candidates;
+  const selected = limit > 0 ? candidates.slice(offset, offset + limit) : candidates.slice(offset);
   const page = state.acceptancePage || context.pages().find((item) => item.url().includes("/sales/lead/")) || await context.newPage();
   state.acceptancePage = page;
 
   const rows = [];
+  const writeArtifact = (complete) => {
+    const artifact = {
+      capturedAt: new Date().toISOString(),
+      input,
+      count: rows.length,
+      offset,
+      limit,
+      totalCandidates: candidates.length,
+      complete,
+      rows,
+    };
+    fs.writeFileSync(out, JSON.stringify(artifact, null, 2));
+  };
+
   for (const candidate of selected) {
     const checkedAt = new Date().toISOString();
     try {
@@ -155,18 +170,16 @@ async function main() {
     if (delayMs > 0) {
       await page.waitForTimeout(delayMs);
     }
+    writeArtifact(false);
   }
 
-  const artifact = {
-    capturedAt: new Date().toISOString(),
-    input,
-    count: rows.length,
-    rows,
-  };
-  fs.writeFileSync(out, JSON.stringify(artifact, null, 2));
+  writeArtifact(true);
   console.log(JSON.stringify({
     out,
     count: rows.length,
+    offset,
+    limit,
+    totalCandidates: candidates.length,
     statuses: rows.reduce((acc, row) => {
       acc[row.status] = (acc[row.status] || 0) + 1;
       return acc;

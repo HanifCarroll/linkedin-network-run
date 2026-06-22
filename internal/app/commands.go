@@ -323,6 +323,29 @@ func NeedsReaudit(store *Store, reason string) error {
 	return nil
 }
 
+func ResumeBlocked(store *Store, reason string) error {
+	run, err := store.Load()
+	if err != nil {
+		return err
+	}
+	if run.State != RunStateBlocked {
+		return fmt.Errorf("run is not blocked; current state is %s", run.State)
+	}
+	now := time.Now()
+	run.BlockedResumeAt = &now
+	run.State = RunStateNeedsReaudit
+	run.Notes = append(run.Notes, "blocked run resume requested: "+reason)
+	run.MarkUpdated()
+	if err := store.Save(run); err != nil {
+		return err
+	}
+	if err := store.AppendEvent(run, "resume-blocked", map[string]any{"reason": reason, "resume_at": now}); err != nil {
+		return err
+	}
+	fmt.Println("blocked run resumed; import a fresh sent-page audit before sending")
+	return nil
+}
+
 func ImportCaptureCommand(store *Store, path string, onlyConnectable bool) error {
 	started := time.Now()
 	run, err := store.Load()
@@ -979,18 +1002,24 @@ func HandleReservoirClear(store *Store, source *string) error {
 	return nil
 }
 
-func PendingCleanupStart(store *Store, maxWithdrawals, thresholdMonths uint32, date Date, force bool) error {
+func PendingCleanupStart(store *Store, maxWithdrawals, thresholdMonths, thresholdDays uint32, date Date, force bool) error {
 	if _, err := os.Stat(store.PendingActivePath()); err == nil && !force {
 		return fmt.Errorf("an active pending-cleanup run already exists; use --force to replace it")
 	}
-	run := NewPendingCleanupRun(maxWithdrawals, thresholdMonths, date)
+	if thresholdDays == 0 {
+		thresholdDays = thresholdMonths * 30
+	}
+	run := NewPendingCleanupRunWithThresholdDays(maxWithdrawals, thresholdDays, date)
+	if thresholdMonths > 0 {
+		run.ThresholdMonths = thresholdMonths
+	}
 	if err := store.SavePending(run); err != nil {
 		return err
 	}
-	if err := store.AppendPendingEvent(run, "start", map[string]any{"max_withdrawals": maxWithdrawals, "threshold_months": thresholdMonths}); err != nil {
+	if err := store.AppendPendingEvent(run, "start", map[string]any{"max_withdrawals": maxWithdrawals, "threshold_months": run.ThresholdMonths, "threshold_days": run.ThresholdDays}); err != nil {
 		return err
 	}
-	fmt.Printf("started pending cleanup %s for %s; cap %d, threshold %d months\n", run.ID, date, maxWithdrawals, thresholdMonths)
+	fmt.Printf("started pending cleanup %s for %s; cap %d, threshold %s\n", run.ID, date, maxWithdrawals, FormatPendingThreshold(run))
 	return nil
 }
 
@@ -1115,13 +1144,15 @@ func PendingCleanupRecordWithdrawResult(store *Store, path string) error {
 }
 
 type PendingWithdrawNextOptions struct {
-	Session       *string
-	Playwriter    string
-	Script        string
-	OutDir        string
-	DryRun        bool
-	AllowWithdraw bool
-	NoRecord      bool
+	Session             *string
+	Playwriter          string
+	Script              string
+	OutDir              string
+	DryRun              bool
+	AllowWithdraw       bool
+	NoRecord            bool
+	PlaywriterTimeoutMS uint32
+	MaxLoadMore         uint32
 }
 
 func PendingCleanupWithdrawNext(store *Store, options PendingWithdrawNextOptions) error {
@@ -1139,6 +1170,14 @@ func PendingCleanupWithdrawNext(store *Store, options PendingWithdrawNextOptions
 	if options.Session == nil {
 		return fmt.Errorf("--session is required to execute Playwriter")
 	}
+	timeoutMS := options.PlaywriterTimeoutMS
+	if timeoutMS == 0 {
+		timeoutMS = defaultPendingWithdrawTimeoutMS
+	}
+	maxLoadMore := options.MaxLoadMore
+	if maxLoadMore == 0 {
+		maxLoadMore = defaultPendingWithdrawLoadMore
+	}
 	if err := os.MkdirAll(options.OutDir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", options.OutDir, err)
 	}
@@ -1150,16 +1189,18 @@ func PendingCleanupWithdrawNext(store *Store, options PendingWithdrawNextOptions
 	resultJSON, _ := json.Marshal(resultPath)
 	candidateJSON, _ := json.Marshal(candidatePath)
 	configJS := fmt.Sprintf(
-		"state.salesNavPendingWithdrawConfig = { out: %s, dryRun: %t, allowWithdraw: %t, candidate: JSON.parse(require('node:fs').readFileSync(%s, 'utf8')) }; console.log(JSON.stringify(state.salesNavPendingWithdrawConfig));",
+		"state.salesNavPendingWithdrawConfig = { out: %s, dryRun: %t, allowWithdraw: %t, maxLoadMore: %d, thresholdDays: %d, candidate: JSON.parse(require('node:fs').readFileSync(%s, 'utf8')) }; console.log(JSON.stringify(state.salesNavPendingWithdrawConfig));",
 		string(resultJSON),
 		options.DryRun || !options.AllowWithdraw,
 		options.AllowWithdraw,
+		maxLoadMore,
+		run.ThresholdDays,
 		string(candidateJSON),
 	)
 	if err := RunPlaywriterConfig(options.Playwriter, *options.Session, configJS); err != nil {
 		return err
 	}
-	if err := RunPlaywriterFile(options.Playwriter, *options.Session, options.Script); err != nil {
+	if err := RunPlaywriterFileWithTimeout(options.Playwriter, *options.Session, options.Script, timeoutMS); err != nil {
 		return err
 	}
 	fmt.Printf("withdraw result: %s\n", resultPath)

@@ -10,6 +10,20 @@ function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function isAbortedNavigation(error) {
+  return /net::ERR_ABORTED|execution context was destroyed|navigation/i.test(String(error?.message || error));
+}
+
+async function gotoSentInvitations(page) {
+  await page.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
+    waitUntil: "domcontentloaded",
+    timeout: 45000,
+  }).catch(async (error) => {
+    if (!isAbortedNavigation(error)) throw error;
+    await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+  });
+}
+
 async function clickLoadMore(page, loadMore) {
   for (let i = 0; i < loadMore; i += 1) {
     const button = page.locator("button").filter({ hasText: /^Load more$/ }).first();
@@ -30,14 +44,20 @@ async function clickLoadMore(page, loadMore) {
 async function main() {
   const out = path.resolve(configValue("out", "/tmp/linkedin-pending-cleanup-capture.json"));
   const loadMore = Number(configValue("loadMore", 0));
-  const thresholdMonths = Number(configValue("thresholdMonths", 2));
+  const configuredThresholdDays = configValue("thresholdDays", null);
+  const configuredThresholdWeeks = configValue("thresholdWeeks", null);
+  const configuredThresholdMonths = configValue("thresholdMonths", null);
+  const thresholdDays = configuredThresholdDays !== null
+    ? Number(configuredThresholdDays)
+    : configuredThresholdWeeks !== null
+      ? Number(configuredThresholdWeeks) * 7
+      : configuredThresholdMonths !== null
+        ? Number(configuredThresholdMonths) * 30
+        : 14;
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   state.pendingPage = state.pendingPage || await context.newPage();
-  await state.pendingPage.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
-    waitUntil: "domcontentloaded",
-    timeout: 45000,
-  });
+  await gotoSentInvitations(state.pendingPage);
   await state.pendingPage.waitForTimeout(2500);
   await clickLoadMore(state.pendingPage, loadMore);
 
@@ -49,6 +69,17 @@ async function main() {
       if (/year/.test(lower)) return number * 12;
       if (/month/.test(lower)) return number;
       if (/today|minute|hour|day|week/.test(lower)) return 0;
+      return null;
+    };
+    const parseAgeDays = (ageText) => {
+      const lower = String(ageText || "").toLowerCase();
+      if (/today|minute|hour/.test(lower)) return 0;
+      const number = Number(lower.match(/\b(\d+)\b/)?.[1] || "1");
+      if (/year/.test(lower)) return number * 365;
+      if (/month/.test(lower)) return number * 30;
+      if (/week/.test(lower)) return number * 7;
+      if (/yesterday/.test(lower)) return 1;
+      if (/day/.test(lower)) return number;
       return null;
     };
     const bodyText = document.body.innerText || "";
@@ -68,7 +99,8 @@ async function main() {
       .map(({ row, link }, index) => {
         const rowText = clean(row.innerText || row.textContent || "");
         const ageText = rowText.match(/Sent (?:today|yesterday|\d+ minutes? ago|\d+ hours? ago|\d+ days? ago|\d+ weeks? ago|\d+ months? ago|\d+ years? ago)/i)?.[0] || null;
-        const age = parseAgeMonths(ageText);
+        const ageMonths = parseAgeMonths(ageText);
+        const ageDays = parseAgeDays(ageText);
         const profileLink = Array.from(row.querySelectorAll("a[href*='/in/'], a[href*='/sales/lead/']")).find((anchor) => anchor.href && !/^Withdraw\b/.test(anchor.innerText || "")) || null;
         const lines = (row.innerText || "").split("\n").map((line) => clean(line)).filter(Boolean);
         const ageIndex = lines.findIndex((line) => /^Sent\b/i.test(line));
@@ -79,8 +111,9 @@ async function main() {
           name,
           profileUrl: profileLink?.href || null,
           ageText,
-          ageMonths: age,
-          eligible: age !== null && age >= threshold,
+          ageMonths,
+          ageDays,
+          eligible: ageDays !== null && ageDays >= threshold,
           rowText,
         };
       })
@@ -89,10 +122,10 @@ async function main() {
       capturedAt: new Date().toISOString(),
       url: location.href,
       peopleCount: Number.isFinite(peopleCount) ? peopleCount : null,
-      thresholdMonths: threshold,
+      thresholdDays: threshold,
       rows,
     };
-  }, thresholdMonths);
+  }, thresholdDays);
 
   fs.writeFileSync(out, JSON.stringify(artifact, null, 2));
   console.log(JSON.stringify({
@@ -101,7 +134,7 @@ async function main() {
     peopleCount: artifact.peopleCount,
     rowCount: artifact.rows.length,
     eligibleCount: artifact.rows.filter((row) => row.eligible).length,
-    oldestAgeMonths: Math.max(0, ...artifact.rows.map((row) => row.ageMonths || 0)),
+    oldestAgeDays: Math.max(0, ...artifact.rows.map((row) => row.ageDays || 0)),
     sample: artifact.rows.slice(0, 10).map((row) => ({ name: row.name, ageText: row.ageText, eligible: row.eligible })),
   }, null, 2));
 }

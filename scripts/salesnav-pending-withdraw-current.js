@@ -13,6 +13,18 @@ function ageMonths(ageText) {
   return null;
 }
 
+function ageDays(ageText) {
+  const lower = String(ageText || "").toLowerCase();
+  if (/today|minute|hour/.test(lower)) return 0;
+  const number = Number(lower.match(/\b(\d+)\b/)?.[1] || "1");
+  if (/year/.test(lower)) return number * 365;
+  if (/month/.test(lower)) return number * 30;
+  if (/week/.test(lower)) return number * 7;
+  if (/yesterday/.test(lower)) return 1;
+  if (/day/.test(lower)) return number;
+  return null;
+}
+
 async function findCandidateRow(page, candidate) {
   const match = await page.locator("a[aria-label^='Withdraw invitation sent to']").evaluateAll((links, input) => {
     const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -64,7 +76,8 @@ async function main() {
 
   const beforeText = await state.pendingPage.locator("body").innerText({ timeout: 10000 });
   const beforeCount = Number(beforeText.match(/People \((\d+)\)/)?.[1]);
-  const candidateAge = ageMonths(candidate.age_text || candidate.ageText);
+  const candidateAgeDays = ageDays(candidate.age_text || candidate.ageText);
+  const candidateAgeMonths = ageMonths(candidate.age_text || candidate.ageText);
   const result = {
     candidate,
     dryRun: false,
@@ -78,9 +91,9 @@ async function main() {
   if (/checkpoint|security verification|sign in|uas\/login/i.test(`${state.pendingPage.url()}\n${beforeText.slice(0, 1500)}`)) {
     result.status = "blocked";
     result.detail = { reason: "checkpoint-login-or-limit" };
-  } else if (candidateAge === null || candidateAge < 2) {
+  } else if (candidateAgeDays === null || candidateAgeDays < 14) {
     result.status = "not-eligible";
-    result.detail = { ageMonths: candidateAge };
+    result.detail = { ageDays: candidateAgeDays, ageMonths: candidateAgeMonths, thresholdDays: 14 };
   } else {
     const found = await scrollUntilFound(state.pendingPage, candidate);
     result.rowText = found?.text || null;

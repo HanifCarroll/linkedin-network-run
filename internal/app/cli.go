@@ -25,6 +25,8 @@ const (
 	defaultAcceptedFollowupsOutDir   = "/tmp/linkedin-accepted-followups"
 	defaultReservoirCaptureOutDir    = "/tmp/linkedin-network-run-reservoir-capture"
 	defaultPendingWithdrawNextOutDir = "/tmp/linkedin-pending-cleanup-withdraw-next"
+	defaultPendingWithdrawTimeoutMS  = 300000
+	defaultPendingWithdrawLoadMore   = 260
 )
 
 func Execute(ctx context.Context, args []string) error {
@@ -60,6 +62,7 @@ func Execute(ctx context.Context, args []string) error {
 	root.AddCommand(topUpReconcileCommand(withStore))
 	root.AddCommand(sourceExhaustedCommand(withStore))
 	root.AddCommand(needsReauditCommand(withStore))
+	root.AddCommand(resumeBlockedCommand(withStore))
 	root.AddCommand(importCaptureCommand(withStore))
 	root.AddCommand(recordTopUpResultCommand(withStore))
 	root.AddCommand(nextCandidateCommand(withStore))
@@ -354,6 +357,17 @@ func needsReauditCommand(withStore func(func(*Store) error) func(*cobra.Command,
 	cmd := &cobra.Command{
 		Use:  "needs-reaudit",
 		RunE: withStore(func(store *Store) error { return NeedsReaudit(store, reason) }),
+	}
+	cmd.Flags().StringVar(&reason, "reason", "", "reason")
+	must(cmd.MarkFlagRequired("reason"))
+	return cmd
+}
+
+func resumeBlockedCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var reason string
+	cmd := &cobra.Command{
+		Use:  "resume-blocked",
+		RunE: withStore(func(store *Store) error { return ResumeBlocked(store, reason) }),
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "reason")
 	must(cmd.MarkFlagRequired("reason"))
@@ -711,7 +725,9 @@ func pendingCleanupCommand(withStore func(func(*Store) error) func(*cobra.Comman
 
 func pendingCleanupStartCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var maxWithdrawals uint32 = 75
-	var thresholdMonths uint32 = 2
+	var thresholdMonths uint32
+	var thresholdWeeks uint32 = 2
+	var thresholdDays uint32
 	var dateFlag string
 	var force bool
 	cmd := &cobra.Command{Use: "start", RunE: withStore(func(store *Store) error {
@@ -719,10 +735,20 @@ func pendingCleanupStartCommand(withStore func(func(*Store) error) func(*cobra.C
 		if err != nil {
 			return err
 		}
-		return PendingCleanupStart(store, maxWithdrawals, thresholdMonths, date, force)
+		effectiveThresholdDays := thresholdDays
+		if effectiveThresholdDays == 0 {
+			if thresholdMonths > 0 {
+				effectiveThresholdDays = thresholdMonths * 30
+			} else {
+				effectiveThresholdDays = thresholdWeeks * 7
+			}
+		}
+		return PendingCleanupStart(store, maxWithdrawals, thresholdMonths, effectiveThresholdDays, date, force)
 	})}
 	cmd.Flags().Uint32Var(&maxWithdrawals, "max-withdrawals", 75, "max withdrawals")
-	cmd.Flags().Uint32Var(&thresholdMonths, "threshold-months", 2, "threshold months")
+	cmd.Flags().Uint32Var(&thresholdDays, "threshold-days", 0, "threshold days")
+	cmd.Flags().Uint32Var(&thresholdWeeks, "threshold-weeks", 2, "threshold weeks")
+	cmd.Flags().Uint32Var(&thresholdMonths, "threshold-months", 0, "threshold months")
 	cmd.Flags().StringVar(&dateFlag, "date", "", "date")
 	cmd.Flags().BoolVar(&force, "force", false, "force")
 	return cmd
@@ -748,22 +774,27 @@ func pendingCleanupNextCommand(withStore func(func(*Store) error) func(*cobra.Co
 
 func pendingCleanupWithdrawNextCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var session, playwriter, script, outDir string
+	var timeoutMS, maxLoadMore uint32
 	var dryRun, allowWithdraw, noRecord bool
 	cmd := &cobra.Command{Use: "withdraw-next", RunE: withStore(func(store *Store) error {
 		return PendingCleanupWithdrawNext(store, PendingWithdrawNextOptions{
-			Session:       OptionalString(session),
-			Playwriter:    playwriter,
-			Script:        script,
-			OutDir:        outDir,
-			DryRun:        dryRun,
-			AllowWithdraw: allowWithdraw,
-			NoRecord:      noRecord,
+			Session:             OptionalString(session),
+			Playwriter:          playwriter,
+			Script:              script,
+			OutDir:              outDir,
+			DryRun:              dryRun,
+			AllowWithdraw:       allowWithdraw,
+			NoRecord:            noRecord,
+			PlaywriterTimeoutMS: timeoutMS,
+			MaxLoadMore:         maxLoadMore,
 		})
 	})}
 	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
 	addPlaywriterFlag(cmd.Flags(), &playwriter)
 	cmd.Flags().StringVar(&script, "script", defaultPendingWithdrawScript, "script")
 	cmd.Flags().StringVar(&outDir, "out-dir", defaultPendingWithdrawNextOutDir, "out dir")
+	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", defaultPendingWithdrawTimeoutMS, "Playwriter timeout ms")
+	cmd.Flags().Uint32Var(&maxLoadMore, "max-load-more", defaultPendingWithdrawLoadMore, "maximum sent-page load-more attempts")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "dry run")
 	cmd.Flags().BoolVar(&allowWithdraw, "allow-withdraw", false, "allow withdraw")
 	cmd.Flags().BoolVar(&noRecord, "no-record", false, "no record")

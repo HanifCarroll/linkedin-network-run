@@ -44,6 +44,7 @@ type PendingCaptureRow struct {
 	ProfileURL *string `json:"profileUrl"`
 	AgeText    *string `json:"ageText"`
 	AgeMonths  *uint32 `json:"ageMonths"`
+	AgeDays    *uint32 `json:"ageDays"`
 	Eligible   *bool   `json:"eligible"`
 	RowText    *string `json:"rowText"`
 }
@@ -123,11 +124,17 @@ func ImportPendingCapture(run *PendingCleanupRun, capture PendingCapture) (int, 
 		if ageMonths == nil {
 			ageMonths = ParseSentAgeMonths(ageText)
 		}
+		ageDays := row.AgeDays
+		if ageDays == nil {
+			ageDays = ParseSentAgeDays(ageText)
+		}
 		eligible := false
-		if row.Eligible != nil {
-			eligible = *row.Eligible
+		if ageDays != nil && run.ThresholdDays > 0 {
+			eligible = *ageDays >= run.ThresholdDays
 		} else if ageMonths != nil {
 			eligible = *ageMonths >= run.ThresholdMonths
+		} else if row.Eligible != nil {
+			eligible = *row.Eligible
 		}
 		rowText := ""
 		if row.RowText != nil {
@@ -141,6 +148,7 @@ func ImportPendingCapture(run *PendingCleanupRun, capture PendingCapture) (int, 
 			ProfileURL: row.ProfileURL,
 			AgeText:    ageText,
 			AgeMonths:  ageMonths,
+			AgeDays:    ageDays,
 			Eligible:   eligible,
 			RowText:    rowText,
 		}
@@ -192,6 +200,41 @@ func ParseSentAgeMonths(ageText string) *uint32 {
 		strings.Contains(lower, "week") {
 		value := uint32(0)
 		return &value
+	}
+	return nil
+}
+
+func ParseSentAgeDays(ageText string) *uint32 {
+	lower := strings.ToLower(ageText)
+	if strings.Contains(lower, "today") ||
+		strings.Contains(lower, "minute") ||
+		strings.Contains(lower, "hour") {
+		value := uint32(0)
+		return &value
+	}
+	count := FirstNumber(lower)
+	if count == nil {
+		value := uint32(1)
+		count = &value
+	}
+	if strings.Contains(lower, "year") {
+		value := *count * 365
+		return &value
+	}
+	if strings.Contains(lower, "month") {
+		value := *count * 30
+		return &value
+	}
+	if strings.Contains(lower, "week") {
+		value := *count * 7
+		return &value
+	}
+	if strings.Contains(lower, "yesterday") {
+		value := uint32(1)
+		return &value
+	}
+	if strings.Contains(lower, "day") {
+		return count
 	}
 	return nil
 }

@@ -25,6 +25,8 @@ func ApplyAudit(run *Run, peopleCount uint32, note *string) {
 	if run.StartAudit == nil {
 		run.StartAudit = &peopleCount
 		run.State = RunStateStartAudited
+	} else if HasBlockingSendResult(*run) {
+		run.State = RunStateBlocked
 	} else if run.State == RunStateNeedsReaudit {
 		run.State = RunStateSending
 	}
@@ -147,6 +149,55 @@ func DrainStaleConnectableCandidates(run *Run, sourceFilter *string) ([]Candidat
 
 func IsUncertainSendStatus(status string) bool {
 	return strings.HasPrefix(status, "unverified:") || status == "blocked"
+}
+
+func HasBlockingSendResult(run Run) bool {
+	for _, event := range run.Candidates {
+		if run.BlockedResumeAt != nil && !event.At.After(*run.BlockedResumeAt) {
+			continue
+		}
+		if event.Status == CandidateStatusFailed && event.Note != nil && strings.Contains(*event.Note, "salesnav-send-one status blocked") {
+			return true
+		}
+	}
+	return false
+}
+
+func isSendNoopStatus(status string) bool {
+	return status == "unverified:clicked-send" ||
+		status == "unverified:send-not-accepted" ||
+		status == "unverified:send-button-disabled"
+}
+
+func SourceRepeatedSendNoop(run Run, source string, threshold uint32) bool {
+	if threshold == 0 {
+		return false
+	}
+	var consecutive uint32
+	for i := len(run.Candidates) - 1; i >= 0; i-- {
+		event := run.Candidates[i]
+		if event.Source != source {
+			continue
+		}
+		if event.Status == CandidateStatusPending || event.Status == CandidateStatusAuditTopUp {
+			return false
+		}
+		if event.Status == CandidateStatusFailed && event.Note != nil && isSendNoopNote(*event.Note) {
+			consecutive++
+			if consecutive >= threshold {
+				return true
+			}
+			continue
+		}
+		return false
+	}
+	return false
+}
+
+func isSendNoopNote(note string) bool {
+	return strings.Contains(note, "unverified:clicked-send") ||
+		strings.Contains(note, "unverified:send-not-accepted") ||
+		strings.Contains(note, "unverified:send-button-disabled")
 }
 
 type AcceptanceCheckCandidate struct {

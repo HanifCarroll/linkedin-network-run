@@ -561,6 +561,15 @@ func TestAcceptanceImportUpdatesSourceReport(t *testing.T) {
 	}
 }
 
+func TestRenderAcceptanceReportFormatsMaxAgeDays(t *testing.T) {
+	maxAgeDays := int64(45)
+	report := AcceptanceReport{MinAgeDays: 1, MaxAgeDays: &maxAgeDays}
+	rendered := RenderAcceptanceReport(report)
+	if !strings.Contains(rendered, "- Max age days: 45") {
+		t.Fatalf("rendered report missing formatted max age days:\n%s", rendered)
+	}
+}
+
 func TestAcceptedFollowupCandidatesSkipAlreadyDraftedPeople(t *testing.T) {
 	run := NewRunDefault(22, testDate(t, "2026-06-20"))
 	run.Candidates = append(run.Candidates,
@@ -633,11 +642,62 @@ func TestAuditImportAppliesPeopleCount(t *testing.T) {
 	}
 }
 
+func TestAuditImportPreservesBlockedSendState(t *testing.T) {
+	run := testRun(t, 30)
+	ApplyAudit(&run, 1236, ptr("start"))
+	run.State = RunStateNeedsReaudit
+	note := "salesnav-send-one status blocked; send-network-429"
+	run.Candidates = append(run.Candidates, CandidateEvent{At: time.Now(), Source: "ASAP - Startup CTO Eng Leaders", Name: "Blocked Lead", Status: CandidateStatusFailed, Note: &note})
+	ApplyAudit(&run, 1245, ptr("after blocked send"))
+	if run.State != RunStateBlocked {
+		t.Fatalf("state=%s, want %s", run.State, RunStateBlocked)
+	}
+}
+
+func TestAuditImportCanResumeAfterBlockedCooldown(t *testing.T) {
+	run := testRun(t, 30)
+	ApplyAudit(&run, 1236, ptr("start"))
+	note := "salesnav-send-one status blocked; send-network-429"
+	run.Candidates = append(run.Candidates, CandidateEvent{At: time.Now().Add(-time.Hour), Source: "ASAP - Startup CTO Eng Leaders", Name: "Blocked Lead", Status: CandidateStatusFailed, Note: &note})
+	resumeAt := time.Now()
+	run.BlockedResumeAt = &resumeAt
+	run.State = RunStateNeedsReaudit
+	ApplyAudit(&run, 1245, ptr("after cooldown"))
+	if run.State != RunStateSending {
+		t.Fatalf("state=%s, want %s", run.State, RunStateSending)
+	}
+}
+
 func TestSendResultFailureMapsToFailedEvent(t *testing.T) {
 	result := SalesNavSendResult{Candidate: SalesNavSendCandidate{Source: "ASAP - Startup CTO Eng Leaders", Name: "Unverified Founder"}, Status: "unverified:send-button-missing"}
 	status, note := result.ToCandidateStatus()
 	if status != CandidateStatusFailed || !strings.Contains(note, "unverified") {
 		t.Fatalf("status=%s note=%q", status, note)
+	}
+}
+
+func TestSourceRepeatedSendNoopRequiresConsecutiveFailures(t *testing.T) {
+	run := testRun(t, 30)
+	source := "ASAP - Startup CTO Eng Leaders"
+	notes := []string{
+		"salesnav-send-one status unverified:clicked-send",
+		"salesnav-send-one status unverified:send-not-accepted",
+	}
+	for index, name := range []string{"One", "Two"} {
+		note := notes[index]
+		run.Candidates = append(run.Candidates, CandidateEvent{At: time.Now(), Source: source, Name: name, Status: CandidateStatusFailed, Note: &note})
+	}
+	if SourceRepeatedSendNoop(run, source, 3) {
+		t.Fatal("two failures should not trip the source no-op threshold")
+	}
+	note := "salesnav-send-one status unverified:send-button-disabled"
+	run.Candidates = append(run.Candidates, CandidateEvent{At: time.Now(), Source: source, Name: "Three", Status: CandidateStatusFailed, Note: &note})
+	if !SourceRepeatedSendNoop(run, source, 3) {
+		t.Fatal("three consecutive send no-op failures should trip the threshold")
+	}
+	run.Candidates = append(run.Candidates, CandidateEvent{At: time.Now(), Source: source, Name: "Verified", Status: CandidateStatusPending})
+	if SourceRepeatedSendNoop(run, source, 3) {
+		t.Fatal("a verified pending send should reset the consecutive failure threshold")
 	}
 }
 
@@ -651,6 +711,24 @@ func TestPendingAgeParserMarksMonthsAndYearsAsStale(t *testing.T) {
 	}
 	for input, want := range cases {
 		got := ParseSentAgeMonths(input)
+		if got == nil || *got != want {
+			t.Fatalf("%q = %v, want %d", input, got, want)
+		}
+	}
+}
+
+func TestPendingAgeParserMarksTwoWeeksAsFourteenDays(t *testing.T) {
+	cases := map[string]uint32{
+		"Sent today":        0,
+		"Sent 6 days ago":   6,
+		"Sent 1 week ago":   7,
+		"Sent 2 weeks ago":  14,
+		"Sent 1 month ago":  30,
+		"Sent 2 months ago": 60,
+		"Sent 1 year ago":   365,
+	}
+	for input, want := range cases {
+		got := ParseSentAgeDays(input)
 		if got == nil || *got != want {
 			t.Fatalf("%q = %v, want %d", input, got, want)
 		}
@@ -675,6 +753,26 @@ func TestPendingCaptureImportExposesNextEligibleInvitation(t *testing.T) {
 	}
 	if imported != 2 || run.NextEligibleObservation().Name != "Stale Invite" {
 		t.Fatalf("imported=%d next=%#v", imported, run.NextEligibleObservation())
+	}
+}
+
+func TestPendingCaptureImportHonorsTwoWeekThreshold(t *testing.T) {
+	run := NewPendingCleanupRunWithThresholdDays(75, 14, testDate(t, "2026-05-26"))
+	capturedAt := "2026-05-26T12:00:00Z"
+	capture := PendingCapture{
+		CapturedAt: &capturedAt,
+		Rows: []PendingCaptureRow{
+			{Index: 0, Name: ptr("One Week Invite"), AgeText: ptr("Sent 1 week ago")},
+			{Index: 1, Name: ptr("Two Week Invite"), ProfileURL: ptr("https://www.linkedin.com/in/two-week"), AgeText: ptr("Sent 2 weeks ago")},
+		},
+	}
+	imported, err := ImportPendingCapture(&run, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := run.NextEligibleObservation()
+	if imported != 2 || next == nil || next.Name != "Two Week Invite" {
+		t.Fatalf("imported=%d next=%#v", imported, next)
 	}
 }
 

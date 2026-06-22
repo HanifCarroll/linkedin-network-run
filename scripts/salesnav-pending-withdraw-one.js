@@ -19,51 +19,107 @@ function ageMonths(ageText) {
   return null;
 }
 
+function ageDays(ageText) {
+  const lower = String(ageText || "").toLowerCase();
+  if (/today|minute|hour/.test(lower)) return 0;
+  const number = Number(lower.match(/\b(\d+)\b/)?.[1] || "1");
+  if (/year/.test(lower)) return number * 365;
+  if (/month/.test(lower)) return number * 30;
+  if (/week/.test(lower)) return number * 7;
+  if (/yesterday/.test(lower)) return 1;
+  if (/day/.test(lower)) return number;
+  return null;
+}
+
+function isTransientNavigationError(error) {
+  return /net::ERR_ABORTED|execution context was destroyed|navigation|target page, context or browser has been closed/i.test(String(error?.message || error));
+}
+
+async function gotoSentInvitations(page) {
+  await page.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
+    waitUntil: "domcontentloaded",
+    timeout: 45000,
+  }).catch(async (error) => {
+    if (!isTransientNavigationError(error)) throw error;
+    await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+  });
+}
+
+async function loadMoreOnce(page) {
+  await page.evaluate(() => {
+    const scroller = document.querySelector("main#workspace") || document.scrollingElement || document.documentElement;
+    scroller.scrollTop += Math.floor(scroller.clientHeight * 2.5);
+  });
+  await page.waitForTimeout(500);
+}
+
 async function clickLoadMoreUntilFound(page, candidate, maxLoadMore) {
-  for (let i = 0; i <= maxLoadMore; i += 1) {
-    const found = await findCandidateRow(page, candidate);
-    if (found) return found;
-    const button = page.locator("button").filter({ hasText: /^Load more$/ }).first();
-    if (i === maxLoadMore) break;
-    if (await button.count()) {
-      await button.scrollIntoViewIfNeeded().catch(() => {});
-      await button.click({ timeout: 8000 });
-    } else {
-      await page.locator("main#workspace").hover().catch(() => {});
-      await page.mouse.wheel(0, 850);
+  let attempts = 0;
+  const initial = await findCandidateRow(page, candidate).catch(async (error) => {
+    if (!isTransientNavigationError(error)) throw error;
+    await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+    return null;
+  });
+  if (initial) return initial;
+
+  const candidateIndex = Number(candidate.index);
+  const preload = Number.isFinite(candidateIndex)
+    ? Math.min(maxLoadMore, Math.max(0, Math.floor(candidateIndex / 5) - 15))
+    : 0;
+  for (; attempts < preload; attempts += 1) {
+    await loadMoreOnce(page);
+    if (attempts > 0 && attempts % 50 === 0) {
+      console.log(JSON.stringify({ phase: "preload-sent-invitations", attempts }));
     }
-    await page.waitForTimeout(700);
+  }
+
+  for (; attempts <= maxLoadMore; attempts += 1) {
+    let found = null;
+    try {
+      found = await findCandidateRow(page, candidate);
+    } catch (error) {
+      if (!isTransientNavigationError(error)) throw error;
+      await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      continue;
+    }
+    if (found) return found;
+    if (attempts === maxLoadMore) break;
+    await loadMoreOnce(page);
   }
   return null;
 }
 
 async function findCandidateRow(page, candidate) {
-  const handles = await page.locator("a[aria-label^='Withdraw invitation sent to']").evaluateAll((links, input) => {
-    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
-    const normalizedProfile = String(input.profileUrl || "").replace(/\/$/, "");
-    return links
-      .map((link, index) => {
-        const aria = link.getAttribute("aria-label") || "";
-        let node = link;
-        while (node && node !== document.body) {
-          const text = clean(node.innerText || node.textContent || "");
-          const withdrawCount = (text.match(/\bWithdraw\b/g) || []).length;
-          if (withdrawCount === 1 && text.includes(input.ageText)) {
-            const profileMatch = normalizedProfile && Array.from(node.querySelectorAll("a[href]")).some((anchor) => anchor.href.replace(/\/$/, "") === normalizedProfile);
-            const nameMatch = aria.toLowerCase().includes(input.name.toLowerCase()) || text.toLowerCase().includes(input.name.toLowerCase());
-            if (!profileMatch && !nameMatch) return null;
-            return { index, text };
-          }
-          node = node.parentElement;
+  const ageText = candidate.age_text || candidate.ageText;
+  const profileUrl = candidate.profile_url || candidate.profileUrl || "";
+  const exactLabel = `Withdraw invitation sent to ${candidate.name}`;
+  const candidates = [
+    page.locator(`a[aria-label=${JSON.stringify(exactLabel)}]`).first(),
+    page.locator(`a[aria-label^='Withdraw invitation sent to'][aria-label*=${JSON.stringify(candidate.name)}]`).first(),
+  ];
+
+  for (const withdrawLink of candidates) {
+    if (!(await withdrawLink.count())) continue;
+    const match = await withdrawLink.evaluate((link, input) => {
+      const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const normalizedProfile = String(input.profileUrl || "").replace(/\/$/, "");
+      let node = link;
+      while (node && node !== document.body) {
+        const text = clean(node.innerText || node.textContent || "");
+        if (text.includes(input.ageText)) {
+          const profileMatch = normalizedProfile && Array.from(node.querySelectorAll("a[href]")).some((anchor) => anchor.href.replace(/\/$/, "") === normalizedProfile);
+          const nameMatch = text.toLowerCase().includes(input.name.toLowerCase()) || String(link.getAttribute("aria-label") || "").toLowerCase().includes(input.name.toLowerCase());
+          if (profileMatch || nameMatch) return { text };
         }
-        return null;
-      })
-      .filter(Boolean);
-  }, { name: candidate.name, profileUrl: candidate.profile_url || candidate.profileUrl, ageText: candidate.age_text || candidate.ageText });
-  if (!handles.length) return null;
-  const withdrawLink = page.locator(`a[aria-label=${JSON.stringify(`Withdraw invitation sent to ${candidate.name}`)}]`).first();
-  const locator = page.locator("div").filter({ has: withdrawLink }).filter({ hasText: candidate.age_text || candidate.ageText }).first();
-  return { locator, withdrawLink, text: handles[0].text };
+        node = node.parentElement;
+      }
+      return null;
+    }, { name: candidate.name, profileUrl, ageText });
+    if (match) return { locator: null, withdrawLink, text: match.text };
+  }
+
+  return null;
 }
 
 async function clickWithdraw(found) {
@@ -71,6 +127,7 @@ async function clickWithdraw(found) {
     await found.withdrawLink.click({ timeout: 8000 });
     return true;
   }
+  if (!found.locator) return false;
   const link = found.locator.locator("a").filter({ hasText: /^Withdraw$/ }).first();
   if (await link.count()) {
     await link.click({ timeout: 8000 });
@@ -84,12 +141,41 @@ async function clickWithdraw(found) {
   return false;
 }
 
+async function clickConfirmWithdraw(page) {
+  await page.waitForTimeout(700);
+  const dialog = page.locator("[role='dialog'], [aria-modal='true'], .artdeco-modal").filter({ hasText: /Withdraw/ }).last();
+  if (await dialog.count()) {
+    const dialogButton = dialog.locator("button").filter({ hasText: /^Withdraw$/ }).last();
+    if (await dialogButton.count()) {
+      await dialogButton.click({ timeout: 8000 });
+      return true;
+    }
+  }
+
+  const button = page.locator("button").filter({ hasText: /^Withdraw$/ }).last();
+  if (await button.count()) {
+    await button.click({ timeout: 8000 });
+    return true;
+  }
+  return false;
+}
+
 async function main() {
   const candidate = configValue("candidate", null);
   const out = path.resolve(configValue("out", "/tmp/linkedin-pending-cleanup-withdraw-result.json"));
   const dryRun = Boolean(configValue("dryRun", true));
   const allowWithdraw = Boolean(configValue("allowWithdraw", false));
-  const maxLoadMore = Number(configValue("maxLoadMore", 110));
+  const maxLoadMore = Number(configValue("maxLoadMore", 260));
+  const configuredThresholdDays = configValue("thresholdDays", null);
+  const configuredThresholdWeeks = configValue("thresholdWeeks", null);
+  const configuredThresholdMonths = configValue("thresholdMonths", null);
+  const thresholdDays = configuredThresholdDays !== null
+    ? Number(configuredThresholdDays)
+    : configuredThresholdWeeks !== null
+      ? Number(configuredThresholdWeeks) * 7
+      : configuredThresholdMonths !== null
+        ? Number(configuredThresholdMonths) * 30
+        : 14;
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   if (!candidate || !candidate.name || !(candidate.age_text || candidate.ageText)) {
@@ -99,14 +185,14 @@ async function main() {
     throw new Error("real withdrawal requires allowWithdraw=true");
   }
 
-  state.pendingPage = state.pendingPage || await context.newPage();
-  await state.pendingPage.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
-    waitUntil: "domcontentloaded",
-    timeout: 45000,
-  });
+  if (!state.pendingPage || !/linkedin\.com\/mynetwork\/invitation-manager\/sent/.test(state.pendingPage.url())) {
+    state.pendingPage = await context.newPage();
+    await gotoSentInvitations(state.pendingPage);
+  }
+  await state.pendingPage.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
   await state.pendingPage.waitForTimeout(2500);
 
-  const beforeText = await state.pendingPage.locator("body").innerText({ timeout: 10000 });
+  const beforeText = await state.pendingPage.locator("body").textContent({ timeout: 30000 });
   const beforeCount = Number(beforeText.match(/People \((\d+)\)/)?.[1]);
   if (/checkpoint|security verification|sign in|uas\/login/i.test(`${state.pendingPage.url()}\n${beforeText.slice(0, 1500)}`)) {
     const result = { status: "blocked", reason: "checkpoint-login-or-limit", candidate, url: state.pendingPage.url(), body: cleanText(beforeText).slice(0, 1500) };
@@ -115,9 +201,10 @@ async function main() {
     return;
   }
 
-  const candidateAge = ageMonths(candidate.age_text || candidate.ageText);
-  if (candidateAge === null || candidateAge < 2) {
-    const result = { status: "not-eligible", reason: "candidate age is below stale threshold", candidate, ageMonths: candidateAge };
+  const candidateAgeDays = ageDays(candidate.age_text || candidate.ageText);
+  const candidateAgeMonths = ageMonths(candidate.age_text || candidate.ageText);
+  if (candidateAgeDays === null || candidateAgeDays < thresholdDays) {
+    const result = { status: "not-eligible", reason: "candidate age is below stale threshold", candidate, ageDays: candidateAgeDays, ageMonths: candidateAgeMonths, thresholdDays };
     fs.writeFileSync(out, JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -143,14 +230,12 @@ async function main() {
     if (!clickedWithdraw) {
       result.status = "withdraw-button-missing";
     } else {
-      await state.pendingPage.waitForTimeout(700);
-      const confirm = state.pendingPage.locator("button,a").filter({ hasText: /^Withdraw$/ }).last();
-      if (!(await confirm.count())) {
+      const clickedConfirm = await clickConfirmWithdraw(state.pendingPage);
+      if (!clickedConfirm) {
         result.status = "confirm-button-missing";
       } else {
-        await confirm.click({ timeout: 8000 });
         await state.pendingPage.waitForTimeout(2000);
-        const afterText = await state.pendingPage.locator("body").innerText({ timeout: 10000 });
+        const afterText = await state.pendingPage.locator("body").textContent({ timeout: 30000 });
         const afterCount = Number(afterText.match(/People \((\d+)\)/)?.[1]);
         result.afterCount = Number.isFinite(afterCount) ? afterCount : null;
         result.detail = { afterCount: result.afterCount };

@@ -207,9 +207,23 @@ func HandleSendGuarded(store *Store, options SendGuardedOptions) error {
 			if err != nil {
 				return err
 			}
-			if IsUncertainSendStatus(status) {
+			autoExhaustedSource := ""
+			if status == "blocked" {
+				run.State = RunStateBlocked
+				run.Notes = append(run.Notes, fmt.Sprintf("guarded send blocked for %s: %s", event.Name, status))
+			} else if IsUncertainSendStatus(status) {
 				run.State = RunStateNeedsReaudit
 				run.Notes = append(run.Notes, fmt.Sprintf("guarded send stopped after uncertain status for %s: %s", event.Name, status))
+				if isSendNoopStatus(status) && SourceRepeatedSendNoop(run, event.Source, 3) {
+					for i := range run.Sources {
+						if run.Sources[i].Name == event.Source {
+							run.Sources[i].Exhausted = true
+							break
+						}
+					}
+					autoExhaustedSource = event.Source
+					run.Notes = append(run.Notes, fmt.Sprintf("source exhausted after repeated send no-op: %s; three consecutive candidates did not become pending after Send Invitation", event.Source))
+				}
 			}
 			PushTiming(&run, "send-guarded", &event.Source, sendStarted, ptr(fmt.Sprintf("attempt=%d; status=%s; path=%s", attempts, status, resultPath)))
 			if err := store.Save(run); err != nil {
@@ -217,6 +231,11 @@ func HandleSendGuarded(store *Store, options SendGuardedOptions) error {
 			}
 			if err := store.AppendEvent(run, "record-send-result", map[string]any{"path": resultPath, "event": event}); err != nil {
 				return err
+			}
+			if autoExhaustedSource != "" {
+				if err := store.AppendEvent(run, "source-exhausted", map[string]any{"source": autoExhaustedSource, "via": "send-guarded-clicked-send-noop"}); err != nil {
+					return err
+				}
 			}
 			if len(drained) > 0 {
 				if err := store.AppendEvent(run, "drain-stale-candidates", map[string]any{"events": drained}); err != nil {

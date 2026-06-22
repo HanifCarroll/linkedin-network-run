@@ -10,15 +10,26 @@ function cleanText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function isAbortedNavigation(error) {
+  return /net::ERR_ABORTED|execution context was destroyed|navigation/i.test(String(error?.message || error));
+}
+
+async function gotoSentInvitations(page) {
+  await page.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
+    waitUntil: "domcontentloaded",
+    timeout: 45000,
+  }).catch(async (error) => {
+    if (!isAbortedNavigation(error)) throw error;
+    await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+  });
+}
+
 async function main() {
   const out = path.resolve(configValue("out", "/tmp/linkedin-network-run-audit.json"));
   const loadMore = Number(configValue("loadMore", 0));
 
   state.auditPage = state.auditPage || await context.newPage();
-  await state.auditPage.goto("https://www.linkedin.com/mynetwork/invitation-manager/sent/", {
-    waitUntil: "domcontentloaded",
-    timeout: 45000,
-  });
+  await gotoSentInvitations(state.auditPage);
   await state.auditPage.waitForTimeout(2500);
 
   for (let i = 0; i < loadMore; i += 1) {

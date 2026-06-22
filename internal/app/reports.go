@@ -139,7 +139,11 @@ func RenderAcceptanceReport(report AcceptanceReport) string {
 	lines = append(lines, "# LinkedIn Acceptance Report")
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("- Min age days: %d", report.MinAgeDays))
-	lines = append(lines, fmt.Sprintf("- Max age days: %v", report.MaxAgeDays))
+	if report.MaxAgeDays == nil {
+		lines = append(lines, "- Max age days: none")
+	} else {
+		lines = append(lines, fmt.Sprintf("- Max age days: %d", *report.MaxAgeDays))
+	}
 	lines = append(lines, fmt.Sprintf("- Total sent in window: %d", report.TotalSent))
 	lines = append(lines, fmt.Sprintf("- Checked: %d", report.Checked))
 	lines = append(lines, fmt.Sprintf("- Unchecked: %d", report.Unchecked))
@@ -199,10 +203,33 @@ func PrintPendingStatus(run PendingCleanupRun) {
 	fmt.Printf("run: %s\n", run.ID)
 	fmt.Printf("date: %s\n", run.Date)
 	fmt.Printf("state: %s\n", run.State)
-	fmt.Printf("threshold months: %d\n", run.ThresholdMonths)
+	fmt.Printf("threshold: %s\n", FormatPendingThreshold(run))
 	fmt.Printf("withdrawn: %d/%d\n", run.WithdrawnCount(), run.MaxWithdrawals)
 	fmt.Printf("audit: start %s, latest %s, delta %s\n", FormatU32Option(run.StartAudit), FormatU32Option(run.LatestAudit), FormatDelta(run.AuditedDelta()))
 	fmt.Printf("imported observations: %d\n", len(run.Observations))
+}
+
+func FormatPendingThreshold(run PendingCleanupRun) string {
+	if run.ThresholdDays > 0 {
+		if run.ThresholdDays%7 == 0 {
+			weeks := run.ThresholdDays / 7
+			unit := "weeks"
+			if weeks == 1 {
+				unit = "week"
+			}
+			return fmt.Sprintf("%d %s", weeks, unit)
+		}
+		unit := "days"
+		if run.ThresholdDays == 1 {
+			unit = "day"
+		}
+		return fmt.Sprintf("%d %s", run.ThresholdDays, unit)
+	}
+	unit := "months"
+	if run.ThresholdMonths == 1 {
+		unit = "month"
+	}
+	return fmt.Sprintf("%d %s", run.ThresholdMonths, unit)
 }
 
 func RenderPendingReport(run PendingCleanupRun) string {
@@ -211,7 +238,7 @@ func RenderPendingReport(run PendingCleanupRun) string {
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("- Run id: `%s`", run.ID))
 	lines = append(lines, fmt.Sprintf("- State: `%s`", run.State))
-	lines = append(lines, fmt.Sprintf("- Threshold: %d months", run.ThresholdMonths))
+	lines = append(lines, fmt.Sprintf("- Threshold: %s", FormatPendingThreshold(run)))
 	lines = append(lines, fmt.Sprintf("- Safety cap: %d", run.MaxWithdrawals))
 	lines = append(lines, fmt.Sprintf("- Start audit: %s", FormatU32Option(run.StartAudit)))
 	lines = append(lines, fmt.Sprintf("- Final/latest audit: %s", FormatU32Option(run.LatestAudit)))

@@ -171,19 +171,34 @@ async function main() {
   const input = path.resolve(configValue("in", "/tmp/linkedin-accepted-candidates.json"));
   const out = path.resolve(configValue("out", "/tmp/linkedin-accepted-research.json"));
   const limit = Number(configValue("limit", 0));
+  const offset = Number(configValue("offset", 0));
   const maxWebResults = Number(configValue("maxWebResults", 5));
   const delayMs = Number(configValue("delayMs", 500));
   const publicWeb = Boolean(configValue("publicWeb", true));
   fs.mkdirSync(path.dirname(out), { recursive: true });
 
   const candidates = JSON.parse(fs.readFileSync(input, "utf8"));
-  const selected = takeFirst(candidates, limit);
+  const selected = takeFirst(candidates.slice(offset), limit);
   const salesPage = state.acceptedResearchSalesPage || context.pages().find((item) => item.url().includes("/sales/lead/")) || await context.newPage();
   const webPage = state.acceptedResearchWebPage || await context.newPage();
   state.acceptedResearchSalesPage = salesPage;
   state.acceptedResearchWebPage = webPage;
 
   const rows = [];
+  const writeArtifact = (complete) => {
+    const artifact = {
+      capturedAt: new Date().toISOString(),
+      input,
+      count: rows.length,
+      offset,
+      limit,
+      totalCandidates: candidates.length,
+      complete,
+      rows,
+    };
+    fs.writeFileSync(out, JSON.stringify(artifact, null, 2));
+  };
+
   for (const candidate of selected) {
     const warnings = [];
     let salesNav = { warnings: ["Sales Nav research did not run"] };
@@ -215,18 +230,16 @@ async function main() {
     if (delayMs > 0) {
       await salesPage.waitForTimeout(delayMs);
     }
+    writeArtifact(false);
   }
 
-  const artifact = {
-    capturedAt: new Date().toISOString(),
-    input,
-    count: rows.length,
-    rows,
-  };
-  fs.writeFileSync(out, JSON.stringify(artifact, null, 2));
+  writeArtifact(true);
   console.log(JSON.stringify({
     out,
     count: rows.length,
+    offset,
+    limit,
+    totalCandidates: candidates.length,
     publicWeb,
   }, null, 2));
 }

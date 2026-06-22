@@ -240,22 +240,23 @@ type AuditEvent struct {
 }
 
 type Run struct {
-	ID             uuid.UUID                      `json:"id"`
-	Date           Date                           `json:"date"`
-	Target         uint32                         `json:"target"`
-	MaxRealSends   uint32                         `json:"max_real_sends"`
-	State          RunState                       `json:"state"`
-	Sources        []SourcePlan                   `json:"sources"`
-	StartAudit     *uint32                        `json:"start_audit"`
-	LatestAudit    *uint32                        `json:"latest_audit"`
-	Audits         []AuditEvent                   `json:"audits"`
-	Candidates     []CandidateEvent               `json:"candidates"`
-	Observations   []CandidateObservation         `json:"observations"`
-	CaptureCursors map[string]SourceCaptureCursor `json:"capture_cursors"`
-	Timings        []RunTimingEvent               `json:"timings"`
-	Notes          []string                       `json:"notes"`
-	CreatedAt      time.Time                      `json:"created_at"`
-	UpdatedAt      time.Time                      `json:"updated_at"`
+	ID              uuid.UUID                      `json:"id"`
+	Date            Date                           `json:"date"`
+	Target          uint32                         `json:"target"`
+	MaxRealSends    uint32                         `json:"max_real_sends"`
+	State           RunState                       `json:"state"`
+	Sources         []SourcePlan                   `json:"sources"`
+	StartAudit      *uint32                        `json:"start_audit"`
+	LatestAudit     *uint32                        `json:"latest_audit"`
+	Audits          []AuditEvent                   `json:"audits"`
+	Candidates      []CandidateEvent               `json:"candidates"`
+	Observations    []CandidateObservation         `json:"observations"`
+	CaptureCursors  map[string]SourceCaptureCursor `json:"capture_cursors"`
+	Timings         []RunTimingEvent               `json:"timings"`
+	Notes           []string                       `json:"notes"`
+	BlockedResumeAt *time.Time                     `json:"blocked_resume_at,omitempty"`
+	CreatedAt       time.Time                      `json:"created_at"`
+	UpdatedAt       time.Time                      `json:"updated_at"`
 }
 
 type PendingCandidateObservation struct {
@@ -266,6 +267,7 @@ type PendingCandidateObservation struct {
 	ProfileURL *string   `json:"profile_url"`
 	AgeText    string    `json:"age_text"`
 	AgeMonths  *uint32   `json:"age_months"`
+	AgeDays    *uint32   `json:"age_days"`
 	Eligible   bool      `json:"eligible"`
 	RowText    string    `json:"row_text"`
 }
@@ -284,6 +286,7 @@ type PendingCleanupRun struct {
 	Date            Date                          `json:"date"`
 	MaxWithdrawals  uint32                        `json:"max_withdrawals"`
 	ThresholdMonths uint32                        `json:"threshold_months"`
+	ThresholdDays   uint32                        `json:"threshold_days"`
 	State           PendingCleanupState           `json:"state"`
 	StartAudit      *uint32                       `json:"start_audit"`
 	LatestAudit     *uint32                       `json:"latest_audit"`
@@ -441,12 +444,19 @@ func NewRunDefault(target uint32, date Date) Run {
 }
 
 func NewPendingCleanupRun(maxWithdrawals, thresholdMonths uint32, date Date) PendingCleanupRun {
+	run := NewPendingCleanupRunWithThresholdDays(maxWithdrawals, thresholdMonths*30, date)
+	run.ThresholdMonths = thresholdMonths
+	return run
+}
+
+func NewPendingCleanupRunWithThresholdDays(maxWithdrawals, thresholdDays uint32, date Date) PendingCleanupRun {
 	now := time.Now()
 	return PendingCleanupRun{
 		ID:              uuid.New(),
 		Date:            date,
 		MaxWithdrawals:  maxWithdrawals,
-		ThresholdMonths: thresholdMonths,
+		ThresholdMonths: thresholdDays / 30,
+		ThresholdDays:   thresholdDays,
 		State:           PendingCleanupStateStarted,
 		Audits:          []AuditEvent{},
 		Observations:    []PendingCandidateObservation{},
@@ -825,6 +835,10 @@ func (r Run) OperatorPlanWithReservoir(reservoir *CandidateReservoir) OperatorPl
 		reason := "run is paused in NEEDS_REAUDIT"
 		return OperatorPlan{Action: "reaudit", Reason: &reason}
 	}
+	if r.State == RunStateBlocked {
+		reason := "run is blocked by the latest guarded send result"
+		return OperatorPlan{Action: "blocked", Reason: &reason}
+	}
 	if r.VerifiedCount() >= r.Target {
 		return OperatorPlan{Action: "final-audit"}
 	}
@@ -1144,6 +1158,9 @@ func (r *AcceptanceReport) Add(source string, status AcceptanceStatus, checked b
 }
 
 func (r *PendingCleanupRun) Normalize() {
+	if r.ThresholdDays == 0 && r.ThresholdMonths > 0 {
+		r.ThresholdDays = r.ThresholdMonths * 30
+	}
 	if r.Audits == nil {
 		r.Audits = []AuditEvent{}
 	}

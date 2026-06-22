@@ -590,6 +590,11 @@ playwriter -s <session> --timeout 45000 \
   -f /Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-acceptance-outcomes.js
 ```
 
+For large exports, set `offset` and `limit` and write one chunk artifact per
+batch. The script writes its artifact after each checked row and marks the final
+artifact with `complete: true`, so interrupted browser runs can be resumed from
+the last completed chunk instead of restarting the whole export.
+
 Import the browser outcome artifact and report acceptance by source:
 
 ```sh
@@ -613,6 +618,9 @@ writes a Markdown report, and records the drafted people in
 `--research <artifact.json>` to render from an existing research artifact without
 opening the browser. Adjust `--max-web-results` if the public web evidence needs
 to be broader or narrower without changing the draft strategy.
+For large accepted batches, `salesnav-accepted-research.js` also accepts
+`offset` and `limit` and writes incremental chunk artifacts with `complete:
+true` when a chunk finishes.
 
 Outcome statuses are:
 
@@ -696,7 +704,7 @@ The same binary also owns stale sent-invitation cleanup state:
 ```sh
 linkedin-network-run pending-cleanup start \
   --max-withdrawals 75 \
-  --threshold-months 2
+  --threshold-weeks 2
 
 linkedin-network-run pending-cleanup import-audit /tmp/linkedin-pending-cleanup-audit.json
 linkedin-network-run pending-cleanup import-capture /tmp/linkedin-pending-cleanup-capture.json
@@ -712,7 +720,7 @@ Capture sent invitations with Playwriter:
 playwriter -s <session> -e 'state.salesNavPendingCaptureConfig = {
   out: "/tmp/linkedin-pending-cleanup-capture.json",
   loadMore: 10,
-  thresholdMonths: 2
+  thresholdDays: 14
 }'
 
 playwriter -s <session> --timeout 45000 \
