@@ -1130,6 +1130,20 @@ func TestDefaultOutreachSourceURLUsesProductStudioFallback(t *testing.T) {
 	}
 }
 
+func TestSalesNavMessageSenderPreservesConfiguredLineBreaks(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "salesnav-send-message-one.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if strings.Contains(source, `cleanText(configValue("message"`) {
+		t.Fatal("sender must not cleanText the configured message; that collapses draft line breaks")
+	}
+	if !strings.Contains(source, `replace(/\r\n/g, "\n").trim()`) {
+		t.Fatal("sender should normalize CRLF while preserving internal line breaks")
+	}
+}
+
 func strPtr(value string) *string {
 	return &value
 }

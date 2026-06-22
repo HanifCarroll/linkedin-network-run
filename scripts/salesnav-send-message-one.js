@@ -360,7 +360,7 @@ async function openProfileAndClickMessageAction(candidate, profileApiResponses) 
 
 async function main() {
   const candidate = configValue("candidate", null);
-  const message = cleanText(configValue("message", ""));
+  const message = String(configValue("message", "") || "").replace(/\r\n/g, "\n").trim();
   const subject = cleanText(configValue("subject", "Contract product engineering availability"));
   const out = path.resolve(configValue("out", "/tmp/recruiter-agency-message-result.json"));
   const dryRun = Boolean(configValue("dryRun", true));
