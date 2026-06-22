@@ -102,7 +102,7 @@ func TestImportCaptureClassifiesAgencyDeliveryAndDrafts(t *testing.T) {
 	if lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted {
 		t.Fatalf("lead = %#v", lead)
 	}
-	if lead.Draft == nil || !strings.Contains(lead.Draft.Body, "I'd like to be considered for your contract pipeline.") {
+	if lead.Draft == nil || !strings.Contains(lead.Draft.Body, "I'd like to be considered for contract, project overflow, or short-term product engineering work.") {
 		t.Fatalf("draft = %#v", lead.Draft)
 	}
 }
@@ -534,7 +534,7 @@ func TestRecruiterDraftUsesApprovedContractPipelineTemplate(t *testing.T) {
 	if !strings.Contains(body, "Hi Jackie,") {
 		t.Fatalf("body = %q", body)
 	}
-	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'd like to be considered for your contract pipeline.") {
+	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'd like to be considered for contract, project overflow, or short-term product engineering work.") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(body, "Turning an AI media MVP into a full production agent platform") || !strings.Contains(body, "Best regards,\nHanif Carroll") {
@@ -553,7 +553,7 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 	if strings.Contains(body, "Las Vegas, Nevada, United States works") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "I'd like to be considered for your contract pipeline.") {
+	if !strings.Contains(body, "I'd like to be considered for contract, project overflow, or short-term product engineering work.") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -569,7 +569,7 @@ func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
 		LeadType:              LeadTypeAgencyFounder,
 	}
 	body := agencyDraft(lead)
-	if !strings.Contains(body, "I'd like to be considered for your contract pipeline.") || !strings.Contains(body, "Shipping an AI tool that helps remote workers") {
+	if !strings.Contains(body, "I'd like to be considered for contract, project overflow, or short-term product engineering work.") || !strings.Contains(body, "Shipping an AI tool that helps remote workers") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {

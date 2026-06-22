@@ -337,17 +337,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0
 a{color:#1455d9;text-decoration:none}
 header{background:#fff;border-bottom:1px solid #d9dee7;padding:16px 24px}
 main{padding:20px 24px}
+h1{font-size:28px;line-height:1.15;margin:8px 0 10px}
 .meta{color:#5c6675;font-size:13px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
 .tabs a,.pill{border:1px solid #c8d0dc;background:#fff;border-radius:6px;padding:7px 10px;font-size:13px;color:#1d2733}
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
 input,textarea,select{font:inherit;border:1px solid #b9c3d1;border-radius:6px;padding:8px;background:#fff}
 button{font:inherit;border:1px solid #1f5fd6;background:#1f5fd6;color:#fff;border-radius:6px;padding:8px 12px;cursor:pointer}
+.table-wrap{overflow-x:auto;border:1px solid #d9dee7;background:#fff}
 table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #d9dee7}
 th,td{padding:10px;border-bottom:1px solid #e4e8ef;text-align:left;vertical-align:top;font-size:14px}
 th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;background:#fbfcfd}
 .status{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .empty{background:#fff;border:1px solid #d9dee7;padding:20px}
+@media (max-width:720px){header,main{padding:14px 16px}h1{font-size:24px}.filters{display:grid}.filters input,.filters select,.filters button{width:100%;box-sizing:border-box}th,td{font-size:13px;padding:8px}}
 </style>
 </head>
 <body>
@@ -374,7 +377,7 @@ th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;ba
 <button type="submit">Filter</button>
 </form>
 {{if .Leads}}
-<table>
+<div class="table-wrap"><table>
 <thead><tr><th>Name</th><th>Bucket</th><th>Status</th><th>Title</th><th>Company</th><th>Score</th><th></th></tr></thead>
 <tbody>
 {{range .Leads}}
@@ -389,7 +392,7 @@ th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;ba
 </tr>
 {{end}}
 </tbody>
-</table>
+</table></div>
 {{else}}
 <div class="empty">No recruiter or agency leads match this filter.</div>
 {{end}}
@@ -409,18 +412,22 @@ th{font-size:12px;color:#5c6675;text-transform:uppercase;letter-spacing:.04em;ba
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;color:#17202a;background:#f7f8fa}
 a{color:#1455d9;text-decoration:none}
 header{background:#fff;border-bottom:1px solid #d9dee7;padding:16px 24px}
-main{max-width:980px;padding:20px 24px}
+main{max-width:1180px;padding:20px 24px}
+h1{font-size:32px;line-height:1.15;margin:28px 0 12px}
 .meta,.field{color:#5c6675;font-size:13px}
+.meta{overflow-wrap:anywhere}
 .summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:18px}
-.field{background:#fff;border:1px solid #d9dee7;border-radius:6px;padding:10px}
+.field{background:#fff;border:1px solid #d9dee7;border-radius:6px;padding:10px;min-width:0;overflow-wrap:anywhere}
 label{display:block;font-weight:600;margin:14px 0 6px}
 input,textarea{box-sizing:border-box;width:100%;font:inherit;border:1px solid #b9c3d1;border-radius:6px;padding:10px;background:#fff}
-textarea{min-height:360px;line-height:1.45}
+textarea{min-height:360px;line-height:1.45;resize:vertical}
 button{font:inherit;border:1px solid #1f5fd6;background:#1f5fd6;color:#fff;border-radius:6px;padding:8px 12px;cursor:pointer}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
 .secondary{background:#fff;color:#1d2733;border-color:#b9c3d1}
 .warn{background:#fff7ed;color:#9a3412;border-color:#fdba74}
 .approve{background:#137333;border-color:#137333}
+@media (max-width:760px){header,main{padding:14px 16px}h1{font-size:26px;margin:20px 0 10px}.summary{grid-template-columns:1fr}.actions{display:grid}.actions button{width:100%}textarea{min-height:300px}}
+@media (max-width:420px){h1{font-size:24px}.meta,.field{font-size:12px}input,textarea,button{font-size:16px}}
 </style>
 </head>
 <body>
