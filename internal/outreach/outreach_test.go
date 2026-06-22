@@ -537,7 +537,10 @@ func TestRecruiterDraftUsesApprovedContractTemplate(t *testing.T) {
 	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract work.") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "Turned an AI media MVP into a production agent platform") || !strings.Contains(body, "Best,\nHanif Carroll") {
+	if !strings.Contains(body, "Turned an AI media MVP into a production agent platform") {
+		t.Fatalf("body = %q", body)
+	}
+	if strings.Contains(body, "Best,") || strings.Contains(body, "Hanif Carroll") {
 		t.Fatalf("body = %q", body)
 	}
 }
