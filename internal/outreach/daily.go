@@ -479,10 +479,13 @@ func validateBucket(store *Store, options DailyOptions, bucket string, target in
 }
 
 func sendBucket(store *Store, options DailyOptions, bucket string, target int, actions *[]DailyLeadAction) error {
-	for sentCountFromActions(*actions, bucket) < target {
+	for {
 		state, err := store.Load()
 		if err != nil {
 			return err
+		}
+		if sentCount(state, bucket) >= target {
+			return nil
 		}
 		candidates := readyLeads(state, bucket)
 		if len(candidates) == 0 {
@@ -620,7 +623,7 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 
 func bucketCompleteForRun(state OutreachState, bucket string, target int, allowSend bool, actions []DailyLeadAction) bool {
 	if allowSend {
-		return sentCountFromActions(actions, bucket) >= target
+		return sentCount(state, bucket) >= target
 	}
 	return readyCount(state, bucket) >= target
 }
@@ -633,6 +636,16 @@ func sentCountFromActions(actions []DailyLeadAction, bucket string) int {
 	count := 0
 	for _, action := range actions {
 		if action.Bucket == bucket && action.Result == "sent-clicked" {
+			count++
+		}
+	}
+	return count
+}
+
+func sentCount(state OutreachState, bucket string) int {
+	count := 0
+	for _, lead := range state.Leads {
+		if leadMatchesSendableBucket(state, lead, bucket) && lead.MessageStatus == MessageStatusSent {
 			count++
 		}
 	}

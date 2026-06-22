@@ -268,6 +268,13 @@ async function fillComposer(composer, message) {
   if (normalizeNewlines(actual) !== normalizeNewlines(message)) {
     throw new Error("composer body mismatch after fill");
   }
+  return {
+    matched: true,
+    selector: composer.selector,
+    expectedLength: message.length,
+    actualLength: actual.length,
+    lineBreakCount: (normalizeNewlines(actual).match(/\n/g) || []).length,
+  };
 }
 
 async function clickSendButton() {
@@ -291,6 +298,31 @@ async function clickSendButton() {
     return { clicked: false };
   });
   return clicked || { clicked: false };
+}
+
+async function inspectSendButtons() {
+  return await state.page.evaluate(() => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog'], .msg-overlay-conversation-bubble, .artdeco-modal"));
+    const scopes = dialogs.length ? dialogs.reverse() : [document.body];
+    const buttons = [];
+    for (const scope of scopes) {
+      for (const element of Array.from(scope.querySelectorAll("button"))) {
+        const rect = element.getBoundingClientRect();
+        const text = clean(element.innerText || element.textContent || "");
+        const aria = element.getAttribute("aria-label") || "";
+        if (!/send/i.test(`${text} ${aria}`)) continue;
+        buttons.push({
+          text,
+          aria,
+          disabled: Boolean(element.disabled || element.getAttribute("disabled") !== null || element.getAttribute("aria-disabled") === "true"),
+          visible: rect.width > 0 && rect.height > 0,
+          tag: element.tagName,
+        });
+      }
+    }
+    return buttons.slice(0, 8);
+  }).catch((error) => [{ error: String(error).slice(0, 500) }]);
 }
 
 async function openProfileAndClickMessageAction(candidate, profileApiResponses) {
@@ -443,14 +475,15 @@ async function main() {
   }
 
   const subjectFill = await fillSubjectIfPresent(subject);
-  await fillComposer(composer, message);
+  const bodyFill = await fillComposer(composer, message);
   await state.page.waitForTimeout(500);
   const send = await clickSendButton();
   if (!send.clicked) {
-    return complete({ status: "send-button-missing", action, composerSelector: composer.selector, subjectFill, profileApiResponses });
+    const sendButtons = await inspectSendButtons();
+    return complete({ status: "send-button-missing", action, composerSelector: composer.selector, subjectFill, bodyFill, sendButtons, profileApiResponses });
   }
   await state.page.waitForTimeout(2000);
-  return complete({ status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, send, profileApiResponses });
+  return complete({ status: "sent-clicked", action, composerSelector: composer.selector, subjectFill, bodyFill, send, profileApiResponses });
 }
 
 await main();

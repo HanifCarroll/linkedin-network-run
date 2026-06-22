@@ -34,15 +34,22 @@ type MessageCandidate struct {
 }
 
 type MessageSendResult struct {
-	Candidate     MessageCandidate `json:"candidate"`
-	DryRun        bool             `json:"dryRun"`
-	URL           *string          `json:"url"`
-	MessageLength int              `json:"messageLength"`
-	Status        string           `json:"status"`
-	Reason        *string          `json:"reason"`
-	Action        json.RawMessage  `json:"action"`
-	Send          json.RawMessage  `json:"send"`
-	Body          *string          `json:"body"`
+	Candidate           MessageCandidate `json:"candidate"`
+	DryRun              bool             `json:"dryRun"`
+	URL                 *string          `json:"url"`
+	MessageLength       int              `json:"messageLength"`
+	Status              string           `json:"status"`
+	Reason              *string          `json:"reason"`
+	Action              json.RawMessage  `json:"action"`
+	SearchRowAction     json.RawMessage  `json:"searchRowAction"`
+	ConversationCheck   json.RawMessage  `json:"conversationCheck"`
+	SubjectFill         json.RawMessage  `json:"subjectFill"`
+	BodyFill            json.RawMessage  `json:"bodyFill"`
+	Send                json.RawMessage  `json:"send"`
+	SendButtons         json.RawMessage  `json:"sendButtons"`
+	ProfileAPIResponses json.RawMessage  `json:"profileApiResponses"`
+	ComposerSelector    *string          `json:"composerSelector"`
+	Body                *string          `json:"body"`
 }
 
 func SendMessage(store *Store, options SendMessageOptions) error {
@@ -124,6 +131,16 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 		return err
 	}
 	ApplyMessageSendResult(&state.Leads[index], result, outPath)
+	appendRunEvent(&state, RunEvent{
+		At:      time.Now(),
+		Phase:   "send-message",
+		Bucket:  bucketForLead(state.Leads[index]),
+		LeadID:  state.Leads[index].ID,
+		Name:    state.Leads[index].Name,
+		Result:  result.Status,
+		Note:    diagnosticSummary(result),
+		OutPath: outPath,
+	})
 	if err := store.Save(state); err != nil {
 		return err
 	}
@@ -163,15 +180,88 @@ func ApplyMessageSendResult(lead *Lead, result MessageSendResult, outPath string
 	now := time.Now()
 	note := resultNote(result)
 	lead.SendAttempts = append(lead.SendAttempts, SendAttempt{
-		At:        now,
-		DryRun:    result.DryRun,
-		Status:    result.Status,
-		ResultURL: result.URL,
-		Note:      note,
-		OutPath:   outPath,
+		At:          now,
+		DryRun:      result.DryRun,
+		Status:      result.Status,
+		ResultURL:   result.URL,
+		Note:        note,
+		OutPath:     outPath,
+		Diagnostics: sendDiagnostics(result),
 	})
 	lead.MessageStatus = messageStatusForResult(result)
 	lead.UpdatedAt = now
+}
+
+func sendDiagnostics(result MessageSendResult) map[string]string {
+	diagnostics := map[string]string{}
+	if result.ComposerSelector != nil && cleanText(*result.ComposerSelector) != "" {
+		diagnostics["composer"] = cleanText(*result.ComposerSelector)
+	}
+	if len(result.SubjectFill) > 0 && string(result.SubjectFill) != "null" {
+		diagnostics["subject"] = compactJSON(result.SubjectFill)
+	}
+	if len(result.BodyFill) > 0 && string(result.BodyFill) != "null" {
+		diagnostics["body"] = compactJSON(result.BodyFill)
+	}
+	if len(result.Send) > 0 && string(result.Send) != "null" {
+		diagnostics["send"] = compactJSON(result.Send)
+	}
+	if len(result.SendButtons) > 0 && string(result.SendButtons) != "null" {
+		diagnostics["send_buttons"] = compactJSON(result.SendButtons)
+	}
+	if len(result.ConversationCheck) > 0 && string(result.ConversationCheck) != "null" {
+		diagnostics["conversation"] = compactJSON(result.ConversationCheck)
+	}
+	if len(result.Action) > 0 && string(result.Action) != "null" {
+		diagnostics["action"] = compactJSON(result.Action)
+	}
+	return diagnostics
+}
+
+func compactJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return truncateEvidence(string(raw))
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return truncateEvidence(string(raw))
+	}
+	return truncateEvidence(string(encoded))
+}
+
+func diagnosticSummary(result MessageSendResult) string {
+	parts := []string{}
+	if result.Reason != nil && cleanText(*result.Reason) != "" {
+		parts = append(parts, cleanText(*result.Reason))
+	}
+	if result.ComposerSelector != nil && cleanText(*result.ComposerSelector) != "" {
+		parts = append(parts, "composer "+cleanText(*result.ComposerSelector))
+	}
+	if len(result.SubjectFill) > 0 && string(result.SubjectFill) != "null" {
+		parts = append(parts, "subject "+compactJSON(result.SubjectFill))
+	}
+	if len(result.BodyFill) > 0 && string(result.BodyFill) != "null" {
+		parts = append(parts, "body "+compactJSON(result.BodyFill))
+	}
+	if len(result.Send) > 0 && string(result.Send) != "null" {
+		parts = append(parts, "send "+compactJSON(result.Send))
+	}
+	return truncateEvidence(strings.Join(parts, "; "))
+}
+
+func appendRunEvent(state *OutreachState, event RunEvent) {
+	if event.At.IsZero() {
+		event.At = time.Now()
+	}
+	state.RunEvents = append(state.RunEvents, event)
+	const maxRunEvents = 500
+	if len(state.RunEvents) > maxRunEvents {
+		state.RunEvents = state.RunEvents[len(state.RunEvents)-maxRunEvents:]
+	}
 }
 
 func messageStatusForResult(result MessageSendResult) MessageStatus {

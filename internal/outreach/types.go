@@ -60,7 +60,20 @@ type OutreachState struct {
 	Leads          []Lead                   `json:"leads"`
 	AgencyAccounts []AgencyAccount          `json:"agency_accounts"`
 	CaptureCursors map[string]CaptureCursor `json:"capture_cursors"`
+	RunEvents      []RunEvent               `json:"run_events"`
 	UpdatedAt      time.Time                `json:"updated_at"`
+}
+
+type RunEvent struct {
+	At        time.Time `json:"at"`
+	Phase     string    `json:"phase"`
+	Bucket    string    `json:"bucket,omitempty"`
+	LeadID    string    `json:"lead_id,omitempty"`
+	AccountID string    `json:"account_id,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	Result    string    `json:"result,omitempty"`
+	Note      string    `json:"note,omitempty"`
+	OutPath   string    `json:"out_path,omitempty"`
 }
 
 type CaptureCursor struct {
@@ -139,12 +152,13 @@ type MessageDraft struct {
 }
 
 type SendAttempt struct {
-	At        time.Time `json:"at"`
-	DryRun    bool      `json:"dry_run"`
-	Status    string    `json:"status"`
-	ResultURL *string   `json:"result_url"`
-	Note      *string   `json:"note"`
-	OutPath   string    `json:"out_path"`
+	At          time.Time         `json:"at"`
+	DryRun      bool              `json:"dry_run"`
+	Status      string            `json:"status"`
+	ResultURL   *string           `json:"result_url"`
+	Note        *string           `json:"note"`
+	OutPath     string            `json:"out_path"`
+	Diagnostics map[string]string `json:"diagnostics,omitempty"`
 }
 
 type ImportSummary struct {
@@ -202,6 +216,9 @@ func (s *OutreachState) Normalize() {
 	}
 	if s.CaptureCursors == nil {
 		s.CaptureCursors = map[string]CaptureCursor{}
+	}
+	if s.RunEvents == nil {
+		s.RunEvents = []RunEvent{}
 	}
 	for i := range s.AgencyAccounts {
 		s.AgencyAccounts[i].Normalize()

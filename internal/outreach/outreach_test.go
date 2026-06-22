@@ -627,7 +627,7 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 	}
 }
 
-func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
+func TestDailySendCompletionCountsPersistedSentLeads(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{
 			ID:              "old_sent",
@@ -652,15 +652,11 @@ func TestDailySendCompletionCountsCurrentRunActions(t *testing.T) {
 		Name:   "Active Studio",
 		Status: AgencyAccountStatusQualified,
 	}}}
-	if bucketCompleteForRun(state, "agency", 1, true, nil) {
-		t.Fatal("historical sent lead should not satisfy a real-send daily quota")
+	if !bucketCompleteForRun(state, "agency", 1, true, nil) {
+		t.Fatal("persisted sent lead should satisfy a real-send daily quota")
 	}
 	if !bucketCompleteForRun(state, "agency", 1, false, nil) {
 		t.Fatal("ready lead should satisfy a draft/validation daily quota")
-	}
-	actions := []DailyLeadAction{{Bucket: "agency", Result: "sent-clicked"}}
-	if !bucketCompleteForRun(state, "agency", 1, true, actions) {
-		t.Fatal("current run sent action should satisfy a real-send daily quota")
 	}
 	if got := readyLeads(state, "agency"); len(got) != 1 || got[0].ID != "ready_now" {
 		t.Fatalf("ready leads = %#v", got)

@@ -184,6 +184,10 @@ func ensureSQLiteSchema(db *sql.DB) error {
 			source TEXT PRIMARY KEY,
 			data TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS run_events (
+			position INTEGER PRIMARY KEY,
+			data TEXT NOT NULL
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -265,6 +269,11 @@ func loadSQLiteState(db *sql.DB) (OutreachState, error) {
 	for _, cursor := range cursors {
 		state.CaptureCursors[cursor.Source] = cursor
 	}
+	events, err := loadJSONRows[RunEvent](db, "SELECT data FROM run_events ORDER BY position")
+	if err != nil {
+		return OutreachState{}, err
+	}
+	state.RunEvents = events
 	state.Normalize()
 	return state, nil
 }
@@ -362,6 +371,7 @@ func saveSQLiteState(db *sql.DB, state OutreachState) error {
 		"DELETE FROM leads",
 		"DELETE FROM agency_accounts",
 		"DELETE FROM capture_cursors",
+		"DELETE FROM run_events",
 		"DELETE FROM meta",
 	} {
 		if _, err := tx.Exec(statement); err != nil {
@@ -390,6 +400,11 @@ func saveSQLiteState(db *sql.DB, state OutreachState) error {
 		}
 		if err := insertJSON(tx, "INSERT INTO capture_cursors (source, data) VALUES (?, ?)", cursor.Source, cursor); err != nil {
 			return fmt.Errorf("saving capture cursor %s: %w", cursor.Source, err)
+		}
+	}
+	for index, event := range state.RunEvents {
+		if err := insertJSON(tx, "INSERT INTO run_events (position, data) VALUES (?, ?)", index, event); err != nil {
+			return fmt.Errorf("saving run event %d: %w", index, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
