@@ -1138,6 +1138,9 @@ func TestSalesNavMessageSenderPreservesConfiguredLineBreaks(t *testing.T) {
 	if !strings.Contains(source, `replace(/\r\n/g, "\n").trim()`) {
 		t.Fatal("sender should normalize CRLF while preserving internal line breaks")
 	}
+	if !strings.Contains(source, "acceptanceFollowupMessageConfig") {
+		t.Fatal("sender should accept the acceptance follow-up message config namespace")
+	}
 }
 
 func strPtr(value string) *string {

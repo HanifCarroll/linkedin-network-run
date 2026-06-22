@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,21 +30,72 @@ type AcceptanceFollowupLedger struct {
 	Drafts []AcceptanceFollowupRecord `json:"drafts"`
 }
 
+type AcceptanceFollowupStatus string
+
+const (
+	AcceptanceFollowupStatusDrafted            AcceptanceFollowupStatus = "drafted"
+	AcceptanceFollowupStatusDryRunReady        AcceptanceFollowupStatus = "dry_run_ready"
+	AcceptanceFollowupStatusSent               AcceptanceFollowupStatus = "sent"
+	AcceptanceFollowupStatusConversationExists AcceptanceFollowupStatus = "conversation_exists"
+	AcceptanceFollowupStatusNotMessageable     AcceptanceFollowupStatus = "not_messageable"
+	AcceptanceFollowupStatusBlocked            AcceptanceFollowupStatus = "blocked"
+	AcceptanceFollowupStatusSendFailed         AcceptanceFollowupStatus = "send_failed"
+)
+
 type AcceptanceFollowupRecord struct {
-	Key          string        `json:"key"`
-	Source       string        `json:"source"`
-	Name         string        `json:"name"`
-	ProfileURL   *string       `json:"profile_url"`
-	DraftedAt    time.Time     `json:"drafted_at"`
-	AcceptedAt   time.Time     `json:"accepted_at"`
-	Strategy     DraftStrategy `json:"strategy"`
-	ReportPath   string        `json:"report_path"`
-	ResearchPath *string       `json:"research_path"`
+	Key          string                      `json:"key"`
+	ID           string                      `json:"id"`
+	Source       string                      `json:"source"`
+	Name         string                      `json:"name"`
+	ProfileURL   *string                     `json:"profile_url"`
+	DraftedAt    time.Time                   `json:"drafted_at"`
+	UpdatedAt    time.Time                   `json:"updated_at"`
+	AcceptedAt   time.Time                   `json:"accepted_at"`
+	Strategy     DraftStrategy               `json:"strategy"`
+	Angle        string                      `json:"angle"`
+	Draft        string                      `json:"draft"`
+	Evidence     []string                    `json:"evidence"`
+	Warnings     []string                    `json:"warnings"`
+	Status       AcceptanceFollowupStatus    `json:"status"`
+	SentAt       *time.Time                  `json:"sent_at"`
+	Attempts     []AcceptanceFollowupAttempt `json:"attempts"`
+	ReportPath   string                      `json:"report_path"`
+	ResearchPath *string                     `json:"research_path"`
+}
+
+type AcceptanceFollowupAttempt struct {
+	At          time.Time         `json:"at"`
+	DryRun      bool              `json:"dry_run"`
+	Status      string            `json:"status"`
+	ResultURL   *string           `json:"result_url"`
+	Note        *string           `json:"note"`
+	OutPath     string            `json:"out_path"`
+	Diagnostics map[string]string `json:"diagnostics"`
 }
 
 func (l *AcceptanceFollowupLedger) Normalize() {
 	if l.Drafts == nil {
 		l.Drafts = []AcceptanceFollowupRecord{}
+	}
+	for i := range l.Drafts {
+		if l.Drafts[i].Key == "" {
+			l.Drafts[i].Key = CandidateKey(l.Drafts[i].Source, l.Drafts[i].Name, l.Drafts[i].ProfileURL)
+		}
+		if l.Drafts[i].ID == "" {
+			l.Drafts[i].ID = AcceptanceFollowupID(l.Drafts[i].Key)
+		}
+		if l.Drafts[i].Status == "" {
+			l.Drafts[i].Status = AcceptanceFollowupStatusDrafted
+		}
+		if l.Drafts[i].Evidence == nil {
+			l.Drafts[i].Evidence = []string{}
+		}
+		if l.Drafts[i].Warnings == nil {
+			l.Drafts[i].Warnings = []string{}
+		}
+		if l.Drafts[i].Attempts == nil {
+			l.Drafts[i].Attempts = []AcceptanceFollowupAttempt{}
+		}
 	}
 }
 
@@ -57,34 +109,106 @@ func (l AcceptanceFollowupLedger) HasDraftFor(candidate AcceptedDraftCandidate) 
 	return false
 }
 
+func (l AcceptanceFollowupLedger) FindByID(id string) (int, bool) {
+	for index, record := range l.Drafts {
+		if record.ID == id {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+func (l AcceptanceFollowupLedger) Ready(limit int) []AcceptanceFollowupRecord {
+	result := []AcceptanceFollowupRecord{}
+	for _, record := range l.Drafts {
+		if record.Status != AcceptanceFollowupStatusDryRunReady {
+			continue
+		}
+		result = append(result, record)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
+func (l AcceptanceFollowupLedger) NeedsDryRun(limit int) []AcceptanceFollowupRecord {
+	result := []AcceptanceFollowupRecord{}
+	for _, record := range l.Drafts {
+		switch record.Status {
+		case AcceptanceFollowupStatusDrafted, AcceptanceFollowupStatusNotMessageable, AcceptanceFollowupStatusBlocked, AcceptanceFollowupStatusSendFailed:
+		default:
+			continue
+		}
+		result = append(result, record)
+		if limit > 0 && len(result) >= limit {
+			break
+		}
+	}
+	return result
+}
+
 func (l *AcceptanceFollowupLedger) RecordReport(report DraftReport, reportPath string, researchPath *string) int {
 	written := 0
 	for _, item := range report.Items {
 		key := CandidateKey(item.Candidate.Source, item.Candidate.Name, item.Candidate.ProfileURL)
-		exists := false
-		for _, record := range l.Drafts {
+		exists := -1
+		for index, record := range l.Drafts {
 			if record.Key == key {
-				exists = true
+				exists = index
 				break
 			}
 		}
-		if exists {
+		if exists >= 0 {
+			if !l.Drafts[exists].Terminal() {
+				l.Drafts[exists].DraftedAt = report.GeneratedAt
+				l.Drafts[exists].UpdatedAt = report.GeneratedAt
+				l.Drafts[exists].Strategy = report.Strategy
+				l.Drafts[exists].Angle = item.Angle
+				l.Drafts[exists].Draft = item.Draft
+				l.Drafts[exists].Evidence = append([]string{}, item.Evidence...)
+				l.Drafts[exists].Warnings = append([]string{}, item.Warnings...)
+				l.Drafts[exists].ReportPath = reportPath
+				l.Drafts[exists].ResearchPath = researchPath
+			}
 			continue
 		}
 		l.Drafts = append(l.Drafts, AcceptanceFollowupRecord{
 			Key:          key,
+			ID:           AcceptanceFollowupID(key),
 			Source:       item.Candidate.Source,
 			Name:         item.Candidate.Name,
 			ProfileURL:   item.Candidate.ProfileURL,
 			DraftedAt:    report.GeneratedAt,
+			UpdatedAt:    report.GeneratedAt,
 			AcceptedAt:   item.Candidate.AcceptedAt,
 			Strategy:     report.Strategy,
+			Angle:        item.Angle,
+			Draft:        item.Draft,
+			Evidence:     append([]string{}, item.Evidence...),
+			Warnings:     append([]string{}, item.Warnings...),
+			Status:       AcceptanceFollowupStatusDrafted,
+			Attempts:     []AcceptanceFollowupAttempt{},
 			ReportPath:   reportPath,
 			ResearchPath: researchPath,
 		})
 		written++
 	}
 	return written
+}
+
+func (r AcceptanceFollowupRecord) Terminal() bool {
+	switch r.Status {
+	case AcceptanceFollowupStatusSent, AcceptanceFollowupStatusConversationExists:
+		return true
+	default:
+		return false
+	}
+}
+
+func AcceptanceFollowupID(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return "afu_" + fmt.Sprintf("%x", sum[:])[:12]
 }
 
 type AcceptedResearchArtifact struct {
@@ -245,8 +369,10 @@ func RenderMarkdown(report DraftReport) string {
 		return strings.Join(lines, "\n")
 	}
 	for _, item := range report.Items {
+		key := CandidateKey(item.Candidate.Source, item.Candidate.Name, item.Candidate.ProfileURL)
 		lines = append(lines, "")
 		lines = append(lines, "## "+cleanInline(item.Candidate.Name))
+		lines = append(lines, "- Follow-up ID: `"+AcceptanceFollowupID(key)+"`")
 		lines = append(lines, "- Source: "+cleanInline(item.Candidate.Source))
 		if item.Candidate.ProfileURL != nil {
 			lines = append(lines, "- Profile: "+cleanInline(*item.Candidate.ProfileURL))

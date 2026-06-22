@@ -622,6 +622,9 @@ func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
 		}
 	}
 	rendered := RenderMarkdown(report)
+	if !strings.Contains(rendered, "- Follow-up ID: `afu_") {
+		t.Fatalf("rendered markdown missing follow-up id:\n%s", rendered)
+	}
 	for _, want := range []string{
 		"> Thanks for connecting, Avery.",
 		">\n> I'm available for contract product engineering work through HC Studio LLC, mostly around full-stack product builds and AI workflows.",
@@ -889,6 +892,94 @@ func TestFollowupLedgerDedupesByNormalizedLinkedInURL(t *testing.T) {
 	inserted := ledger.RecordReport(report, "/tmp/report.md", nil)
 	if inserted != 1 || !ledger.HasDraftFor(candidate) {
 		t.Fatalf("inserted=%d ledger=%#v", inserted, ledger)
+	}
+	record := ledger.Drafts[0]
+	if record.ID == "" || record.Status != AcceptanceFollowupStatusDrafted || record.Draft == "" || record.Angle == "" {
+		t.Fatalf("record missing persisted send fields: %#v", record)
+	}
+	if len(record.Evidence) == 0 || record.Attempts == nil {
+		t.Fatalf("record missing evidence/attempt initialization: %#v", record)
+	}
+}
+
+func TestFollowupLedgerUpdatesNonTerminalDraftsButKeepsSentDrafts(t *testing.T) {
+	candidate := draftCandidate("ASAP - Contract Recruiters Staffing")
+	report := BuildDraftReport([]AcceptedDraftCandidate{candidate}, nil, DraftStrategyAsapContractV1, nil)
+	ledger := AcceptanceFollowupLedger{}
+	ledger.RecordReport(report, "/tmp/report.md", nil)
+	ledger.Drafts[0].Draft = "old draft"
+	ledger.Drafts[0].Status = AcceptanceFollowupStatusDryRunReady
+	ledger.RecordReport(report, "/tmp/report-redraft.md", nil)
+	if ledger.Drafts[0].Draft == "old draft" || ledger.Drafts[0].ReportPath != "/tmp/report-redraft.md" {
+		t.Fatalf("non-terminal draft was not refreshed: %#v", ledger.Drafts[0])
+	}
+	ledger.Drafts[0].Draft = "sent draft"
+	ledger.Drafts[0].Status = AcceptanceFollowupStatusSent
+	ledger.RecordReport(report, "/tmp/report-after-sent.md", nil)
+	if ledger.Drafts[0].Draft != "sent draft" || ledger.Drafts[0].ReportPath != "/tmp/report-redraft.md" {
+		t.Fatalf("sent draft should not be overwritten: %#v", ledger.Drafts[0])
+	}
+}
+
+func TestAcceptanceFollowupSendResultTransitions(t *testing.T) {
+	record := AcceptanceFollowupRecord{ID: "afu_test", Draft: "Hi\n\nBody", ProfileURL: ptr("https://www.linkedin.com/sales/lead/abc")}
+	ApplyAcceptanceFollowupSendResult(&record, AcceptanceFollowupSendResult{
+		DryRun:           true,
+		Status:           "dry-run-messageable",
+		ComposerSelector: ptr("div[role=textbox]"),
+		BodyFill:         json.RawMessage(`{"lineBreakCount":2}`),
+	}, "/tmp/dry-run.json")
+	if record.Status != AcceptanceFollowupStatusDryRunReady || len(record.Attempts) != 1 {
+		t.Fatalf("dry-run record=%#v", record)
+	}
+	if record.Attempts[0].Diagnostics["body"] == "" {
+		t.Fatalf("diagnostics=%#v", record.Attempts[0].Diagnostics)
+	}
+	ApplyAcceptanceFollowupSendResult(&record, AcceptanceFollowupSendResult{Status: "sent-clicked", Send: json.RawMessage(`{"clicked":true}`)}, "/tmp/send.json")
+	if record.Status != AcceptanceFollowupStatusSent || record.SentAt == nil || len(record.Attempts) != 2 {
+		t.Fatalf("sent record=%#v", record)
+	}
+}
+
+func TestAcceptanceFollowupRealSendRequiresReadyStatus(t *testing.T) {
+	record := AcceptanceFollowupRecord{
+		ID:         "afu_test",
+		Draft:      "Hi\n\nBody",
+		ProfileURL: ptr("https://www.linkedin.com/sales/lead/abc"),
+		Status:     AcceptanceFollowupStatusDrafted,
+	}
+	if err := validateAcceptanceFollowupCanSend(record, true, false); err != nil {
+		t.Fatalf("dry run should be allowed before ready: %v", err)
+	}
+	err := validateAcceptanceFollowupCanSend(record, false, true)
+	if err == nil || !strings.Contains(err.Error(), "real sends require dry_run_ready") {
+		t.Fatalf("err=%v", err)
+	}
+	record.Status = AcceptanceFollowupStatusDryRunReady
+	if err := validateAcceptanceFollowupCanSend(record, false, true); err != nil {
+		t.Fatalf("ready real send rejected: %v", err)
+	}
+	record.Status = AcceptanceFollowupStatusSent
+	err = validateAcceptanceFollowupCanSend(record, true, false)
+	if err == nil || !strings.Contains(err.Error(), "already sent") {
+		t.Fatalf("terminal send guard err=%v", err)
+	}
+}
+
+func TestAcceptanceFollowupReadyQueueUsesOnlyDryRunReady(t *testing.T) {
+	ledger := AcceptanceFollowupLedger{Drafts: []AcceptanceFollowupRecord{
+		{ID: "drafted", Status: AcceptanceFollowupStatusDrafted},
+		{ID: "ready-1", Status: AcceptanceFollowupStatusDryRunReady},
+		{ID: "sent", Status: AcceptanceFollowupStatusSent},
+		{ID: "ready-2", Status: AcceptanceFollowupStatusDryRunReady},
+	}}
+	ready := ledger.Ready(1)
+	if len(ready) != 1 || ready[0].ID != "ready-1" {
+		t.Fatalf("ready=%#v", ready)
+	}
+	pending := ledger.NeedsDryRun(3)
+	if len(pending) != 1 || pending[0].ID != "drafted" {
+		t.Fatalf("pending=%#v", pending)
 	}
 }
 

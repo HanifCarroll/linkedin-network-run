@@ -21,7 +21,11 @@ function salesProfileId(profileUrl) {
 }
 
 function configValue(name, fallback = null) {
-  const config = globalThis.recruiterAgencyMessageConfig || state.recruiterAgencyMessageConfig || {};
+  const config = globalThis.acceptanceFollowupMessageConfig
+    || state.acceptanceFollowupMessageConfig
+    || globalThis.recruiterAgencyMessageConfig
+    || state.recruiterAgencyMessageConfig
+    || {};
   return Object.prototype.hasOwnProperty.call(config, name) ? config[name] : fallback;
 }
 
@@ -399,10 +403,10 @@ async function main() {
   const allowSend = Boolean(configValue("allowSend", false));
 
   if (!candidate || !candidate.profileUrl) {
-    throw new Error("candidate with profileUrl is required in state.recruiterAgencyMessageConfig");
+    throw new Error("candidate with profileUrl is required in message config");
   }
   if (!message) {
-    throw new Error("message is required in state.recruiterAgencyMessageConfig");
+    throw new Error("message is required in message config");
   }
   if (!dryRun && !allowSend) {
     throw new Error("real send requires allowSend=true");

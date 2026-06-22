@@ -10,23 +10,25 @@ import (
 )
 
 const (
-	defaultPlaywriter                = "/Users/hanifcarroll/.bun/bin/playwriter"
-	defaultSendScript                = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-one.js"
-	defaultAuditScript               = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-audit.js"
-	defaultCaptureScript             = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js"
-	defaultAcceptedResearchScript    = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-accepted-research.js"
-	defaultPendingWithdrawScript     = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-pending-withdraw-one.js"
-	defaultSavedSearches             = "/tmp/linkedin-network-run-saved-searches.json"
-	defaultSendNextOutDir            = "/tmp/linkedin-network-run-send-next"
-	defaultSendGuardedOutDir         = "/tmp/linkedin-network-run-send-guarded"
-	defaultReconcileAuditOutDir      = "/tmp/linkedin-network-run-reconcile-audit"
-	defaultTopUpReconcileOutDir      = "/tmp/linkedin-network-run-top-up-reconcile"
-	defaultAcceptanceCandidatesPath  = "/tmp/linkedin-acceptance-candidates.json"
-	defaultAcceptedFollowupsOutDir   = "/tmp/linkedin-accepted-followups"
-	defaultReservoirCaptureOutDir    = "/tmp/linkedin-network-run-reservoir-capture"
-	defaultPendingWithdrawNextOutDir = "/tmp/linkedin-pending-cleanup-withdraw-next"
-	defaultPendingWithdrawTimeoutMS  = 300000
-	defaultPendingWithdrawLoadMore   = 260
+	defaultPlaywriter                      = "/Users/hanifcarroll/.bun/bin/playwriter"
+	defaultSendScript                      = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-one.js"
+	defaultAuditScript                     = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-audit.js"
+	defaultCaptureScript                   = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-capture.js"
+	defaultAcceptedResearchScript          = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-accepted-research.js"
+	defaultPendingWithdrawScript           = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-pending-withdraw-one.js"
+	defaultSavedSearches                   = "/tmp/linkedin-network-run-saved-searches.json"
+	defaultSendNextOutDir                  = "/tmp/linkedin-network-run-send-next"
+	defaultSendGuardedOutDir               = "/tmp/linkedin-network-run-send-guarded"
+	defaultReconcileAuditOutDir            = "/tmp/linkedin-network-run-reconcile-audit"
+	defaultTopUpReconcileOutDir            = "/tmp/linkedin-network-run-top-up-reconcile"
+	defaultAcceptanceCandidatesPath        = "/tmp/linkedin-acceptance-candidates.json"
+	defaultAcceptedFollowupsOutDir         = "/tmp/linkedin-accepted-followups"
+	defaultAcceptanceFollowupMessageScript = "/Users/hanifcarroll/projects/linkedin-network-automation/scripts/salesnav-send-message-one.js"
+	defaultAcceptanceFollowupMessageOutDir = "/tmp/linkedin-acceptance-followup-message"
+	defaultReservoirCaptureOutDir          = "/tmp/linkedin-network-run-reservoir-capture"
+	defaultPendingWithdrawNextOutDir       = "/tmp/linkedin-pending-cleanup-withdraw-next"
+	defaultPendingWithdrawTimeoutMS        = 300000
+	defaultPendingWithdrawLoadMore         = 260
 )
 
 func Execute(ctx context.Context, args []string) error {
@@ -468,6 +470,9 @@ func acceptanceCommand(withStore func(func(*Store) error) func(*cobra.Command, [
 	})
 	cmd.AddCommand(acceptanceReportCommand(withStore))
 	cmd.AddCommand(acceptanceDraftFollowupsCommand(withStore))
+	cmd.AddCommand(acceptanceDryRunFollowupsCommand(withStore))
+	cmd.AddCommand(acceptanceSendFollowupCommand(withStore))
+	cmd.AddCommand(acceptanceSendReadyFollowupsCommand(withStore))
 	return cmd
 }
 
@@ -568,6 +573,91 @@ func acceptanceDraftFollowupsCommand(withStore func(func(*Store) error) func(*co
 	cmd.Flags().BoolVar(&noPublicWeb, "no-public-web", false, "disable public web")
 	cmd.Flags().Uint32Var(&maxWebResults, "max-web-results", 5, "max web results")
 	cmd.Flags().Uint64Var(&delayMS, "delay-ms", 500, "delay ms")
+	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", 120000, "Playwriter timeout ms")
+	return cmd
+}
+
+func acceptanceSendFollowupCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var id, session, playwriter, script, outDir string
+	var dryRun, allowSend bool
+	var timeoutMS uint32 = 120000
+	cmd := &cobra.Command{
+		Use: "send-followup",
+		RunE: withStore(func(store *Store) error {
+			return HandleAcceptanceSendFollowup(store, AcceptanceFollowupSendOptions{
+				ID:         id,
+				Session:    OptionalString(session),
+				Playwriter: playwriter,
+				Script:     script,
+				OutDir:     outDir,
+				DryRun:     dryRun,
+				AllowSend:  allowSend,
+				TimeoutMS:  timeoutMS,
+			})
+		}),
+	}
+	cmd.Flags().StringVar(&id, "id", "", "accepted follow-up id")
+	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	addPlaywriterFlag(cmd.Flags(), &playwriter)
+	cmd.Flags().StringVar(&script, "script", defaultAcceptanceFollowupMessageScript, "message script")
+	cmd.Flags().StringVar(&outDir, "out-dir", defaultAcceptanceFollowupMessageOutDir, "output directory")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "dry run")
+	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "allow real send")
+	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", 120000, "Playwriter timeout ms")
+	return cmd
+}
+
+func acceptanceDryRunFollowupsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var session, playwriter, script, outDir string
+	var limit int = 5
+	var timeoutMS uint32 = 120000
+	cmd := &cobra.Command{
+		Use: "dry-run-followups",
+		RunE: withStore(func(store *Store) error {
+			return HandleAcceptanceDryRunFollowups(store, AcceptanceFollowupDryRunOptions{
+				Session:    OptionalString(session),
+				Playwriter: playwriter,
+				Script:     script,
+				OutDir:     outDir,
+				Limit:      limit,
+				TimeoutMS:  timeoutMS,
+			})
+		}),
+	}
+	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	addPlaywriterFlag(cmd.Flags(), &playwriter)
+	cmd.Flags().StringVar(&script, "script", defaultAcceptanceFollowupMessageScript, "message script")
+	cmd.Flags().StringVar(&outDir, "out-dir", defaultAcceptanceFollowupMessageOutDir, "output directory")
+	cmd.Flags().IntVar(&limit, "limit", 5, "maximum follow-ups to dry-run")
+	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", 120000, "Playwriter timeout ms")
+	return cmd
+}
+
+func acceptanceSendReadyFollowupsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var session, playwriter, script, outDir string
+	var limit int = 5
+	var allowSend bool
+	var timeoutMS uint32 = 120000
+	cmd := &cobra.Command{
+		Use: "send-ready-followups",
+		RunE: withStore(func(store *Store) error {
+			return HandleAcceptanceSendReadyFollowups(store, AcceptanceFollowupSendReadyOptions{
+				Session:    OptionalString(session),
+				Playwriter: playwriter,
+				Script:     script,
+				OutDir:     outDir,
+				Limit:      limit,
+				AllowSend:  allowSend,
+				TimeoutMS:  timeoutMS,
+			})
+		}),
+	}
+	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	addPlaywriterFlag(cmd.Flags(), &playwriter)
+	cmd.Flags().StringVar(&script, "script", defaultAcceptanceFollowupMessageScript, "message script")
+	cmd.Flags().StringVar(&outDir, "out-dir", defaultAcceptanceFollowupMessageOutDir, "output directory")
+	cmd.Flags().IntVar(&limit, "limit", 5, "maximum ready follow-ups to send")
+	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "allow real sends")
 	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", 120000, "Playwriter timeout ms")
 	return cmd
 }

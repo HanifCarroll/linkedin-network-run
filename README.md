@@ -555,7 +555,8 @@ Automation ownership is intentionally split:
 
 - `linkedin-network` sends and reconciles new connection requests only.
 - `linkedin-acceptance-daily` checks accepted outcomes, imports the acceptance
-  artifact, and writes draft-only follow-up Markdown for newly accepted people.
+  artifact, writes follow-up drafts for newly accepted people, and can send
+  those follow-ups through the guarded message sender.
 - `linkedin-acceptance-weekly` is report-only. It summarizes the acceptance
   ledger and does not open LinkedIn, run Playwriter classification, import
   outcomes, or draft messages.
@@ -602,7 +603,7 @@ linkedin-network-run acceptance import /tmp/linkedin-acceptance-outcomes.json
 linkedin-network-run acceptance report --min-age-days 1 --max-age-days 45
 ```
 
-Generate draft-only first messages for newly accepted connections:
+Generate first-message drafts for newly accepted connections:
 
 ```sh
 linkedin-network-run acceptance draft-followups \
@@ -612,15 +613,56 @@ linkedin-network-run acceptance draft-followups \
 
 This command exports every accepted ledger entry that has not already received a
 draft, researches each person through Sales Navigator plus public web search,
-writes a Markdown report, and records the drafted people in
-`acceptance-followups.json`. It never sends LinkedIn messages. Re-run with
-`--include-drafted` only when intentionally regenerating drafts. Pass
-`--research <artifact.json>` to render from an existing research artifact without
-opening the browser. Adjust `--max-web-results` if the public web evidence needs
-to be broader or narrower without changing the draft strategy.
+writes a Markdown report, and records the drafted people plus their message text
+in `acceptance-followups.json`. Re-run with `--include-drafted` only when
+intentionally regenerating drafts. Pass `--research <artifact.json>` to render
+from an existing research artifact without opening the browser. Adjust
+`--max-web-results` if the public web evidence needs to be broader or narrower
+without changing the draft strategy.
 For large accepted batches, `salesnav-accepted-research.js` also accepts
 `offset` and `limit` and writes incremental chunk artifacts with `complete:
 true` when a chunk finishes.
+
+Dry-run a drafted accepted follow-up before sending:
+
+```sh
+linkedin-network-run acceptance send-followup \
+  --id <accepted-followup-id> \
+  --session <session> \
+  --dry-run
+```
+
+Or dry-run a bounded batch:
+
+```sh
+linkedin-network-run acceptance dry-run-followups \
+  --session <session> \
+  --limit 5
+```
+
+A successful dry run marks the record `dry_run_ready`. Real sends require that
+ready status and an explicit `--allow-send` flag:
+
+```sh
+linkedin-network-run acceptance send-followup \
+  --id <accepted-followup-id> \
+  --session <session> \
+  --allow-send
+```
+
+Send a bounded batch that already passed dry-run checks:
+
+```sh
+linkedin-network-run acceptance send-ready-followups \
+  --session <session> \
+  --limit 5 \
+  --allow-send
+```
+
+The guarded message sender opens the accepted person's Sales Navigator profile,
+uses the normal Message/InMail action, preserves line breaks, records every
+attempt in `acceptance-followups.json`, and records `conversation_exists`
+instead of sending when an existing conversation is detected.
 
 Outcome statuses are:
 
@@ -687,9 +729,14 @@ Use `--state-dir <dir>` for dry runs, tests, or isolated experiments.
   controller JSONL logs.
 - `acceptance export/import/report` measures later accepted/connected outcomes
   from exported invitation candidates.
-- `acceptance draft-followups` creates draft-only Markdown first messages for
-  newly accepted connections and tracks which accepted people already have a
-  draft.
+- `acceptance draft-followups` creates Markdown first messages for newly
+  accepted connections and stores the drafts in `acceptance-followups.json`.
+- `acceptance dry-run-followups` checks a bounded batch of drafted accepted
+  follow-ups and marks messageable records `dry_run_ready`.
+- `acceptance send-followup` dry-runs or sends one accepted follow-up through
+  the guarded message sender.
+- `acceptance send-ready-followups` sends a bounded batch of accepted follow-ups
+  already marked `dry_run_ready`.
 - `needs-reaudit` blocks further sending until a fresh `audit` is recorded.
 - `source-exhausted` carries the source shortfall into the next source.
 - `finish` refuses to complete unless the audited sent-page delta equals the target.
