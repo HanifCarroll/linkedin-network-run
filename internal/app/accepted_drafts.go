@@ -268,9 +268,26 @@ func RenderMarkdown(report DraftReport) string {
 		lines = append(lines, "")
 		lines = append(lines, "Draft:")
 		lines = append(lines, "")
-		lines = append(lines, "> "+cleanInline(item.Draft))
+		lines = append(lines, blockquote(item.Draft)...)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func blockquote(value string) []string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(value), "\r\n", "\n")
+	if normalized == "" {
+		return []string{">"}
+	}
+	lines := strings.Split(normalized, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			out = append(out, ">")
+			continue
+		}
+		out = append(out, "> "+line)
+	}
+	return out
 }
 
 func buildDraftItem(candidate AcceptedDraftCandidate, research *AcceptedResearchRow, strategy DraftStrategy) DraftItem {
@@ -378,7 +395,7 @@ func buildAsapContractDraft(candidate AcceptedDraftCandidate, research *Accepted
 }
 
 func generalAcceptedFollowupDraft(first string) string {
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\nIf that ever becomes relevant, would you like me to send over my resume and a couple of project examples?", first)
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\nIf that ever becomes relevant, would you like me to send over my resume and a couple of project examples?\n\nBest,\nHanif Carroll", first)
 }
 
 func technicalAcceptedFollowupDraft(first string, company *string) string {
@@ -386,7 +403,7 @@ func technicalAcceptedFollowupDraft(first string, company *string) string {
 	if company != nil && cleanInline(*company) != "" {
 		context = "Given your work at " + cleanInline(*company)
 	}
-	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\n%s, I thought the most relevant overlap would be helping ship a product, workflow, or internal tool quickly.\n\nWould you like me to send over my resume and a couple of project examples?", first, context)
+	return fmt.Sprintf("Thanks for connecting, %s.\n\nI'm available for contract product engineering work through HC Studio LLC. I usually help with full-stack product builds, AI workflows, internal tools, and prototype-to-production work.\n\n%s, I thought the most relevant overlap would be helping ship a product, workflow, or internal tool quickly.\n\nWould you like me to send over my resume and a couple of project examples?\n\nBest,\nHanif Carroll", first, context)
 }
 
 func chooseAngle(source string, title *string, company *string, webResult *WebResult) draftAngle {

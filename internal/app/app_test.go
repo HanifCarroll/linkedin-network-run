@@ -598,6 +598,42 @@ func TestAcceptedFollowupCandidatesSkipAlreadyDraftedPeople(t *testing.T) {
 	}
 }
 
+func TestAcceptedFollowupDraftsPreserveParagraphsAndSignoff(t *testing.T) {
+	acceptedAt := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	candidates := []AcceptedDraftCandidate{{
+		Source:       "Network - Founder Operators (11-50)",
+		Name:         "Avery Founder",
+		AcceptedAt:   acceptedAt,
+		Relationship: ptr("1st"),
+	}}
+	report := BuildDraftReport(candidates, nil, DraftStrategyAsapContractV1, nil)
+	if len(report.Items) != 1 {
+		t.Fatalf("items = %d", len(report.Items))
+	}
+	draft := report.Items[0].Draft
+	for _, want := range []string{
+		"Thanks for connecting, Avery.",
+		"\n\nI'm available for contract product engineering work",
+		"\n\nIf that ever becomes relevant",
+		"\n\nBest,\nHanif Carroll",
+	} {
+		if !strings.Contains(draft, want) {
+			t.Fatalf("draft missing %q:\n%s", want, draft)
+		}
+	}
+	rendered := RenderMarkdown(report)
+	for _, want := range []string{
+		"> Thanks for connecting, Avery.",
+		">\n> I'm available for contract product engineering work",
+		">\n> If that ever becomes relevant",
+		">\n> Best,\n> Hanif Carroll",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered markdown missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestOperatorPlanPrefersReauditThenSendThenCapture(t *testing.T) {
 	run := testRun(t, 22)
 	if run.OperatorPlan().Action != "capture-source" {
