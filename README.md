@@ -643,6 +643,17 @@ linkedin-network-run acceptance dry-run-followups \
 A successful dry run marks the record `dry_run_ready`. Real sends require that
 ready status and an explicit `--allow-send` flag:
 
+To verify the actual rendered body formatting without sending, use the preview
+fill mode. It fills the composer, records `bodyFill.lineBreakCount`, and stops
+before any send click:
+
+```sh
+linkedin-network-run acceptance send-followup \
+  --id <accepted-followup-id> \
+  --session <session> \
+  --preview-fill
+```
+
 ```sh
 linkedin-network-run acceptance send-followup \
   --id <accepted-followup-id> \
@@ -734,7 +745,8 @@ Use `--state-dir <dir>` for dry runs, tests, or isolated experiments.
 - `acceptance dry-run-followups` checks a bounded batch of drafted accepted
   follow-ups and marks messageable records `dry_run_ready`.
 - `acceptance send-followup` dry-runs or sends one accepted follow-up through
-  the guarded message sender.
+  the guarded message sender; `--preview-fill` fills the composer for formatting
+  verification without sending.
 - `acceptance send-ready-followups` sends a bounded batch of accepted follow-ups
   already marked `dry_run_ready`.
 - `needs-reaudit` blocks further sending until a fresh `audit` is recorded.

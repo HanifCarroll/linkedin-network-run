@@ -1141,6 +1141,9 @@ func TestSalesNavMessageSenderPreservesConfiguredLineBreaks(t *testing.T) {
 	if !strings.Contains(source, "acceptanceFollowupMessageConfig") {
 		t.Fatal("sender should accept the acceptance follow-up message config namespace")
 	}
+	if !strings.Contains(source, `previewFill`) || !strings.Contains(source, `status: "preview-filled"`) {
+		t.Fatal("sender should support a fill-only preview status before any send click")
+	}
 }
 
 func strPtr(value string) *string {

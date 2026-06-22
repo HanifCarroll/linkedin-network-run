@@ -10,14 +10,15 @@ import (
 )
 
 type AcceptanceFollowupSendOptions struct {
-	ID         string
-	Session    *string
-	Playwriter string
-	Script     string
-	OutDir     string
-	DryRun     bool
-	AllowSend  bool
-	TimeoutMS  uint32
+	ID          string
+	Session     *string
+	Playwriter  string
+	Script      string
+	OutDir      string
+	DryRun      bool
+	PreviewFill bool
+	AllowSend   bool
+	TimeoutMS   uint32
 }
 
 type AcceptanceFollowupSendReadyOptions struct {
@@ -79,7 +80,7 @@ func HandleAcceptanceSendFollowup(store *Store, options AcceptanceFollowupSendOp
 	if options.OutDir == "" {
 		return fmt.Errorf("--out-dir is required")
 	}
-	dryRun := options.DryRun || !options.AllowSend
+	dryRun := options.DryRun || options.PreviewFill || !options.AllowSend
 
 	ledger, err := store.LoadAcceptanceFollowupLedger()
 	if err != nil {
@@ -101,15 +102,16 @@ func HandleAcceptanceSendFollowup(store *Store, options AcceptanceFollowupSendOp
 		return err
 	}
 	if err := store.AppendAcceptanceEvent("send-followup", map[string]any{
-		"id":      options.ID,
-		"name":    ledger.Drafts[index].Name,
-		"status":  result.Status,
-		"dry_run": dryRun,
-		"out":     outPath,
+		"id":           options.ID,
+		"name":         ledger.Drafts[index].Name,
+		"status":       result.Status,
+		"dry_run":      dryRun,
+		"preview_fill": options.PreviewFill,
+		"out":          outPath,
 	}); err != nil {
 		return err
 	}
-	fmt.Printf("accepted_followup=%s status=%s dry_run=%t out=%s\n", options.ID, result.Status, result.DryRun, outPath)
+	fmt.Printf("accepted_followup=%s status=%s dry_run=%t preview_fill=%t out=%s\n", options.ID, result.Status, result.DryRun, options.PreviewFill, outPath)
 	return nil
 }
 
@@ -208,12 +210,13 @@ func runAcceptanceFollowupSend(options AcceptanceFollowupSendOptions, record Acc
 		Source:     record.Source,
 	}
 	config := map[string]any{
-		"candidate": candidate,
-		"message":   record.Draft,
-		"subject":   "",
-		"out":       outPath,
-		"dryRun":    dryRun,
-		"allowSend": options.AllowSend,
+		"candidate":   candidate,
+		"message":     record.Draft,
+		"subject":     "",
+		"out":         outPath,
+		"dryRun":      dryRun,
+		"previewFill": options.PreviewFill,
+		"allowSend":   options.AllowSend,
 	}
 	rawConfig, err := json.Marshal(config)
 	if err != nil {
@@ -265,7 +268,7 @@ func ApplyAcceptanceFollowupSendResult(record *AcceptanceFollowupRecord, result 
 
 func acceptanceFollowupStatusForResult(result AcceptanceFollowupSendResult) AcceptanceFollowupStatus {
 	switch result.Status {
-	case "dry-run-messageable":
+	case "dry-run-messageable", "preview-filled":
 		return AcceptanceFollowupStatusDryRunReady
 	case "sent-clicked":
 		return AcceptanceFollowupStatusSent

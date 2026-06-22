@@ -401,12 +401,19 @@ async function main() {
   const out = path.resolve(configValue("out", "/tmp/recruiter-agency-message-result.json"));
   const dryRun = Boolean(configValue("dryRun", true));
   const allowSend = Boolean(configValue("allowSend", false));
+  const previewFill = Boolean(configValue("previewFill", false));
 
   if (!candidate || !candidate.profileUrl) {
     throw new Error("candidate with profileUrl is required in message config");
   }
   if (!message) {
     throw new Error("message is required in message config");
+  }
+  if (previewFill && !dryRun) {
+    throw new Error("previewFill requires dryRun=true");
+  }
+  if (previewFill && allowSend) {
+    throw new Error("previewFill cannot run with allowSend=true");
   }
   if (!dryRun && !allowSend) {
     throw new Error("real send requires allowSend=true");
@@ -430,6 +437,7 @@ async function main() {
     url: state.page.url(),
     messageLength: message.length,
     status: "unknown",
+    previewFill,
   });
   const complete = (payload) => {
     const result = { ...base(), ...payload };
@@ -468,7 +476,7 @@ async function main() {
   if (conversationCheck?.exists) {
     return complete({ status: "conversation-exists", action, conversationCheck, profileApiResponses, composerSelector: composer?.selector });
   }
-  if (dryRun) {
+  if (dryRun && !previewFill) {
     return complete({ status: "dry-run-messageable", action, conversationCheck, profileApiResponses, composerSelector: composer?.selector });
   }
 
@@ -480,6 +488,10 @@ async function main() {
 
   const subjectFill = await fillSubjectIfPresent(subject);
   const bodyFill = await fillComposer(composer, message);
+  if (previewFill) {
+    await state.page.waitForTimeout(500);
+    return complete({ status: "preview-filled", action, conversationCheck, composerSelector: composer.selector, subjectFill, bodyFill, profileApiResponses });
+  }
   await state.page.waitForTimeout(500);
   const send = await clickSendButton();
   if (!send.clicked) {

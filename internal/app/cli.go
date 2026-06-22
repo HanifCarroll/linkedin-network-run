@@ -579,20 +579,21 @@ func acceptanceDraftFollowupsCommand(withStore func(func(*Store) error) func(*co
 
 func acceptanceSendFollowupCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var id, session, playwriter, script, outDir string
-	var dryRun, allowSend bool
+	var dryRun, previewFill, allowSend bool
 	var timeoutMS uint32 = 120000
 	cmd := &cobra.Command{
 		Use: "send-followup",
 		RunE: withStore(func(store *Store) error {
 			return HandleAcceptanceSendFollowup(store, AcceptanceFollowupSendOptions{
-				ID:         id,
-				Session:    OptionalString(session),
-				Playwriter: playwriter,
-				Script:     script,
-				OutDir:     outDir,
-				DryRun:     dryRun,
-				AllowSend:  allowSend,
-				TimeoutMS:  timeoutMS,
+				ID:          id,
+				Session:     OptionalString(session),
+				Playwriter:  playwriter,
+				Script:      script,
+				OutDir:      outDir,
+				DryRun:      dryRun,
+				PreviewFill: previewFill,
+				AllowSend:   allowSend,
+				TimeoutMS:   timeoutMS,
 			})
 		}),
 	}
@@ -602,6 +603,7 @@ func acceptanceSendFollowupCommand(withStore func(func(*Store) error) func(*cobr
 	cmd.Flags().StringVar(&script, "script", defaultAcceptanceFollowupMessageScript, "message script")
 	cmd.Flags().StringVar(&outDir, "out-dir", defaultAcceptanceFollowupMessageOutDir, "output directory")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "dry run")
+	cmd.Flags().BoolVar(&previewFill, "preview-fill", false, "fill the composer and verify body formatting without sending")
 	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "allow real send")
 	cmd.Flags().Uint32Var(&timeoutMS, "playwriter-timeout-ms", 120000, "Playwriter timeout ms")
 	return cmd

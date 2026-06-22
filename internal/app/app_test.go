@@ -925,15 +925,18 @@ func TestAcceptanceFollowupSendResultTransitions(t *testing.T) {
 	record := AcceptanceFollowupRecord{ID: "afu_test", Draft: "Hi\n\nBody", ProfileURL: ptr("https://www.linkedin.com/sales/lead/abc")}
 	ApplyAcceptanceFollowupSendResult(&record, AcceptanceFollowupSendResult{
 		DryRun:           true,
-		Status:           "dry-run-messageable",
+		Status:           "preview-filled",
 		ComposerSelector: ptr("div[role=textbox]"),
 		BodyFill:         json.RawMessage(`{"lineBreakCount":2}`),
-	}, "/tmp/dry-run.json")
+	}, "/tmp/preview-fill.json")
 	if record.Status != AcceptanceFollowupStatusDryRunReady || len(record.Attempts) != 1 {
-		t.Fatalf("dry-run record=%#v", record)
+		t.Fatalf("preview-fill record=%#v", record)
 	}
 	if record.Attempts[0].Diagnostics["body"] == "" {
 		t.Fatalf("diagnostics=%#v", record.Attempts[0].Diagnostics)
+	}
+	if record.Attempts[0].Status != "preview-filled" {
+		t.Fatalf("attempt=%#v", record.Attempts[0])
 	}
 	ApplyAcceptanceFollowupSendResult(&record, AcceptanceFollowupSendResult{Status: "sent-clicked", Send: json.RawMessage(`{"clicked":true}`)}, "/tmp/send.json")
 	if record.Status != AcceptanceFollowupStatusSent || record.SentAt == nil || len(record.Attempts) != 2 {
