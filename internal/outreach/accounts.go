@@ -141,6 +141,10 @@ func ImportAccountCapture(state *OutreachState, capture SalesNavAccountCapture) 
 			account.ImportedAt = state.AgencyAccounts[index].ImportedAt
 			account.LastContactCaptureAt = state.AgencyAccounts[index].LastContactCaptureAt
 			account.ContactCaptureCount = state.AgencyAccounts[index].ContactCaptureCount
+			account.LastContactStrategy = state.AgencyAccounts[index].LastContactStrategy
+			account.LastContactError = state.AgencyAccounts[index].LastContactError
+			account.LastContactErrorAt = state.AgencyAccounts[index].LastContactErrorAt
+			account.ContactErrorCount = state.AgencyAccounts[index].ContactErrorCount
 			if len(state.AgencyAccounts[index].Notes) > 0 {
 				account.Notes = state.AgencyAccounts[index].Notes
 			}
@@ -334,6 +338,24 @@ func agencyAccountsForContactCapture(state OutreachState, target int) []AgencyAc
 	return accounts
 }
 
+func agencyAccountsNeedingContactCapture(state OutreachState, target int) []AgencyAccount {
+	state.Normalize()
+	accounts := []AgencyAccount{}
+	for _, account := range agencyAccountsForContactCapture(state, 0) {
+		if accountHasActiveLead(state, account.ID) {
+			continue
+		}
+		if _, ok := nextAgencyContactSearchStrategy(account); !ok {
+			continue
+		}
+		accounts = append(accounts, account)
+		if target > 0 && len(accounts) >= target {
+			return accounts
+		}
+	}
+	return accounts
+}
+
 func accountHasActiveLead(state OutreachState, accountID string) bool {
 	for _, lead := range state.Leads {
 		if lead.AgencyAccountID == nil || *lead.AgencyAccountID != accountID {
@@ -342,7 +364,7 @@ func accountHasActiveLead(state OutreachState, accountID string) bool {
 		if lead.Status == LeadStatusRejected {
 			continue
 		}
-		if isTerminalMessageStatus(lead.MessageStatus) && lead.MessageStatus != MessageStatusDryRunReady && lead.MessageStatus != MessageStatusSent && lead.MessageStatus != MessageStatusManuallySent {
+		if isTerminalMessageStatus(lead.MessageStatus) && lead.MessageStatus != MessageStatusDryRunReady {
 			continue
 		}
 		return true

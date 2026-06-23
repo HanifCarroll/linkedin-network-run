@@ -312,7 +312,11 @@ func RunPlaywriterCapture(
 	if err := RunPlaywriterConfig(playwriter, session, configJS); err != nil {
 		return "", err
 	}
-	if err := RunPlaywriterFileWithTimeout(playwriter, session, script, 90000); err != nil {
+	timeoutMS := options.TimeoutMS
+	if timeoutMS == 0 {
+		timeoutMS = 90000
+	}
+	if err := RunPlaywriterFileWithTimeout(playwriter, session, script, timeoutMS); err != nil {
 		return "", err
 	}
 	return filepath.Join(outDir, "page.json"), nil

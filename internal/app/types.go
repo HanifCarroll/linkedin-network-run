@@ -220,6 +220,7 @@ type CaptureRunOptions struct {
 	Limit                uint32
 	RowScrollDelayMS     uint32
 	OnlyConnectable      bool
+	TimeoutMS            uint32
 }
 
 type TopUpFallbackOptions struct {

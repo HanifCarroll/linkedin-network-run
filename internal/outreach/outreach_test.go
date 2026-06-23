@@ -2,6 +2,7 @@ package outreach
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -300,7 +301,11 @@ func TestImportCaptureUsesQualifiedAgencyAccountContext(t *testing.T) {
 		FitReasons:   []string{"software/product delivery account signal"},
 		EvidenceText: "Bright Product Studio Software Development Custom software and MVP product delivery",
 	}
-	source := agencyContactSource(account)
+	strategy, ok := firstAgencyContactSearchStrategy(account)
+	if !ok {
+		t.Fatal("missing agency contact strategy")
+	}
+	source := agencyContactSource(account, strategy)
 	state := OutreachState{AgencyAccounts: []AgencyAccount{account}}
 	capture := app.SalesNavCapture{
 		Source: &source,
@@ -517,7 +522,7 @@ func TestDraftMessagesStoresAngleAndEvidence(t *testing.T) {
 	if !strings.Contains(lead.Draft.Body, "US citizen contracting via my LLC (1099/C2C)") {
 		t.Fatalf("body = %q", lead.Draft.Body)
 	}
-	if !strings.Contains(lead.Draft.Body, "Would you like me to send my resume and project examples?") {
+	if !strings.Contains(lead.Draft.Body, "Are you the right person to ask about this kind of project support?") || strings.Contains(lead.Draft.Body, "Would you like me to send my resume and project examples?") {
 		t.Fatalf("body = %q", lead.Draft.Body)
 	}
 }
@@ -540,6 +545,12 @@ func TestRecruiterDraftUsesApprovedContractTemplate(t *testing.T) {
 	if !strings.Contains(body, "Turned an AI media MVP into a production agent platform") {
 		t.Fatalf("body = %q", body)
 	}
+	if !strings.Contains(body, "Recent projects:") || strings.Contains(body, "Recent wins:") {
+		t.Fatalf("body = %q", body)
+	}
+	if !strings.Contains(body, "Are you the right person to ask about this type of role?") || strings.Contains(body, "Would you like me to send my resume and project examples?") {
+		t.Fatalf("body = %q", body)
+	}
 	if strings.Contains(body, "Best,") || strings.Contains(body, "Hanif Carroll") {
 		t.Fatalf("body = %q", body)
 	}
@@ -557,6 +568,9 @@ func TestAgencyDraftDoesNotUseLocationAsCompany(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about project or overflow work.") {
+		t.Fatalf("body = %q", body)
+	}
+	if !strings.Contains(body, "Are you the right person to ask about this kind of project support?") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -621,13 +635,16 @@ func TestDashboardSeparatesAgencyAndRecruiterBuckets(t *testing.T) {
 	if len(report.ReadyRecruiters) != 1 || report.ReadyRecruiters[0].ID != "recruiter_1" {
 		t.Fatalf("ready recruiters = %#v", report.ReadyRecruiters)
 	}
+	if report.ReadyCounts.Agencies != 1 || report.ReadyCounts.Recruiters != 1 {
+		t.Fatalf("ready counts = %#v", report.ReadyCounts)
+	}
 	markdown := RenderDashboardMarkdown(report)
-	if !strings.Contains(markdown, "## Agencies") || !strings.Contains(markdown, "## Recruiters") || !strings.Contains(markdown, "- Draft evidence:") || !strings.Contains(markdown, "Agency account: Bright Product Studio") || !strings.Contains(markdown, "Agency accounts: `1` qualified") {
+	if !strings.Contains(markdown, "## Agencies") || !strings.Contains(markdown, "## Recruiters") || !strings.Contains(markdown, "- Draft evidence:") || !strings.Contains(markdown, "Agency account: Bright Product Studio") || !strings.Contains(markdown, "Agency accounts: `1` qualified") || !strings.Contains(markdown, "- Ready now: `1` agencies, `1` recruiters") {
 		t.Fatalf("markdown = %s", markdown)
 	}
 }
 
-func TestDailySendCompletionCountsPersistedSentLeads(t *testing.T) {
+func TestDailySendCompletionCountsThisRunActions(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{
 			ID:              "old_sent",
@@ -652,8 +669,15 @@ func TestDailySendCompletionCountsPersistedSentLeads(t *testing.T) {
 		Name:   "Active Studio",
 		Status: AgencyAccountStatusQualified,
 	}}}
-	if !bucketCompleteForRun(state, "agency", 1, true, nil) {
-		t.Fatal("persisted sent lead should satisfy a real-send daily quota")
+	if bucketCompleteForRun(state, "agency", 1, true, nil) {
+		t.Fatal("persisted sent lead should not satisfy a real-send daily quota")
+	}
+	actions := []DailyLeadAction{{
+		Bucket: "agency",
+		Result: "sent-clicked",
+	}}
+	if !bucketCompleteForRun(state, "agency", 1, true, actions) {
+		t.Fatal("current-run sent action should satisfy a real-send daily quota")
 	}
 	if !bucketCompleteForRun(state, "agency", 1, false, nil) {
 		t.Fatal("ready lead should satisfy a draft/validation daily quota")
@@ -672,6 +696,90 @@ func TestDailySendCompletionCountsPersistedSentLeads(t *testing.T) {
 	})
 	if got := readyLeads(state, "agency"); len(got) != 1 || got[0].ID != "ready_now" {
 		t.Fatalf("approved lead should not replace messageable send candidate: %#v", got)
+	}
+}
+
+func TestDashboardShowsThisRunAndLifetimeCountsSeparately(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{
+			ID:              "old_sent",
+			Name:            "Old Sent",
+			LeadType:        LeadTypeAgencyFounder,
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusSent,
+			FitScore:        99,
+			AgencyAccountID: strPtr("acct_active"),
+		},
+		{
+			ID:            "drafted_recruiter",
+			Name:          "Drafted Recruiter",
+			LeadType:      LeadTypeContractRecruiter,
+			Status:        LeadStatusEligible,
+			MessageStatus: MessageStatusDrafted,
+			FitScore:      95,
+			ProfileURL:    strPtr("https://linkedin.com/sales/lead/drafted"),
+			Draft:         &MessageDraft{Body: "body"},
+		},
+	}, AgencyAccounts: []AgencyAccount{{
+		ID:     "acct_active",
+		Name:   "Active Studio",
+		Status: AgencyAccountStatusQualified,
+	}}}
+	actions := []DailyLeadAction{
+		{Bucket: "agency", Result: "sent-clicked"},
+		{Bucket: "recruiter", Result: "conversation-exists"},
+	}
+	report := BuildDashboardReport(state, "/tmp/outreach.sqlite", 5, 5, true, actions)
+	if report.RunCounts.Sent.Agencies != 1 || report.RunCounts.ConversationExists.Recruiters != 1 {
+		t.Fatalf("run counts = %#v", report.RunCounts)
+	}
+	if report.LifetimeCounts.Agencies != 1 || report.BacklogCounts.Recruiters != 1 {
+		t.Fatalf("lifetime/backlog counts = %#v %#v", report.LifetimeCounts, report.BacklogCounts)
+	}
+	markdown := RenderDashboardMarkdown(report)
+	for _, want := range []string{
+		"- This-run sent: `1` agencies, `0` recruiters",
+		"conversation_exists `0` agencies, `1` recruiters",
+		"- Backlog drafted/needs validation: `0` agencies, `1` recruiters",
+		"- Lifetime sent: `1` agencies, `0` recruiters",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestDashboardIncludesSentAgencyLeadsFromExhaustedAccounts(t *testing.T) {
+	state := OutreachState{
+		Leads: []Lead{{
+			ID:              "sent_agency",
+			Name:            "Sent Agency",
+			LeadType:        LeadTypeAgencyFounder,
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusSent,
+			FitScore:        90,
+			AgencyAccountID: strPtr("acct_exhausted"),
+		}},
+		AgencyAccounts: []AgencyAccount{{
+			ID:     "acct_exhausted",
+			Name:   "Exhausted Studio",
+			Status: AgencyAccountStatusExhausted,
+		}, {
+			ID:     "acct_empty",
+			Name:   "Empty Studio",
+			Status: AgencyAccountStatusExhausted,
+		}},
+	}
+	report := BuildDashboardReport(state, "/tmp/outreach.sqlite", 5, 5, true, nil)
+	if report.LifetimeCounts.Agencies != 1 || len(report.SentAgencies) != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	if report.AgencyFunnelCounts.WithContacts != 1 || report.AgencyFunnelCounts.WithMessageableOrSentContacts != 1 || report.AgencyFunnelCounts.ExhaustedWithoutContacts != 1 {
+		t.Fatalf("funnel = %#v", report.AgencyFunnelCounts)
+	}
+	markdown := RenderDashboardMarkdown(report)
+	if !strings.Contains(markdown, "Agency contactability:") || !strings.Contains(markdown, "`1` with contacts") {
+		t.Fatalf("markdown = %s", markdown)
 	}
 }
 
@@ -1076,6 +1184,48 @@ func TestAgencyAccountContactSearchURLUsesCurrentCompany(t *testing.T) {
 	}
 }
 
+func TestAgencyAccountContactSearchStrategiesBroadenAfterFirstPass(t *testing.T) {
+	account := AgencyAccount{
+		ID:                  "acct_bright",
+		Name:                "Bright Product Studio",
+		AccountURL:          strPtr("https://www.linkedin.com/sales/company/12345?_ntb=x"),
+		FitScore:            80,
+		ContactCaptureCount: 1,
+	}
+	strategy, ok := nextAgencyContactSearchStrategy(account)
+	if !ok {
+		t.Fatal("missing second contact strategy")
+	}
+	got, err := agencyAccountContactSearchURLForStrategy(account, strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"/sales/search/people",
+		"type%3ACURRENT_COMPANY",
+		"id%3A12345",
+		"keywords%3ACEO%2520President%2520Managing%2520Director",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("broadened URL missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "POSTED_ON_LINKEDIN") || strings.Contains(got, "RPOL") {
+		t.Fatalf("broadened URL should not require recent posts: %s", got)
+	}
+}
+
+func TestAgencyAccountContactSearchStrategiesUseResourceFallbackOnlyForStrongAccounts(t *testing.T) {
+	strong := AgencyAccount{ID: "strong", Name: "Strong Studio", FitScore: 80}
+	weak := AgencyAccount{ID: "weak", Name: "Weak Studio", FitScore: 65}
+	if got := agencyAccountContactStrategyCount(strong); got != 3 {
+		t.Fatalf("strong strategy count = %d", got)
+	}
+	if got := agencyAccountContactStrategyCount(weak); got != 2 {
+		t.Fatalf("weak strategy count = %d", got)
+	}
+}
+
 func TestAgencyAccountsForContactCapturePrefersAccountsWithoutActiveLeads(t *testing.T) {
 	state := OutreachState{
 		AgencyAccounts: []AgencyAccount{
@@ -1095,6 +1245,162 @@ func TestAgencyAccountsForContactCapturePrefersAccountsWithoutActiveLeads(t *tes
 	accounts := agencyAccountsForContactCapture(state, 2)
 	if len(accounts) != 2 || accounts[0].ID != "acct_fresh" {
 		t.Fatalf("accounts = %#v", accounts)
+	}
+}
+
+func TestAgencyAccountsNeedingContactCaptureIgnoresSentLeads(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{
+			{ID: "acct_sent", Name: "Sent Studio", Status: AgencyAccountStatusQualified, FitScore: 100},
+			{ID: "acct_drafted", Name: "Drafted Studio", Status: AgencyAccountStatusQualified, FitScore: 90},
+			{ID: "acct_fresh", Name: "Fresh Studio", Status: AgencyAccountStatusQualified, FitScore: 80},
+		},
+		Leads: []Lead{
+			{
+				ID:              "lead_sent",
+				Name:            "Sent Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusSent,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_sent"),
+			},
+			{
+				ID:              "lead_drafted",
+				Name:            "Drafted Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusDrafted,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_drafted"),
+			},
+		},
+	}
+	accounts := agencyAccountsNeedingContactCapture(state, 3)
+	if len(accounts) != 2 {
+		t.Fatalf("accounts = %#v", accounts)
+	}
+	got := map[string]bool{}
+	for _, account := range accounts {
+		got[account.ID] = true
+	}
+	if !got["acct_sent"] || !got["acct_fresh"] || got["acct_drafted"] {
+		t.Fatalf("accounts = %#v", accounts)
+	}
+}
+
+func TestAgencyAccountOpenLeadCountExcludesAlreadySentDuplicates(t *testing.T) {
+	state := OutreachState{
+		Leads: []Lead{
+			{
+				ID:              "lead_sent",
+				Name:            "Sent Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusSent,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_1"),
+			},
+			{
+				ID:              "lead_ready",
+				Name:            "Ready Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusDryRunReady,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_1"),
+			},
+			{
+				ID:              "lead_rejected",
+				Name:            "Rejected Founder",
+				Status:          LeadStatusRejected,
+				MessageStatus:   MessageStatusNone,
+				LeadType:        LeadTypeBadFit,
+				AgencyAccountID: strPtr("acct_1"),
+			},
+		},
+	}
+	if got := agencyAccountOpenLeadCount(state, "acct_1"); got != 1 {
+		t.Fatalf("open lead count = %d", got)
+	}
+}
+
+func TestRetireStaleAgencyAccountsExhaustsSentOnlyAccounts(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{
+			{ID: "acct_sent", Name: "Sent Studio", Status: AgencyAccountStatusQualified, ContactCaptureCount: 2},
+			{ID: "acct_open", Name: "Open Studio", Status: AgencyAccountStatusQualified, ContactCaptureCount: 2},
+		},
+		Leads: []Lead{
+			{
+				ID:              "lead_sent",
+				Name:            "Sent Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusSent,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_sent"),
+			},
+			{
+				ID:              "lead_open",
+				Name:            "Open Founder",
+				Status:          LeadStatusEligible,
+				MessageStatus:   MessageStatusDrafted,
+				LeadType:        LeadTypeAgencyFounder,
+				AgencyAccountID: strPtr("acct_open"),
+			},
+		},
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireStaleAgencyAccounts(store); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentIndex := findAgencyAccountByID(got.AgencyAccounts, "acct_sent")
+	openIndex := findAgencyAccountByID(got.AgencyAccounts, "acct_open")
+	if sentIndex < 0 || got.AgencyAccounts[sentIndex].Status != AgencyAccountStatusExhausted {
+		t.Fatalf("sent account = %#v", got.AgencyAccounts)
+	}
+	if openIndex < 0 || got.AgencyAccounts[openIndex].Status != AgencyAccountStatusQualified {
+		t.Fatalf("open account = %#v", got.AgencyAccounts)
+	}
+}
+
+func TestRecordAgencyContactCaptureErrorPersistsResumeMarker(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := OutreachState{AgencyAccounts: []AgencyAccount{{
+		ID:     "acct_error",
+		Name:   "Error Studio",
+		Status: AgencyAccountStatusQualified,
+	}}}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	strategy := agencyContactSearchStrategy{Name: "founder_recent"}
+	if err := recordAgencyContactCaptureError(store, "acct_error", strategy, errors.New("browser closed")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := findAgencyAccountByID(got.AgencyAccounts, "acct_error")
+	if index < 0 {
+		t.Fatal("account missing")
+	}
+	account := got.AgencyAccounts[index]
+	if account.ContactErrorCount != 1 || account.LastContactError == nil || !strings.Contains(*account.LastContactError, "browser closed") {
+		t.Fatalf("account = %#v", account)
+	}
+	if account.LastContactStrategy == nil || *account.LastContactStrategy != "founder_recent" || account.LastContactCaptureAt == nil {
+		t.Fatalf("account = %#v", account)
 	}
 }
 

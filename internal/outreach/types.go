@@ -140,6 +140,10 @@ type AgencyAccount struct {
 	UpdatedAt            time.Time           `json:"updated_at"`
 	LastContactCaptureAt *time.Time          `json:"last_contact_capture_at"`
 	ContactCaptureCount  int                 `json:"contact_capture_count"`
+	LastContactStrategy  *string             `json:"last_contact_strategy,omitempty"`
+	LastContactError     *string             `json:"last_contact_error,omitempty"`
+	LastContactErrorAt   *time.Time          `json:"last_contact_error_at,omitempty"`
+	ContactErrorCount    int                 `json:"contact_error_count,omitempty"`
 	Notes                []string            `json:"notes"`
 }
 

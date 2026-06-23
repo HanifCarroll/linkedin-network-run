@@ -10,21 +10,48 @@ import (
 )
 
 type DashboardReport struct {
-	GeneratedAt        time.Time         `json:"generated_at"`
-	StatePath          string            `json:"state_path"`
-	TargetAgencies     int               `json:"target_agencies"`
-	TargetRecruiters   int               `json:"target_recruiters"`
-	AllowSend          bool              `json:"allow_send"`
-	Actions            []DailyLeadAction `json:"actions"`
-	Counts             StatusCounts      `json:"counts"`
-	ReadyAgencies      []Lead            `json:"ready_agencies"`
-	ReadyRecruiters    []Lead            `json:"ready_recruiters"`
-	ApprovedAgencies   []Lead            `json:"approved_agencies"`
-	ApprovedRecruiters []Lead            `json:"approved_recruiters"`
-	SentAgencies       []Lead            `json:"sent_agencies"`
-	SentRecruiters     []Lead            `json:"sent_recruiters"`
-	SkippedAgencies    []Lead            `json:"skipped_agencies"`
-	SkippedRecruiters  []Lead            `json:"skipped_recruiters"`
+	GeneratedAt        time.Time             `json:"generated_at"`
+	StatePath          string                `json:"state_path"`
+	TargetAgencies     int                   `json:"target_agencies"`
+	TargetRecruiters   int                   `json:"target_recruiters"`
+	AllowSend          bool                  `json:"allow_send"`
+	Actions            []DailyLeadAction     `json:"actions"`
+	Counts             StatusCounts          `json:"counts"`
+	RunCounts          DashboardRunCounts    `json:"run_counts"`
+	BacklogCounts      DashboardBucketCounts `json:"backlog_counts"`
+	ReadyCounts        DashboardBucketCounts `json:"ready_counts"`
+	LifetimeCounts     DashboardBucketCounts `json:"lifetime_counts"`
+	AgencyFunnelCounts AgencyAccountFunnel   `json:"agency_funnel_counts"`
+	ReadyAgencies      []Lead                `json:"ready_agencies"`
+	ReadyRecruiters    []Lead                `json:"ready_recruiters"`
+	ApprovedAgencies   []Lead                `json:"approved_agencies"`
+	ApprovedRecruiters []Lead                `json:"approved_recruiters"`
+	SentAgencies       []Lead                `json:"sent_agencies"`
+	SentRecruiters     []Lead                `json:"sent_recruiters"`
+	SkippedAgencies    []Lead                `json:"skipped_agencies"`
+	SkippedRecruiters  []Lead                `json:"skipped_recruiters"`
+}
+
+type DashboardBucketCounts struct {
+	Agencies   int `json:"agencies"`
+	Recruiters int `json:"recruiters"`
+}
+
+type DashboardRunCounts struct {
+	Sent               DashboardBucketCounts `json:"sent"`
+	DryRunReady        DashboardBucketCounts `json:"dry_run_ready"`
+	ConversationExists DashboardBucketCounts `json:"conversation_exists"`
+	NotMessageable     DashboardBucketCounts `json:"not_messageable"`
+	Blocked            DashboardBucketCounts `json:"blocked"`
+	SendFailed         DashboardBucketCounts `json:"send_failed"`
+}
+
+type AgencyAccountFunnel struct {
+	Qualified                     int `json:"qualified"`
+	WithContacts                  int `json:"with_contacts"`
+	WithMessageableOrSentContacts int `json:"with_messageable_or_sent_contacts"`
+	ExhaustedWithoutContacts      int `json:"exhausted_without_contacts"`
+	ExhaustedAfterContactAttempts int `json:"exhausted_after_contact_attempts"`
 }
 
 type DailyLeadAction struct {
@@ -43,13 +70,27 @@ type DailyLeadAction struct {
 func BuildDashboardReport(state OutreachState, statePath string, targetAgencies int, targetRecruiters int, allowSend bool, actions []DailyLeadAction) DashboardReport {
 	state.Normalize()
 	return DashboardReport{
-		GeneratedAt:        time.Now(),
-		StatePath:          statePath,
-		TargetAgencies:     targetAgencies,
-		TargetRecruiters:   targetRecruiters,
-		AllowSend:          allowSend,
-		Actions:            actions,
-		Counts:             Counts(state),
+		GeneratedAt:      time.Now(),
+		StatePath:        statePath,
+		TargetAgencies:   targetAgencies,
+		TargetRecruiters: targetRecruiters,
+		AllowSend:        allowSend,
+		Actions:          actions,
+		Counts:           Counts(state),
+		RunCounts:        dashboardRunCounts(actions),
+		BacklogCounts: DashboardBucketCounts{
+			Agencies:   dashboardBucketCount(state, "agency", MessageStatusDrafted),
+			Recruiters: dashboardBucketCount(state, "recruiter", MessageStatusDrafted),
+		},
+		ReadyCounts: DashboardBucketCounts{
+			Agencies:   dashboardBucketCount(state, "agency", MessageStatusDryRunReady),
+			Recruiters: dashboardBucketCount(state, "recruiter", MessageStatusDryRunReady),
+		},
+		LifetimeCounts: DashboardBucketCounts{
+			Agencies:   dashboardBucketCount(state, "agency", MessageStatusSent),
+			Recruiters: dashboardBucketCount(state, "recruiter", MessageStatusSent),
+		},
+		AgencyFunnelCounts: agencyAccountFunnelCounts(state),
 		ReadyAgencies:      dashboardLeads(state, "agency", MessageStatusDryRunReady),
 		ReadyRecruiters:    dashboardLeads(state, "recruiter", MessageStatusDryRunReady),
 		ApprovedAgencies:   dashboardLeads(state, "agency", MessageStatusApproved),
@@ -67,17 +108,36 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		"",
 		fmt.Sprintf("- Generated: `%s`", report.GeneratedAt.Format(time.RFC3339)),
 		fmt.Sprintf("- State: `%s`", report.StatePath),
-		fmt.Sprintf("- Target: `%d` agencies, `%d` recruiters", report.TargetAgencies, report.TargetRecruiters),
+		fmt.Sprintf("- This-run target: `%d` agencies, `%d` recruiters", report.TargetAgencies, report.TargetRecruiters),
 		fmt.Sprintf("- Real sends enabled: `%t`", report.AllowSend),
-		fmt.Sprintf("- Messageable/sendable: `%d` agencies, `%d` recruiters", len(report.ReadyAgencies), len(report.ReadyRecruiters)),
+		fmt.Sprintf("- This-run sent: `%d` agencies, `%d` recruiters", report.RunCounts.Sent.Agencies, report.RunCounts.Sent.Recruiters),
+		fmt.Sprintf("- This-run checked/skipped: conversation_exists `%d` agencies, `%d` recruiters; not_messageable `%d` agencies, `%d` recruiters; blocked `%d` agencies, `%d` recruiters; send_failed `%d` agencies, `%d` recruiters",
+			report.RunCounts.ConversationExists.Agencies,
+			report.RunCounts.ConversationExists.Recruiters,
+			report.RunCounts.NotMessageable.Agencies,
+			report.RunCounts.NotMessageable.Recruiters,
+			report.RunCounts.Blocked.Agencies,
+			report.RunCounts.Blocked.Recruiters,
+			report.RunCounts.SendFailed.Agencies,
+			report.RunCounts.SendFailed.Recruiters,
+		),
+		fmt.Sprintf("- Ready now: `%d` agencies, `%d` recruiters", report.ReadyCounts.Agencies, report.ReadyCounts.Recruiters),
+		fmt.Sprintf("- Backlog drafted/needs validation: `%d` agencies, `%d` recruiters", report.BacklogCounts.Agencies, report.BacklogCounts.Recruiters),
 		fmt.Sprintf("- Manually approved: `%d` agencies, `%d` recruiters", len(report.ApprovedAgencies), len(report.ApprovedRecruiters)),
-		fmt.Sprintf("- Sent: `%d` agencies, `%d` recruiters", len(report.SentAgencies), len(report.SentRecruiters)),
-		fmt.Sprintf("- Checked/skipped: `%d` agencies, `%d` recruiters", len(report.SkippedAgencies), len(report.SkippedRecruiters)),
+		fmt.Sprintf("- Lifetime sent: `%d` agencies, `%d` recruiters", report.LifetimeCounts.Agencies, report.LifetimeCounts.Recruiters),
+		fmt.Sprintf("- Lifetime checked/skipped: `%d` agencies, `%d` recruiters", len(report.SkippedAgencies), len(report.SkippedRecruiters)),
 		fmt.Sprintf("- Agency accounts: `%d` qualified, `%d` needs review, `%d` rejected, `%d` exhausted",
 			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusQualified],
 			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusNeedsReview],
 			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusRejected],
 			report.Counts.ByAgencyAccountStatus[AgencyAccountStatusExhausted],
+		),
+		fmt.Sprintf("- Agency contactability: `%d` qualified accounts, `%d` with contacts, `%d` with messageable/sent contacts, `%d` exhausted with no contacts, `%d` exhausted after contact attempts",
+			report.AgencyFunnelCounts.Qualified,
+			report.AgencyFunnelCounts.WithContacts,
+			report.AgencyFunnelCounts.WithMessageableOrSentContacts,
+			report.AgencyFunnelCounts.ExhaustedWithoutContacts,
+			report.AgencyFunnelCounts.ExhaustedAfterContactAttempts,
 		),
 		"",
 	}
@@ -119,10 +179,89 @@ func WriteDashboardMarkdown(path string, report DashboardReport) error {
 	return nil
 }
 
+func dashboardRunCounts(actions []DailyLeadAction) DashboardRunCounts {
+	counts := DashboardRunCounts{}
+	for _, action := range actions {
+		var selected *DashboardBucketCounts
+		switch action.Result {
+		case "sent-clicked":
+			selected = &counts.Sent
+		case "dry-run-messageable":
+			selected = &counts.DryRunReady
+		case "conversation-exists":
+			selected = &counts.ConversationExists
+		case "not-messageable":
+			selected = &counts.NotMessageable
+		case "blocked":
+			selected = &counts.Blocked
+		case "send-button-missing", "composer-missing", "identity-mismatch":
+			selected = &counts.SendFailed
+		}
+		if selected == nil {
+			continue
+		}
+		switch action.Bucket {
+		case "agency":
+			selected.Agencies++
+		case "recruiter":
+			selected.Recruiters++
+		}
+	}
+	return counts
+}
+
+func agencyAccountFunnelCounts(state OutreachState) AgencyAccountFunnel {
+	state.Normalize()
+	accountsWithContacts := map[string]bool{}
+	accountsWithMessageableOrSentContacts := map[string]bool{}
+	for _, lead := range state.Leads {
+		if bucketForLead(lead) != "agency" || lead.AgencyAccountID == nil || cleanText(*lead.AgencyAccountID) == "" || lead.Status != LeadStatusEligible {
+			continue
+		}
+		accountID := cleanText(*lead.AgencyAccountID)
+		accountsWithContacts[accountID] = true
+		switch lead.MessageStatus {
+		case MessageStatusDryRunReady, MessageStatusSent, MessageStatusManuallySent:
+			accountsWithMessageableOrSentContacts[accountID] = true
+		}
+	}
+	counts := AgencyAccountFunnel{}
+	for _, account := range state.AgencyAccounts {
+		switch account.Status {
+		case AgencyAccountStatusQualified:
+			counts.Qualified++
+		case AgencyAccountStatusExhausted:
+			if !accountsWithContacts[account.ID] {
+				counts.ExhaustedWithoutContacts++
+			}
+			if account.ContactCaptureCount > 0 {
+				counts.ExhaustedAfterContactAttempts++
+			}
+		}
+		if accountsWithContacts[account.ID] {
+			counts.WithContacts++
+		}
+		if accountsWithMessageableOrSentContacts[account.ID] {
+			counts.WithMessageableOrSentContacts++
+		}
+	}
+	return counts
+}
+
+func dashboardBucketCount(state OutreachState, bucket string, messageStatus MessageStatus) int {
+	count := 0
+	for _, lead := range state.Leads {
+		if dashboardLeadMatchesBucket(state, lead, bucket, messageStatus) {
+			count++
+		}
+	}
+	return count
+}
+
 func dashboardLeads(state OutreachState, bucket string, messageStatus MessageStatus) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if !leadMatchesSendableBucket(state, lead, bucket) || lead.MessageStatus != messageStatus {
+		if !dashboardLeadMatchesBucket(state, lead, bucket, messageStatus) {
 			continue
 		}
 		leads = append(leads, lead)
@@ -139,11 +278,11 @@ func dashboardLeads(state OutreachState, bucket string, messageStatus MessageSta
 func dashboardSkippedLeads(state OutreachState, bucket string) []Lead {
 	leads := []Lead{}
 	for _, lead := range state.Leads {
-		if !leadMatchesSendableBucket(state, lead, bucket) {
-			continue
-		}
 		switch lead.MessageStatus {
 		case MessageStatusConversationExists, MessageStatusNotMessageable, MessageStatusBlocked, MessageStatusSendFailed:
+			if !dashboardLeadMatchesBucket(state, lead, bucket, lead.MessageStatus) {
+				continue
+			}
 			leads = append(leads, lead)
 		}
 	}
@@ -154,6 +293,18 @@ func dashboardSkippedLeads(state OutreachState, bucket string) []Lead {
 		return leads[i].FitScore > leads[j].FitScore
 	})
 	return leads
+}
+
+func dashboardLeadMatchesBucket(state OutreachState, lead Lead, bucket string, messageStatus MessageStatus) bool {
+	if lead.MessageStatus != messageStatus || bucketForLead(lead) != bucket {
+		return false
+	}
+	switch messageStatus {
+	case MessageStatusSent, MessageStatusManuallySent, MessageStatusConversationExists, MessageStatusNotMessageable, MessageStatusBlocked, MessageStatusSendFailed:
+		return lead.Status == LeadStatusEligible
+	default:
+		return leadMatchesSendableBucket(state, lead, bucket)
+	}
 }
 
 func renderLeadCards(label string, leads []Lead) []string {

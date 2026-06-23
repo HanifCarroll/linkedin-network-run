@@ -227,6 +227,7 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 		Limit:                options.Limit,
 		RowScrollDelayMS:     options.RowScrollDelayMS,
 		OnlyConnectable:      false,
+		TimeoutMS:            options.TimeoutMS,
 	})
 	if err != nil {
 		return err
@@ -247,6 +248,9 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 
 func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBucket, actions *[]DailyLeadAction) error {
 	for round := 0; round < options.MaxCaptureRounds; round++ {
+		if err := retireStaleAgencyAccounts(store); err != nil {
+			return err
+		}
 		state, err := store.Load()
 		if err != nil {
 			return err
@@ -268,6 +272,31 @@ func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBuck
 		}
 	}
 	return nil
+}
+
+func retireStaleAgencyAccounts(store *Store) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	changed := false
+	now := time.Now()
+	for i := range state.AgencyAccounts {
+		account := &state.AgencyAccounts[i]
+		if account.Status != AgencyAccountStatusQualified || account.ContactCaptureCount < agencyAccountContactStrategyCount(*account) {
+			continue
+		}
+		if agencyAccountOpenLeadCount(state, account.ID) > 0 {
+			continue
+		}
+		account.Status = AgencyAccountStatusExhausted
+		account.UpdatedAt = now
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return store.Save(state)
 }
 
 func draftValidateAndMaybeSendBucket(store *Store, options DailyOptions, bucket string, target int, actions *[]DailyLeadAction) error {
@@ -293,7 +322,11 @@ func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int
 	if err != nil {
 		return err
 	}
-	if len(agencyAccountsForContactCapture(state, target*2)) >= target {
+	desired := target * 2
+	if desired < target {
+		desired = target
+	}
+	if len(agencyAccountsNeedingContactCapture(state, desired)) >= target {
 		return nil
 	}
 	for _, source := range defaultAgencyAccountSources() {
@@ -304,7 +337,7 @@ func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int
 		if err != nil {
 			return err
 		}
-		if len(agencyAccountsForContactCapture(state, target*2)) >= target*2 {
+		if len(agencyAccountsNeedingContactCapture(state, desired)) >= desired {
 			return nil
 		}
 	}
@@ -357,30 +390,37 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 	if needed <= 0 {
 		return 0, nil
 	}
-	accounts := agencyAccountsForContactCapture(state, agencyContactAccountLimit(needed))
+	accounts := agencyAccountsNeedingContactCapture(state, agencyContactAccountLimit(needed))
 	capturedContacts := 0
 	for _, account := range accounts {
 		if account.AccountURL == nil {
 			continue
 		}
-		contactURL, err := agencyAccountContactSearchURL(account)
+		strategy, ok := nextAgencyContactSearchStrategy(account)
+		if !ok {
+			continue
+		}
+		contactURL, err := agencyAccountContactSearchURLForStrategy(account, strategy)
 		if err != nil {
 			continue
 		}
-		source := agencyContactSource(account)
-		outDir := filepath.Join(options.CaptureOutDir, safePathSegment(AgencyAccountContactsSource), safePathSegment(account.ID), fmt.Sprintf("round-%02d", round))
+		source := agencyContactSource(account, strategy)
+		outDir := filepath.Join(options.CaptureOutDir, safePathSegment(AgencyAccountContactsSource), safePathSegment(account.ID), safePathSegment(strategy.Name), fmt.Sprintf("round-%02d", round))
 		path, err := app.RunPlaywriterCapture(options.Playwriter, options.Session, options.CaptureScript, outDir, source, contactURL, app.CaptureRunOptions{
 			Pages:                options.PagesPerCapture,
 			StopAfterConnectable: options.StopAfterConnectable,
 			Limit:                options.Limit,
 			RowScrollDelayMS:     options.RowScrollDelayMS,
 			OnlyConnectable:      false,
+			TimeoutMS:            options.TimeoutMS,
 		})
 		if err != nil {
+			_ = recordAgencyContactCaptureError(store, account.ID, strategy, err)
 			return capturedContacts, err
 		}
 		capture, err := app.LoadSalesNavCapture(path)
 		if err != nil {
+			_ = recordAgencyContactCaptureError(store, account.ID, strategy, err)
 			return capturedContacts, err
 		}
 		state, err = store.Load()
@@ -392,14 +432,19 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 			continue
 		}
 		accountForImport := state.AgencyAccounts[index]
+		openBefore := agencyAccountOpenLeadCount(state, account.ID)
 		if _, err := ImportCapture(&state, capture, ImportOptions{AgencyAccount: &accountForImport}); err != nil {
 			return capturedContacts, err
 		}
+		openAfter := agencyAccountOpenLeadCount(state, account.ID)
 		now := time.Now()
 		state.AgencyAccounts[index].ContactCaptureCount++
 		state.AgencyAccounts[index].LastContactCaptureAt = &now
+		state.AgencyAccounts[index].LastContactStrategy = &strategy.Name
+		state.AgencyAccounts[index].LastContactError = nil
+		state.AgencyAccounts[index].LastContactErrorAt = nil
 		state.AgencyAccounts[index].UpdatedAt = now
-		if len(capture.Rows) == 0 && state.AgencyAccounts[index].ContactCaptureCount >= 2 {
+		if openAfter <= openBefore && state.AgencyAccounts[index].ContactCaptureCount >= agencyAccountContactStrategyCount(state.AgencyAccounts[index]) {
 			state.AgencyAccounts[index].Status = AgencyAccountStatusExhausted
 		}
 		if err := store.Save(state); err != nil {
@@ -415,6 +460,47 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 		}
 	}
 	return capturedContacts, nil
+}
+
+func recordAgencyContactCaptureError(store *Store, accountID string, strategy agencyContactSearchStrategy, cause error) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	index := findAgencyAccountByID(state.AgencyAccounts, accountID)
+	if index < 0 {
+		return nil
+	}
+	now := time.Now()
+	message := cause.Error()
+	if len(message) > 240 {
+		message = message[:240]
+	}
+	account := &state.AgencyAccounts[index]
+	account.LastContactCaptureAt = &now
+	account.LastContactStrategy = &strategy.Name
+	account.LastContactError = &message
+	account.LastContactErrorAt = &now
+	account.ContactErrorCount++
+	account.UpdatedAt = now
+	return store.Save(state)
+}
+
+func agencyAccountOpenLeadCount(state OutreachState, accountID string) int {
+	count := 0
+	for _, lead := range state.Leads {
+		if lead.AgencyAccountID == nil || *lead.AgencyAccountID != accountID {
+			continue
+		}
+		if lead.Status != LeadStatusEligible {
+			continue
+		}
+		if isTerminalMessageStatus(lead.MessageStatus) && lead.MessageStatus != MessageStatusDryRunReady {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func agencyContactAccountLimit(needed int) int {
@@ -484,7 +570,7 @@ func sendBucket(store *Store, options DailyOptions, bucket string, target int, a
 		if err != nil {
 			return err
 		}
-		if sentCount(state, bucket) >= target {
+		if sentCountFromActions(*actions, bucket) >= target {
 			return nil
 		}
 		candidates := readyLeads(state, bucket)
@@ -623,7 +709,7 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 
 func bucketCompleteForRun(state OutreachState, bucket string, target int, allowSend bool, actions []DailyLeadAction) bool {
 	if allowSend {
-		return sentCount(state, bucket) >= target
+		return sentCountFromActions(actions, bucket) >= target
 	}
 	return readyCount(state, bucket) >= target
 }
@@ -645,7 +731,7 @@ func sentCountFromActions(actions []DailyLeadAction, bucket string) int {
 func sentCount(state OutreachState, bucket string) int {
 	count := 0
 	for _, lead := range state.Leads {
-		if leadMatchesSendableBucket(state, lead, bucket) && lead.MessageStatus == MessageStatusSent {
+		if lead.Status == LeadStatusEligible && bucketForLead(lead) == bucket && lead.MessageStatus == MessageStatusSent {
 			count++
 		}
 	}
@@ -712,6 +798,14 @@ type salesNavFilterValue struct {
 	Text string
 }
 
+type agencyContactSearchStrategy struct {
+	Name                  string
+	TitleFilter           *salesNavFilter
+	Keywords              string
+	IncludeRecentActivity bool
+	StrongAccountOnly     bool
+}
+
 func defaultOutreachSourceURL(source string) (string, bool) {
 	switch source {
 	case RecruiterSource:
@@ -756,16 +850,76 @@ func defaultOutreachAccountSourceURL(source string) (string, bool) {
 }
 
 func agencyAccountContactSearchURL(account AgencyAccount) (string, error) {
+	strategy, ok := firstAgencyContactSearchStrategy(account)
+	if !ok {
+		return "", fmt.Errorf("agency account %s has no contact search strategy", account.ID)
+	}
+	return agencyAccountContactSearchURLForStrategy(account, strategy)
+}
+
+func agencyAccountContactSearchURLForStrategy(account AgencyAccount, strategy agencyContactSearchStrategy) (string, error) {
 	companyID := salesNavCompanyID(account)
 	if companyID == "" {
 		return "", fmt.Errorf("agency account %s has no Sales Navigator company id", account.ID)
 	}
 	company := salesNavFilter{Type: "CURRENT_COMPANY", Values: []salesNavFilterValue{{ID: companyID, Text: account.Name}}}
-	return salesNavPeopleSearchURL(appendSalesNavFilters(basePeopleFilters(), company, agencyLeaderTitleFilter()), ""), nil
+	filters := appendSalesNavFilters(basePeopleFiltersForRecentActivity(strategy.IncludeRecentActivity), company)
+	if strategy.TitleFilter != nil {
+		filters = appendSalesNavFilters(filters, *strategy.TitleFilter)
+	}
+	return salesNavPeopleSearchURL(filters, strategy.Keywords), nil
 }
 
-func agencyContactSource(account AgencyAccount) string {
-	return cleanText(AgencyAccountContactsSource + " - " + account.Name)
+func agencyContactSource(account AgencyAccount, strategy agencyContactSearchStrategy) string {
+	return cleanText(AgencyAccountContactsSource + " - " + account.Name + " - " + strategy.Name)
+}
+
+func firstAgencyContactSearchStrategy(account AgencyAccount) (agencyContactSearchStrategy, bool) {
+	strategies := agencyContactSearchStrategies(account)
+	if len(strategies) == 0 {
+		return agencyContactSearchStrategy{}, false
+	}
+	return strategies[0], true
+}
+
+func nextAgencyContactSearchStrategy(account AgencyAccount) (agencyContactSearchStrategy, bool) {
+	strategies := agencyContactSearchStrategies(account)
+	if account.ContactCaptureCount < 0 || account.ContactCaptureCount >= len(strategies) {
+		return agencyContactSearchStrategy{}, false
+	}
+	return strategies[account.ContactCaptureCount], true
+}
+
+func agencyAccountContactStrategyCount(account AgencyAccount) int {
+	return len(agencyContactSearchStrategies(account))
+}
+
+func agencyContactSearchStrategies(account AgencyAccount) []agencyContactSearchStrategy {
+	leaderFilter := agencyLeaderTitleFilter()
+	strategies := []agencyContactSearchStrategy{
+		{
+			Name:                  "founder_recent",
+			TitleFilter:           &leaderFilter,
+			IncludeRecentActivity: true,
+		},
+		{
+			Name:     "executive_delivery_broad",
+			Keywords: "CEO President Managing Director Head of Engineering VP Engineering Technical Director Head of Delivery Client Services Partnerships",
+		},
+	}
+	if agencyAccountAllowsResourceFallback(account) {
+		strategies = append(strategies, agencyContactSearchStrategy{
+			Name:                  "resource_delivery_broad",
+			Keywords:              "Resource Manager Resourcing Talent Manager Head of Talent Client Services Partnerships Delivery",
+			StrongAccountOnly:     true,
+			IncludeRecentActivity: false,
+		})
+	}
+	return strategies
+}
+
+func agencyAccountAllowsResourceFallback(account AgencyAccount) bool {
+	return account.FitScore >= 75
 }
 
 func salesNavCompanyID(account AgencyAccount) string {
@@ -801,11 +955,18 @@ func findAgencyAccountByID(accounts []AgencyAccount, id string) int {
 }
 
 func basePeopleFilters() []salesNavFilter {
-	return []salesNavFilter{
+	return basePeopleFiltersForRecentActivity(true)
+}
+
+func basePeopleFiltersForRecentActivity(includeRecentActivity bool) []salesNavFilter {
+	filters := []salesNavFilter{
 		{Type: "REGION", Values: []salesNavFilterValue{{ID: "103644278", Text: "United States"}}},
 		{Type: "RELATIONSHIP", Values: []salesNavFilterValue{{ID: "S", Text: "2nd degree connections"}}},
-		{Type: "POSTED_ON_LINKEDIN", Values: []salesNavFilterValue{{ID: "RPOL", Text: "Posted on LinkedIn"}}},
 	}
+	if includeRecentActivity {
+		filters = append(filters, salesNavFilter{Type: "POSTED_ON_LINKEDIN", Values: []salesNavFilterValue{{ID: "RPOL", Text: "Posted on LinkedIn"}}})
+	}
+	return filters
 }
 
 func contractRecruiterTitleFilter() salesNavFilter {

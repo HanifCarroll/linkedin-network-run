@@ -140,9 +140,9 @@ func classifyLead(source string, title *string, company *string, evidence string
 	rejects := []string{}
 
 	titleLooksRecruiter := containsAny(titleText, "recruiter", "talent acquisition", "talent partner", "sourcer", "account manager", "staffing")
-	titleLooksAgencyResource := containsAny(titleText, "resource manager", "resourcing", "talent manager")
-	titleLooksAgencyDelivery := containsAny(titleText, "delivery", "technical director", "engineering director", "head of engineering", "vp engineering")
-	titleLooksAgencyFounder := containsAny(titleText, "founder", "partner", "principal", "owner", "ceo")
+	titleLooksAgencyResource := containsAny(titleText, "resource manager", "resourcing", "talent manager", "head of talent")
+	titleLooksAgencyDelivery := containsAny(titleText, "delivery", "technical director", "engineering director", "head of engineering", "vp engineering", "head of delivery", "client services", "partnerships")
+	titleLooksAgencyFounder := containsAny(titleText, "founder", "partner", "principal", "owner", "ceo", "president", "managing director")
 	titleLooksAgencyPersona := titleLooksAgencyResource || titleLooksAgencyDelivery || titleLooksAgencyFounder
 	accountLooksAgency := agencyAccount != nil && agencyAccount.Status == AgencyAccountStatusQualified
 	companyLooksAgency := accountLooksAgency || containsAny(companyText, "product studio", "digital product", "digital agency", "software agency", "development agency", "design agency", "dev shop", "studio", "consultancy", "consulting", "agency")
