@@ -11,10 +11,18 @@ import (
 
 type DashboardReport struct {
 	GeneratedAt        time.Time             `json:"generated_at"`
+	Mode               string                `json:"mode"`
+	RunID              string                `json:"run_id,omitempty"`
+	RunStartedAt       *time.Time            `json:"run_started_at,omitempty"`
+	RunCompletedAt     *time.Time            `json:"run_completed_at,omitempty"`
 	StatePath          string                `json:"state_path"`
+	DashboardPath      string                `json:"dashboard_path,omitempty"`
 	TargetAgencies     int                   `json:"target_agencies"`
 	TargetRecruiters   int                   `json:"target_recruiters"`
 	AllowSend          bool                  `json:"allow_send"`
+	LatestRun          *RunSummary           `json:"latest_run,omitempty"`
+	Recommendation     RunRecommendation     `json:"recommendation"`
+	LimitingReason     string                `json:"limiting_reason,omitempty"`
 	Actions            []DailyLeadAction     `json:"actions"`
 	Counts             StatusCounts          `json:"counts"`
 	RunCounts          DashboardRunCounts    `json:"run_counts"`
@@ -22,6 +30,7 @@ type DashboardReport struct {
 	ReadyCounts        DashboardBucketCounts `json:"ready_counts"`
 	LifetimeCounts     DashboardBucketCounts `json:"lifetime_counts"`
 	AgencyFunnelCounts AgencyAccountFunnel   `json:"agency_funnel_counts"`
+	AgencyDrilldown    AgencyDrilldownCounts `json:"agency_drilldown"`
 	ReadyAgencies      []Lead                `json:"ready_agencies"`
 	ReadyRecruiters    []Lead                `json:"ready_recruiters"`
 	ApprovedAgencies   []Lead                `json:"approved_agencies"`
@@ -54,8 +63,21 @@ type AgencyAccountFunnel struct {
 	ExhaustedAfterContactAttempts int `json:"exhausted_after_contact_attempts"`
 }
 
+type AgencyDrilldownCounts struct {
+	NotSearchedYet          int `json:"not_searched_yet"`
+	SearchedFounderRecent   int `json:"searched_founder_recent"`
+	SearchedExecutiveBroad  int `json:"searched_executive_broad"`
+	SearchedResourceBroad   int `json:"searched_resource_broad"`
+	ContactsFound           int `json:"contacts_found"`
+	NoContactsFound         int `json:"no_contacts_found"`
+	BrowserErrorRetryable   int `json:"browser_error_retryable"`
+	QualifiedRemaining      int `json:"qualified_remaining"`
+	ExhaustedWithoutContact int `json:"exhausted_without_contact"`
+}
+
 type DailyLeadAction struct {
 	At            time.Time     `json:"at"`
+	RunID         string        `json:"run_id,omitempty"`
 	Bucket        string        `json:"bucket"`
 	LeadID        string        `json:"lead_id"`
 	Name          string        `json:"name"`
@@ -67,17 +89,67 @@ type DailyLeadAction struct {
 	Note          *string       `json:"note"`
 }
 
+type DashboardBuildOptions struct {
+	Mode             string
+	RunID            string
+	RunStartedAt     *time.Time
+	RunCompletedAt   *time.Time
+	DashboardPath    string
+	TargetAgencies   int
+	TargetRecruiters int
+	AllowSend        bool
+	Actions          []DailyLeadAction
+	IncludeLatestRun bool
+	Recommendation   *RunRecommendation
+}
+
 func BuildDashboardReport(state OutreachState, statePath string, targetAgencies int, targetRecruiters int, allowSend bool, actions []DailyLeadAction) DashboardReport {
-	state.Normalize()
-	return DashboardReport{
-		GeneratedAt:      time.Now(),
-		StatePath:        statePath,
+	return BuildDashboardReportWithOptions(state, statePath, DashboardBuildOptions{
+		Mode:             "run",
 		TargetAgencies:   targetAgencies,
 		TargetRecruiters: targetRecruiters,
 		AllowSend:        allowSend,
 		Actions:          actions,
+	})
+}
+
+func BuildDashboardReportWithOptions(state OutreachState, statePath string, options DashboardBuildOptions) DashboardReport {
+	state.Normalize()
+	mode := cleanText(options.Mode)
+	if mode == "" {
+		mode = "run"
+	}
+	var latestRun *RunSummary
+	if options.IncludeLatestRun {
+		if summary, ok := LatestRunSummary(state, statePath); ok {
+			latestRun = &summary
+		}
+	}
+	recommendation := RunRecommendation{}
+	if options.Recommendation != nil {
+		recommendation = *options.Recommendation
+	} else if latestRun != nil {
+		recommendation = latestRun.Recommendation
+	} else {
+		recommendation = RecommendNextRun(state, statePath, options.TargetAgencies, options.TargetRecruiters, options.AllowSend)
+	}
+	return DashboardReport{
+		GeneratedAt:      time.Now(),
+		Mode:             mode,
+		RunID:            options.RunID,
+		RunStartedAt:     options.RunStartedAt,
+		RunCompletedAt:   options.RunCompletedAt,
+		StatePath:        statePath,
+		DashboardPath:    options.DashboardPath,
+		TargetAgencies:   options.TargetAgencies,
+		TargetRecruiters: options.TargetRecruiters,
+		AllowSend:        options.AllowSend,
+		LatestRun:        latestRun,
+		Recommendation:   recommendation,
+		LimitingReason:   dashboardLimitingReason(state, options.TargetAgencies, options.TargetRecruiters, options.AllowSend, options.Actions),
+		Actions:          options.Actions,
 		Counts:           Counts(state),
-		RunCounts:        dashboardRunCounts(actions),
+		RunCounts:        dashboardRunCounts(options.Actions),
 		BacklogCounts: DashboardBucketCounts{
 			Agencies:   dashboardBucketCount(state, "agency", MessageStatusDrafted),
 			Recruiters: dashboardBucketCount(state, "recruiter", MessageStatusDrafted),
@@ -91,6 +163,7 @@ func BuildDashboardReport(state OutreachState, statePath string, targetAgencies 
 			Recruiters: dashboardBucketCount(state, "recruiter", MessageStatusSent),
 		},
 		AgencyFunnelCounts: agencyAccountFunnelCounts(state),
+		AgencyDrilldown:    agencyDrilldownCounts(state),
 		ReadyAgencies:      dashboardLeads(state, "agency", MessageStatusDryRunReady),
 		ReadyRecruiters:    dashboardLeads(state, "recruiter", MessageStatusDryRunReady),
 		ApprovedAgencies:   dashboardLeads(state, "agency", MessageStatusApproved),
@@ -107,7 +180,27 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 		fmt.Sprintf("# Recruiter And Agency Outreach %s", report.GeneratedAt.Format("2006-01-02")),
 		"",
 		fmt.Sprintf("- Generated: `%s`", report.GeneratedAt.Format(time.RFC3339)),
+		fmt.Sprintf("- Mode: `%s`", report.Mode),
+	}
+	if report.Mode == "render" {
+		lines = append(lines, "- Dashboard render only; no send run executed.")
+	}
+	if report.RunID != "" {
+		lines = append(lines, fmt.Sprintf("- Run ID: `%s`", report.RunID))
+	}
+	if report.RunStartedAt != nil {
+		lines = append(lines, fmt.Sprintf("- Run started: `%s`", report.RunStartedAt.Format(time.RFC3339)))
+	}
+	if report.RunCompletedAt != nil {
+		lines = append(lines, fmt.Sprintf("- Run completed: `%s`", report.RunCompletedAt.Format(time.RFC3339)))
+	}
+	lines = append(lines,
 		fmt.Sprintf("- State: `%s`", report.StatePath),
+	)
+	if report.DashboardPath != "" {
+		lines = append(lines, fmt.Sprintf("- Dashboard path: `%s`", report.DashboardPath))
+	}
+	lines = append(lines,
 		fmt.Sprintf("- This-run target: `%d` agencies, `%d` recruiters", report.TargetAgencies, report.TargetRecruiters),
 		fmt.Sprintf("- Real sends enabled: `%t`", report.AllowSend),
 		fmt.Sprintf("- This-run sent: `%d` agencies, `%d` recruiters", report.RunCounts.Sent.Agencies, report.RunCounts.Sent.Recruiters),
@@ -139,7 +232,47 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 			report.AgencyFunnelCounts.ExhaustedWithoutContacts,
 			report.AgencyFunnelCounts.ExhaustedAfterContactAttempts,
 		),
+		fmt.Sprintf("- Agency drilldown: not searched `%d`; searched founder/recent `%d`; searched executive/delivery broad `%d`; searched resource/delivery broad `%d`; contacts found `%d`; no contacts found `%d`; browser error retryable `%d`",
+			report.AgencyDrilldown.NotSearchedYet,
+			report.AgencyDrilldown.SearchedFounderRecent,
+			report.AgencyDrilldown.SearchedExecutiveBroad,
+			report.AgencyDrilldown.SearchedResourceBroad,
+			report.AgencyDrilldown.ContactsFound,
+			report.AgencyDrilldown.NoContactsFound,
+			report.AgencyDrilldown.BrowserErrorRetryable,
+		),
 		"",
+	)
+	if report.LimitingReason != "" {
+		lines = append(lines, "- Limiting reason: "+cleanInline(report.LimitingReason), "")
+	}
+	if report.LatestRun != nil {
+		lines = append(lines,
+			"## Latest Run",
+			"",
+			fmt.Sprintf("- Run ID: `%s`", report.LatestRun.RunID),
+			fmt.Sprintf("- Status: `%s`", report.LatestRun.Status),
+			fmt.Sprintf("- Started: `%s`", report.LatestRun.StartedAt.Format(time.RFC3339)),
+			fmt.Sprintf("- Sent: `%d` agencies, `%d` recruiters", report.LatestRun.Counts.Sent.Agencies, report.LatestRun.Counts.Sent.Recruiters),
+		)
+		if !report.LatestRun.CompletedAt.IsZero() {
+			lines = append(lines, fmt.Sprintf("- Completed: `%s`", report.LatestRun.CompletedAt.Format(time.RFC3339)))
+		}
+		if report.LatestRun.Blocker != "" {
+			lines = append(lines, "- Blocker: "+cleanInline(report.LatestRun.Blocker))
+		}
+		lines = append(lines, "")
+	}
+	if report.Recommendation.ShouldRetry {
+		lines = append(lines,
+			"## Recommended Next Run",
+			"",
+			"- Reason: "+cleanInline(report.Recommendation.Reason),
+			"- Command: `"+cleanInline(report.Recommendation.Command)+"`",
+			"",
+		)
+	} else if cleanText(report.Recommendation.Reason) != "" {
+		lines = append(lines, "## Recommended Next Run", "", "- "+cleanInline(report.Recommendation.Reason), "")
 	}
 	if len(report.Actions) > 0 {
 		lines = append(lines, "## Run Actions", "")
@@ -179,6 +312,20 @@ func WriteDashboardMarkdown(path string, report DashboardReport) error {
 	return nil
 }
 
+func WriteDashboardMarkdownAliases(paths []string, report DashboardReport) error {
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if cleanText(path) == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		if err := WriteDashboardMarkdown(path, report); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func dashboardRunCounts(actions []DailyLeadAction) DashboardRunCounts {
 	counts := DashboardRunCounts{}
 	for _, action := range actions {
@@ -208,6 +355,47 @@ func dashboardRunCounts(actions []DailyLeadAction) DashboardRunCounts {
 		}
 	}
 	return counts
+}
+
+func dashboardLimitingReason(state OutreachState, targetAgencies int, targetRecruiters int, allowSend bool, actions []DailyLeadAction) string {
+	state.Normalize()
+	if allowSend {
+		agencyGap := targetAgencies - sentCountFromActions(actions, "agency")
+		if agencyGap > 0 && targetAgencies > 0 {
+			funnel := agencyAccountFunnelCounts(state)
+			drilldown := agencyDrilldownCounts(state)
+			return fmt.Sprintf("Agency target is short by %d sends. Current account pool: %d qualified accounts, %d with contacts, %d with messageable/sent contacts, %d not searched yet, %d with no contacts found, %d exhausted with no contacts, %d retryable browser errors.",
+				agencyGap,
+				funnel.Qualified,
+				funnel.WithContacts,
+				funnel.WithMessageableOrSentContacts,
+				drilldown.NotSearchedYet,
+				drilldown.NoContactsFound,
+				funnel.ExhaustedWithoutContacts,
+				drilldown.BrowserErrorRetryable,
+			)
+		}
+		recruiterGap := targetRecruiters - sentCountFromActions(actions, "recruiter")
+		if recruiterGap > 0 && targetRecruiters > 0 {
+			return fmt.Sprintf("Recruiter target is short by %d sends. Current recruiter backlog: %d drafted, %d ready, %d conversation_exists, %d not_messageable, %d blocked, %d send_failed.",
+				recruiterGap,
+				dashboardBucketCount(state, "recruiter", MessageStatusDrafted),
+				dashboardBucketCount(state, "recruiter", MessageStatusDryRunReady),
+				dashboardBucketCount(state, "recruiter", MessageStatusConversationExists),
+				dashboardBucketCount(state, "recruiter", MessageStatusNotMessageable),
+				dashboardBucketCount(state, "recruiter", MessageStatusBlocked),
+				dashboardBucketCount(state, "recruiter", MessageStatusSendFailed),
+			)
+		}
+		return ""
+	}
+	if targetAgencies > 0 && readyCount(state, "agency") < targetAgencies {
+		return fmt.Sprintf("Agency validation target is short by %d ready contacts.", targetAgencies-readyCount(state, "agency"))
+	}
+	if targetRecruiters > 0 && readyCount(state, "recruiter") < targetRecruiters {
+		return fmt.Sprintf("Recruiter validation target is short by %d ready contacts.", targetRecruiters-readyCount(state, "recruiter"))
+	}
+	return ""
 }
 
 func agencyAccountFunnelCounts(state OutreachState) AgencyAccountFunnel {
@@ -243,6 +431,47 @@ func agencyAccountFunnelCounts(state OutreachState) AgencyAccountFunnel {
 		}
 		if accountsWithMessageableOrSentContacts[account.ID] {
 			counts.WithMessageableOrSentContacts++
+		}
+	}
+	return counts
+}
+
+func agencyDrilldownCounts(state OutreachState) AgencyDrilldownCounts {
+	state.Normalize()
+	contactsByAccount := map[string]int{}
+	for _, lead := range state.Leads {
+		if lead.AgencyAccountID == nil || cleanText(*lead.AgencyAccountID) == "" || lead.Status != LeadStatusEligible || bucketForLead(lead) != "agency" {
+			continue
+		}
+		contactsByAccount[cleanText(*lead.AgencyAccountID)]++
+	}
+	counts := AgencyDrilldownCounts{}
+	for _, account := range state.AgencyAccounts {
+		hasContacts := contactsByAccount[account.ID] > 0
+		if account.Status == AgencyAccountStatusQualified {
+			counts.QualifiedRemaining++
+			switch {
+			case account.ContactCaptureCount <= 0:
+				counts.NotSearchedYet++
+			case account.ContactCaptureCount == 1:
+				counts.SearchedFounderRecent++
+			case account.ContactCaptureCount == 2:
+				counts.SearchedExecutiveBroad++
+			default:
+				counts.SearchedResourceBroad++
+			}
+			if account.LastContactError != nil && cleanText(*account.LastContactError) != "" {
+				counts.BrowserErrorRetryable++
+			}
+		}
+		if hasContacts {
+			counts.ContactsFound++
+		}
+		if account.ContactCaptureCount > 0 && !hasContacts {
+			counts.NoContactsFound++
+		}
+		if account.Status == AgencyAccountStatusExhausted && !hasContacts {
+			counts.ExhaustedWithoutContact++
 		}
 	}
 	return counts

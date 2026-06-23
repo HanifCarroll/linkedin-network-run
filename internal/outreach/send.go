@@ -13,6 +13,7 @@ import (
 
 type SendMessageOptions struct {
 	LeadID     string
+	RunID      string
 	Session    string
 	Playwriter string
 	Script     string
@@ -53,9 +54,15 @@ type MessageSendResult struct {
 }
 
 func SendMessage(store *Store, options SendMessageOptions) error {
+	options.RunID = normalizeRunID(options.RunID, "message")
 	if options.Session == "" {
 		return fmt.Errorf("--session is required")
 	}
+	resolvedSession, err := resolvePlaywriterSession(options.Playwriter, options.Session)
+	if err != nil {
+		return err
+	}
+	options.Session = resolvedSession
 	if options.LeadID == "" {
 		return fmt.Errorf("--lead-id is required")
 	}
@@ -130,9 +137,10 @@ func SendMessage(store *Store, options SendMessageOptions) error {
 	if err != nil {
 		return err
 	}
-	ApplyMessageSendResult(&state.Leads[index], result, outPath)
+	ApplyMessageSendResult(&state.Leads[index], result, outPath, options.RunID)
 	appendRunEvent(&state, RunEvent{
 		At:      time.Now(),
+		RunID:   options.RunID,
 		Phase:   "send-message",
 		Bucket:  bucketForLead(state.Leads[index]),
 		LeadID:  state.Leads[index].ID,
@@ -176,11 +184,12 @@ func LoadMessageSendResult(path string) (MessageSendResult, error) {
 	return result, nil
 }
 
-func ApplyMessageSendResult(lead *Lead, result MessageSendResult, outPath string) {
+func ApplyMessageSendResult(lead *Lead, result MessageSendResult, outPath string, runID string) {
 	now := time.Now()
 	note := resultNote(result)
 	lead.SendAttempts = append(lead.SendAttempts, SendAttempt{
 		At:          now,
+		RunID:       runID,
 		DryRun:      result.DryRun,
 		Status:      result.Status,
 		ResultURL:   result.URL,
@@ -189,6 +198,7 @@ func ApplyMessageSendResult(lead *Lead, result MessageSendResult, outPath string
 		Diagnostics: sendDiagnostics(result),
 	})
 	lead.MessageStatus = messageStatusForResult(result)
+	lead.MessageStatusAt = &now
 	lead.UpdatedAt = now
 }
 

@@ -28,6 +28,9 @@ const (
 )
 
 type DailyOptions struct {
+	RunID                  string
+	Command                string
+	Args                   []string
 	Session                string
 	Playwriter             string
 	CaptureScript          string
@@ -57,6 +60,7 @@ type DailyOptions struct {
 
 type DailyResult struct {
 	Report        DashboardReport `json:"report"`
+	Summary       RunSummary      `json:"summary"`
 	DashboardPath string          `json:"dashboard_path"`
 	Markdown      string          `json:"markdown"`
 }
@@ -72,18 +76,61 @@ func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 	if strings.TrimSpace(options.Session) == "" {
 		return DailyResult{}, fmt.Errorf("--session is required")
 	}
+	resolvedSession, err := resolvePlaywriterSession(options.Playwriter, options.Session)
+	if err != nil {
+		return DailyResult{}, err
+	}
+	options.Session = resolvedSession
+	startedAt := time.Now()
+	if err := appendRunLifecycleEvent(store, RunEvent{
+		At:               startedAt,
+		RunID:            options.RunID,
+		Phase:            "run-start",
+		Command:          options.Command,
+		Args:             options.Args,
+		StatePath:        store.StatePath(),
+		DashboardPath:    options.DashboardPath,
+		TargetAgencies:   options.TargetAgencies,
+		TargetRecruiters: options.TargetRecruiters,
+		AllowSend:        options.AllowSend,
+		StartedAt:        startedAt,
+	}); err != nil {
+		return DailyResult{}, err
+	}
+	actions := []DailyLeadAction{}
+	runBlocker := ""
+	finishRun := func(result string, blocker string, dashboardPath string) {
+		completedAt := time.Now()
+		_ = appendRunLifecycleEvent(store, RunEvent{
+			At:               completedAt,
+			RunID:            options.RunID,
+			Phase:            "run-finish",
+			Command:          options.Command,
+			Args:             options.Args,
+			Result:           result,
+			StatePath:        store.StatePath(),
+			DashboardPath:    dashboardPath,
+			TargetAgencies:   options.TargetAgencies,
+			TargetRecruiters: options.TargetRecruiters,
+			AllowSend:        options.AllowSend,
+			StartedAt:        startedAt,
+			CompletedAt:      completedAt,
+			Blocker:          blocker,
+		})
+	}
 	if !options.SkipSessionReset {
 		if err := app.ResetPlaywriterSession(options.Playwriter, options.Session); err != nil {
+			finishRun("failed", err.Error(), options.DashboardPath)
 			return DailyResult{}, err
 		}
 	}
 	buckets := dailyBuckets(options)
 	if dailySourcesNeedSavedSearches(buckets) {
 		if err := EnsureSavedSearches(options); err != nil {
+			finishRun("failed", err.Error(), options.DashboardPath)
 			return DailyResult{}, err
 		}
 	}
-	actions := []DailyLeadAction{}
 bucketLoop:
 	for _, bucket := range buckets {
 		if bucket.Target <= 0 {
@@ -92,48 +139,59 @@ bucketLoop:
 		if bucket.Name == "agency" {
 			if err := runAgencyAccountBucket(store, options, bucket, &actions); err != nil {
 				if errors.Is(err, errBlankLeadPageValidation) {
+					runBlocker = err.Error()
 					break bucketLoop
 				}
+				finishRun("failed", err.Error(), options.DashboardPath)
 				return DailyResult{}, err
 			}
 			continue
 		}
 		if len(bucket.Sources) == 0 {
+			finishRun("failed", fmt.Sprintf("daily bucket %q has no sources", bucket.Name), options.DashboardPath)
 			return DailyResult{}, fmt.Errorf("daily bucket %q has no sources", bucket.Name)
 		}
 		for round := 0; round < options.MaxCaptureRounds; round++ {
 			for _, source := range bucket.Sources {
 				state, err := store.Load()
 				if err != nil {
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
 					break
 				}
 				if err := captureSource(store, options, source, round+1); err != nil {
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				state, err = store.Load()
 				if err != nil {
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				DraftMessages(&state, 0)
 				if err := store.Save(state); err != nil {
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				if err := validateBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
 					if errors.Is(err, errBlankLeadPageValidation) {
+						runBlocker = err.Error()
 						break bucketLoop
 					}
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				if options.AllowSend {
 					if err := sendBucket(store, options, bucket.Name, bucket.Target, &actions); err != nil {
+						finishRun("failed", err.Error(), options.DashboardPath)
 						return DailyResult{}, err
 					}
 				}
 				state, err = store.Load()
 				if err != nil {
+					finishRun("failed", err.Error(), options.DashboardPath)
 					return DailyResult{}, err
 				}
 				if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
@@ -142,6 +200,7 @@ bucketLoop:
 			}
 			state, err := store.Load()
 			if err != nil {
+				finishRun("failed", err.Error(), options.DashboardPath)
 				return DailyResult{}, err
 			}
 			if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, actions) {
@@ -151,14 +210,74 @@ bucketLoop:
 	}
 	state, err := store.Load()
 	if err != nil {
+		finishRun("failed", err.Error(), options.DashboardPath)
 		return DailyResult{}, err
 	}
-	report := BuildDashboardReport(state, store.StatePath(), options.TargetAgencies, options.TargetRecruiters, options.AllowSend, actions)
+	completedAt := time.Now()
+	recommendation := RunRecommendation{}
+	reportStatus := "completed"
+	if runBlocker != "" {
+		reportStatus = "blocked"
+	}
+	report := BuildDashboardReportWithOptions(state, store.StatePath(), DashboardBuildOptions{
+		Mode:             "run",
+		RunID:            options.RunID,
+		RunStartedAt:     &startedAt,
+		RunCompletedAt:   &completedAt,
+		DashboardPath:    options.DashboardPath,
+		TargetAgencies:   options.TargetAgencies,
+		TargetRecruiters: options.TargetRecruiters,
+		AllowSend:        options.AllowSend,
+		Actions:          actions,
+		Recommendation:   &recommendation,
+	})
+	report.Recommendation = RecommendNextRunSummary(RunSummary{
+		RunID:            options.RunID,
+		Command:          options.Command,
+		Args:             options.Args,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Status:           reportStatus,
+		Blocker:          runBlocker,
+		DashboardPath:    options.DashboardPath,
+		StatePath:        store.StatePath(),
+		TargetAgencies:   options.TargetAgencies,
+		TargetRecruiters: options.TargetRecruiters,
+		AllowSend:        options.AllowSend,
+		Counts:           dashboardRunCounts(actions),
+		Actions:          actions,
+	})
 	markdown := RenderDashboardMarkdown(report)
-	if err := WriteDashboardMarkdown(options.DashboardPath, report); err != nil {
+	if err := WriteDashboardMarkdownAliases([]string{options.DashboardPath, store.LatestRunDashboardPath(), store.DefaultDailyDashboardPath()}, report); err != nil {
+		finishRun("failed", err.Error(), options.DashboardPath)
 		return DailyResult{}, err
 	}
-	return DailyResult{Report: report, DashboardPath: options.DashboardPath, Markdown: markdown}, nil
+	finishRun(reportStatus, runBlocker, options.DashboardPath)
+	state, err = store.Load()
+	if err != nil {
+		return DailyResult{}, err
+	}
+	summary, ok := LatestRunSummary(state, store.StatePath())
+	if !ok || summary.RunID != options.RunID {
+		summary = RunSummary{
+			RunID:            options.RunID,
+			Command:          options.Command,
+			Args:             options.Args,
+			StartedAt:        startedAt,
+			CompletedAt:      completedAt,
+			Status:           reportStatus,
+			Blocker:          runBlocker,
+			DashboardPath:    options.DashboardPath,
+			StatePath:        store.StatePath(),
+			TargetAgencies:   options.TargetAgencies,
+			TargetRecruiters: options.TargetRecruiters,
+			AllowSend:        options.AllowSend,
+			Counts:           dashboardRunCounts(actions),
+			Actions:          actions,
+		}
+		summary.Recommendation = RecommendNextRunSummary(summary)
+	}
+	return DailyResult{Report: report, Summary: summary, DashboardPath: options.DashboardPath, Markdown: markdown}, nil
 }
 
 func dailyBuckets(options DailyOptions) []dailyBucket {
@@ -547,6 +666,7 @@ func validateBucket(store *Store, options DailyOptions, bucket string, target in
 		lead := candidates[0]
 		if err := SendMessage(store, SendMessageOptions{
 			LeadID:     lead.ID,
+			RunID:      options.RunID,
 			Session:    options.Session,
 			Playwriter: options.Playwriter,
 			Script:     options.MessageScript,
@@ -557,7 +677,7 @@ func validateBucket(store *Store, options DailyOptions, bucket string, target in
 		}); err != nil {
 			return err
 		}
-		recordLatestAction(store, bucket, lead.ID, "dry-run-message", actions)
+		recordLatestAction(store, options.RunID, bucket, lead.ID, "dry-run-message", actions)
 		if latestAttemptIsBlankLeadPageFailure(store, lead.ID) {
 			return errBlankLeadPageValidation
 		}
@@ -580,6 +700,7 @@ func sendBucket(store *Store, options DailyOptions, bucket string, target int, a
 		lead := candidates[0]
 		if err := SendMessage(store, SendMessageOptions{
 			LeadID:     lead.ID,
+			RunID:      options.RunID,
 			Session:    options.Session,
 			Playwriter: options.Playwriter,
 			Script:     options.MessageScript,
@@ -590,12 +711,12 @@ func sendBucket(store *Store, options DailyOptions, bucket string, target int, a
 		}); err != nil {
 			return err
 		}
-		recordLatestAction(store, bucket, lead.ID, "send-message", actions)
+		recordLatestAction(store, options.RunID, bucket, lead.ID, "send-message", actions)
 	}
 	return nil
 }
 
-func recordLatestAction(store *Store, bucket string, leadID string, action string, actions *[]DailyLeadAction) {
+func recordLatestAction(store *Store, runID string, bucket string, leadID string, action string, actions *[]DailyLeadAction) {
 	state, err := store.Load()
 	if err != nil {
 		return
@@ -606,14 +727,19 @@ func recordLatestAction(store *Store, bucket string, leadID string, action strin
 	}
 	lead := state.Leads[index]
 	result := string(lead.MessageStatus)
+	at := time.Now()
 	var note *string
 	if len(lead.SendAttempts) > 0 {
 		last := lead.SendAttempts[len(lead.SendAttempts)-1]
 		result = last.Status
 		note = last.Note
+		if !last.At.IsZero() {
+			at = last.At
+		}
 	}
 	*actions = append(*actions, DailyLeadAction{
-		At:            time.Now(),
+		At:            at,
+		RunID:         runID,
 		Bucket:        bucket,
 		LeadID:        lead.ID,
 		Name:          lead.Name,
@@ -647,6 +773,12 @@ func latestAttemptIsBlankLeadPageFailure(store *Store, leadID string) bool {
 }
 
 func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
+	if options.RunID == "" {
+		options.RunID = newRunID("daily")
+	}
+	if options.Command == "" {
+		options.Command = "run-daily"
+	}
 	if options.Playwriter == "" {
 		options.Playwriter = defaultPlaywriter
 	}
@@ -690,16 +822,16 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 		options.MaxCaptureRounds = 4
 	}
 	if options.CaptureOutDir == "" {
-		options.CaptureOutDir = defaultCaptureOutDir
+		options.CaptureOutDir = filepath.Join(defaultCaptureOutDir, options.RunID)
 	}
 	if options.AccountCaptureOutDir == "" {
-		options.AccountCaptureOutDir = defaultAccountCaptureOutDir
+		options.AccountCaptureOutDir = filepath.Join(defaultAccountCaptureOutDir, options.RunID)
 	}
 	if options.MessageOutDir == "" {
-		options.MessageOutDir = defaultMessageOutDir
+		options.MessageOutDir = filepath.Join(defaultMessageOutDir, options.RunID)
 	}
 	if options.DashboardPath == "" {
-		options.DashboardPath = store.DefaultDailyDashboardPath()
+		options.DashboardPath = store.RunDashboardPath(options.RunID)
 	}
 	if options.TimeoutMS == 0 {
 		options.TimeoutMS = 90000

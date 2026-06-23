@@ -449,19 +449,22 @@ func TestImportCaptureDedupesNormalizedProfileURL(t *testing.T) {
 
 func TestApplyMessageSendResultMapsStatuses(t *testing.T) {
 	lead := Lead{ID: "lead_1", Name: "Riley Recruiter", MessageStatus: MessageStatusDrafted}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "dry-run-messageable"}, "/tmp/dry-run.json")
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "dry-run-messageable"}, "/tmp/dry-run.json", "run_1")
 	if lead.MessageStatus != MessageStatusDryRunReady || len(lead.SendAttempts) != 1 {
 		t.Fatalf("dry-run lead = %#v", lead)
 	}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "sent-clicked"}, "/tmp/sent.json")
+	if lead.MessageStatusAt == nil || lead.SendAttempts[0].At.IsZero() || lead.SendAttempts[0].RunID != "run_1" {
+		t.Fatalf("timestamp/run id missing: %#v", lead)
+	}
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "sent-clicked"}, "/tmp/sent.json", "run_1")
 	if lead.MessageStatus != MessageStatusSent || len(lead.SendAttempts) != 2 {
 		t.Fatalf("sent lead = %#v", lead)
 	}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "not-messageable"}, "/tmp/not-messageable.json")
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "not-messageable"}, "/tmp/not-messageable.json", "run_1")
 	if lead.MessageStatus != MessageStatusNotMessageable || len(lead.SendAttempts) != 3 {
 		t.Fatalf("not-messageable lead = %#v", lead)
 	}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "conversation-exists"}, "/tmp/conversation.json")
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "conversation-exists"}, "/tmp/conversation.json", "run_1")
 	if lead.MessageStatus != MessageStatusConversationExists || len(lead.SendAttempts) != 4 {
 		t.Fatalf("conversation-exists lead = %#v", lead)
 	}
@@ -469,11 +472,11 @@ func TestApplyMessageSendResultMapsStatuses(t *testing.T) {
 
 func TestApplyMessageSendResultMapsBlockedAndFailure(t *testing.T) {
 	lead := Lead{ID: "lead_1", Name: "Riley Recruiter", MessageStatus: MessageStatusDrafted}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "blocked"}, "/tmp/blocked.json")
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: true, Status: "blocked"}, "/tmp/blocked.json", "run_2")
 	if lead.MessageStatus != MessageStatusBlocked {
 		t.Fatalf("blocked status = %s", lead.MessageStatus)
 	}
-	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "composer-missing"}, "/tmp/fail.json")
+	ApplyMessageSendResult(&lead, MessageSendResult{DryRun: false, Status: "composer-missing"}, "/tmp/fail.json", "run_2")
 	if lead.MessageStatus != MessageStatusSendFailed {
 		t.Fatalf("failed status = %s", lead.MessageStatus)
 	}
@@ -749,6 +752,72 @@ func TestDashboardShowsThisRunAndLifetimeCountsSeparately(t *testing.T) {
 	}
 }
 
+func TestDashboardRenderModeCallsOutNoRunAndLatestRun(t *testing.T) {
+	started := time.Date(2026, time.June, 23, 12, 0, 0, 0, time.UTC)
+	completed := started.Add(2 * time.Minute)
+	state := OutreachState{
+		RunEvents: []RunEvent{
+			{At: started, RunID: "daily-1", Phase: "run-start", Command: "run-daily", StartedAt: started, TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+			{At: started.Add(time.Minute), RunID: "daily-1", Phase: "send-message", Bucket: "recruiter", LeadID: "lead_1", Name: "Riley", Result: "sent-clicked"},
+			{At: completed, RunID: "daily-1", Phase: "run-finish", Command: "run-daily", Result: "completed", StartedAt: started, CompletedAt: completed, TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+		},
+	}
+	report := BuildDashboardReportWithOptions(state, "/tmp/state.sqlite", DashboardBuildOptions{
+		Mode:             "render",
+		DashboardPath:    "/tmp/latest-render.md",
+		TargetAgencies:   5,
+		TargetRecruiters: 5,
+		AllowSend:        false,
+		IncludeLatestRun: true,
+	})
+	markdown := RenderDashboardMarkdown(report)
+	for _, want := range []string{
+		"Dashboard render only; no send run executed.",
+		"## Latest Run",
+		"Run ID: `daily-1`",
+		"Sent: `0` agencies, `1` recruiters",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
+	started := time.Date(2026, time.June, 23, 12, 0, 0, 0, time.UTC)
+	state := OutreachState{RunEvents: []RunEvent{
+		{At: started, RunID: "daily-2", Phase: "run-start", Command: "run-daily", StartedAt: started, TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+		{At: started.Add(time.Second), RunID: "daily-2", Phase: "send-message", Bucket: "recruiter", LeadID: "lead_1", Name: "Riley", Result: "sent-clicked"},
+		{At: started.Add(2 * time.Second), RunID: "daily-2", Phase: "send-message", Bucket: "agency", LeadID: "lead_2", Name: "Dana", Result: "sent-clicked"},
+		{At: started.Add(time.Minute), RunID: "daily-2", Phase: "run-finish", Command: "run-daily", Result: "completed", StartedAt: started, CompletedAt: started.Add(time.Minute), TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+	}}
+	summary, ok := LatestRunSummary(state, "/tmp/state.sqlite")
+	if !ok {
+		t.Fatal("missing summary")
+	}
+	if summary.Counts.Sent.Agencies != 1 || summary.Counts.Sent.Recruiters != 1 {
+		t.Fatalf("counts = %#v", summary.Counts.Sent)
+	}
+	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "--target-agencies 5 --target-recruiters 0") {
+		t.Fatalf("recommendation = %#v", summary.Recommendation)
+	}
+}
+
+func TestLatestRunSummaryFallsBackToLegacyRunEvents(t *testing.T) {
+	at := time.Date(2026, time.June, 23, 12, 15, 0, 0, time.UTC)
+	state := OutreachState{RunEvents: []RunEvent{
+		{At: at, Phase: "send-message", Bucket: "recruiter", LeadID: "lead_1", Name: "Riley", Result: "sent-clicked"},
+		{At: at.Add(time.Minute), Phase: "send-message", Bucket: "agency", LeadID: "lead_2", Name: "Dana", Result: "sent-clicked"},
+	}}
+	summary, ok := LatestRunSummary(state, "/tmp/state.sqlite")
+	if !ok {
+		t.Fatal("missing legacy summary")
+	}
+	if !strings.HasPrefix(summary.RunID, "legacy-") || summary.Counts.Sent.Recruiters != 1 || summary.Counts.Sent.Agencies != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 func TestDashboardIncludesSentAgencyLeadsFromExhaustedAccounts(t *testing.T) {
 	state := OutreachState{
 		Leads: []Lead{{
@@ -780,6 +849,30 @@ func TestDashboardIncludesSentAgencyLeadsFromExhaustedAccounts(t *testing.T) {
 	markdown := RenderDashboardMarkdown(report)
 	if !strings.Contains(markdown, "Agency contactability:") || !strings.Contains(markdown, "`1` with contacts") {
 		t.Fatalf("markdown = %s", markdown)
+	}
+}
+
+func TestAgencyDrilldownCountsContactSearchStages(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{
+			{ID: "acct_new", Name: "New Studio", Status: AgencyAccountStatusQualified},
+			{ID: "acct_founder", Name: "Founder Studio", Status: AgencyAccountStatusQualified, ContactCaptureCount: 1},
+			{ID: "acct_exec", Name: "Exec Studio", Status: AgencyAccountStatusQualified, ContactCaptureCount: 2, LastContactError: strPtr("page closed")},
+			{ID: "acct_resource", Name: "Resource Studio", Status: AgencyAccountStatusQualified, ContactCaptureCount: 3},
+			{ID: "acct_exhausted", Name: "Exhausted Studio", Status: AgencyAccountStatusExhausted, ContactCaptureCount: 2},
+		},
+		Leads: []Lead{{
+			ID:              "lead_contact",
+			Name:            "Dana",
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusDrafted,
+			LeadType:        LeadTypeAgencyFounder,
+			AgencyAccountID: strPtr("acct_founder"),
+		}},
+	}
+	counts := agencyDrilldownCounts(state)
+	if counts.NotSearchedYet != 1 || counts.SearchedFounderRecent != 1 || counts.SearchedExecutiveBroad != 1 || counts.SearchedResourceBroad != 1 || counts.ContactsFound != 1 || counts.BrowserErrorRetryable != 1 || counts.ExhaustedWithoutContact != 1 {
+		t.Fatalf("drilldown = %#v", counts)
 	}
 }
 

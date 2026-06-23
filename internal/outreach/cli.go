@@ -55,6 +55,8 @@ func Execute(ctx context.Context, args []string) error {
 	root.AddCommand(queueCommand(withStore))
 	root.AddCommand(draftCommand(withStore))
 	root.AddCommand(dashboardCommand(withStore))
+	root.AddCommand(lastRunCommand(withStore))
+	root.AddCommand(recommendNextRunCommand(withStore))
 	root.AddCommand(reviseCommand(withStore))
 	root.AddCommand(serveCommand(ctx, withStore))
 	root.AddCommand(sendReadyCommand(withStore))
@@ -76,8 +78,13 @@ func captureCommand(withStore func(func(*Store) error) func(*cobra.Command, []st
 		Use: "capture",
 		RunE: withStore(func(store *Store) error {
 			if strings.TrimSpace(session) == "" {
-				return fmt.Errorf("--session is required")
+				session = "auto"
 			}
+			resolvedSession, err := resolvePlaywriterSession(playwriter, session)
+			if err != nil {
+				return err
+			}
+			session = resolvedSession
 			if strings.TrimSpace(source) == "" {
 				return fmt.Errorf("--source is required")
 			}
@@ -98,7 +105,7 @@ func captureCommand(withStore func(func(*Store) error) func(*cobra.Command, []st
 			return importCapturePath(store, path, onlyConnectable)
 		}),
 	}
-	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	cmd.Flags().StringVar(&session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), &playwriter)
 	cmd.Flags().StringVar(&script, "script", defaultCaptureScript, "Sales Navigator capture script")
 	cmd.Flags().StringVar(&savedSearches, "saved-searches", defaultSavedSearches, "saved-search resolver artifact")
@@ -120,8 +127,13 @@ func captureAccountsCommand(withStore func(func(*Store) error) func(*cobra.Comma
 		Use: "capture-accounts",
 		RunE: withStore(func(store *Store) error {
 			if strings.TrimSpace(session) == "" {
-				return fmt.Errorf("--session is required")
+				session = "auto"
 			}
+			resolvedSession, err := resolvePlaywriterSession(playwriter, session)
+			if err != nil {
+				return err
+			}
+			session = resolvedSession
 			if strings.TrimSpace(source) == "" {
 				return fmt.Errorf("--source is required")
 			}
@@ -141,7 +153,7 @@ func captureAccountsCommand(withStore func(func(*Store) error) func(*cobra.Comma
 			return importAccountsPath(store, path)
 		}),
 	}
-	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	cmd.Flags().StringVar(&session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), &playwriter)
 	cmd.Flags().StringVar(&script, "script", defaultAccountCaptureScript, "Sales Navigator account capture script")
 	cmd.Flags().StringVar(&savedSearches, "saved-searches", defaultSavedSearches, "saved-search resolver artifact")
@@ -232,6 +244,8 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 		Use: "run-daily",
 		RunE: withStore(func(store *Store) error {
 			result, err := RunDaily(store, DailyOptions{
+				Command:                "run-daily",
+				Args:                   os.Args[1:],
 				Session:                session,
 				Playwriter:             playwriter,
 				CaptureScript:          captureScript,
@@ -261,6 +275,7 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 			if err != nil {
 				return err
 			}
+			fmt.Println(RenderRunSummaryText(result.Summary))
 			fmt.Printf("dashboard=%s\n", result.DashboardPath)
 			if printMarkdown {
 				fmt.Println(result.Markdown)
@@ -392,7 +407,7 @@ func dashboardCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 				return err
 			}
 			if out == "" {
-				out = store.DefaultDailyDashboardPath()
+				out = store.LatestRenderDashboardPath()
 			}
 			if targetAgencies == 0 {
 				targetAgencies = 5
@@ -400,7 +415,16 @@ func dashboardCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 			if targetRecruiters == 0 {
 				targetRecruiters = 5
 			}
-			report := BuildDashboardReport(state, store.StatePath(), targetAgencies, targetRecruiters, allowSend, nil)
+			recommendation := RecommendNextRun(state, store.StatePath(), targetAgencies, targetRecruiters, allowSend)
+			report := BuildDashboardReportWithOptions(state, store.StatePath(), DashboardBuildOptions{
+				Mode:             "render",
+				DashboardPath:    out,
+				TargetAgencies:   targetAgencies,
+				TargetRecruiters: targetRecruiters,
+				AllowSend:        allowSend,
+				IncludeLatestRun: true,
+				Recommendation:   &recommendation,
+			})
 			if err := WriteDashboardMarkdown(out, report); err != nil {
 				return err
 			}
@@ -416,6 +440,73 @@ func dashboardCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 	cmd.Flags().IntVar(&targetAgencies, "target-agencies", 5, "agency target")
 	cmd.Flags().IntVar(&targetRecruiters, "target-recruiters", 5, "recruiter target")
 	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "dashboard reflects real-send run")
+	return cmd
+}
+
+func lastRunCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use: "last-run",
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			summary, ok := LatestRunSummary(state, store.StatePath())
+			if !ok {
+				return fmt.Errorf("no run summary found")
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderRunSummaryText(summary))
+			return nil
+		}),
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func recommendNextRunCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var targetAgencies, targetRecruiters int
+	var allowSend, asJSON bool
+	cmd := &cobra.Command{
+		Use: "recommend-next-run",
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			recommendation := RecommendNextRun(state, store.StatePath(), targetAgencies, targetRecruiters, allowSend)
+			if asJSON {
+				raw, err := json.MarshalIndent(recommendation, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			if recommendation.ShouldRetry {
+				fmt.Printf("recommendation=%s\n", recommendation.Reason)
+				if recommendation.Blocker != "" {
+					fmt.Printf("blocker=%s\n", recommendation.Blocker)
+				}
+				fmt.Printf("next_command=%s\n", recommendation.Command)
+				return nil
+			}
+			fmt.Printf("recommendation=%s\n", recommendation.Reason)
+			return nil
+		}),
+	}
+	cmd.Flags().IntVar(&targetAgencies, "target-agencies", 5, "agency target")
+	cmd.Flags().IntVar(&targetRecruiters, "target-recruiters", 5, "recruiter target")
+	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "recommend real-send command")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
 
@@ -485,7 +576,12 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 			if !allowSend {
 				return fmt.Errorf("send-ready requires --allow-send")
 			}
+			runID := newRunID("send-ready")
+			startedAt := time.Now()
 			options := normalizeDailyOptions(store, DailyOptions{
+				RunID:            runID,
+				Command:          "send-ready",
+				Args:             os.Args[1:],
 				Session:          session,
 				Playwriter:       playwriter,
 				MessageScript:    messageScript,
@@ -496,20 +592,66 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 				DashboardPath:    dashboardPath,
 				TimeoutMS:        timeoutMS,
 			})
+			if options.Session == "" {
+				options.Session = "auto"
+			}
+			resolvedSession, err := resolvePlaywriterSession(options.Playwriter, options.Session)
+			if err != nil {
+				return err
+			}
+			options.Session = resolvedSession
+			if err := appendRunLifecycleEvent(store, RunEvent{
+				At:               startedAt,
+				RunID:            runID,
+				Phase:            "run-start",
+				Command:          "send-ready",
+				Args:             os.Args[1:],
+				StatePath:        store.StatePath(),
+				DashboardPath:    options.DashboardPath,
+				TargetAgencies:   options.TargetAgencies,
+				TargetRecruiters: options.TargetRecruiters,
+				AllowSend:        true,
+				StartedAt:        startedAt,
+			}); err != nil {
+				return err
+			}
 			actions := []DailyLeadAction{}
 			if err := sendBucket(store, options, "agency", options.TargetAgencies, &actions); err != nil {
+				_ = appendRunLifecycleEvent(store, RunEvent{At: time.Now(), RunID: runID, Phase: "run-finish", Command: "send-ready", Args: os.Args[1:], Result: "failed", StatePath: store.StatePath(), DashboardPath: options.DashboardPath, TargetAgencies: options.TargetAgencies, TargetRecruiters: options.TargetRecruiters, AllowSend: true, StartedAt: startedAt, CompletedAt: time.Now(), Blocker: err.Error()})
 				return err
 			}
 			if err := sendBucket(store, options, "recruiter", options.TargetRecruiters, &actions); err != nil {
+				_ = appendRunLifecycleEvent(store, RunEvent{At: time.Now(), RunID: runID, Phase: "run-finish", Command: "send-ready", Args: os.Args[1:], Result: "failed", StatePath: store.StatePath(), DashboardPath: options.DashboardPath, TargetAgencies: options.TargetAgencies, TargetRecruiters: options.TargetRecruiters, AllowSend: true, StartedAt: startedAt, CompletedAt: time.Now(), Blocker: err.Error()})
 				return err
 			}
 			state, err := store.Load()
 			if err != nil {
 				return err
 			}
-			report := BuildDashboardReport(state, store.StatePath(), options.TargetAgencies, options.TargetRecruiters, true, actions)
-			if err := WriteDashboardMarkdown(options.DashboardPath, report); err != nil {
+			completedAt := time.Now()
+			report := BuildDashboardReportWithOptions(state, store.StatePath(), DashboardBuildOptions{
+				Mode:             "run",
+				RunID:            runID,
+				RunStartedAt:     &startedAt,
+				RunCompletedAt:   &completedAt,
+				DashboardPath:    options.DashboardPath,
+				TargetAgencies:   options.TargetAgencies,
+				TargetRecruiters: options.TargetRecruiters,
+				AllowSend:        true,
+				Actions:          actions,
+			})
+			if err := WriteDashboardMarkdownAliases([]string{options.DashboardPath, store.LatestRunDashboardPath(), store.DefaultDailyDashboardPath()}, report); err != nil {
 				return err
+			}
+			if err := appendRunLifecycleEvent(store, RunEvent{At: completedAt, RunID: runID, Phase: "run-finish", Command: "send-ready", Args: os.Args[1:], Result: "completed", StatePath: store.StatePath(), DashboardPath: options.DashboardPath, TargetAgencies: options.TargetAgencies, TargetRecruiters: options.TargetRecruiters, AllowSend: true, StartedAt: startedAt, CompletedAt: completedAt}); err != nil {
+				return err
+			}
+			state, err = store.Load()
+			if err != nil {
+				return err
+			}
+			if summary, ok := LatestRunSummary(state, store.StatePath()); ok {
+				fmt.Println(RenderRunSummaryText(summary))
 			}
 			fmt.Printf("dashboard=%s\n", options.DashboardPath)
 			if printMarkdown {
@@ -518,7 +660,7 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 			return nil
 		}),
 	}
-	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	cmd.Flags().StringVar(&session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), &playwriter)
 	cmd.Flags().StringVar(&messageScript, "message-script", defaultMessageScript, "message script")
 	cmd.Flags().StringVar(&messageOutDir, "message-out-dir", defaultMessageOutDir, "message output directory")
@@ -528,7 +670,6 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 	cmd.Flags().Uint32Var(&timeoutMS, "timeout-ms", 90000, "Playwriter timeout")
 	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "allow real sends")
 	cmd.Flags().BoolVar(&printMarkdown, "print-markdown", false, "print dashboard markdown")
-	must(cmd.MarkFlagRequired("session"))
 	return cmd
 }
 
@@ -541,6 +682,7 @@ func sendMessageCommand(withStore func(func(*Store) error) func(*cobra.Command, 
 		RunE: withStore(func(store *Store) error {
 			return SendMessage(store, SendMessageOptions{
 				LeadID:     leadID,
+				RunID:      newRunID("message"),
 				Session:    session,
 				Playwriter: playwriter,
 				Script:     script,
@@ -552,7 +694,7 @@ func sendMessageCommand(withStore func(func(*Store) error) func(*cobra.Command, 
 		}),
 	}
 	cmd.Flags().StringVar(&leadID, "lead-id", "", "lead id")
-	cmd.Flags().StringVar(&session, "session", "", "Playwriter session")
+	cmd.Flags().StringVar(&session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), &playwriter)
 	cmd.Flags().StringVar(&script, "script", defaultMessageScript, "message script")
 	cmd.Flags().StringVar(&outDir, "out-dir", defaultMessageOutDir, "message result output directory")
@@ -560,7 +702,6 @@ func sendMessageCommand(withStore func(func(*Store) error) func(*cobra.Command, 
 	cmd.Flags().BoolVar(&allowSend, "allow-send", false, "allow real message send")
 	cmd.Flags().Uint32Var(&timeoutMS, "timeout-ms", 60000, "Playwriter script timeout")
 	must(cmd.MarkFlagRequired("lead-id"))
-	must(cmd.MarkFlagRequired("session"))
 	return cmd
 }
 
@@ -581,8 +722,10 @@ func markMessageCommand(withStore func(func(*Store) error) func(*cobra.Command, 
 			if index < 0 {
 				return fmt.Errorf("unknown lead id %q", id)
 			}
+			now := time.Now()
 			state.Leads[index].MessageStatus = messageStatus
-			state.Leads[index].UpdatedAt = time.Now()
+			state.Leads[index].MessageStatusAt = &now
+			state.Leads[index].UpdatedAt = now
 			if strings.TrimSpace(note) != "" {
 				state.Leads[index].Notes = append(state.Leads[index].Notes, cleanText(note))
 			}
@@ -788,7 +931,7 @@ func addPlaywriterFlag(flags *pflag.FlagSet, target *string) {
 }
 
 func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool) {
-	cmd.Flags().StringVar(session, "session", "", "Playwriter session")
+	cmd.Flags().StringVar(session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), playwriter)
 	cmd.Flags().StringVar(captureScript, "capture-script", defaultCaptureScript, "Sales Navigator capture script")
 	cmd.Flags().StringVar(accountCaptureScript, "account-capture-script", defaultAccountCaptureScript, "Sales Navigator account capture script")
@@ -813,7 +956,6 @@ func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, capt
 	cmd.Flags().BoolVar(refreshSavedSearches, "refresh-saved-searches", false, "refresh saved-search resolver before capture")
 	cmd.Flags().BoolVar(skipSessionReset, "skip-session-reset", false, "skip the default Playwriter session reset before the daily run")
 	cmd.Flags().BoolVar(printMarkdown, "print-markdown", false, "print dashboard markdown")
-	must(cmd.MarkFlagRequired("session"))
 }
 
 func must(err error) {

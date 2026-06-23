@@ -65,15 +65,26 @@ type OutreachState struct {
 }
 
 type RunEvent struct {
-	At        time.Time `json:"at"`
-	Phase     string    `json:"phase"`
-	Bucket    string    `json:"bucket,omitempty"`
-	LeadID    string    `json:"lead_id,omitempty"`
-	AccountID string    `json:"account_id,omitempty"`
-	Name      string    `json:"name,omitempty"`
-	Result    string    `json:"result,omitempty"`
-	Note      string    `json:"note,omitempty"`
-	OutPath   string    `json:"out_path,omitempty"`
+	At               time.Time `json:"at"`
+	RunID            string    `json:"run_id,omitempty"`
+	Phase            string    `json:"phase"`
+	Command          string    `json:"command,omitempty"`
+	Args             []string  `json:"args,omitempty"`
+	Bucket           string    `json:"bucket,omitempty"`
+	LeadID           string    `json:"lead_id,omitempty"`
+	AccountID        string    `json:"account_id,omitempty"`
+	Name             string    `json:"name,omitempty"`
+	Result           string    `json:"result,omitempty"`
+	Note             string    `json:"note,omitempty"`
+	OutPath          string    `json:"out_path,omitempty"`
+	DashboardPath    string    `json:"dashboard_path,omitempty"`
+	StatePath        string    `json:"state_path,omitempty"`
+	TargetAgencies   int       `json:"target_agencies,omitempty"`
+	TargetRecruiters int       `json:"target_recruiters,omitempty"`
+	AllowSend        bool      `json:"allow_send,omitempty"`
+	StartedAt        time.Time `json:"started_at,omitempty"`
+	CompletedAt      time.Time `json:"completed_at,omitempty"`
+	Blocker          string    `json:"blocker,omitempty"`
 }
 
 type CaptureCursor struct {
@@ -115,6 +126,7 @@ type Lead struct {
 	CapturedAt            *string       `json:"captured_at"`
 	ImportedAt            time.Time     `json:"imported_at"`
 	UpdatedAt             time.Time     `json:"updated_at"`
+	MessageStatusAt       *time.Time    `json:"message_status_at,omitempty"`
 	Draft                 *MessageDraft `json:"draft"`
 	SendAttempts          []SendAttempt `json:"send_attempts"`
 	Notes                 []string      `json:"notes"`
@@ -157,6 +169,7 @@ type MessageDraft struct {
 
 type SendAttempt struct {
 	At          time.Time         `json:"at"`
+	RunID       string            `json:"run_id,omitempty"`
 	DryRun      bool              `json:"dry_run"`
 	Status      string            `json:"status"`
 	ResultURL   *string           `json:"result_url"`

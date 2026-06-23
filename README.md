@@ -57,20 +57,24 @@ Use it for recruiters and agencies only:
 
 ```sh
 recruiter-agency-outreach run-daily \
-  --session <session> \
+  --session auto \
   --target-agencies 5 \
   --target-recruiters 5 \
   --allow-send \
   --print-markdown
 ```
 
-`run-daily` resets the Playwriter session connection, opens generated Sales
-Navigator searches, imports and dedupes accounts/leads, drafts context-aware
-messages, validates messageability in the browser, sends up to 5 agency
-messages and 5 recruiter messages for the current run when `--allow-send` is
-present, and writes a Markdown dashboard under the outreach state directory.
-Use `--skip-session-reset` only when intentionally preserving a live Playwriter
-page connection.
+`run-daily` resolves `--session auto` by reusing an existing Playwriter session
+for this workspace, or creating one when none exists. It resets the Playwriter
+session connection, opens generated Sales Navigator searches, imports and
+dedupes accounts/leads, drafts context-aware messages, validates messageability
+in the browser, sends up to 5 agency messages and 5 recruiter messages for the
+current run when `--allow-send` is present, and writes a Markdown dashboard
+under the outreach state directory. Each run gets a stable `run_id`; default
+artifacts are written under run-specific directories, with dashboard aliases at
+`dashboards/latest-run.md`, `dashboards/latest-render.md`, and
+`dashboards/runs/<run_id>.md`. Use `--skip-session-reset` only when
+intentionally preserving a live Playwriter page connection.
 
 The built-in daily sources do not depend on stale Sales Navigator saved-search
 names. After a source has been captured once, the workflow still uses its saved
@@ -96,7 +100,9 @@ Validated source configuration:
 | Agency accounts primary | `ASAP - Agency Accounts Development Agency` | United States, industry in `Software Development`, `IT Services and IT Consulting`, `Design Services`, company headcount `11-50`, `51-200`, `201-500`; keyword `custom software development agency` | Used to build the qualified account reservoir before contact capture |
 | Agency accounts backup | `ASAP - Agency Accounts Digital Agency` | Same account filters; keyword `digital product agency` | Used to build the qualified account reservoir before contact capture |
 | Agency accounts backup | `ASAP - Agency Accounts Product Studio` | Same account filters; keyword `product studio` | Used to build the qualified account reservoir before contact capture |
-| Agency contacts | `ASAP - Agency Account Contacts - <account>` | United States, 2nd-degree, Posted on LinkedIn, `CURRENT_COMPANY` set to the qualified agency account, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director` | Produces drafted agency people with account-level evidence attached |
+| Agency contacts | `ASAP - Agency Account Contacts - <account> - founder_recent` | United States, 2nd-degree, Posted on LinkedIn, `CURRENT_COMPANY` set to the qualified agency account, current title in `Founder`, `Co-Founder`, `Owner`, `Partner`, `Managing Partner`, `Principal Consultant`, `Technical Director`, `President`, `Managing Director` | First account-scoped contact pass |
+| Agency contacts broad | `ASAP - Agency Account Contacts - <account> - executive_delivery_broad` | United States, 2nd-degree, `CURRENT_COMPANY` set to the qualified agency account, broad executive/delivery keywords, no Posted-on-LinkedIn filter | Second pass before exhausting an account |
+| Agency contacts resource | `ASAP - Agency Account Contacts - <account> - resource_delivery_broad` | United States, 2nd-degree, `CURRENT_COMPANY` set to a high-fit qualified agency account, resource/delivery/client-services keywords, no Posted-on-LinkedIn filter | Third pass for high-fit accounts |
 | Agencies fallback | `ASAP - Agency Development Agency Leaders`, `ASAP - Agency Digital Agency Leaders`, `ASAP - Agency Product Studio Leaders` | Person-first agency searches retained from the previous source-quality run | Used only when account-first contact capture yields no candidates in a round |
 
 The latest source-quality test captured 956 visible Sales Navigator rows across
@@ -116,7 +122,7 @@ To force a fresh saved-search resolver for a custom/manual saved-search source:
 
 ```sh
 recruiter-agency-outreach run-daily \
-  --session <session> \
+  --session auto \
   --target-agencies 5 \
   --target-recruiters 5 \
   --allow-send \
@@ -124,11 +130,22 @@ recruiter-agency-outreach run-daily \
   --print-markdown
 ```
 
-The dashboard includes the visible source context, account context, fit reasons,
-draft angle, draft evidence, message text, last send check, and run actions:
+The dashboard includes visible source context, account context, fit reasons,
+draft angle, draft evidence, message text, last send check, run actions,
+latest-run evidence, agency contactability, agency drill-down counts, and a
+plain limiting reason. A standalone dashboard render is labeled as a render and
+does not claim a send run occurred:
 
 ```sh
 recruiter-agency-outreach dashboard --print-markdown
+```
+
+Review the latest actual run, including `run_id`, start/end time, command,
+send/skipped counts, blocker, dashboard path, and the recommended next command:
+
+```sh
+recruiter-agency-outreach last-run
+recruiter-agency-outreach recommend-next-run --target-agencies 5 --target-recruiters 5 --allow-send
 ```
 
 Revise a draft before sending by writing the revised body to a local file and
@@ -145,7 +162,7 @@ Send leads that have already passed a dry-run messageability check:
 
 ```sh
 recruiter-agency-outreach send-ready \
-  --session <session> \
+  --session auto \
   --target-agencies 5 \
   --target-recruiters 5 \
   --allow-send \
