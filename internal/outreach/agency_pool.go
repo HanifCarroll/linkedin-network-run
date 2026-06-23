@@ -11,16 +11,19 @@ import (
 )
 
 type AgencyPoolDiagnosis struct {
-	GeneratedAt                   time.Time                    `json:"generated_at"`
-	StatePath                     string                       `json:"state_path"`
-	Counts                        StatusCounts                 `json:"counts"`
-	Funnel                        AgencyAccountFunnel          `json:"funnel"`
-	Drilldown                     AgencyDrilldownCounts        `json:"drilldown"`
-	WebsiteCandidates             int                          `json:"website_candidates"`
-	QualifiedWebsiteCandidates    int                          `json:"qualified_website_candidates"`
-	ExhaustedWebsiteCandidates    int                          `json:"exhausted_website_candidates"`
-	RetryableBrowserErrorAccounts int                          `json:"retryable_browser_error_accounts"`
-	Accounts                      []AgencyPoolAccountDiagnosis `json:"accounts"`
+	GeneratedAt                   time.Time                            `json:"generated_at"`
+	StatePath                     string                               `json:"state_path"`
+	Counts                        StatusCounts                         `json:"counts"`
+	Funnel                        AgencyAccountFunnel                  `json:"funnel"`
+	Drilldown                     AgencyDrilldownCounts                `json:"drilldown"`
+	ContactCandidateCounts        map[AgencyContactCandidateStatus]int `json:"contact_candidate_counts"`
+	ContactCandidateReviewCounts  map[AgencyContactReviewStatus]int    `json:"contact_candidate_review_counts"`
+	ContactCandidateSourceCounts  map[string]int                       `json:"contact_candidate_source_counts"`
+	WebsiteCandidates             int                                  `json:"website_candidates"`
+	QualifiedWebsiteCandidates    int                                  `json:"qualified_website_candidates"`
+	ExhaustedWebsiteCandidates    int                                  `json:"exhausted_website_candidates"`
+	RetryableBrowserErrorAccounts int                                  `json:"retryable_browser_error_accounts"`
+	Accounts                      []AgencyPoolAccountDiagnosis         `json:"accounts"`
 }
 
 type AgencyPoolAccountDiagnosis struct {
@@ -51,7 +54,143 @@ func agencyPoolCommand(withStore func(func(*Store) error) func(*cobra.Command, [
 		Use:   "agency-pool",
 		Short: "Inspect agency account sourcing and contactability",
 	}
+	cmd.AddCommand(agencyPoolImportSourceCommand(withStore))
+	cmd.AddCommand(agencyPoolEnrichWebsitesCommand(withStore))
+	cmd.AddCommand(agencyPoolContactsCommand(withStore))
 	cmd.AddCommand(agencyPoolDiagnoseCommand(withStore))
+	return cmd
+}
+
+func agencyPoolImportSourceCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "import-source <path>",
+		Short: "Import structured agency accounts and review-only contact candidates",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(func(store *Store) error {
+				capture, err := LoadAgencySourceCapture(args[0])
+				if err != nil {
+					return err
+				}
+				state, err := store.Load()
+				if err != nil {
+					return err
+				}
+				summary, err := ImportAgencySourceCapture(&state, capture)
+				if err != nil {
+					return err
+				}
+				if err := store.Save(state); err != nil {
+					return err
+				}
+				if asJSON {
+					raw, err := json.MarshalIndent(summary, "", "  ")
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(raw))
+					return nil
+				}
+				fmt.Printf("source=%s stored=%d updated=%d qualified=%d needs_review=%d rejected=%d contact_candidates_stored=%d contact_candidates_updated=%d total_accounts=%d\n",
+					summary.Source,
+					summary.Stored,
+					summary.Updated,
+					summary.Qualified,
+					summary.NeedsReview,
+					summary.Rejected,
+					summary.ContactCandidatesStored,
+					summary.ContactCandidatesUpdated,
+					summary.TotalAccounts,
+				)
+				return nil
+			})(cmd, args)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolEnrichWebsitesCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var limit int
+	var timeoutMS int
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "enrich-websites",
+		Short: "Discover explicit review-only contacts from agency websites",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(func(store *Store) error {
+				state, err := store.Load()
+				if err != nil {
+					return err
+				}
+				summary := EnrichAgencyWebsites(cmd.Context(), &state, AgencyWebsiteEnrichmentOptions{
+					Limit:     limit,
+					TimeoutMS: timeoutMS,
+				})
+				if err := store.Save(state); err != nil {
+					return err
+				}
+				if asJSON {
+					raw, err := json.MarshalIndent(summary, "", "  ")
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(raw))
+					return nil
+				}
+				fmt.Printf("checked=%d skipped=%d contact_candidates_stored=%d contact_candidates_updated=%d errors=%d\n",
+					summary.Checked,
+					summary.Skipped,
+					summary.ContactCandidatesStored,
+					summary.ContactCandidatesUpdated,
+					summary.Errors,
+				)
+				return nil
+			})(cmd, args)
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 25, "max agency websites to check")
+	cmd.Flags().IntVar(&timeoutMS, "timeout-ms", 10000, "HTTP timeout per request in milliseconds")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolContactsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var limit int
+	var status string
+	var reviewStatus string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "contacts",
+		Short: "List review-only agency contact candidates",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			candidates, err := agencyContactCandidatesForReview(state, status, reviewStatus, limit)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(candidates, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderAgencyContactCandidatesText(candidates))
+			return nil
+		}),
+	}
+	cmd.Flags().IntVar(&limit, "limit", 20, "max contact candidate rows")
+	cmd.Flags().StringVar(&status, "status", "", "candidate status filter")
+	cmd.Flags().StringVar(&reviewStatus, "review-status", string(AgencyContactReviewStatusNeedsReview), "review status filter")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
 
@@ -59,8 +198,9 @@ func agencyPoolDiagnoseCommand(withStore func(func(*Store) error) func(*cobra.Co
 	var limit int
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:  "diagnose",
-		Args: cobra.NoArgs,
+		Use:   "diagnose",
+		Short: "Show agency account pool health and next actions",
+		Args:  cobra.NoArgs,
 		RunE: withStore(func(store *Store) error {
 			state, err := store.Load()
 			if err != nil {
@@ -86,14 +226,18 @@ func agencyPoolDiagnoseCommand(withStore func(func(*Store) error) func(*cobra.Co
 
 func BuildAgencyPoolDiagnosis(state OutreachState, statePath string, limit int) AgencyPoolDiagnosis {
 	state.Normalize()
+	counts := Counts(state)
 	leadCounts := agencyPoolLeadCountsByAccount(state)
 	diagnosis := AgencyPoolDiagnosis{
-		GeneratedAt: time.Now(),
-		StatePath:   statePath,
-		Counts:      Counts(state),
-		Funnel:      agencyAccountFunnelCounts(state),
-		Drilldown:   agencyDrilldownCounts(state),
-		Accounts:    []AgencyPoolAccountDiagnosis{},
+		GeneratedAt:                  time.Now(),
+		StatePath:                    statePath,
+		Counts:                       counts,
+		Funnel:                       agencyAccountFunnelCounts(state),
+		Drilldown:                    agencyDrilldownCounts(state),
+		ContactCandidateCounts:       counts.ByAgencyContactCandidateStatus,
+		ContactCandidateReviewCounts: counts.ByAgencyContactCandidateReviewStatus,
+		ContactCandidateSourceCounts: counts.ByAgencyContactCandidateSource,
+		Accounts:                     []AgencyPoolAccountDiagnosis{},
 	}
 	for _, account := range state.AgencyAccounts {
 		counts := leadCounts[account.ID]
@@ -243,6 +387,9 @@ func RenderAgencyPoolDiagnosisText(diagnosis AgencyPoolDiagnosis) string {
 			diagnosis.QualifiedWebsiteCandidates,
 			diagnosis.ExhaustedWebsiteCandidates,
 		),
+		"review_only_contacts=" + renderAgencyContactCandidateStatusCounts(diagnosis.ContactCandidateCounts),
+		"contact_review=" + renderAgencyContactReviewStatusCounts(diagnosis.ContactCandidateReviewCounts),
+		"contact_sources=" + renderStringCounts(diagnosis.ContactCandidateSourceCounts),
 		fmt.Sprintf("retryable_browser_error_accounts=%d", diagnosis.RetryableBrowserErrorAccounts),
 		"next_accounts:",
 		"id\tscore\tstatus\tcaptures\tcontacts\topen_leads\tlast_strategy\twebsite\tnext_step\tname",
@@ -262,6 +409,127 @@ func RenderAgencyPoolDiagnosisText(diagnosis AgencyPoolDiagnosis) string {
 		))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func agencyContactCandidatesForReview(state OutreachState, status string, reviewStatus string, limit int) ([]AgencyContactCandidate, error) {
+	state.Normalize()
+	candidateStatus, filterByStatus, err := parseAgencyContactCandidateStatus(status)
+	if err != nil {
+		return nil, err
+	}
+	candidateReviewStatus, filterByReviewStatus, err := parseAgencyContactReviewStatus(reviewStatus)
+	if err != nil {
+		return nil, err
+	}
+	items := []AgencyContactCandidate{}
+	for _, candidate := range state.AgencyContactCandidates {
+		if filterByStatus && candidate.Status != candidateStatus {
+			continue
+		}
+		if filterByReviewStatus && candidate.ReviewStatus != candidateReviewStatus {
+			continue
+		}
+		items = append(items, candidate)
+	}
+	sortAgencyContactCandidates(items)
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func parseAgencyContactCandidateStatus(value string) (AgencyContactCandidateStatus, bool, error) {
+	cleaned := cleanText(value)
+	if cleaned == "" {
+		return "", false, nil
+	}
+	status := AgencyContactCandidateStatus(cleaned)
+	if !validAgencyContactCandidateStatus(status) {
+		return "", false, fmt.Errorf("invalid agency contact candidate status %q", cleaned)
+	}
+	return status, true, nil
+}
+
+func parseAgencyContactReviewStatus(value string) (AgencyContactReviewStatus, bool, error) {
+	cleaned := cleanText(value)
+	if cleaned == "" {
+		return "", false, nil
+	}
+	status := AgencyContactReviewStatus(cleaned)
+	switch status {
+	case AgencyContactReviewStatusNeedsReview,
+		AgencyContactReviewStatusApproved,
+		AgencyContactReviewStatusRejected,
+		AgencyContactReviewStatusConverted:
+		return status, true, nil
+	default:
+		return "", false, fmt.Errorf("invalid agency contact review status %q", cleaned)
+	}
+}
+
+func RenderAgencyContactCandidatesText(candidates []AgencyContactCandidate) string {
+	lines := []string{
+		fmt.Sprintf("agency_contact_candidates=%d", len(candidates)),
+		"id\treview_status\tstatus\tsource\tagency\temail\tprofile_url\tcontact_url\tform_action\tname",
+	}
+	for _, candidate := range candidates {
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+			candidate.ID,
+			candidate.ReviewStatus,
+			candidate.Status,
+			cleanText(candidate.Source),
+			cleanText(candidate.AgencyAccountName),
+			stringOrDash(candidate.Email),
+			stringOrDash(candidate.ProfileURL),
+			stringOrDash(candidate.ContactURL),
+			stringOrDash(candidate.FormAction),
+			stringOrDash(candidate.Name),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderAgencyContactCandidateStatusCounts(counts map[AgencyContactCandidateStatus]int) string {
+	parts := []string{}
+	for _, status := range []AgencyContactCandidateStatus{
+		AgencyContactCandidateStatusWebsiteContactCandidate,
+		AgencyContactCandidateStatusGenericInbox,
+		AgencyContactCandidateStatusContactForm,
+		AgencyContactCandidateStatusRejected,
+		AgencyContactCandidateStatusConverted,
+	} {
+		parts = append(parts, fmt.Sprintf("%s %d", status, counts[status]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func renderAgencyContactReviewStatusCounts(counts map[AgencyContactReviewStatus]int) string {
+	parts := []string{}
+	for _, status := range []AgencyContactReviewStatus{
+		AgencyContactReviewStatusNeedsReview,
+		AgencyContactReviewStatusApproved,
+		AgencyContactReviewStatusRejected,
+		AgencyContactReviewStatusConverted,
+	} {
+		parts = append(parts, fmt.Sprintf("%s %d", status, counts[status]))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func renderStringCounts(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "-"
+	}
+	keys := []string{}
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := []string{}
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", key, counts[key]))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func stringOrDash(value *string) string {

@@ -1,8 +1,10 @@
 package outreach
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -995,6 +997,142 @@ func TestBuildAgencyPoolDiagnosisIdentifiesWebsiteEnrichmentCandidates(t *testin
 	}
 }
 
+func TestImportAgencySourceCaptureCreatesReviewOnlyAccountsAndCandidates(t *testing.T) {
+	capturedAt := "2026-06-23T12:00:00Z"
+	sourceURL := "https://webflow.com/agencies/bright-studio"
+	capture := AgencySourceCapture{
+		Source:     "Webflow partners",
+		SourceType: "webflow_partner",
+		CapturedAt: &capturedAt,
+		Rows: []AgencySourceRow{{
+			Name:      "Bright Studio",
+			Website:   strPtr("bright.example.com"),
+			SourceURL: &sourceURL,
+			Services:  []string{"Web Development"},
+			Contacts: []AgencySourceContactRow{
+				{Email: strPtr("hello@bright.example.com"), Evidence: []string{"directory mailto"}},
+				{Name: strPtr("Jane Doe"), ProfileURL: strPtr("https://www.linkedin.com/in/jane-doe/?trk=directory")},
+				{ContactURL: strPtr("https://bright.example.com/contact"), FormAction: strPtr("https://bright.example.com/contact")},
+			},
+		}},
+	}
+	state := OutreachState{}
+	summary, err := ImportAgencySourceCapture(&state, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Stored != 1 || summary.Qualified != 1 || summary.ContactCandidatesStored != 3 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if len(state.Leads) != 0 {
+		t.Fatalf("source import should not create sendable leads: %#v", state.Leads)
+	}
+	if len(state.AgencyAccounts) != 1 || state.AgencyAccounts[0].Status != AgencyAccountStatusQualified {
+		t.Fatalf("accounts = %#v", state.AgencyAccounts)
+	}
+	if state.AgencyAccounts[0].Domain == nil || *state.AgencyAccounts[0].Domain != "bright.example.com" {
+		t.Fatalf("domain = %v", state.AgencyAccounts[0].Domain)
+	}
+	statuses := map[AgencyContactCandidateStatus]int{}
+	for _, candidate := range state.AgencyContactCandidates {
+		if candidate.ReviewStatus != AgencyContactReviewStatusNeedsReview {
+			t.Fatalf("candidate should be review-only = %#v", candidate)
+		}
+		statuses[candidate.Status]++
+	}
+	if statuses[AgencyContactCandidateStatusGenericInbox] != 1 || statuses[AgencyContactCandidateStatusWebsiteContactCandidate] != 1 || statuses[AgencyContactCandidateStatusContactForm] != 1 {
+		t.Fatalf("candidate statuses = %#v candidates=%#v", statuses, state.AgencyContactCandidates)
+	}
+	store := Store{Dir: t.TempDir()}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.AgencyContactCandidates) != 3 {
+		t.Fatalf("reloaded candidates = %#v", reloaded.AgencyContactCandidates)
+	}
+}
+
+func TestEnrichAgencyWebsitesExtractsExplicitLinksAndForms(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, `<html><body><a href="mailto:info@example.com">info@example.com</a><form action="/newsletter"></form></body></html>`)
+		case "/team":
+			fmt.Fprint(w, `<html><body><a href="https://www.linkedin.com/in/jane-doe/?trk=team">Jane Doe</a></body></html>`)
+		case "/contact":
+			fmt.Fprint(w, `<html><body><form action="/contact"><input name="email"></form></body></html>`)
+		default:
+			fmt.Fprint(w, `<html><body></body></html>`)
+		}
+	}))
+	defer server.Close()
+
+	state := OutreachState{AgencyAccounts: []AgencyAccount{{
+		ID:      "acct_bright",
+		Name:    "Bright Studio",
+		Source:  "LinkedIn account search",
+		Status:  AgencyAccountStatusQualified,
+		Website: strPtr(server.URL),
+	}}}
+	summary := EnrichAgencyWebsites(context.Background(), &state, AgencyWebsiteEnrichmentOptions{
+		Limit:  1,
+		Client: server.Client(),
+		Now:    time.Date(2026, time.June, 23, 12, 0, 0, 0, time.UTC),
+	})
+	if summary.Checked != 1 || summary.ContactCandidatesStored != 3 || summary.Errors != 0 {
+		t.Fatalf("summary = %#v candidates=%#v", summary, state.AgencyContactCandidates)
+	}
+	if state.AgencyAccounts[0].WebsiteEnrichmentCount != 1 || state.AgencyAccounts[0].LastWebsiteEnrichedAt == nil || state.AgencyAccounts[0].LastWebsiteEnrichmentError != nil {
+		t.Fatalf("account enrichment fields = %#v", state.AgencyAccounts[0])
+	}
+	statuses := map[AgencyContactCandidateStatus]int{}
+	for _, candidate := range state.AgencyContactCandidates {
+		statuses[candidate.Status]++
+	}
+	if statuses[AgencyContactCandidateStatusGenericInbox] != 1 || statuses[AgencyContactCandidateStatusWebsiteContactCandidate] != 1 || statuses[AgencyContactCandidateStatusContactForm] != 1 {
+		t.Fatalf("candidate statuses = %#v candidates=%#v", statuses, state.AgencyContactCandidates)
+	}
+}
+
+func TestDashboardIncludesAgencyContactCandidateCounts(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{{
+			ID:     "acct_bright",
+			Name:   "Bright Studio",
+			Source: "Webflow partners",
+			Status: AgencyAccountStatusQualified,
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{
+			{ID: "agc_email", AgencyAccountID: "acct_bright", AgencyAccountName: "Bright Studio", Source: "website_enrichment", Status: AgencyContactCandidateStatusGenericInbox, ReviewStatus: AgencyContactReviewStatusNeedsReview, Email: strPtr("info@example.com")},
+			{ID: "agc_profile", AgencyAccountID: "acct_bright", AgencyAccountName: "Bright Studio", Source: "website_enrichment", Status: AgencyContactCandidateStatusWebsiteContactCandidate, ReviewStatus: AgencyContactReviewStatusApproved, ProfileURL: strPtr("https://www.linkedin.com/in/jane-doe/")},
+			{ID: "agc_form", AgencyAccountID: "acct_bright", AgencyAccountName: "Bright Studio", Source: "Webflow partners", Status: AgencyContactCandidateStatusContactForm, ReviewStatus: AgencyContactReviewStatusNeedsReview, ContactURL: strPtr("https://bright.example.com/contact")},
+		},
+	}
+	report := BuildDashboardReport(state, "/tmp/outreach.sqlite", 5, 5, true, nil)
+	if report.Counts.ByAgencyContactCandidateStatus[AgencyContactCandidateStatusGenericInbox] != 1 || report.Counts.ByAgencyContactCandidateReviewStatus[AgencyContactReviewStatusNeedsReview] != 2 {
+		t.Fatalf("counts = %#v", report.Counts)
+	}
+	if len(report.AgencySourceYields) != 2 {
+		t.Fatalf("source yields = %#v", report.AgencySourceYields)
+	}
+	markdown := RenderDashboardMarkdown(report)
+	for _, want := range []string{
+		"Agency review-only contacts: `1` website_contact_candidate, `1` generic_inbox, `1` contact_form",
+		"Agency contact review: `2` needs_review, `1` approved",
+		"Agency source yield:",
+		"website_enrichment accounts q0/nr0/r0/ex0 contacts website_contact_candidate1/generic_inbox1/contact_form0",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func TestLeadsForMessageValidationOnlyReturnsDraftableStatuses(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{ID: "drafted", Name: "Drafted", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 90, ProfileURL: strPtr("https://linkedin.com/sales/lead/a"), Draft: &MessageDraft{Body: "body"}},
@@ -1250,6 +1388,21 @@ func TestStoreImportsLegacyJSONAndPersistsSQLite(t *testing.T) {
 		CaptureCursors: map[string]CaptureCursor{
 			"source": {Source: "source", RawRowCount: 3},
 		},
+		AgencyAccounts: []AgencyAccount{{
+			ID:     "acct_bright",
+			Name:   "Bright Studio",
+			Source: "source",
+			Status: AgencyAccountStatusQualified,
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{{
+			ID:                "agc_email",
+			AgencyAccountID:   "acct_bright",
+			AgencyAccountName: "Bright Studio",
+			Source:            "website_enrichment",
+			Status:            AgencyContactCandidateStatusGenericInbox,
+			ReviewStatus:      AgencyContactReviewStatusNeedsReview,
+			Email:             strPtr("info@example.com"),
+		}},
 	}
 	raw, err := json.Marshal(state)
 	if err != nil {
@@ -1268,6 +1421,9 @@ func TestStoreImportsLegacyJSONAndPersistsSQLite(t *testing.T) {
 	if len(loaded.Leads) != 1 || loaded.Leads[0].Draft == nil || loaded.Leads[0].Draft.Body != "draft body" || len(loaded.Leads[0].SendAttempts) != 1 {
 		t.Fatalf("loaded state = %#v", loaded)
 	}
+	if len(loaded.AgencyContactCandidates) != 1 || loaded.AgencyContactCandidates[0].Email == nil || *loaded.AgencyContactCandidates[0].Email != "info@example.com" {
+		t.Fatalf("loaded candidates = %#v", loaded.AgencyContactCandidates)
+	}
 	loaded.Leads[0].Draft.Body = "updated draft"
 	if err := store.Save(loaded); err != nil {
 		t.Fatal(err)
@@ -1278,6 +1434,9 @@ func TestStoreImportsLegacyJSONAndPersistsSQLite(t *testing.T) {
 	}
 	if reloaded.Leads[0].Draft == nil || reloaded.Leads[0].Draft.Body != "updated draft" {
 		t.Fatalf("reloaded state = %#v", reloaded)
+	}
+	if len(reloaded.AgencyContactCandidates) != 1 {
+		t.Fatalf("reloaded candidates = %#v", reloaded.AgencyContactCandidates)
 	}
 }
 

@@ -315,11 +315,15 @@ func Queue(state OutreachState, statuses []LeadStatus, limit int, includeDraft b
 func Counts(state OutreachState) StatusCounts {
 	state.Normalize()
 	counts := StatusCounts{
-		ByStatus:              map[LeadStatus]int{},
-		ByLeadType:            map[LeadType]int{},
-		ByMessageStatus:       map[MessageStatus]int{},
-		BySource:              map[string]int{},
-		ByAgencyAccountStatus: map[AgencyAccountStatus]int{},
+		ByStatus:                             map[LeadStatus]int{},
+		ByLeadType:                           map[LeadType]int{},
+		ByMessageStatus:                      map[MessageStatus]int{},
+		BySource:                             map[string]int{},
+		ByAgencyAccountStatus:                map[AgencyAccountStatus]int{},
+		ByAgencyAccountSource:                map[string]int{},
+		ByAgencyContactCandidateStatus:       map[AgencyContactCandidateStatus]int{},
+		ByAgencyContactCandidateReviewStatus: map[AgencyContactReviewStatus]int{},
+		ByAgencyContactCandidateSource:       map[string]int{},
 	}
 	for _, lead := range state.Leads {
 		counts.ByStatus[lead.Status]++
@@ -329,6 +333,12 @@ func Counts(state OutreachState) StatusCounts {
 	}
 	for _, account := range state.AgencyAccounts {
 		counts.ByAgencyAccountStatus[account.Status]++
+		counts.ByAgencyAccountSource[account.Source]++
+	}
+	for _, candidate := range state.AgencyContactCandidates {
+		counts.ByAgencyContactCandidateStatus[candidate.Status]++
+		counts.ByAgencyContactCandidateReviewStatus[candidate.ReviewStatus]++
+		counts.ByAgencyContactCandidateSource[candidate.Source]++
 	}
 	return counts
 }

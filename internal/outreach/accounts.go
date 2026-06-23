@@ -145,6 +145,10 @@ func ImportAccountCapture(state *OutreachState, capture SalesNavAccountCapture) 
 			account.LastContactError = state.AgencyAccounts[index].LastContactError
 			account.LastContactErrorAt = state.AgencyAccounts[index].LastContactErrorAt
 			account.ContactErrorCount = state.AgencyAccounts[index].ContactErrorCount
+			account.LastWebsiteEnrichedAt = state.AgencyAccounts[index].LastWebsiteEnrichedAt
+			account.WebsiteEnrichmentCount = state.AgencyAccounts[index].WebsiteEnrichmentCount
+			account.LastWebsiteEnrichmentError = state.AgencyAccounts[index].LastWebsiteEnrichmentError
+			account.LastWebsiteEnrichmentErrorAt = state.AgencyAccounts[index].LastWebsiteEnrichmentErrorAt
 			if len(state.AgencyAccounts[index].Notes) > 0 {
 				account.Notes = state.AgencyAccounts[index].Notes
 			}

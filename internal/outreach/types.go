@@ -35,6 +35,25 @@ const (
 	AgencyAccountStatusExhausted   AgencyAccountStatus = "exhausted"
 )
 
+type AgencyContactCandidateStatus string
+
+const (
+	AgencyContactCandidateStatusWebsiteContactCandidate AgencyContactCandidateStatus = "website_contact_candidate"
+	AgencyContactCandidateStatusGenericInbox            AgencyContactCandidateStatus = "generic_inbox"
+	AgencyContactCandidateStatusContactForm             AgencyContactCandidateStatus = "contact_form"
+	AgencyContactCandidateStatusRejected                AgencyContactCandidateStatus = "rejected"
+	AgencyContactCandidateStatusConverted               AgencyContactCandidateStatus = "converted"
+)
+
+type AgencyContactReviewStatus string
+
+const (
+	AgencyContactReviewStatusNeedsReview AgencyContactReviewStatus = "needs_review"
+	AgencyContactReviewStatusApproved    AgencyContactReviewStatus = "approved"
+	AgencyContactReviewStatusRejected    AgencyContactReviewStatus = "rejected"
+	AgencyContactReviewStatusConverted   AgencyContactReviewStatus = "converted"
+)
+
 type MessageStatus string
 
 const (
@@ -56,12 +75,13 @@ const (
 )
 
 type OutreachState struct {
-	SchemaVersion  int                      `json:"schema_version"`
-	Leads          []Lead                   `json:"leads"`
-	AgencyAccounts []AgencyAccount          `json:"agency_accounts"`
-	CaptureCursors map[string]CaptureCursor `json:"capture_cursors"`
-	RunEvents      []RunEvent               `json:"run_events"`
-	UpdatedAt      time.Time                `json:"updated_at"`
+	SchemaVersion           int                      `json:"schema_version"`
+	Leads                   []Lead                   `json:"leads"`
+	AgencyAccounts          []AgencyAccount          `json:"agency_accounts"`
+	AgencyContactCandidates []AgencyContactCandidate `json:"agency_contact_candidates"`
+	CaptureCursors          map[string]CaptureCursor `json:"capture_cursors"`
+	RunEvents               []RunEvent               `json:"run_events"`
+	UpdatedAt               time.Time                `json:"updated_at"`
 }
 
 type RunEvent struct {
@@ -133,30 +153,54 @@ type Lead struct {
 }
 
 type AgencyAccount struct {
-	ID                   string              `json:"id"`
-	Source               string              `json:"source"`
-	Name                 string              `json:"name"`
-	AccountURL           *string             `json:"account_url"`
-	Website              *string             `json:"website"`
-	Domain               *string             `json:"domain"`
-	Industry             *string             `json:"industry"`
-	Headcount            *string             `json:"headcount"`
-	Location             *string             `json:"location"`
-	Status               AgencyAccountStatus `json:"status"`
-	FitScore             int                 `json:"fit_score"`
-	FitReasons           []string            `json:"fit_reasons"`
-	RejectReasons        []string            `json:"reject_reasons"`
-	EvidenceText         string              `json:"evidence_text"`
-	CapturedAt           *string             `json:"captured_at"`
-	ImportedAt           time.Time           `json:"imported_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	LastContactCaptureAt *time.Time          `json:"last_contact_capture_at"`
-	ContactCaptureCount  int                 `json:"contact_capture_count"`
-	LastContactStrategy  *string             `json:"last_contact_strategy,omitempty"`
-	LastContactError     *string             `json:"last_contact_error,omitempty"`
-	LastContactErrorAt   *time.Time          `json:"last_contact_error_at,omitempty"`
-	ContactErrorCount    int                 `json:"contact_error_count,omitempty"`
-	Notes                []string            `json:"notes"`
+	ID                           string              `json:"id"`
+	Source                       string              `json:"source"`
+	Name                         string              `json:"name"`
+	AccountURL                   *string             `json:"account_url"`
+	Website                      *string             `json:"website"`
+	Domain                       *string             `json:"domain"`
+	Industry                     *string             `json:"industry"`
+	Headcount                    *string             `json:"headcount"`
+	Location                     *string             `json:"location"`
+	Status                       AgencyAccountStatus `json:"status"`
+	FitScore                     int                 `json:"fit_score"`
+	FitReasons                   []string            `json:"fit_reasons"`
+	RejectReasons                []string            `json:"reject_reasons"`
+	EvidenceText                 string              `json:"evidence_text"`
+	CapturedAt                   *string             `json:"captured_at"`
+	ImportedAt                   time.Time           `json:"imported_at"`
+	UpdatedAt                    time.Time           `json:"updated_at"`
+	LastContactCaptureAt         *time.Time          `json:"last_contact_capture_at"`
+	ContactCaptureCount          int                 `json:"contact_capture_count"`
+	LastContactStrategy          *string             `json:"last_contact_strategy,omitempty"`
+	LastContactError             *string             `json:"last_contact_error,omitempty"`
+	LastContactErrorAt           *time.Time          `json:"last_contact_error_at,omitempty"`
+	ContactErrorCount            int                 `json:"contact_error_count,omitempty"`
+	LastWebsiteEnrichedAt        *time.Time          `json:"last_website_enriched_at,omitempty"`
+	WebsiteEnrichmentCount       int                 `json:"website_enrichment_count,omitempty"`
+	LastWebsiteEnrichmentError   *string             `json:"last_website_enrichment_error,omitempty"`
+	LastWebsiteEnrichmentErrorAt *time.Time          `json:"last_website_enrichment_error_at,omitempty"`
+	Notes                        []string            `json:"notes"`
+}
+
+type AgencyContactCandidate struct {
+	ID                string                       `json:"id"`
+	AgencyAccountID   string                       `json:"agency_account_id"`
+	AgencyAccountName string                       `json:"agency_account_name"`
+	Source            string                       `json:"source"`
+	SourceURL         *string                      `json:"source_url,omitempty"`
+	Status            AgencyContactCandidateStatus `json:"status"`
+	ReviewStatus      AgencyContactReviewStatus    `json:"review_status"`
+	Name              *string                      `json:"name,omitempty"`
+	Title             *string                      `json:"title,omitempty"`
+	Email             *string                      `json:"email,omitempty"`
+	ProfileURL        *string                      `json:"profile_url,omitempty"`
+	ContactURL        *string                      `json:"contact_url,omitempty"`
+	FormAction        *string                      `json:"form_action,omitempty"`
+	Evidence          []string                     `json:"evidence"`
+	ImportedAt        time.Time                    `json:"imported_at"`
+	UpdatedAt         time.Time                    `json:"updated_at"`
+	Notes             []string                     `json:"notes"`
 }
 
 type MessageDraft struct {
@@ -214,11 +258,15 @@ type DraftReport struct {
 }
 
 type StatusCounts struct {
-	ByStatus              map[LeadStatus]int          `json:"by_status"`
-	ByLeadType            map[LeadType]int            `json:"by_lead_type"`
-	ByMessageStatus       map[MessageStatus]int       `json:"by_message_status"`
-	BySource              map[string]int              `json:"by_source"`
-	ByAgencyAccountStatus map[AgencyAccountStatus]int `json:"by_agency_account_status"`
+	ByStatus                             map[LeadStatus]int                   `json:"by_status"`
+	ByLeadType                           map[LeadType]int                     `json:"by_lead_type"`
+	ByMessageStatus                      map[MessageStatus]int                `json:"by_message_status"`
+	BySource                             map[string]int                       `json:"by_source"`
+	ByAgencyAccountStatus                map[AgencyAccountStatus]int          `json:"by_agency_account_status"`
+	ByAgencyAccountSource                map[string]int                       `json:"by_agency_account_source"`
+	ByAgencyContactCandidateStatus       map[AgencyContactCandidateStatus]int `json:"by_agency_contact_candidate_status"`
+	ByAgencyContactCandidateReviewStatus map[AgencyContactReviewStatus]int    `json:"by_agency_contact_candidate_review_status"`
+	ByAgencyContactCandidateSource       map[string]int                       `json:"by_agency_contact_candidate_source"`
 }
 
 func (s *OutreachState) Normalize() {
@@ -231,6 +279,9 @@ func (s *OutreachState) Normalize() {
 	if s.AgencyAccounts == nil {
 		s.AgencyAccounts = []AgencyAccount{}
 	}
+	if s.AgencyContactCandidates == nil {
+		s.AgencyContactCandidates = []AgencyContactCandidate{}
+	}
 	if s.CaptureCursors == nil {
 		s.CaptureCursors = map[string]CaptureCursor{}
 	}
@@ -242,6 +293,9 @@ func (s *OutreachState) Normalize() {
 	}
 	for i := range s.Leads {
 		s.Leads[i].Normalize()
+	}
+	for i := range s.AgencyContactCandidates {
+		s.AgencyContactCandidates[i].Normalize()
 	}
 }
 
@@ -294,6 +348,25 @@ func (a *AgencyAccount) Normalize() {
 	a.EvidenceText = truncateEvidence(a.EvidenceText)
 }
 
+func (c *AgencyContactCandidate) Normalize() {
+	c.Source = cleanText(c.Source)
+	c.AgencyAccountID = cleanText(c.AgencyAccountID)
+	c.AgencyAccountName = cleanText(c.AgencyAccountName)
+	if c.Status == "" {
+		c.Status = AgencyContactCandidateStatusWebsiteContactCandidate
+	}
+	if c.ReviewStatus == "" {
+		c.ReviewStatus = AgencyContactReviewStatusNeedsReview
+	}
+	if c.Evidence == nil {
+		c.Evidence = []string{}
+	}
+	if c.Notes == nil {
+		c.Notes = []string{}
+	}
+	c.Evidence = truncateEvidenceItems(c.Evidence)
+}
+
 func cleanText(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
@@ -312,4 +385,19 @@ func truncateEvidence(value string) string {
 		return cleaned
 	}
 	return cleaned[:700]
+}
+
+func truncateEvidenceItems(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	items := []string{}
+	for _, value := range values {
+		cleaned := truncateEvidence(value)
+		if cleaned == "" {
+			continue
+		}
+		items = append(items, cleaned)
+	}
+	return items
 }

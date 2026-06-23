@@ -174,6 +174,53 @@ company/team/contact pages. The output should feed reviewed drafts or source
 artifacts before any send path; do not treat random scraped personal emails as
 automatically messageable.
 
+Import reviewed directory or partner-list agency sources into the account pool:
+
+```sh
+recruiter-agency-outreach agency-pool import-source /path/to/agency-source.json
+```
+
+The source artifact is structured JSON, not raw scraped page text:
+
+```json
+{
+  "schema_version": 1,
+  "source": "Webflow partners",
+  "source_type": "webflow_partner",
+  "rows": [
+    {
+      "name": "Bright Studio",
+      "website": "https://bright.example.com",
+      "source_url": "https://webflow.com/agencies/bright-studio",
+      "services": ["Web Development"],
+      "contacts": [
+        {
+          "name": "Jane Doe",
+          "profile_url": "https://www.linkedin.com/in/jane-doe/",
+          "evidence": ["listed as team contact in source directory"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+Website enrichment is still review-only. It records explicit `mailto:` links,
+explicit LinkedIn `/in/` profile links, and contact forms from contact-oriented
+pages/actions as `agency_contact_candidates`; it does not create sendable
+LinkedIn leads:
+
+```sh
+recruiter-agency-outreach agency-pool enrich-websites --limit 25
+recruiter-agency-outreach agency-pool contacts --limit 20
+recruiter-agency-outreach agency-pool contacts --status generic_inbox --limit 20
+```
+
+The dashboard and `agency-pool diagnose` include review-only contact counts and
+source-yield counts so failed agency reruns show whether the limit is LinkedIn
+messageability, empty account-scoped searches, or a missing source/enrichment
+pool.
+
 Revise a draft before sending by writing the revised body to a local file and
 resetting the lead to `drafted`:
 

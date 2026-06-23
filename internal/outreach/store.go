@@ -76,7 +76,7 @@ func (s Store) Load() (OutreachState, error) {
 		if err != nil {
 			return OutreachState{}, err
 		}
-		if len(state.Leads) > 0 || len(state.AgencyAccounts) > 0 || len(state.CaptureCursors) > 0 {
+		if len(state.Leads) > 0 || len(state.AgencyAccounts) > 0 || len(state.AgencyContactCandidates) > 0 || len(state.CaptureCursors) > 0 {
 			if err := s.Save(state); err != nil {
 				return OutreachState{}, err
 			}
@@ -103,10 +103,12 @@ func (s Store) loadJSONState() (OutreachState, error) {
 	path := s.JSONStatePath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		state := OutreachState{
-			SchemaVersion:  1,
-			Leads:          []Lead{},
-			CaptureCursors: map[string]CaptureCursor{},
-			UpdatedAt:      time.Now(),
+			SchemaVersion:           1,
+			Leads:                   []Lead{},
+			AgencyAccounts:          []AgencyAccount{},
+			AgencyContactCandidates: []AgencyContactCandidate{},
+			CaptureCursors:          map[string]CaptureCursor{},
+			UpdatedAt:               time.Now(),
 		}
 		return state, nil
 	}
@@ -180,6 +182,10 @@ func ensureSQLiteSchema(db *sql.DB) error {
 			id TEXT PRIMARY KEY,
 			data TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS agency_contact_candidates (
+			id TEXT PRIMARY KEY,
+			data TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS capture_cursors (
 			source TEXT PRIMARY KEY,
 			data TEXT NOT NULL
@@ -230,11 +236,12 @@ func ensureSQLiteColumn(db *sql.DB, table string, column string, definition stri
 
 func loadSQLiteState(db *sql.DB) (OutreachState, error) {
 	state := OutreachState{
-		SchemaVersion:  1,
-		Leads:          []Lead{},
-		AgencyAccounts: []AgencyAccount{},
-		CaptureCursors: map[string]CaptureCursor{},
-		UpdatedAt:      time.Now(),
+		SchemaVersion:           1,
+		Leads:                   []Lead{},
+		AgencyAccounts:          []AgencyAccount{},
+		AgencyContactCandidates: []AgencyContactCandidate{},
+		CaptureCursors:          map[string]CaptureCursor{},
+		UpdatedAt:               time.Now(),
 	}
 	if value, ok, err := metaValue(db, "schema_version"); err != nil {
 		return OutreachState{}, err
@@ -262,6 +269,11 @@ func loadSQLiteState(db *sql.DB) (OutreachState, error) {
 		return OutreachState{}, err
 	}
 	state.AgencyAccounts = accounts
+	candidates, err := loadJSONRows[AgencyContactCandidate](db, "SELECT data FROM agency_contact_candidates ORDER BY id")
+	if err != nil {
+		return OutreachState{}, err
+	}
+	state.AgencyContactCandidates = candidates
 	cursors, err := loadJSONRows[CaptureCursor](db, "SELECT data FROM capture_cursors ORDER BY source")
 	if err != nil {
 		return OutreachState{}, err
@@ -370,6 +382,7 @@ func saveSQLiteState(db *sql.DB, state OutreachState) error {
 		"DELETE FROM drafts",
 		"DELETE FROM leads",
 		"DELETE FROM agency_accounts",
+		"DELETE FROM agency_contact_candidates",
 		"DELETE FROM capture_cursors",
 		"DELETE FROM run_events",
 		"DELETE FROM meta",
@@ -392,6 +405,11 @@ func saveSQLiteState(db *sql.DB, state OutreachState) error {
 	for _, account := range state.AgencyAccounts {
 		if err := insertJSON(tx, "INSERT INTO agency_accounts (id, data) VALUES (?, ?)", account.ID, account); err != nil {
 			return fmt.Errorf("saving agency account %s: %w", account.ID, err)
+		}
+	}
+	for _, candidate := range state.AgencyContactCandidates {
+		if err := insertJSON(tx, "INSERT INTO agency_contact_candidates (id, data) VALUES (?, ?)", candidate.ID, candidate); err != nil {
+			return fmt.Errorf("saving agency contact candidate %s: %w", candidate.ID, err)
 		}
 	}
 	for source, cursor := range state.CaptureCursors {

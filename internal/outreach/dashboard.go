@@ -31,6 +31,7 @@ type DashboardReport struct {
 	LifetimeCounts     DashboardBucketCounts `json:"lifetime_counts"`
 	AgencyFunnelCounts AgencyAccountFunnel   `json:"agency_funnel_counts"`
 	AgencyDrilldown    AgencyDrilldownCounts `json:"agency_drilldown"`
+	AgencySourceYields []AgencySourceYield   `json:"agency_source_yields"`
 	ReadyAgencies      []Lead                `json:"ready_agencies"`
 	ReadyRecruiters    []Lead                `json:"ready_recruiters"`
 	ApprovedAgencies   []Lead                `json:"approved_agencies"`
@@ -73,6 +74,17 @@ type AgencyDrilldownCounts struct {
 	BrowserErrorRetryable   int `json:"browser_error_retryable"`
 	QualifiedRemaining      int `json:"qualified_remaining"`
 	ExhaustedWithoutContact int `json:"exhausted_without_contact"`
+}
+
+type AgencySourceYield struct {
+	Source                   string `json:"source"`
+	QualifiedAccounts        int    `json:"qualified_accounts"`
+	NeedsReviewAccounts      int    `json:"needs_review_accounts"`
+	RejectedAccounts         int    `json:"rejected_accounts"`
+	ExhaustedAccounts        int    `json:"exhausted_accounts"`
+	WebsiteContactCandidates int    `json:"website_contact_candidates"`
+	GenericInboxes           int    `json:"generic_inboxes"`
+	ContactForms             int    `json:"contact_forms"`
 }
 
 type DailyLeadAction struct {
@@ -164,6 +176,7 @@ func BuildDashboardReportWithOptions(state OutreachState, statePath string, opti
 		},
 		AgencyFunnelCounts: agencyAccountFunnelCounts(state),
 		AgencyDrilldown:    agencyDrilldownCounts(state),
+		AgencySourceYields: agencySourceYields(state),
 		ReadyAgencies:      dashboardLeads(state, "agency", MessageStatusDryRunReady),
 		ReadyRecruiters:    dashboardLeads(state, "recruiter", MessageStatusDryRunReady),
 		ApprovedAgencies:   dashboardLeads(state, "agency", MessageStatusApproved),
@@ -241,8 +254,22 @@ func RenderDashboardMarkdown(report DashboardReport) string {
 			report.AgencyDrilldown.NoContactsFound,
 			report.AgencyDrilldown.BrowserErrorRetryable,
 		),
+		fmt.Sprintf("- Agency review-only contacts: `%d` website_contact_candidate, `%d` generic_inbox, `%d` contact_form",
+			report.Counts.ByAgencyContactCandidateStatus[AgencyContactCandidateStatusWebsiteContactCandidate],
+			report.Counts.ByAgencyContactCandidateStatus[AgencyContactCandidateStatusGenericInbox],
+			report.Counts.ByAgencyContactCandidateStatus[AgencyContactCandidateStatusContactForm],
+		),
+		fmt.Sprintf("- Agency contact review: `%d` needs_review, `%d` approved, `%d` rejected, `%d` converted",
+			report.Counts.ByAgencyContactCandidateReviewStatus[AgencyContactReviewStatusNeedsReview],
+			report.Counts.ByAgencyContactCandidateReviewStatus[AgencyContactReviewStatusApproved],
+			report.Counts.ByAgencyContactCandidateReviewStatus[AgencyContactReviewStatusRejected],
+			report.Counts.ByAgencyContactCandidateReviewStatus[AgencyContactReviewStatusConverted],
+		),
 		"",
 	)
+	if len(report.AgencySourceYields) > 0 {
+		lines = append(lines, "- Agency source yield: "+renderAgencySourceYieldsInline(report.AgencySourceYields), "")
+	}
 	if report.LimitingReason != "" {
 		lines = append(lines, "- Limiting reason: "+cleanInline(report.LimitingReason), "")
 	}
@@ -475,6 +502,77 @@ func agencyDrilldownCounts(state OutreachState) AgencyDrilldownCounts {
 		}
 	}
 	return counts
+}
+
+func agencySourceYields(state OutreachState) []AgencySourceYield {
+	state.Normalize()
+	bySource := map[string]*AgencySourceYield{}
+	get := func(source string) *AgencySourceYield {
+		cleaned := cleanText(source)
+		if cleaned == "" {
+			cleaned = "unknown"
+		}
+		item := bySource[cleaned]
+		if item == nil {
+			item = &AgencySourceYield{Source: cleaned}
+			bySource[cleaned] = item
+		}
+		return item
+	}
+	for _, account := range state.AgencyAccounts {
+		item := get(account.Source)
+		switch account.Status {
+		case AgencyAccountStatusQualified:
+			item.QualifiedAccounts++
+		case AgencyAccountStatusNeedsReview:
+			item.NeedsReviewAccounts++
+		case AgencyAccountStatusRejected:
+			item.RejectedAccounts++
+		case AgencyAccountStatusExhausted:
+			item.ExhaustedAccounts++
+		}
+	}
+	for _, candidate := range state.AgencyContactCandidates {
+		item := get(candidate.Source)
+		switch candidate.Status {
+		case AgencyContactCandidateStatusWebsiteContactCandidate:
+			item.WebsiteContactCandidates++
+		case AgencyContactCandidateStatusGenericInbox:
+			item.GenericInboxes++
+		case AgencyContactCandidateStatusContactForm:
+			item.ContactForms++
+		}
+	}
+	yields := []AgencySourceYield{}
+	for _, item := range bySource {
+		yields = append(yields, *item)
+	}
+	sort.SliceStable(yields, func(i, j int) bool {
+		leftTotal := yields[i].QualifiedAccounts + yields[i].NeedsReviewAccounts + yields[i].RejectedAccounts + yields[i].ExhaustedAccounts + yields[i].WebsiteContactCandidates + yields[i].GenericInboxes + yields[i].ContactForms
+		rightTotal := yields[j].QualifiedAccounts + yields[j].NeedsReviewAccounts + yields[j].RejectedAccounts + yields[j].ExhaustedAccounts + yields[j].WebsiteContactCandidates + yields[j].GenericInboxes + yields[j].ContactForms
+		if leftTotal != rightTotal {
+			return leftTotal > rightTotal
+		}
+		return yields[i].Source < yields[j].Source
+	})
+	return yields
+}
+
+func renderAgencySourceYieldsInline(yields []AgencySourceYield) string {
+	parts := []string{}
+	for _, yield := range yields {
+		parts = append(parts, fmt.Sprintf("%s accounts q%d/nr%d/r%d/ex%d contacts website_contact_candidate%d/generic_inbox%d/contact_form%d",
+			cleanInline(yield.Source),
+			yield.QualifiedAccounts,
+			yield.NeedsReviewAccounts,
+			yield.RejectedAccounts,
+			yield.ExhaustedAccounts,
+			yield.WebsiteContactCandidates,
+			yield.GenericInboxes,
+			yield.ContactForms,
+		))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func dashboardBucketCount(state OutreachState, bucket string, messageStatus MessageStatus) int {
