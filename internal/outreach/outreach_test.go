@@ -804,6 +804,9 @@ func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
 	if !strings.Contains(summary.Recommendation.Command, "--stop-when-no-progress --max-no-progress-searches 12") {
 		t.Fatalf("recommendation missing agency no-progress guard = %#v", summary.Recommendation)
 	}
+	if !strings.Contains(summary.Recommendation.Command, "--timeout-ms 240000") {
+		t.Fatalf("recommendation missing agency timeout = %#v", summary.Recommendation)
+	}
 }
 
 func TestLatestRunSummaryFallsBackToLegacyRunEvents(t *testing.T) {
