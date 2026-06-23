@@ -243,8 +243,8 @@ func RecommendNextRunSummary(summary RunSummary) RunRecommendation {
 	agencyGap := nonZero(summary.TargetAgencies, 0) - summary.Counts.Sent.Agencies
 	recruiterGap := nonZero(summary.TargetRecruiters, 0) - summary.Counts.Sent.Recruiters
 	if summary.Status == "failed" || cleanText(summary.Blocker) != "" {
-		targetAgencies := nonZero(summary.TargetAgencies, 5)
-		targetRecruiters := nonZero(summary.TargetRecruiters, 5)
+		targetAgencies := positiveOrFallback(agencyGap, nonZero(summary.TargetAgencies, 5))
+		targetRecruiters := positiveOrFallback(recruiterGap, nonZero(summary.TargetRecruiters, 5))
 		if agencyGap > 0 && recruiterGap <= 0 {
 			targetRecruiters = 0
 		} else if recruiterGap > 0 && agencyGap <= 0 {
@@ -261,14 +261,14 @@ func RecommendNextRunSummary(summary RunSummary) RunRecommendation {
 		if agencyGap > 0 {
 			return RunRecommendation{
 				ShouldRetry: true,
-				Command:     retryCommand(nonZero(summary.TargetAgencies, 5), 0, true),
+				Command:     retryCommand(agencyGap, 0, true),
 				Reason:      fmt.Sprintf("Agency target is still short by %d sends; validate the fixed agency lane without spending time on recruiters.", agencyGap),
 			}
 		}
 		if recruiterGap > 0 {
 			return RunRecommendation{
 				ShouldRetry: true,
-				Command:     retryCommand(0, nonZero(summary.TargetRecruiters, 5), true),
+				Command:     retryCommand(0, recruiterGap, true),
 				Reason:      fmt.Sprintf("Recruiter target is still short by %d sends.", recruiterGap),
 			}
 		}
@@ -294,6 +294,13 @@ func retryCommand(targetAgencies int, targetRecruiters int, allowSend bool) stri
 
 func nonZero(value int, fallback int) int {
 	if value != 0 {
+		return value
+	}
+	return fallback
+}
+
+func positiveOrFallback(value int, fallback int) int {
+	if value > 0 {
 		return value
 	}
 	return fallback

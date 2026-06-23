@@ -798,7 +798,7 @@ func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
 	if summary.Counts.Sent.Agencies != 1 || summary.Counts.Sent.Recruiters != 1 {
 		t.Fatalf("counts = %#v", summary.Counts.Sent)
 	}
-	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "--target-agencies 5 --target-recruiters 0") {
+	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "--target-agencies 4 --target-recruiters 0") {
 		t.Fatalf("recommendation = %#v", summary.Recommendation)
 	}
 }
