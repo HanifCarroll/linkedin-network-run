@@ -801,6 +801,9 @@ func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
 	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "--target-agencies 4 --target-recruiters 0") {
 		t.Fatalf("recommendation = %#v", summary.Recommendation)
 	}
+	if !strings.Contains(summary.Recommendation.Command, "--stop-when-no-progress --max-no-progress-searches 12") {
+		t.Fatalf("recommendation missing agency no-progress guard = %#v", summary.Recommendation)
+	}
 }
 
 func TestLatestRunSummaryFallsBackToLegacyRunEvents(t *testing.T) {
@@ -873,6 +876,119 @@ func TestAgencyDrilldownCountsContactSearchStages(t *testing.T) {
 	counts := agencyDrilldownCounts(state)
 	if counts.NotSearchedYet != 1 || counts.SearchedFounderRecent != 1 || counts.SearchedExecutiveBroad != 1 || counts.SearchedResourceBroad != 1 || counts.ContactsFound != 1 || counts.BrowserErrorRetryable != 1 || counts.ExhaustedWithoutContact != 1 {
 		t.Fatalf("drilldown = %#v", counts)
+	}
+}
+
+func TestShouldStopForAgencyNoProgressUsesConfiguredThreshold(t *testing.T) {
+	tests := []struct {
+		name    string
+		options DailyOptions
+		streak  int
+		want    bool
+	}{
+		{
+			name:    "disabled",
+			options: DailyOptions{StopWhenNoProgress: false, MaxNoProgressSearches: 2},
+			streak:  2,
+			want:    false,
+		},
+		{
+			name:    "below threshold",
+			options: DailyOptions{StopWhenNoProgress: true, MaxNoProgressSearches: 3},
+			streak:  2,
+			want:    false,
+		},
+		{
+			name:    "at threshold",
+			options: DailyOptions{StopWhenNoProgress: true, MaxNoProgressSearches: 3},
+			streak:  3,
+			want:    true,
+		},
+		{
+			name:    "default threshold",
+			options: DailyOptions{StopWhenNoProgress: true},
+			streak:  12,
+			want:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldStopForAgencyNoProgress(tt.options, &dailyProgress{AgencyNoProgressStreak: tt.streak})
+			if got != tt.want {
+				t.Fatalf("shouldStopForAgencyNoProgress() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildAgencyPoolDiagnosisIdentifiesWebsiteEnrichmentCandidates(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{
+			{
+				ID:                  "acct_open",
+				Name:                "Open Studio",
+				Status:              AgencyAccountStatusQualified,
+				FitScore:            95,
+				Website:             strPtr("https://open.example.com"),
+				ContactCaptureCount: 1,
+			},
+			{
+				ID:                  "acct_exhausted",
+				Name:                "Exhausted Studio",
+				Status:              AgencyAccountStatusExhausted,
+				FitScore:            90,
+				Website:             strPtr("https://exhausted.example.com"),
+				ContactCaptureCount: 3,
+			},
+			{
+				ID:                  "acct_website",
+				Name:                "Website Studio",
+				Status:              AgencyAccountStatusQualified,
+				FitScore:            88,
+				Website:             strPtr("https://website.example.com"),
+				ContactCaptureCount: 3,
+			},
+			{
+				ID:                  "acct_search",
+				Name:                "Search Studio",
+				Status:              AgencyAccountStatusQualified,
+				FitScore:            80,
+				Website:             strPtr("https://search.example.com"),
+				ContactCaptureCount: 1,
+			},
+		},
+		Leads: []Lead{{
+			ID:              "lead_open",
+			Name:            "Dana",
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusDrafted,
+			LeadType:        LeadTypeAgencyFounder,
+			AgencyAccountID: strPtr("acct_open"),
+		}},
+	}
+	diagnosis := BuildAgencyPoolDiagnosis(state, "/tmp/outreach.sqlite", 20)
+	if diagnosis.WebsiteCandidates != 2 || diagnosis.QualifiedWebsiteCandidates != 1 || diagnosis.ExhaustedWebsiteCandidates != 1 {
+		t.Fatalf("website candidate counts = %#v", diagnosis)
+	}
+	steps := map[string]string{}
+	for _, account := range diagnosis.Accounts {
+		steps[account.ID] = account.NextStep
+	}
+	if steps["acct_open"] != "validate_or_send_open_lead" {
+		t.Fatalf("open account step = %q", steps["acct_open"])
+	}
+	if steps["acct_search"] != "continue_linkedin_contact_search:executive_delivery_broad" {
+		t.Fatalf("search account step = %q", steps["acct_search"])
+	}
+	if steps["acct_website"] != "website_enrichment" {
+		t.Fatalf("website account step = %q", steps["acct_website"])
+	}
+	if steps["acct_exhausted"] != "website_enrichment" {
+		t.Fatalf("exhausted account step = %q", steps["acct_exhausted"])
+	}
+	text := RenderAgencyPoolDiagnosisText(diagnosis)
+	if !strings.Contains(text, "website_candidates=all 2; qualified 1; exhausted 1") || !strings.Contains(text, "acct_website") {
+		t.Fatalf("diagnosis text = %s", text)
 	}
 }
 

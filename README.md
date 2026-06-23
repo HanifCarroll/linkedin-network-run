@@ -50,7 +50,7 @@ It can send already-drafted LinkedIn messages only through the guarded
 lives at:
 
 ```text
-~/Library/Application Support/recruiter-agency-outreach/outreach.json
+~/Library/Application Support/recruiter-agency-outreach/outreach.sqlite
 ```
 
 Use it for recruiters and agencies only:
@@ -61,6 +61,8 @@ recruiter-agency-outreach run-daily \
   --target-agencies 5 \
   --target-recruiters 5 \
   --allow-send \
+  --stop-when-no-progress \
+  --max-no-progress-searches 12 \
   --print-markdown
 ```
 
@@ -75,6 +77,11 @@ artifacts are written under run-specific directories, with dashboard aliases at
 `dashboards/latest-run.md`, `dashboards/latest-render.md`, and
 `dashboards/runs/<run_id>.md`. Use `--skip-session-reset` only when
 intentionally preserving a live Playwriter page connection.
+
+For agency-heavy reruns, `--stop-when-no-progress` keeps the run from spending
+the whole browser budget on account-scoped people searches that produce no new
+messageable contacts. The default CLI threshold is 12 consecutive no-progress
+agency contact searches; tune it with `--max-no-progress-searches`.
 
 The built-in daily sources do not depend on stale Sales Navigator saved-search
 names. After a source has been captured once, the workflow still uses its saved
@@ -127,6 +134,8 @@ recruiter-agency-outreach run-daily \
   --target-recruiters 5 \
   --allow-send \
   --refresh-saved-searches \
+  --stop-when-no-progress \
+  --max-no-progress-searches 12 \
   --print-markdown
 ```
 
@@ -147,6 +156,23 @@ send/skipped counts, blocker, dashboard path, and the recommended next command:
 recruiter-agency-outreach last-run
 recruiter-agency-outreach recommend-next-run --target-agencies 5 --target-recruiters 5 --allow-send
 ```
+
+Diagnose the agency account pool before another agency-only rerun:
+
+```sh
+recruiter-agency-outreach agency-pool diagnose --limit 20
+```
+
+This is read-only. It shows the state path, account statuses, contactability
+funnel, drill-down counts, retryable browser errors, and the next useful account
+actions such as `continue_linkedin_contact_search`, `validate_or_send_open_lead`,
+or `website_enrichment`.
+
+Website checks are a second-stage agency source. Use them after LinkedIn
+account/contact searches fail to find a messageable person, and only from public
+company/team/contact pages. The output should feed reviewed drafts or source
+artifacts before any send path; do not treat random scraped personal emails as
+automatically messageable.
 
 Revise a draft before sending by writing the revised body to a local file and
 resetting the lead to `drafted`:

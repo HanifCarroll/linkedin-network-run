@@ -52,6 +52,7 @@ func Execute(ctx context.Context, args []string) error {
 	root.AddCommand(importCaptureCommand(withStore))
 	root.AddCommand(importAccountsCommand(withStore))
 	root.AddCommand(accountsCommand(withStore))
+	root.AddCommand(agencyPoolCommand(withStore))
 	root.AddCommand(queueCommand(withStore))
 	root.AddCommand(draftCommand(withStore))
 	root.AddCommand(dashboardCommand(withStore))
@@ -237,9 +238,9 @@ func importAccountsPath(store *Store, path string) error {
 
 func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var session, playwriter, captureScript, accountCaptureScript, messageScript, savedSearchesScript, savedSearches, captureOutDir, accountCaptureOutDir, messageOutDir, dashboardPath string
-	var targetAgencies, targetRecruiters, maxCaptureRounds int
+	var targetAgencies, targetRecruiters, maxCaptureRounds, maxNoProgressSearches int
 	var pages, accountPages, limit, accountLimit, stopAfterConnectable, rowScrollDelayMS, timeoutMS uint32
-	var allowSend, refreshSavedSearches, skipSessionReset, printMarkdown bool
+	var allowSend, refreshSavedSearches, skipSessionReset, printMarkdown, stopWhenNoProgress bool
 	cmd := &cobra.Command{
 		Use: "run-daily",
 		RunE: withStore(func(store *Store) error {
@@ -271,6 +272,8 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 				DashboardPath:          dashboardPath,
 				PrintMarkdown:          printMarkdown,
 				TimeoutMS:              timeoutMS,
+				StopWhenNoProgress:     stopWhenNoProgress,
+				MaxNoProgressSearches:  maxNoProgressSearches,
 			})
 			if err != nil {
 				return err
@@ -283,7 +286,7 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 			return nil
 		}),
 	}
-	addDailyFlags(cmd, &session, &playwriter, &captureScript, &accountCaptureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &accountCaptureOutDir, &messageOutDir, &dashboardPath, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &pages, &accountPages, &limit, &accountLimit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown)
+	addDailyFlags(cmd, &session, &playwriter, &captureScript, &accountCaptureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &accountCaptureOutDir, &messageOutDir, &dashboardPath, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &pages, &accountPages, &limit, &accountLimit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown, &stopWhenNoProgress, &maxNoProgressSearches)
 	return cmd
 }
 
@@ -930,7 +933,7 @@ func addPlaywriterFlag(flags *pflag.FlagSet, target *string) {
 	flags.StringVar(target, "bunx", defaultPlaywriter, "Playwriter executable alias")
 }
 
-func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool) {
+func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool, stopWhenNoProgress *bool, maxNoProgressSearches *int) {
 	cmd.Flags().StringVar(session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), playwriter)
 	cmd.Flags().StringVar(captureScript, "capture-script", defaultCaptureScript, "Sales Navigator capture script")
@@ -956,6 +959,8 @@ func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, capt
 	cmd.Flags().BoolVar(refreshSavedSearches, "refresh-saved-searches", false, "refresh saved-search resolver before capture")
 	cmd.Flags().BoolVar(skipSessionReset, "skip-session-reset", false, "skip the default Playwriter session reset before the daily run")
 	cmd.Flags().BoolVar(printMarkdown, "print-markdown", false, "print dashboard markdown")
+	cmd.Flags().BoolVar(stopWhenNoProgress, "stop-when-no-progress", true, "stop cleanly when agency contact searches stop producing new contacts")
+	cmd.Flags().IntVar(maxNoProgressSearches, "max-no-progress-searches", 12, "consecutive no-progress agency contact searches allowed before stopping")
 }
 
 func must(err error) {

@@ -289,6 +289,9 @@ func retryCommand(targetAgencies int, targetRecruiters int, allowSend bool) stri
 	if allowSend {
 		parts = append(parts, "--allow-send")
 	}
+	if targetAgencies > 0 {
+		parts = append(parts, "--stop-when-no-progress", "--max-no-progress-searches", "12")
+	}
 	return strings.Join(parts, " ")
 }
 

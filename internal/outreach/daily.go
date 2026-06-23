@@ -14,6 +14,7 @@ import (
 )
 
 var errBlankLeadPageValidation = errors.New("sales navigator lead page rendered blank during validation")
+var errAgencyNoProgressStop = errors.New("agency contact search stopped after no-progress threshold")
 
 const (
 	RecruiterSource                = "ASAP - Contract Recruiter Titles"
@@ -56,6 +57,8 @@ type DailyOptions struct {
 	DashboardPath          string
 	PrintMarkdown          bool
 	TimeoutMS              uint32
+	StopWhenNoProgress     bool
+	MaxNoProgressSearches  int
 }
 
 type DailyResult struct {
@@ -69,6 +72,17 @@ type dailyBucket struct {
 	Name    string
 	Sources []string
 	Target  int
+}
+
+type dailyProgress struct {
+	AgencyTarget                 int
+	AgencyContactSearches        int
+	AgencyZeroContactSearches    int
+	AgencyNoProgressSearches     int
+	AgencyNoProgressStreak       int
+	AgencyContactsFound          int
+	AgencyAccountsCaptured       int
+	AgencyAccountSourcesCaptured int
 }
 
 func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
@@ -138,7 +152,7 @@ bucketLoop:
 		}
 		if bucket.Name == "agency" {
 			if err := runAgencyAccountBucket(store, options, bucket, &actions); err != nil {
-				if errors.Is(err, errBlankLeadPageValidation) {
+				if errors.Is(err, errBlankLeadPageValidation) || errors.Is(err, errAgencyNoProgressStop) {
 					runBlocker = err.Error()
 					break bucketLoop
 				}
@@ -366,6 +380,7 @@ func captureSource(store *Store, options DailyOptions, source string, round int)
 }
 
 func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBucket, actions *[]DailyLeadAction) error {
+	progress := &dailyProgress{AgencyTarget: bucket.Target}
 	for round := 0; round < options.MaxCaptureRounds; round++ {
 		if err := retireStaleAgencyAccounts(store); err != nil {
 			return err
@@ -377,17 +392,22 @@ func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBuck
 		if bucketCompleteForRun(state, bucket.Name, bucket.Target, options.AllowSend, *actions) {
 			return nil
 		}
-		if err := ensureAgencyAccountReservoir(store, options, bucket.Target, round+1); err != nil {
+		printAgencyProgress(state, *progress, *actions, "round-start", fmt.Sprintf("round=%d", round+1))
+		if err := ensureAgencyAccountReservoir(store, options, bucket.Target, round+1, progress); err != nil {
 			return err
 		}
-		captured, err := captureAgencyContactsFromAccounts(store, options, bucket.Target, round+1)
-		if err != nil {
-			return err
-		}
+		captured, err := captureAgencyContactsFromAccounts(store, options, bucket.Target, round+1, progress)
 		if captured > 0 {
 			if err := draftValidateAndMaybeSendBucket(store, options, bucket.Name, bucket.Target, actions); err != nil {
 				return err
 			}
+		}
+		state, loadErr := store.Load()
+		if loadErr == nil {
+			printAgencyProgress(state, *progress, *actions, "round-complete", fmt.Sprintf("round=%d captured_rows=%d", round+1, captured))
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -436,7 +456,7 @@ func draftValidateAndMaybeSendBucket(store *Store, options DailyOptions, bucket 
 	return nil
 }
 
-func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int, round int) error {
+func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int, round int, progress *dailyProgress) error {
 	state, err := store.Load()
 	if err != nil {
 		return err
@@ -449,13 +469,17 @@ func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int
 		return nil
 	}
 	for _, source := range defaultAgencyAccountSources() {
-		if err := captureAgencyAccountSource(store, options, source, round); err != nil {
+		stored, err := captureAgencyAccountSource(store, options, source, round)
+		if err != nil {
 			return err
 		}
+		progress.AgencyAccountSourcesCaptured++
+		progress.AgencyAccountsCaptured += stored
 		state, err = store.Load()
 		if err != nil {
 			return err
 		}
+		printAgencyProgress(state, *progress, nil, "account-reservoir", fmt.Sprintf("source=%q stored_or_updated=%d needing_contact=%d", source, stored, len(agencyAccountsNeedingContactCapture(state, desired))))
 		if len(agencyAccountsNeedingContactCapture(state, desired)) >= desired {
 			return nil
 		}
@@ -463,10 +487,10 @@ func ensureAgencyAccountReservoir(store *Store, options DailyOptions, target int
 	return nil
 }
 
-func captureAgencyAccountSource(store *Store, options DailyOptions, source string, round int) error {
+func captureAgencyAccountSource(store *Store, options DailyOptions, source string, round int) (int, error) {
 	state, err := store.Load()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var explicitURL *string
 	if cursor, ok := state.CaptureCursors[source]; ok && cursor.ResumeURL != nil {
@@ -474,7 +498,7 @@ func captureAgencyAccountSource(store *Store, options DailyOptions, source strin
 	}
 	captureURL, err := resolveDailyAccountCaptureURL(explicitURL, options.SavedSearches, source)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	outDir := filepath.Join(options.AccountCaptureOutDir, safePathSegment(source), fmt.Sprintf("round-%02d", round))
 	path, err := RunPlaywriterAccountCapture(options.Playwriter, options.Session, options.AccountCaptureScript, outDir, source, captureURL, AccountCaptureRunOptions{
@@ -484,23 +508,27 @@ func captureAgencyAccountSource(store *Store, options DailyOptions, source strin
 		TimeoutMS:        options.TimeoutMS,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	capture, err := LoadSalesNavAccountCapture(path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	state, err = store.Load()
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := ImportAccountCapture(&state, capture); err != nil {
-		return err
+	summary, err := ImportAccountCapture(&state, capture)
+	if err != nil {
+		return 0, err
 	}
-	return store.Save(state)
+	if err := store.Save(state); err != nil {
+		return 0, err
+	}
+	return summary.Stored + summary.Updated, nil
 }
 
-func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, target int, round int) (int, error) {
+func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, target int, round int, progress *dailyProgress) (int, error) {
 	state, err := store.Load()
 	if err != nil {
 		return 0, err
@@ -523,6 +551,7 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 		if err != nil {
 			continue
 		}
+		printAgencyProgress(state, *progress, nil, "contact-search-start", fmt.Sprintf("account=%q strategy=%s", account.Name, strategy.Name))
 		source := agencyContactSource(account, strategy)
 		outDir := filepath.Join(options.CaptureOutDir, safePathSegment(AgencyAccountContactsSource), safePathSegment(account.ID), safePathSegment(strategy.Name), fmt.Sprintf("round-%02d", round))
 		path, err := app.RunPlaywriterCapture(options.Playwriter, options.Session, options.CaptureScript, outDir, source, contactURL, app.CaptureRunOptions{
@@ -556,6 +585,10 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 			return capturedContacts, err
 		}
 		openAfter := agencyAccountOpenLeadCount(state, account.ID)
+		newOpenContacts := openAfter - openBefore
+		if newOpenContacts < 0 {
+			newOpenContacts = 0
+		}
 		now := time.Now()
 		state.AgencyAccounts[index].ContactCaptureCount++
 		state.AgencyAccounts[index].LastContactCaptureAt = &now
@@ -570,15 +603,63 @@ func captureAgencyContactsFromAccounts(store *Store, options DailyOptions, targe
 			return capturedContacts, err
 		}
 		capturedContacts += len(capture.Rows)
+		progress.AgencyContactSearches++
+		if len(capture.Rows) == 0 {
+			progress.AgencyZeroContactSearches++
+		}
+		if newOpenContacts == 0 {
+			progress.AgencyNoProgressSearches++
+			progress.AgencyNoProgressStreak++
+		} else {
+			progress.AgencyNoProgressStreak = 0
+			progress.AgencyContactsFound += newOpenContacts
+		}
 		state, err = store.Load()
 		if err != nil {
 			return capturedContacts, err
+		}
+		printAgencyProgress(state, *progress, nil, "contact-search-complete", fmt.Sprintf("account=%q strategy=%s rows=%d new_contacts=%d", account.Name, strategy.Name, len(capture.Rows), newOpenContacts))
+		if shouldStopForAgencyNoProgress(options, progress) {
+			return capturedContacts, fmt.Errorf("%w: %d consecutive account contact searches produced no new contacts", errAgencyNoProgressStop, progress.AgencyNoProgressStreak)
 		}
 		if readyCount(state, "agency") >= target {
 			return capturedContacts, nil
 		}
 	}
 	return capturedContacts, nil
+}
+
+func shouldStopForAgencyNoProgress(options DailyOptions, progress *dailyProgress) bool {
+	if !options.StopWhenNoProgress {
+		return false
+	}
+	threshold := options.MaxNoProgressSearches
+	if threshold <= 0 {
+		threshold = 12
+	}
+	return progress.AgencyNoProgressStreak >= threshold
+}
+
+func printAgencyProgress(state OutreachState, progress dailyProgress, actions []DailyLeadAction, phase string, detail string) {
+	state.Normalize()
+	sent := sentCountFromActions(actions, "agency")
+	if sent == 0 {
+		sent = dashboardRunCounts(actions).Sent.Agencies
+	}
+	fmt.Printf(
+		"progress agency phase=%s sent=%d/%d ready=%d searches=%d zero_contact=%d no_progress_streak=%d contacts_found=%d qualified=%d exhausted=%d detail=%s\n",
+		phase,
+		sent,
+		progress.AgencyTarget,
+		readyCount(state, "agency"),
+		progress.AgencyContactSearches,
+		progress.AgencyZeroContactSearches,
+		progress.AgencyNoProgressStreak,
+		progress.AgencyContactsFound,
+		Counts(state).ByAgencyAccountStatus[AgencyAccountStatusQualified],
+		Counts(state).ByAgencyAccountStatus[AgencyAccountStatusExhausted],
+		cleanText(detail),
+	)
 }
 
 func recordAgencyContactCaptureError(store *Store, accountID string, strategy agencyContactSearchStrategy, cause error) error {
@@ -835,6 +916,9 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 	}
 	if options.TimeoutMS == 0 {
 		options.TimeoutMS = 90000
+	}
+	if options.MaxNoProgressSearches <= 0 {
+		options.MaxNoProgressSearches = 12
 	}
 	return options
 }
