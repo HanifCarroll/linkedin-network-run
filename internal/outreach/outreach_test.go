@@ -1133,6 +1133,136 @@ func TestDashboardIncludesAgencyContactCandidateCounts(t *testing.T) {
 	}
 }
 
+func TestReviewAndPromoteAgencyContactCandidateCreatesDraftedLead(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{{
+			ID:           "acct_oktana",
+			Name:         "Oktana",
+			Source:       "ASAP - Agency Accounts Digital Agency",
+			AccountURL:   strPtr("https://www.linkedin.com/sales/company/3880229"),
+			Status:       AgencyAccountStatusQualified,
+			FitScore:     80,
+			FitReasons:   []string{"software/product delivery account signal"},
+			EvidenceText: "Oktana custom software development and digital engineering",
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{{
+			ID:                "agc_gaston",
+			AgencyAccountID:   "acct_oktana",
+			AgencyAccountName: "Oktana",
+			Source:            "website_enrichment",
+			SourceURL:         strPtr("https://oktana.com/about-us/"),
+			Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+			ReviewStatus:      AgencyContactReviewStatusNeedsReview,
+			Name:              strPtr("Linkedin"),
+			ProfileURL:        strPtr("https://www.linkedin.com/in/gaston-falco/"),
+			Evidence:          []string{"explicit LinkedIn profile link on https://oktana.com/about-us/"},
+		}},
+	}
+	reviewed, err := ReviewAgencyContactCandidate(&state, AgencyContactReviewOptions{
+		CandidateID:  "agc_gaston",
+		ReviewStatus: AgencyContactReviewStatusApproved,
+		Name:         "Gaston Falco",
+		Title:        "Practice Lead Manager",
+		Note:         "Oktana leadership page lists this role.",
+		Now:          time.Date(2026, time.June, 23, 20, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.ReviewStatus != AgencyContactReviewStatusApproved || reviewed.Name == nil || *reviewed.Name != "Gaston Falco" || reviewed.Title == nil || *reviewed.Title != "Practice Lead Manager" {
+		t.Fatalf("reviewed = %#v", reviewed)
+	}
+	summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
+		CandidateIDs: []string{"agc_gaston"},
+		Draft:        true,
+		Now:          time.Date(2026, time.June, 23, 20, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Stored != 1 || summary.Updated != 0 || summary.Drafted != 1 || len(summary.Skipped) != 0 || len(summary.Leads) != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	lead := summary.Leads[0]
+	if lead.Name != "Gaston Falco" || lead.LeadType != LeadTypeAgencyDelivery || lead.MessageStatus != MessageStatusDrafted || lead.Draft == nil {
+		t.Fatalf("lead = %#v", lead)
+	}
+	if lead.AgencyAccountName == nil || *lead.AgencyAccountName != "Oktana" || lead.AgencyAccountURL == nil {
+		t.Fatalf("agency context = %#v", lead)
+	}
+	if !strings.Contains(lead.EvidenceText, "Agency contact candidate: agc_gaston") || !strings.Contains(strings.Join(lead.FitReasons, "\n"), "reviewed website contact candidate") {
+		t.Fatalf("lead evidence/reasons = %#v %#v", lead.EvidenceText, lead.FitReasons)
+	}
+	if !strings.Contains(lead.Draft.Body, "Are you the right person to ask about this kind of project support?") {
+		t.Fatalf("draft = %q", lead.Draft.Body)
+	}
+	candidateIndex := findAgencyContactCandidateByID(state.AgencyContactCandidates, "agc_gaston")
+	if candidateIndex < 0 {
+		t.Fatal("candidate missing")
+	}
+	candidate := state.AgencyContactCandidates[candidateIndex]
+	if candidate.ReviewStatus != AgencyContactReviewStatusConverted || candidate.Status != AgencyContactCandidateStatusConverted || candidate.PromotedLeadID == nil || *candidate.PromotedLeadID != lead.ID {
+		t.Fatalf("candidate = %#v", candidate)
+	}
+}
+
+func TestPromoteAgencyContactCandidatesSkipsUnsafeCandidates(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{{
+			ID:     "acct_bright",
+			Name:   "Bright Studio",
+			Status: AgencyAccountStatusQualified,
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{
+			{
+				ID:                "agc_unapproved",
+				AgencyAccountID:   "acct_bright",
+				AgencyAccountName: "Bright Studio",
+				Source:            "website_enrichment",
+				Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+				ReviewStatus:      AgencyContactReviewStatusNeedsReview,
+				Name:              strPtr("Dana Delivery"),
+				Title:             strPtr("Head of Delivery"),
+				ProfileURL:        strPtr("https://www.linkedin.com/in/dana-delivery/"),
+			},
+			{
+				ID:                "agc_inbox",
+				AgencyAccountID:   "acct_bright",
+				AgencyAccountName: "Bright Studio",
+				Source:            "website_enrichment",
+				Status:            AgencyContactCandidateStatusGenericInbox,
+				ReviewStatus:      AgencyContactReviewStatusApproved,
+				Email:             strPtr("hello@bright.example.com"),
+			},
+			{
+				ID:                "agc_placeholder",
+				AgencyAccountID:   "acct_bright",
+				AgencyAccountName: "Bright Studio",
+				Source:            "website_enrichment",
+				Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+				ReviewStatus:      AgencyContactReviewStatusApproved,
+				Name:              strPtr("Linkedin"),
+				Title:             strPtr("Head of Delivery"),
+				ProfileURL:        strPtr("https://www.linkedin.com/in/placeholder/"),
+			},
+		},
+	}
+	summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Stored != 0 || summary.Updated != 0 || len(summary.Leads) != 0 || len(summary.Skipped) != 2 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	reasons := strings.Join([]string{summary.Skipped[0].Reason, summary.Skipped[1].Reason}, "\n")
+	if !strings.Contains(reasons, "only personal LinkedIn profile candidates can be promoted") || !strings.Contains(reasons, "candidate needs a reviewed person name") {
+		t.Fatalf("skips = %#v", summary.Skipped)
+	}
+	if len(state.Leads) != 0 {
+		t.Fatalf("leads = %#v", state.Leads)
+	}
+}
+
 func TestLeadsForMessageValidationOnlyReturnsDraftableStatuses(t *testing.T) {
 	state := OutreachState{Leads: []Lead{
 		{ID: "drafted", Name: "Drafted", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 90, ProfileURL: strPtr("https://linkedin.com/sales/lead/a"), Draft: &MessageDraft{Body: "body"}},

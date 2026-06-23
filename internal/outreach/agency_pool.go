@@ -57,6 +57,9 @@ func agencyPoolCommand(withStore func(func(*Store) error) func(*cobra.Command, [
 	cmd.AddCommand(agencyPoolImportSourceCommand(withStore))
 	cmd.AddCommand(agencyPoolEnrichWebsitesCommand(withStore))
 	cmd.AddCommand(agencyPoolContactsCommand(withStore))
+	cmd.AddCommand(agencyPoolReviewContactCommand(withStore))
+	cmd.AddCommand(agencyPoolPromoteContactCommand(withStore))
+	cmd.AddCommand(agencyPoolPromoteContactsCommand(withStore))
 	cmd.AddCommand(agencyPoolDiagnoseCommand(withStore))
 	return cmd
 }
@@ -190,6 +193,157 @@ func agencyPoolContactsCommand(withStore func(func(*Store) error) func(*cobra.Co
 	cmd.Flags().IntVar(&limit, "limit", 20, "max contact candidate rows")
 	cmd.Flags().StringVar(&status, "status", "", "candidate status filter")
 	cmd.Flags().StringVar(&reviewStatus, "review-status", string(AgencyContactReviewStatusNeedsReview), "review status filter")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolReviewContactCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var candidateID string
+	var reviewStatus string
+	var name string
+	var title string
+	var note string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "review-contact",
+		Short: "Approve, reject, or annotate a review-only agency contact candidate",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			parsedStatus, ok, err := parseAgencyContactReviewStatus(reviewStatus)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("--review-status is required")
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			candidate, err := ReviewAgencyContactCandidate(&state, AgencyContactReviewOptions{
+				CandidateID:  candidateID,
+				ReviewStatus: parsedStatus,
+				Name:         name,
+				Title:        title,
+				Note:         note,
+			})
+			if err != nil {
+				return err
+			}
+			if err := store.Save(state); err != nil {
+				return err
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(candidate, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Printf("candidate=%s review_status=%s status=%s name=%s title=%s\n",
+				candidate.ID,
+				candidate.ReviewStatus,
+				candidate.Status,
+				stringOrDash(candidate.Name),
+				stringOrDash(candidate.Title),
+			)
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&candidateID, "candidate-id", "", "agency contact candidate id")
+	cmd.Flags().StringVar(&reviewStatus, "review-status", string(AgencyContactReviewStatusApproved), "review status")
+	cmd.Flags().StringVar(&name, "name", "", "reviewed person name")
+	cmd.Flags().StringVar(&title, "title", "", "reviewed person title")
+	cmd.Flags().StringVar(&note, "note", "", "review note")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolPromoteContactCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var candidateID string
+	var draft bool
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "promote-contact",
+		Short: "Promote one approved LinkedIn-profile candidate into a draftable agency lead",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			if cleanText(candidateID) == "" {
+				return fmt.Errorf("--candidate-id is required")
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
+				CandidateIDs: []string{candidateID},
+				Draft:        draft,
+			})
+			if err != nil {
+				return err
+			}
+			if err := store.Save(state); err != nil {
+				return err
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderAgencyContactPromotionSummaryText(summary))
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&candidateID, "candidate-id", "", "agency contact candidate id")
+	cmd.Flags().BoolVar(&draft, "draft", false, "generate a draft for promoted leads")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolPromoteContactsCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var candidateIDs []string
+	var limit int
+	var draft bool
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "promote-contacts",
+		Short: "Promote approved LinkedIn-profile candidates into draftable agency leads",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
+				CandidateIDs: candidateIDs,
+				Limit:        limit,
+				Draft:        draft,
+			})
+			if err != nil {
+				return err
+			}
+			if err := store.Save(state); err != nil {
+				return err
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderAgencyContactPromotionSummaryText(summary))
+			return nil
+		}),
+	}
+	cmd.Flags().StringSliceVar(&candidateIDs, "candidate-id", []string{}, "candidate id to promote; repeat or comma-separate")
+	cmd.Flags().IntVar(&limit, "limit", 20, "max approved candidates to promote when candidate ids are omitted")
+	cmd.Flags().BoolVar(&draft, "draft", false, "generate drafts for promoted leads")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -470,10 +624,10 @@ func parseAgencyContactReviewStatus(value string) (AgencyContactReviewStatus, bo
 func RenderAgencyContactCandidatesText(candidates []AgencyContactCandidate) string {
 	lines := []string{
 		fmt.Sprintf("agency_contact_candidates=%d", len(candidates)),
-		"id\treview_status\tstatus\tsource\tagency\temail\tprofile_url\tcontact_url\tform_action\tname",
+		"id\treview_status\tstatus\tsource\tagency\temail\tprofile_url\tcontact_url\tform_action\tpromoted_lead\tname",
 	}
 	for _, candidate := range candidates {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			candidate.ID,
 			candidate.ReviewStatus,
 			candidate.Status,
@@ -483,8 +637,34 @@ func RenderAgencyContactCandidatesText(candidates []AgencyContactCandidate) stri
 			stringOrDash(candidate.ProfileURL),
 			stringOrDash(candidate.ContactURL),
 			stringOrDash(candidate.FormAction),
+			stringOrDash(candidate.PromotedLeadID),
 			stringOrDash(candidate.Name),
 		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func RenderAgencyContactPromotionSummaryText(summary AgencyContactPromotionSummary) string {
+	lines := []string{
+		fmt.Sprintf("stored=%d updated=%d drafted=%d skipped=%d", summary.Stored, summary.Updated, summary.Drafted, len(summary.Skipped)),
+	}
+	if len(summary.Leads) > 0 {
+		lines = append(lines, "leads:")
+		for _, lead := range summary.Leads {
+			lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
+				lead.ID,
+				lead.Name,
+				lead.LeadType,
+				stringOrDash(lead.Title),
+				stringOrDash(lead.ProfileURL),
+			))
+		}
+	}
+	if len(summary.Skipped) > 0 {
+		lines = append(lines, "skipped:")
+		for _, skipped := range summary.Skipped {
+			lines = append(lines, fmt.Sprintf("%s\t%s", skipped.CandidateID, skipped.Reason))
+		}
 	}
 	return strings.Join(lines, "\n")
 }

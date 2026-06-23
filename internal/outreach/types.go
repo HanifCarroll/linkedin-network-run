@@ -198,6 +198,7 @@ type AgencyContactCandidate struct {
 	ContactURL        *string                      `json:"contact_url,omitempty"`
 	FormAction        *string                      `json:"form_action,omitempty"`
 	Evidence          []string                     `json:"evidence"`
+	PromotedLeadID    *string                      `json:"promoted_lead_id,omitempty"`
 	ImportedAt        time.Time                    `json:"imported_at"`
 	UpdatedAt         time.Time                    `json:"updated_at"`
 	Notes             []string                     `json:"notes"`

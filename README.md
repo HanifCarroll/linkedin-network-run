@@ -216,6 +216,30 @@ recruiter-agency-outreach agency-pool contacts --limit 20
 recruiter-agency-outreach agency-pool contacts --status generic_inbox --limit 20
 ```
 
+Promote only reviewed personal LinkedIn candidates into the normal agency lead
+queue. The reviewer must approve the candidate and provide a real person name
+and title when the website only exposed a generic link label:
+
+```sh
+recruiter-agency-outreach agency-pool review-contact \
+  --candidate-id <id> \
+  --review-status approved \
+  --name "Gaston Falco" \
+  --title "Practice Lead Manager" \
+  --note "Official agency about page lists this person and role"
+
+recruiter-agency-outreach agency-pool promote-contact \
+  --candidate-id <id> \
+  --draft
+```
+
+Batch promotion is limited to candidates already marked `approved` and still
+requires a personal LinkedIn profile, reviewed name, and reviewed title:
+
+```sh
+recruiter-agency-outreach agency-pool promote-contacts --limit 10 --draft
+```
+
 The dashboard and `agency-pool diagnose` include review-only contact counts and
 source-yield counts so failed agency reruns show whether the limit is LinkedIn
 messageability, empty account-scoped searches, or a missing source/enrichment
