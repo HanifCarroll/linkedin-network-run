@@ -1206,6 +1206,84 @@ func TestReviewAndPromoteAgencyContactCandidateCreatesDraftedLead(t *testing.T) 
 	}
 }
 
+func TestPromoteAgencyContactCandidatesLimitsActiveLeadsPerAgency(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{{
+			ID:         "acct_oktana",
+			Name:       "Oktana",
+			Status:     AgencyAccountStatusQualified,
+			AccountURL: strPtr("https://www.linkedin.com/sales/company/3880229"),
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{
+			{
+				ID:                "agc_lorenzo",
+				AgencyAccountID:   "acct_oktana",
+				AgencyAccountName: "Oktana",
+				Source:            "website_enrichment",
+				SourceURL:         strPtr("https://oktana.com/about-us/"),
+				Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+				ReviewStatus:      AgencyContactReviewStatusApproved,
+				Name:              strPtr("Lorenzo Fernandez"),
+				Title:             strPtr("Sales Engineering"),
+				ProfileURL:        strPtr("https://www.linkedin.com/in/lorenzo-fernandez-297017b/"),
+			},
+			{
+				ID:                "agc_gaston",
+				AgencyAccountID:   "acct_oktana",
+				AgencyAccountName: "Oktana",
+				Source:            "website_enrichment",
+				SourceURL:         strPtr("https://oktana.com/about-us/"),
+				Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+				ReviewStatus:      AgencyContactReviewStatusApproved,
+				Name:              strPtr("Gaston Falco"),
+				Title:             strPtr("Practice Lead Manager"),
+				ProfileURL:        strPtr("https://www.linkedin.com/in/gaston-falco/"),
+			},
+		},
+	}
+	summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
+		Limit: 10,
+		Draft: true,
+		Now:   time.Date(2026, time.June, 23, 20, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Stored != 1 || summary.Drafted != 1 || len(summary.Leads) != 1 || len(summary.Skipped) != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if !strings.Contains(summary.Skipped[0].Reason, "max per agency is 1") {
+		t.Fatalf("skip reason = %#v", summary.Skipped)
+	}
+	converted := 0
+	approved := 0
+	for _, candidate := range state.AgencyContactCandidates {
+		switch candidate.ReviewStatus {
+		case AgencyContactReviewStatusConverted:
+			converted++
+		case AgencyContactReviewStatusApproved:
+			approved++
+		}
+	}
+	if converted != 1 || approved != 1 {
+		t.Fatalf("candidate statuses converted=%d approved=%d candidates=%#v", converted, approved, state.AgencyContactCandidates)
+	}
+
+	remainingID := summary.Skipped[0].CandidateID
+	overrideSummary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
+		CandidateIDs:           []string{remainingID},
+		Draft:                  true,
+		AllowMultiplePerAgency: true,
+		Now:                    time.Date(2026, time.June, 23, 20, 2, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overrideSummary.Stored != 1 || overrideSummary.Drafted != 1 || len(overrideSummary.Skipped) != 0 || len(state.Leads) != 2 {
+		t.Fatalf("override summary = %#v leads=%#v", overrideSummary, state.Leads)
+	}
+}
+
 func TestPromoteAgencyContactCandidatesSkipsUnsafeCandidates(t *testing.T) {
 	state := OutreachState{
 		AgencyAccounts: []AgencyAccount{{

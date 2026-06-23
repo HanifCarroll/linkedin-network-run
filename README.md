@@ -234,11 +234,17 @@ recruiter-agency-outreach agency-pool promote-contact \
 ```
 
 Batch promotion is limited to candidates already marked `approved` and still
-requires a personal LinkedIn profile, reviewed name, and reviewed title:
+requires a personal LinkedIn profile, reviewed name, and reviewed title. By
+default, promotion keeps only one active outreach lead per agency account, so an
+agency with a drafted, ready, sent, failed-send, or existing-conversation lead
+will skip additional contacts:
 
 ```sh
 recruiter-agency-outreach agency-pool promote-contacts --limit 10 --draft
 ```
+
+Use `--max-per-agency` or `--allow-multiple-per-agency` only when intentionally
+working more than one contact at the same agency.
 
 The dashboard and `agency-pool diagnose` include review-only contact counts and
 source-yield counts so failed agency reruns show whether the limit is LinkedIn

@@ -263,6 +263,8 @@ func agencyPoolReviewContactCommand(withStore func(func(*Store) error) func(*cob
 func agencyPoolPromoteContactCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var candidateID string
 	var draft bool
+	var maxPerAgency int
+	var allowMultiplePerAgency bool
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "promote-contact",
@@ -277,8 +279,10 @@ func agencyPoolPromoteContactCommand(withStore func(func(*Store) error) func(*co
 				return err
 			}
 			summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
-				CandidateIDs: []string{candidateID},
-				Draft:        draft,
+				CandidateIDs:           []string{candidateID},
+				Draft:                  draft,
+				MaxPerAgency:           maxPerAgency,
+				AllowMultiplePerAgency: allowMultiplePerAgency,
 			})
 			if err != nil {
 				return err
@@ -300,6 +304,8 @@ func agencyPoolPromoteContactCommand(withStore func(func(*Store) error) func(*co
 	}
 	cmd.Flags().StringVar(&candidateID, "candidate-id", "", "agency contact candidate id")
 	cmd.Flags().BoolVar(&draft, "draft", false, "generate a draft for promoted leads")
+	cmd.Flags().IntVar(&maxPerAgency, "max-per-agency", 1, "max active outreach leads per agency account")
+	cmd.Flags().BoolVar(&allowMultiplePerAgency, "allow-multiple-per-agency", false, "disable the active lead cap for this promotion")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -308,6 +314,8 @@ func agencyPoolPromoteContactsCommand(withStore func(func(*Store) error) func(*c
 	var candidateIDs []string
 	var limit int
 	var draft bool
+	var maxPerAgency int
+	var allowMultiplePerAgency bool
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "promote-contacts",
@@ -319,9 +327,11 @@ func agencyPoolPromoteContactsCommand(withStore func(func(*Store) error) func(*c
 				return err
 			}
 			summary, err := PromoteAgencyContactCandidates(&state, AgencyContactPromotionOptions{
-				CandidateIDs: candidateIDs,
-				Limit:        limit,
-				Draft:        draft,
+				CandidateIDs:           candidateIDs,
+				Limit:                  limit,
+				Draft:                  draft,
+				MaxPerAgency:           maxPerAgency,
+				AllowMultiplePerAgency: allowMultiplePerAgency,
 			})
 			if err != nil {
 				return err
@@ -344,6 +354,8 @@ func agencyPoolPromoteContactsCommand(withStore func(func(*Store) error) func(*c
 	cmd.Flags().StringSliceVar(&candidateIDs, "candidate-id", []string{}, "candidate id to promote; repeat or comma-separate")
 	cmd.Flags().IntVar(&limit, "limit", 20, "max approved candidates to promote when candidate ids are omitted")
 	cmd.Flags().BoolVar(&draft, "draft", false, "generate drafts for promoted leads")
+	cmd.Flags().IntVar(&maxPerAgency, "max-per-agency", 1, "max active outreach leads per agency account")
+	cmd.Flags().BoolVar(&allowMultiplePerAgency, "allow-multiple-per-agency", false, "disable the active lead cap for this promotion")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
