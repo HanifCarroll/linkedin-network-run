@@ -72,9 +72,9 @@ Results:
 
 ## Known Gaps
 
-- Live Playwright extraction is not wired yet because the shared browser layer is
-  owned by Thread 2. The extractor currently consumes known post URLs with saved
-  HTML artifacts or a queue CSV pointing at those artifacts.
+- The extractor currently consumes known post URLs with saved HTML artifacts or
+  a queue CSV pointing at those artifacts. Live LinkedIn post comment capture is
+  outside the implemented extractor surface.
 - Calibration report generation currently creates the report/template and blocks
   promotion until labels exist. Label import/storage should be integrated once
   the orchestrator settles shared experiment storage.
@@ -85,7 +85,7 @@ Results:
 
 ## Integration Dependencies
 
-- Thread 2 browser layer should provide a read-only page/HTML capture API for
+- A future browser extension can provide a read-only page/HTML capture API for
   known LinkedIn post URLs.
 - Thread 1/shared foundation may eventually replace local CSV/JSONL writers
   with shared report/storage helpers.

@@ -18,7 +18,6 @@ from packages.linkedin_storage.migrations import (
     import_legacy_network_state,
     import_legacy_opportunity_runs,
     import_legacy_recruiter_agency_state,
-    latest_import_summary,
 )
 
 NETWORK_COMMANDS = (
@@ -113,8 +112,6 @@ OPPORTUNITY_COMMANDS = (
     "import-legacy-state",
     "status",
 )
-
-REAL_SEND_FLAGS = frozenset({"--allow-send", "--allow-withdraw"})
 
 NETWORK_APP_COMMANDS = frozenset(
     {
@@ -229,26 +226,8 @@ def _dispatch_compat_command(
         return 2
     if _is_app_command(source_app=source_app, command=command):
         return _dispatch_app_command(source_app=source_app, argv=args)
-    if _has_real_action_flag(command_args):
-        print(
-            f"{command_name} {command}: real send/withdraw flags are blocked in the "
-            "temporary Python compatibility shim for legacy-only commands.",
-            file=sys.stderr,
-        )
-        return 2
-    if command in {"status", "plan", "dashboard", "report", "last-run", "queue"}:
-        return _status_placeholder(
-            command_name=command_name,
-            command=command,
-            source_app=source_app,
-            argv=command_args,
-        )
-    return _no_send_placeholder(
-        command_name=command_name,
-        command=command,
-        source_app=source_app,
-        argv=command_args,
-    )
+    print(f"{command_name}: command is listed but not routed: {command}", file=sys.stderr)
+    return 2
 
 
 def _print_help(
@@ -264,8 +243,8 @@ def _print_help(
     for command in commands:
         print(f"  {command}", file=output)
     print(
-        "\nImplemented commands delegate to the Python app ports. Legacy-only commands "
-        "remain no-send placeholders.",
+        "\nKnown commands delegate to the Python app ports. import-legacy-state "
+        "runs the migration bridge.",
         file=output,
     )
 
@@ -307,94 +286,6 @@ def _import_legacy_state(*, source_app: SourceApp, argv: Sequence[str]) -> int:
         for warning in result.warnings:
             print(f"warning: {warning}", file=sys.stderr)
     return 0
-
-
-def _status_placeholder(
-    *,
-    command_name: str,
-    command: str,
-    source_app: SourceApp,
-    argv: Sequence[str],
-) -> int:
-    target_root = _target_root_from_args(argv)
-    payload = _placeholder_payload(
-        command_name=command_name,
-        command=command,
-        source_app=source_app,
-        target_root=target_root,
-    )
-    if "--json" in argv:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        latest = payload["latest_legacy_import"]
-        print(f"{command_name} {command}: Python port behavior is not wired yet.")
-        if latest is None:
-            print(f"No legacy import found under {target_root}.")
-        else:
-            print(f"Latest legacy import: {latest}")
-    return 0
-
-
-def _no_send_placeholder(
-    *,
-    command_name: str,
-    command: str,
-    source_app: SourceApp,
-    argv: Sequence[str],
-) -> int:
-    target_root = _target_root_from_args(argv)
-    payload = _placeholder_payload(
-        command_name=command_name,
-        command=command,
-        source_app=source_app,
-        target_root=target_root,
-    )
-    payload["dry_run"] = True
-    payload["result"] = "no_send_placeholder"
-    if "--json" in argv:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    else:
-        print(
-            f"{command_name} {command}: no-send compatibility placeholder; "
-            "legacy-only behavior is not ported."
-        )
-    return 0
-
-
-def _placeholder_payload(
-    *,
-    command_name: str,
-    command: str,
-    source_app: SourceApp,
-    target_root: Path,
-) -> dict[str, object]:
-    return {
-        "command_name": command_name,
-        "command": command,
-        "source_app": source_app,
-        "compatibility_shim": True,
-        "status": "not_ported",
-        "target_root": str(target_root),
-        "latest_legacy_import": latest_import_summary(
-            source_app=source_app,
-            target_root=target_root,
-        ),
-        "parity_gap": "This legacy command is not implemented by the Python app port.",
-    }
-
-
-def _target_root_from_args(argv: Sequence[str]) -> Path:
-    args = list(argv)
-    for index, value in enumerate(args):
-        if value == "--target-root" and index + 1 < len(args):
-            return Path(args[index + 1])
-        if value.startswith("--target-root="):
-            return Path(value.split("=", 1)[1])
-    return DEFAULT_STATE_ROOT
-
-
-def _has_real_action_flag(argv: Sequence[str]) -> bool:
-    return any(arg in REAL_SEND_FLAGS for arg in argv)
 
 
 def _is_app_command(*, source_app: SourceApp, command: str) -> bool:

@@ -6,9 +6,10 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest integrated commit before final opportunity parity work: `e1e3ca6`
-- Follow-up integration: network browser adapter and recruiter/agency command
-  parity changes are included after the root routing commit.
+- Latest cutover-prep commit: `a46869d`
+- Follow-up integration: network browser adapter, recruiter/agency command
+  parity, opportunity command parity, cutover audit, and legacy state promotion
+  are included after the root routing commit.
 
 ## Integrated Workstreams
 
@@ -126,6 +127,9 @@ Last updated: 2026-06-24
   commands to the app ports. Compatibility now delegates every known network,
   recruiter/agency, and opportunity command to the Python app ports, leaving
   only `import-legacy-state` in the migration shim.
+- Legacy importers now preserve raw old artifacts and promote usable Python app
+  state for network and recruiter/agency under
+  `~/Library/Application Support/linkedin-tools/`.
 - Runtime package data includes opportunity JSON contracts and review UI
   templates/static assets.
 - Network automation now has Python Playwright-backed command paths for
@@ -159,12 +163,16 @@ Last updated: 2026-06-24
 ## Integrated Verification
 
 After integrating Threads 1 through 7, root routing, the follow-up
-browser/command parity slices, and opportunity command parity:
+browser/command parity slices, opportunity command parity, and cutover state
+promotion:
 
-- PASS: `uv run pytest` (`104 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`105 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
+- PASS: temp-root import rehearsal for real local network and recruiter/agency
+  state, followed by Python `network status --json` and
+  `recruiter-agency report --json`.
 - PASS: source-faithful grep required by `AGENTS.md`. Remaining hits are
   existing legacy migration names, explicit score fields/classifiers, UI
   headings/templates, and documented handoff grep examples; no new weak

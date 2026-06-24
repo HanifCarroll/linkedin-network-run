@@ -178,7 +178,7 @@ def test_compatibility_command_sets_delegate_known_commands() -> None:
     assert set(OPPORTUNITY_COMMANDS) - OPPORTUNITY_APP_COMMANDS == {"import-legacy-state"}
 
 
-def test_compat_help_status_and_no_send_paths(
+def test_compat_help_and_delegated_command_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

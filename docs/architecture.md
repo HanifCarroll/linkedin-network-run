@@ -1,8 +1,8 @@
 # Python LinkedIn Tools Architecture
 
-This repo now has a Python monorepo scaffold beside the existing Go and
-Playwriter implementation. The Go/JavaScript code remains parity evidence until
-the Python port passes the PRD acceptance criteria and Hanif approves cutover.
+This repo now has an integrated Python `linkedin-tools` monorepo beside the
+existing Go and Playwriter implementation. The Go/JavaScript code remains
+parity evidence until Hanif approves cutover.
 
 Source-of-truth planning docs:
 

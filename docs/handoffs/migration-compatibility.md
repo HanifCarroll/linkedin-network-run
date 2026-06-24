@@ -46,14 +46,8 @@ Each shim supports:
 
 - `--help`
 - `import-legacy-state --old-state-dir <path> --target-root <path> --json`
-- no-send placeholder responses for known legacy commands
-- JSON placeholder status for `status`, `plan`, `dashboard`, `report`,
-  `last-run`, and `queue` where applicable
-
-Real-action flags are blocked in the temporary shims:
-
-- `--allow-send`
-- `--allow-withdraw`
+- delegation of all known non-import commands to the Python app ports
+- app-owned real-action gates such as `--allow-send` and `--allow-withdraw`
 
 ## Data Models Introduced
 
@@ -92,13 +86,15 @@ Raw SQLite files are still imported as exact source bytes.
 
 `tests/test_migration_compat.py` covers:
 
-- network import preserves source files and stores raw artifacts
+- network import preserves source files, stores raw artifacts, and promotes
+  Python app state
 - recruiter/agency import preserves JSON and SQLite files
 - recruiter/agency read-only SQLite table snapshots are stored
+- recruiter/agency import promotes usable Python SQLite app state from old
+  `outreach.sqlite` or `outreach.json`
 - missing opportunity source directory records a warning without creating
   source state
-- compatibility help/status/no-send paths
-- real send flags are blocked
+- compatibility help and delegated command paths
 - network shim import command writes the compatibility SQLite store
 
 ## Verification Run
@@ -123,33 +119,26 @@ modification scope.
 
 ## Known Gaps
 
-- Compatibility shims do not execute final app behavior yet. They return
-  explicit `not_ported` placeholders for app-owned commands.
-- Imported artifacts are preserved in the compatibility store, not transformed
-  into final network, recruiter/agency, or opportunity-intel app tables.
-- Opportunity import currently imports `/tmp/linkedin-opportunity-signals`
-  when present and records a warning when absent.
-- Browser dry-runs were not exercised in this thread because browser behavior is
-  owned by the browser and app-port workstreams.
+- Opportunity import currently preserves `/tmp/linkedin-opportunity-signals`
+  artifacts when present and records a warning when absent; those artifacts are
+  still consumed through the opportunity artifact commands rather than promoted
+  to a separate app database.
+- Browser dry-runs were not exercised in the original migration thread because
+  browser behavior was owned by the browser and app-port workstreams. The
+  orchestrator later recorded live dry-run evidence in
+  `docs/cutover-acceptance-audit.md`.
 
 ## Integration Dependencies
 
-- Thread 4 must define stable network automation SQLite/read-model tables before
-  these raw `legacy_artifacts` are transformed into final controller state.
-- Thread 5 must define stable recruiter/agency tables before importer output is
-  promoted beyond raw artifacts and read-only `outreach.sqlite` snapshots.
-- Thread 3 must define opportunity-intel run/artifact contracts before
-  `/tmp/linkedin-opportunity-signals` imports can become final app state.
-- The orchestrator should decide whether final migrations consume raw artifacts
-  directly from `legacy-imports.sqlite` or run one-time promotion commands into
-  app-specific SQLite stores.
+- Thread 3 owns any future decision to move `/tmp/linkedin-opportunity-signals`
+  artifacts into an app-owned database. The current port keeps opportunity
+  intelligence artifact-first and recommend-only.
 
 ## Removal Plan After Cutover
 
 1. Keep compatibility shims through parity audit and Hanif-approved cutover.
-2. After all Python app commands pass parity smoke tests, change shims from
-   placeholders to direct app dispatchers or remove the old command names from
-   `pyproject.toml`.
+2. After Hanif-approved cutover, decide whether the old command names remain as
+   permanent aliases or are removed from `pyproject.toml`.
 3. Keep `legacy-imports.sqlite` read-only until final app stores are validated.
 4. After final app stores are validated and backed up, archive the compatibility
    importer and remove shim-only placeholder branches.
@@ -158,7 +147,6 @@ modification scope.
 
 ## Decisions Needing Orchestrator Approval
 
-- Final destination schema for transformed legacy artifacts.
 - Whether compatibility command names remain as permanent aliases after cutover
   or are removed from `pyproject.toml`.
 - Whether opportunity-intel should keep importing `/tmp/linkedin-opportunity-signals`

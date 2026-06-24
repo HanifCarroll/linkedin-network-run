@@ -25,13 +25,15 @@ sends or withdrawals were performed during verification.
   full compatibility command surface, provider CSV contracts, source
   experiments, calibration artifacts, review queues, and source decision
   artifacts.
-- Read-only legacy importers and compatibility commands for:
-  `linkedin-network-run`, `recruiter-agency-outreach`, and
-  `linkedin-opportunity-intel`.
+- Legacy importers and compatibility commands for `linkedin-network-run`,
+  `recruiter-agency-outreach`, and `linkedin-opportunity-intel`; network and
+  recruiter/agency imports now promote usable Python app state under the new
+  `linkedin-tools` state root.
 
 ## Recent Closure Commits
 
 - `f620d70 feat: close remaining network command parity`
+- `a46869d feat: promote legacy state for cutover`
 - `bc3b923 feat: preserve salesnav capture api enrichment`
 - `c807cf9 feat: expand opportunity command parity`
 - `e1e3ca6 feat: complete recruiter browser parity`
@@ -39,7 +41,7 @@ sends or withdrawals were performed during verification.
 
 ## Verification
 
-- PASS: `uv run pytest` (`104 passed`, one existing FastAPI/Starlette warning)
+- PASS: `uv run pytest` (`105 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy
@@ -48,6 +50,9 @@ sends or withdrawals were performed during verification.
 - PASS: compatibility command coverage check. Known network, recruiter/agency,
   and opportunity commands all delegate to Python app ports; only
   `import-legacy-state` remains in the migration shim.
+- PASS: temp-root legacy import rehearsal. Real local network and
+  recruiter/agency state imported without warnings and regenerated Python
+  network status and recruiter/agency report.
 
 ## Live Dry-Run Evidence
 
