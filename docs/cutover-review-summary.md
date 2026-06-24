@@ -25,6 +25,10 @@ sends or withdrawals were performed during verification.
   full compatibility command surface, provider CSV contracts, source
   experiments, calibration artifacts, review queues, and source decision
   artifacts.
+- Python replacements for active local automation dependencies that previously
+  called standalone `salesnav-*.js` artifact producers: saved-search
+  resolution, acceptance outcome checks, accepted-candidate research, pending
+  cleanup audits, and pending invitation capture.
 - Legacy importers and compatibility commands for `linkedin-network-run`,
   `recruiter-agency-outreach`, and `linkedin-opportunity-intel`; network and
   recruiter/agency imports now promote usable Python app state under the new
@@ -41,7 +45,7 @@ sends or withdrawals were performed during verification.
 
 ## Verification
 
-- PASS: `uv run pytest` (`105 passed`, one existing FastAPI/Starlette warning)
+- PASS: `uv run pytest` (`109 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy
@@ -53,6 +57,9 @@ sends or withdrawals were performed during verification.
 - PASS: temp-root legacy import rehearsal. Real local network and
   recruiter/agency state imported without warnings and regenerated Python
   network status and recruiter/agency report.
+- PASS: focused automation-cutover tests for `saved-searches`, `acceptance
+  check`, accepted research inside `acceptance draft-followups --session`,
+  `pending-cleanup audit`, and `pending-cleanup capture`.
 
 ## Live Dry-Run Evidence
 
@@ -74,6 +81,10 @@ sends or withdrawals were performed during verification.
 The only unchecked item in `docs/cutover-checklist.md` is:
 
 - Hanif approves cutover.
+
+The active local automation replacement map is documented in
+`docs/cutover-automation-inventory.md`; the live prompts should be edited only
+after approval.
 
 After approval, the old Go/JavaScript implementation can be archived or frozen
 according to the cutover checklist.

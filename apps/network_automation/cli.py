@@ -24,21 +24,27 @@ from .models import CandidateStatus, DraftStrategy
 from .old_state import inspect_old_state
 from .reports import render_pending_report, render_report
 from .service import (
+    acceptance_check,
     acceptance_draft_followups,
     acceptance_dry_run_followups,
     acceptance_export,
+    acceptance_export_followup_candidates,
     acceptance_import,
     acceptance_report,
+    acceptance_research,
     acceptance_seed,
     acceptance_seed_history,
     acceptance_send_followup,
     acceptance_send_ready_followups,
+    capture_saved_searches,
     capture_source,
     drain_stale_candidates,
     finish_run,
     import_audit,
     import_capture_path,
     needs_reaudit,
+    pending_cleanup_audit,
+    pending_cleanup_capture,
     pending_cleanup_finish,
     pending_cleanup_import_audit,
     pending_cleanup_import_capture,
@@ -66,6 +72,11 @@ from .store import Store
 
 DEFAULT_RESERVOIR_CAPTURE_OUT_DIR = Path("/tmp/linkedin-network-run-reservoir-capture")
 DEFAULT_SAVED_SEARCHES = Path("/tmp/linkedin-network-run-saved-searches.json")
+DEFAULT_SAVED_SEARCHES_URL = "https://www.linkedin.com/sales/search/people"
+DEFAULT_ACCEPTANCE_OUTCOMES = Path("/tmp/linkedin-acceptance-outcomes.json")
+DEFAULT_ACCEPTED_RESEARCH = Path("/tmp/linkedin-accepted-followups/accepted-research.json")
+DEFAULT_ACCEPTED_CANDIDATES = Path("/tmp/linkedin-accepted-followups/accepted-candidates.json")
+DEFAULT_PENDING_CAPTURE = Path("/tmp/linkedin-pending-cleanup-capture.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_audit_parser = subparsers.add_parser("import-audit")
     import_audit_parser.add_argument("path")
+
+    saved_searches = subparsers.add_parser("saved-searches")
+    saved_searches.add_argument("--session", default="auto")
+    saved_searches.add_argument("--url", default=DEFAULT_SAVED_SEARCHES_URL)
+    saved_searches.add_argument("--out", default=str(DEFAULT_SAVED_SEARCHES))
+    saved_searches.add_argument("--fixture-result", default=None)
 
     reconcile = subparsers.add_parser("reconcile-audit")
     reconcile.add_argument("--session", default="auto")
@@ -213,15 +230,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     acceptance_import_parser = acceptance_sub.add_parser("import")
     acceptance_import_parser.add_argument("path")
+    acceptance_check_parser = acceptance_sub.add_parser("check")
+    acceptance_check_parser.add_argument("--session", default="auto")
+    acceptance_check_parser.add_argument(
+        "--in", dest="input", default="/tmp/linkedin-acceptance-candidates.json"
+    )
+    acceptance_check_parser.add_argument("--out", default=str(DEFAULT_ACCEPTANCE_OUTCOMES))
+    acceptance_check_parser.add_argument("--offset", type=int, default=0)
+    acceptance_check_parser.add_argument("--limit", type=int, default=0)
+    acceptance_check_parser.add_argument("--delay-ms", type=int, default=500)
+    acceptance_check_parser.add_argument("--fixture-result", default=None)
     acceptance_report_parser = acceptance_sub.add_parser("report")
     acceptance_report_parser.add_argument("--min-age-days", type=int, default=0)
     acceptance_report_parser.add_argument("--max-age-days", type=int, default=None)
     acceptance_report_parser.add_argument("--json", action="store_true")
+    acceptance_candidates = acceptance_sub.add_parser("export-followup-candidates")
+    acceptance_candidates.add_argument("--out", default=str(DEFAULT_ACCEPTED_CANDIDATES))
+    acceptance_candidates.add_argument("--include-drafted", action="store_true")
+    acceptance_research_parser = acceptance_sub.add_parser("research")
+    acceptance_research_parser.add_argument("--session", default="auto")
+    acceptance_research_parser.add_argument(
+        "--in", dest="input", default=str(DEFAULT_ACCEPTED_CANDIDATES)
+    )
+    acceptance_research_parser.add_argument("--out", default=str(DEFAULT_ACCEPTED_RESEARCH))
+    acceptance_research_parser.add_argument("--offset", type=int, default=0)
+    acceptance_research_parser.add_argument("--limit", type=int, default=0)
+    acceptance_research_parser.add_argument("--no-public-web", action="store_true")
+    acceptance_research_parser.add_argument("--max-web-results", type=int, default=5)
+    acceptance_research_parser.add_argument("--delay-ms", type=int, default=500)
+    acceptance_research_parser.add_argument("--fixture-result", default=None)
     acceptance_draft = acceptance_sub.add_parser("draft-followups")
+    acceptance_draft.add_argument("--session", default=None)
     acceptance_draft.add_argument("--research", default=None)
     acceptance_draft.add_argument("--out", default=None)
+    acceptance_draft.add_argument(
+        "--out-dir", default="/tmp/linkedin-accepted-followups"
+    )
     acceptance_draft.add_argument("--include-drafted", action="store_true")
     acceptance_draft.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
+    acceptance_draft.add_argument("--no-public-web", action="store_true")
+    acceptance_draft.add_argument("--max-web-results", type=int, default=5)
+    acceptance_draft.add_argument("--delay-ms", type=int, default=500)
+    acceptance_draft.add_argument("--fixture-result", default=None)
     acceptance_send = acceptance_sub.add_parser("send-followup")
     acceptance_send.add_argument("--id", required=True)
     acceptance_send.add_argument("--session", default="auto")
@@ -277,10 +327,23 @@ def build_parser() -> argparse.ArgumentParser:
     pending_start.add_argument("--threshold-weeks", type=int, default=2)
     pending_start.add_argument("--threshold-months", type=int, default=0)
     pending_start.add_argument("--force", action="store_true")
+    pending_audit = pending_sub.add_parser("audit")
+    pending_audit.add_argument("--session", default="auto")
+    pending_audit.add_argument("--load-more", type=int, default=0)
+    pending_audit.add_argument("--out-dir", default=str(DEFAULT_AUDIT_OUT_DIR))
+    pending_audit.add_argument("--fixture-result", default=None)
     pending_import_audit = pending_sub.add_parser("import-audit")
     pending_import_audit.add_argument("path")
     pending_import_capture = pending_sub.add_parser("import-capture")
     pending_import_capture.add_argument("path")
+    pending_capture = pending_sub.add_parser("capture")
+    pending_capture.add_argument("--session", default="auto")
+    pending_capture.add_argument("--load-more", type=int, default=0)
+    pending_capture.add_argument("--threshold-days", type=int, default=0)
+    pending_capture.add_argument("--threshold-weeks", type=int, default=2)
+    pending_capture.add_argument("--threshold-months", type=int, default=0)
+    pending_capture.add_argument("--out", default=str(DEFAULT_PENDING_CAPTURE))
+    pending_capture.add_argument("--fixture-result", default=None)
     pending_plan = pending_sub.add_parser("plan")
     pending_plan.add_argument("--json", action="store_true")
     pending_next = pending_sub.add_parser("next")
@@ -341,6 +404,12 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return record_audit(store, args.people_count, args.note)
     if command == "import-audit":
         return import_audit(store, Path(args.path))
+    if command == "saved-searches":
+        return capture_saved_searches(
+            browser_from_args(args, saved_searches=True),
+            url=args.url,
+            out=Path(args.out),
+        )
     if command == "reconcile-audit":
         return reconcile_audit(
             store,
@@ -478,12 +547,40 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
         )
     if command == "import":
         return acceptance_import(store, Path(args.path))
+    if command == "check":
+        return acceptance_check(
+            store,
+            browser_from_args(args, acceptance_outcomes=True),
+            input_path=Path(args.input),
+            out=Path(args.out),
+            offset=args.offset,
+            limit=args.limit,
+            delay_ms=args.delay_ms,
+        )
     if command == "report":
         return acceptance_report(
             store,
             min_age_days=args.min_age_days,
             max_age_days=args.max_age_days,
             as_json=args.json,
+        )
+    if command == "export-followup-candidates":
+        return acceptance_export_followup_candidates(
+            store,
+            out=Path(args.out),
+            include_drafted=args.include_drafted,
+        )
+    if command == "research":
+        return acceptance_research(
+            store,
+            browser_from_args(args, accepted_research=True),
+            input_path=Path(args.input),
+            out=Path(args.out),
+            offset=args.offset,
+            limit=args.limit,
+            public_web=not args.no_public_web,
+            max_web_results=args.max_web_results,
+            delay_ms=args.delay_ms,
         )
     if command == "draft-followups":
         return acceptance_draft_followups(
@@ -492,6 +589,13 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             out=Path(args.out) if args.out else None,
             include_drafted=args.include_drafted,
             strategy=DraftStrategy(args.strategy),
+            browser=browser_from_args(args, accepted_research=True)
+            if args.session is not None or args.fixture_result
+            else None,
+            research_out_dir=Path(args.out_dir) if args.out_dir else None,
+            public_web=not args.no_public_web,
+            max_web_results=args.max_web_results,
+            delay_ms=args.delay_ms,
         )
     if command == "send-followup":
         return acceptance_send_followup(
@@ -571,10 +675,29 @@ def dispatch_pending(args: argparse.Namespace, store: Store) -> str:
             threshold_months=args.threshold_months,
             force=args.force,
         )
+    if command == "audit":
+        return pending_cleanup_audit(
+            store,
+            browser_from_args(args, audit=True),
+            load_more=args.load_more,
+        )
     if command == "import-audit":
         return pending_cleanup_import_audit(store, Path(args.path))
     if command == "import-capture":
         return pending_cleanup_import_capture(store, Path(args.path))
+    if command == "capture":
+        threshold_days = args.threshold_days
+        if threshold_days == 0:
+            threshold_days = (
+                args.threshold_months * 30 if args.threshold_months else args.threshold_weeks * 7
+            )
+        return pending_cleanup_capture(
+            store,
+            browser_from_args(args, pending_capture=True),
+            load_more=args.load_more,
+            threshold_days=threshold_days,
+            out=Path(args.out),
+        )
     if command == "plan":
         return json_model_or_text(store.load_pending().operator_plan(), as_json=args.json)
     if command == "next":
@@ -625,6 +748,10 @@ def browser_from_args(
     send: bool = False,
     capture: bool = False,
     audit: bool = False,
+    saved_searches: bool = False,
+    acceptance_outcomes: bool = False,
+    accepted_research: bool = False,
+    pending_capture: bool = False,
     followup: bool = False,
     withdraw: bool = False,
 ) -> BrowserClient:
@@ -635,6 +762,10 @@ def browser_from_args(
             send_result=path if send else None,
             capture=path if capture else None,
             audit=path if audit else None,
+            saved_searches=path if saved_searches else None,
+            acceptance_outcomes=path if acceptance_outcomes else None,
+            accepted_research=path if accepted_research else None,
+            pending_capture=path if pending_capture else None,
             followup_result=path if followup else None,
             withdraw_result=path if withdraw else None,
         )

@@ -108,6 +108,11 @@ and pending-invitation cleanup.
 uv run linkedin-tools network --state-dir "$state_root/network-automation" status --json
 uv run linkedin-tools network --state-dir "$state_root/network-automation" plan --json
 uv run linkedin-tools network --state-dir "$state_root/network-automation" report
+uv run linkedin-tools network --state-dir "$state_root/network-automation" saved-searches --session auto
+uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance check --session auto
+uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance draft-followups --session auto
+uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup audit --session auto
+uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto
 ```
 
 Browser-backed commands default to guarded dry-run behavior unless the explicit

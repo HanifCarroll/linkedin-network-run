@@ -140,6 +140,10 @@ Last updated: 2026-06-24
   `withdraw-next --dry-run` passed from a temporary state directory by
   attaching to the existing Playwriter CDP endpoint at
   `ws://127.0.0.1:19988/cdp`.
+- Active local automation JS artifact producer dependencies now have Python
+  command replacements: `saved-searches`, `acceptance check`,
+  `acceptance research`, `acceptance draft-followups --session`,
+  `pending-cleanup audit`, and `pending-cleanup capture`.
 - Python Sales Navigator people capture now preserves the old JavaScript
   capture API-response enrichment from `/sales-api/salesApiLeadSearch`,
   including top-level API metadata, per-row API state, API-derived profile
@@ -166,7 +170,7 @@ After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, opportunity command parity, and cutover state
 promotion:
 
-- PASS: `uv run pytest` (`105 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`109 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`

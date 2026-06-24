@@ -7,6 +7,8 @@ This runbook is the post-approval execution path for moving from the current
 Go/JavaScript implementation to the Python `linkedin-tools` monorepo. The
 technical readiness evidence is in `docs/cutover-acceptance-audit.md`; this
 file covers the operational cutover steps.
+The active local Codex automation prompt replacement map is in
+`docs/cutover-automation-inventory.md`.
 
 ## Current State
 
@@ -184,7 +186,8 @@ matching approval flag:
    git tag python-cutover-approved-YYYYMMDD
    ```
 
-3. Update operational docs and automation references to use Python commands.
+3. Update operational docs and automation references to use Python commands
+   using `docs/cutover-automation-inventory.md`.
 4. Run the pre-cutover verification commands again.
 5. In a separate archive commit, freeze or remove legacy Go/JavaScript entry
    points according to the approved archive decision.

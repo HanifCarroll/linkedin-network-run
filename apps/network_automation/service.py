@@ -11,6 +11,7 @@ from .browser import BrowserClient
 from .models import (
     AcceptanceCheckCandidate,
     AcceptanceOutcomeArtifact,
+    AcceptedDraftCandidate,
     AcceptedResearchArtifact,
     CandidateEvent,
     CandidateStatus,
@@ -92,6 +93,11 @@ def import_audit(store: Store, path: Path) -> str:
     store.save_run(run)
     store.append_event(run, "import-audit", {"path": str(path), "people_count": audit.people_count})
     return f"audit imported: People ({audit.people_count}){_delta_suffix(run.audited_delta())}"
+
+
+def capture_saved_searches(browser: BrowserClient, *, url: str, out: Path) -> str:
+    artifact, path = browser.resolve_saved_searches(url=url, out=out)
+    return f"captured {len(artifact.searches)} saved searches to {path}"
 
 
 def reconcile_audit(
@@ -804,6 +810,45 @@ def acceptance_import(store: Store, path: Path) -> str:
     )
 
 
+def acceptance_check(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    input_path: Path,
+    out: Path,
+    offset: int,
+    limit: int,
+    delay_ms: int,
+) -> str:
+    candidates = load_acceptance_check_candidates(input_path)
+    artifact, path = browser.check_acceptance_outcomes(
+        candidates=candidates,
+        input_path=input_path,
+        out=out,
+        offset=offset,
+        limit=limit,
+        delay_ms=delay_ms,
+    )
+    store.append_acceptance_event(
+        "check",
+        {
+            "input": str(input_path),
+            "out": path,
+            "count": len(artifact.rows),
+            "offset": offset,
+            "limit": limit,
+            "complete": artifact.complete,
+        },
+    )
+    statuses: dict[str, int] = {}
+    for row in artifact.rows:
+        statuses[row.status.value] = statuses.get(row.status.value, 0) + 1
+    return (
+        f"acceptance outcomes: {len(artifact.rows)} rows written to {path}; "
+        f"statuses={json.dumps(statuses, sort_keys=True)}"
+    )
+
+
 def acceptance_report(
     store: Store, *, min_age_days: int, max_age_days: int | None, as_json: bool = False
 ) -> str:
@@ -823,16 +868,40 @@ def acceptance_draft_followups(
     out: Path | None,
     include_drafted: bool,
     strategy: DraftStrategy,
+    browser: BrowserClient | None = None,
+    research_out_dir: Path | None = None,
+    public_web: bool = True,
+    max_web_results: int = 5,
+    delay_ms: int = 500,
 ) -> str:
     ledger = store.load_acceptance_ledger()
     followups = store.load_acceptance_followup_ledger()
     candidates = ledger.accepted_for_followup(followups, include_drafted)
     report_path = out or store.default_acceptance_followup_report_path()
-    artifact = read_model(research, AcceptedResearchArtifact) if research else None
+    generated_research: Path | None = None
     if candidates and research is None:
-        raise RuntimeError(
-            "--research is required until the shared Python browser research API is available"
+        if browser is None:
+            raise RuntimeError("--session is required when --research is not provided")
+        generated_dir = research_out_dir or (store.dir / "acceptance-followups" / "research")
+        generated_dir.mkdir(parents=True, exist_ok=True)
+        candidates_path = generated_dir / "accepted-candidates.json"
+        generated_research = generated_dir / "accepted-research.json"
+        write_json_atomic(
+            candidates_path,
+            [candidate.model_dump(mode="json", by_alias=False) for candidate in candidates],
         )
+        browser.research_accepted_candidates(
+            candidates=candidates,
+            input_path=candidates_path,
+            out=generated_research,
+            offset=0,
+            limit=0,
+            public_web=public_web,
+            max_web_results=max_web_results,
+            delay_ms=delay_ms,
+        )
+        research = generated_research
+    artifact = read_model(research, AcceptedResearchArtifact) if research else None
     report = build_draft_report(
         candidates, artifact, strategy, str(research) if research is not None else None
     )
@@ -851,9 +920,67 @@ def acceptance_draft_followups(
             "recorded": recorded,
             "strategy": strategy.value,
             "include_drafted": include_drafted,
+            "public_web": public_web,
+            "max_web_results": max_web_results,
+            "generated_research": str(generated_research) if generated_research else None,
         },
     )
-    return f"accepted follow-up drafts: {len(report.items)} written to {report_path}"
+    suffix = f"; research artifact: {research}" if research else ""
+    return f"accepted follow-up drafts: {len(report.items)} written to {report_path}{suffix}"
+
+
+def acceptance_research(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    input_path: Path,
+    out: Path,
+    offset: int,
+    limit: int,
+    public_web: bool,
+    max_web_results: int,
+    delay_ms: int,
+) -> str:
+    candidates = load_accepted_draft_candidates(input_path)
+    artifact, path = browser.research_accepted_candidates(
+        candidates=candidates,
+        input_path=input_path,
+        out=out,
+        offset=offset,
+        limit=limit,
+        public_web=public_web,
+        max_web_results=max_web_results,
+        delay_ms=delay_ms,
+    )
+    store.append_acceptance_event(
+        "research",
+        {
+            "input": str(input_path),
+            "out": path,
+            "count": len(artifact.rows),
+            "offset": offset,
+            "limit": limit,
+            "public_web": public_web,
+            "max_web_results": max_web_results,
+        },
+    )
+    return f"accepted research: {len(artifact.rows)} rows written to {path}"
+
+
+def acceptance_export_followup_candidates(
+    store: Store, *, out: Path, include_drafted: bool
+) -> str:
+    ledger = store.load_acceptance_ledger()
+    followups = store.load_acceptance_followup_ledger()
+    candidates = ledger.accepted_for_followup(followups, include_drafted)
+    write_json_atomic(
+        out, [candidate.model_dump(mode="json", by_alias=False) for candidate in candidates]
+    )
+    store.append_acceptance_event(
+        "export-followup-candidates",
+        {"out": str(out), "count": len(candidates), "include_drafted": include_drafted},
+    )
+    return f"exported {len(candidates)} accepted follow-up candidates to {out}"
 
 
 def acceptance_send_followup(
@@ -985,6 +1112,26 @@ def pending_cleanup_import_audit(store: Store, path: Path) -> str:
     )
 
 
+def pending_cleanup_audit(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    load_more: int,
+) -> str:
+    audit, path = browser.audit_sent_invitations(load_more=load_more)
+    run = store.load_pending()
+    note = "browser audit; recent_names=" + ", ".join(audit.recent_names)
+    apply_pending_audit(run, audit.people_count, note)
+    store.save_pending(run)
+    store.append_pending_event(
+        run, "audit", {"path": path, "people_count": audit.people_count}
+    )
+    return (
+        f"pending audit: People ({audit.people_count}) from {path}"
+        f"{_delta_suffix(run.audited_delta())}"
+    )
+
+
 def pending_cleanup_import_capture(store: Store, path: Path) -> str:
     run = store.load_pending()
     capture = read_model(path, PendingCapture)
@@ -994,6 +1141,31 @@ def pending_cleanup_import_capture(store: Store, path: Path) -> str:
     store.save_pending(run)
     store.append_pending_event(run, "import-capture", {"path": str(path), "imported": imported})
     return f"imported {imported} pending invitation observations"
+
+
+def pending_cleanup_capture(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    load_more: int,
+    threshold_days: int,
+    out: Path,
+) -> str:
+    artifact, path = browser.capture_pending_invitations(
+        load_more=load_more,
+        threshold_days=threshold_days,
+        out=out,
+    )
+    run = store.load_pending()
+    imported = import_pending_capture(run, artifact)
+    run.state = PendingCleanupState.WITHDRAWING
+    run.mark_updated()
+    store.save_pending(run)
+    store.append_pending_event(run, "capture", {"path": path, "imported": imported})
+    return (
+        f"pending capture: {len(artifact.rows)} rows written to {path}; "
+        f"imported {imported} observations"
+    )
 
 
 def pending_cleanup_record_withdraw_result(store: Store, path: Path) -> str:
@@ -1085,6 +1257,27 @@ def record_top_up_result_from_path(store: Store, path: Path, note: str | None = 
         f"recorded top-up result as {event.status.value}; "
         f"row-level verified remains {run.verified_count()}/{run.target}"
     )
+
+
+def load_acceptance_check_candidates(path: Path) -> list[AcceptanceCheckCandidate]:
+    return [
+        AcceptanceCheckCandidate.model_validate(item)
+        for item in _load_json_list(path, "acceptance candidates")
+    ]
+
+
+def load_accepted_draft_candidates(path: Path) -> list[AcceptedDraftCandidate]:
+    return [
+        AcceptedDraftCandidate.model_validate(item)
+        for item in _load_json_list(path, "accepted draft candidates")
+    ]
+
+
+def _load_json_list(path: Path, label: str) -> list[object]:
+    data = json.loads(path.read_text())
+    if not isinstance(data, list):
+        raise ValueError(f"{label} artifact must be a JSON array: {path}")
+    return data
 
 
 def _delta_suffix(delta: int | None) -> str:

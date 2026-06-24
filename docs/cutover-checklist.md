@@ -15,6 +15,8 @@ and archive sequence.
 - [x] Send and withdraw safety tests pass.
 - [x] Browser dry-runs pass.
 - [x] Opportunity-intel remains recommend-only.
+- [x] Active local Codex automation prompt dependencies have Python command
+      replacements documented in `docs/cutover-automation-inventory.md`.
 - [ ] Hanif approves cutover.
 
 ## Network Automation Browser Slice
@@ -28,6 +30,10 @@ and archive sequence.
 - [x] `reconcile-audit`, active-run `capture`, and `reservoir capture` have
       Python browser-backed CLI paths that feed existing state import/apply
       functions.
+- [x] `saved-searches`, `acceptance check`, `acceptance research`,
+      `acceptance draft-followups --session`, `pending-cleanup audit`, and
+      `pending-cleanup capture` have Python browser-backed artifact producer
+      paths for the active local automation prompts.
 - [x] `drain-stale-candidates` and `top-up-reconcile` are delegated to Python
       app commands, with top-up preserving the real-send `--allow-send` gate
       and fixture-backed tests for send/audit recording.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 APP_NAMES = ("network", "recruiter-agency", "opportunity", "comments", "ui")
@@ -27,11 +28,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     from apps.recruiter_agency_outreach.cli import main as recruiter_agency_main
     from apps.review_ui.cli import main as ui_main
 
-    parser = build_parser()
-    args, remaining = parser.parse_known_args(argv)
-    if args.app is None:
-        parser.print_help()
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] in {"-h", "--help"}:
+        build_parser().print_help()
         return 0
+    app = args[0]
+    if app not in APP_NAMES:
+        parser = build_parser()
+        parser.error(f"unknown app namespace: {app}")
+        return 2
+    remaining = args[1:]
+    if not remaining:
+        # Let the app namespace print its own help whenever possible.
+        remaining = ["--help"]
     dispatchers = {
         "network": network_main,
         "recruiter-agency": recruiter_agency_main,
@@ -39,7 +48,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "comments": comments_main,
         "ui": ui_main,
     }
-    return dispatchers[str(args.app)](remaining)
+    return dispatchers[app](remaining)
 
 
 if __name__ == "__main__":

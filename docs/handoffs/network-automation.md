@@ -22,17 +22,18 @@ The existing Go and JavaScript implementation under `cmd/`, `internal/`, and
 The Python network CLI now supports:
 
 - Run controller: `start`, `audit`, `import-audit`, `record`,
-  `record-send-result`, `record-top-up-result`, `send-next`, `send-guarded`,
-  `source-exhausted`, `needs-reaudit`, `resume-blocked`, `import-capture`,
-  `next`, `next-candidate`, `candidates`, `plan`, `status`, `report`,
-  `finish`, `tune-sources`.
+  `saved-searches`, `record-send-result`, `record-top-up-result`,
+  `send-next`, `send-guarded`, `source-exhausted`, `needs-reaudit`,
+  `resume-blocked`, `import-capture`, `next`, `next-candidate`,
+  `candidates`, `plan`, `status`, `report`, `finish`, `tune-sources`.
 - Acceptance: `acceptance seed`, `seed-history`, `export`, `import`,
-  `report`, `draft-followups`, `send-followup`, `dry-run-followups`,
+  `check`, `report`, `export-followup-candidates`, `research`,
+  `draft-followups`, `send-followup`, `dry-run-followups`,
   `send-ready-followups`.
 - Reservoir: `reservoir import-capture`, `fill-run`, `report`, `clear`.
-- Pending cleanup: `pending-cleanup start`, `import-audit`, `import-capture`,
-  `plan`, `next`, `record-withdraw-result`, `withdraw-next`, `status`,
-  `report`, `finish`.
+- Pending cleanup: `pending-cleanup start`, `audit`, `import-audit`,
+  `import-capture`, `capture`, `plan`, `next`, `record-withdraw-result`,
+  `withdraw-next`, `status`, `report`, `finish`.
 - Migration hook: `old-state inspect`.
 
 Real connection sends require `--allow-send`. Real accepted-follow-up sends

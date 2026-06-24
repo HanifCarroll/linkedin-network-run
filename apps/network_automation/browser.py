@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from pydantic import BaseModel
 
@@ -42,14 +43,20 @@ from packages.linkedin_salesnav import (
 )
 
 from .models import (
+    AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
+    AcceptanceOutcomeArtifact,
+    AcceptedDraftCandidate,
+    AcceptedResearchArtifact,
     CandidateObservation,
     PendingCandidateObservation,
+    PendingCapture,
     PendingWithdrawResult,
     SalesNavAudit,
     SalesNavCapture,
     SalesNavSendResult,
+    SavedSearchArtifact,
 )
 from .store import read_model, write_json_atomic
 
@@ -64,6 +71,7 @@ MESSAGE_ACTION = re.compile(r"^(Message|InMail)\b", re.I)
 SEND_MESSAGE_BUTTON = re.compile(r"^(Send|Send message)$", re.I)
 PEOPLE_COUNT = re.compile(r"People \(([\d,]+)\)")
 SALES_NAV_LEAD_SEARCH_API = re.compile(r"/sales-api/salesApiLeadSearch", re.I)
+SALES_NAV_PROFILE_API = re.compile(r"/sales-api/salesApiProfiles", re.I)
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -86,6 +94,38 @@ class BrowserClient(Protocol):
     ) -> tuple[SalesNavCapture, str]: ...
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]: ...
+
+    def resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]: ...
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]: ...
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]: ...
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]: ...
 
     def send_acceptance_followup(
         self,
@@ -132,6 +172,46 @@ class UnavailableBrowserClient:
         _ = load_more
         raise RuntimeError("browser client is not configured")
 
+    def resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]:
+        _ = url, out
+        raise RuntimeError("browser client is not configured")
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        _ = candidates, input_path, out, offset, limit, delay_ms
+        raise RuntimeError("browser client is not configured")
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        _ = candidates, input_path, out, offset, limit, public_web, max_web_results, delay_ms
+        raise RuntimeError("browser client is not configured")
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        _ = load_more, threshold_days, out
+        raise RuntimeError("browser client is not configured")
+
     def send_acceptance_followup(
         self,
         record: AcceptanceFollowupRecord,
@@ -163,12 +243,20 @@ class FixtureBrowserClient:
         send_result: Path | None = None,
         capture: Path | None = None,
         audit: Path | None = None,
+        saved_searches: Path | None = None,
+        acceptance_outcomes: Path | None = None,
+        accepted_research: Path | None = None,
+        pending_capture: Path | None = None,
         followup_result: Path | None = None,
         withdraw_result: Path | None = None,
     ) -> None:
         self.send_result = send_result
         self.capture = capture
         self.audit = audit
+        self.saved_searches = saved_searches
+        self.acceptance_outcomes = acceptance_outcomes
+        self.accepted_research = accepted_research
+        self.pending_capture = pending_capture
         self.followup_result = followup_result
         self.withdraw_result = withdraw_result
 
@@ -201,6 +289,58 @@ class FixtureBrowserClient:
         if self.audit is None:
             raise RuntimeError("audit fixture was not provided")
         return read_model(self.audit, SalesNavAudit), str(self.audit)
+
+    def resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]:
+        _ = url, out
+        if self.saved_searches is None:
+            raise RuntimeError("saved-search fixture was not provided")
+        return read_model(self.saved_searches, SavedSearchArtifact), str(self.saved_searches)
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        _ = candidates, input_path, out, offset, limit, delay_ms
+        if self.acceptance_outcomes is None:
+            raise RuntimeError("acceptance-outcomes fixture was not provided")
+        return read_model(self.acceptance_outcomes, AcceptanceOutcomeArtifact), str(
+            self.acceptance_outcomes
+        )
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        _ = candidates, input_path, out, offset, limit, public_web, max_web_results, delay_ms
+        if self.accepted_research is None:
+            raise RuntimeError("accepted-research fixture was not provided")
+        return read_model(self.accepted_research, AcceptedResearchArtifact), str(
+            self.accepted_research
+        )
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        _ = load_more, threshold_days, out
+        if self.pending_capture is None:
+            raise RuntimeError("pending-capture fixture was not provided")
+        return read_model(self.pending_capture, PendingCapture), str(self.pending_capture)
 
     def send_acceptance_followup(
         self,
@@ -305,6 +445,68 @@ class PlaywrightBrowserClient:
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         return self._run(self._audit_sent_invitations(load_more=load_more))
+
+    def resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]:
+        return self._run(self._resolve_saved_searches(url=url, out=out))
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        return self._run(
+            self._check_acceptance_outcomes(
+                candidates=candidates,
+                input_path=input_path,
+                out=out,
+                offset=offset,
+                limit=limit,
+                delay_ms=delay_ms,
+            )
+        )
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        return self._run(
+            self._research_accepted_candidates(
+                candidates=candidates,
+                input_path=input_path,
+                out=out,
+                offset=offset,
+                limit=limit,
+                public_web=public_web,
+                max_web_results=max_web_results,
+                delay_ms=delay_ms,
+            )
+        )
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        return self._run(
+            self._capture_pending_invitations(
+                load_more=load_more,
+                threshold_days=threshold_days,
+                out=out,
+            )
+        )
 
     def send_acceptance_followup(
         self,
@@ -566,6 +768,288 @@ class PlaywrightBrowserClient:
         }
         return self._write_result("audit", payload, SalesNavAudit)
 
+    async def _resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]:
+        page = await self._page(("linkedin.com/sales/search/people", "linkedin.com/sales"))
+        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        await _wait_for_load(page)
+        button = page.get_by_role("button", name=re.compile(r"Saved searches", re.I)).first
+        if not await _locator_count(button):
+            raise RuntimeError("saved-searches button missing")
+        await button.click(timeout=10000)
+        await _medium_wait(page)
+        searches = await page.locator("a[href*='savedSearchId=']").evaluate_all(
+            """(anchors) => {
+              const byId = new Map();
+              for (const anchor of anchors) {
+                const href = anchor.href;
+                let savedSearchId = null;
+                try {
+                  savedSearchId = new URL(href).searchParams.get("savedSearchId");
+                } catch {
+                  savedSearchId = null;
+                }
+                if (!savedSearchId) continue;
+                const text = String(anchor.textContent || "").replace(/\\s+/g, " ").trim();
+                const aria = anchor.getAttribute("aria-label") || "";
+                const ariaName = aria.match(
+                  /(?:View |results for )(.+?)(?: lead saved search| since|$)/
+                );
+                const textPattern = new RegExp(
+                  "(?:Go to \\\\d+[,\\\\dK+]* new results for |View )(.+?)" +
+                  "(?: since | lead saved search|$)"
+                );
+                const textName = text.match(textPattern);
+                const knownName = (ariaName || [])[1] || (textName || [])[1] || text || null;
+                const existing = byId.get(savedSearchId) || {
+                  savedSearchId,
+                  name: knownName,
+                  viewUrl: null,
+                  freshUrl: null,
+                  freshText: null,
+                  rowText: text,
+                };
+                if (href.includes("lastViewedAt=")) {
+                  existing.freshUrl = href;
+                  existing.freshText = text;
+                } else {
+                  existing.viewUrl = href;
+                }
+                existing.name = existing.name || knownName;
+                byId.set(savedSearchId, existing);
+              }
+              return Array.from(byId.values());
+            }"""
+        )
+        payload = {
+            "capturedAt": _now_iso(),
+            "url": page.url,
+            "searches": searches,
+        }
+        return self._write_exact_result(out, payload, SavedSearchArtifact)
+
+    async def _check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int,
+        limit: int,
+        delay_ms: int,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        page = await self._page(("linkedin.com/sales/lead/", "linkedin.com/sales/search/people"))
+        rows: list[dict[str, Any]] = []
+        selected = _window(candidates, offset=offset, limit=limit)
+        for candidate in selected:
+            checked_at = _now_iso()
+            try:
+                outcome = await self._classify_acceptance_candidate(page, candidate)
+                rows.append(
+                    {
+                        "source": candidate.source,
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "status": outcome["status"],
+                        "checkedAt": checked_at,
+                        "relationship": outcome.get("relationship"),
+                        "evidence": outcome.get("evidence"),
+                        "note": outcome.get("note"),
+                    }
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "source": candidate.source,
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "status": "failed",
+                        "checkedAt": checked_at,
+                        "relationship": None,
+                        "evidence": str(exc)[:1000],
+                        "note": "browser check failed",
+                    }
+                )
+            if delay_ms > 0:
+                await page.wait_for_timeout(delay_ms)
+            self._write_exact_result(
+                out,
+                _acceptance_artifact_payload(
+                    input_path=input_path,
+                    candidates=candidates,
+                    rows=rows,
+                    offset=offset,
+                    limit=limit,
+                    complete=False,
+                ),
+                AcceptanceOutcomeArtifact,
+            )
+        return self._write_exact_result(
+            out,
+            _acceptance_artifact_payload(
+                input_path=input_path,
+                candidates=candidates,
+                rows=rows,
+                offset=offset,
+                limit=limit,
+                complete=True,
+            ),
+            AcceptanceOutcomeArtifact,
+        )
+
+    async def _classify_acceptance_candidate(
+        self, page: Any, candidate: AcceptanceCheckCandidate
+    ) -> dict[str, Any]:
+        if not candidate.profile_url:
+            return {
+                "status": "unknown",
+                "relationship": None,
+                "evidence": None,
+                "note": "candidate has no Sales Navigator profile URL",
+            }
+        target_profile_id = sales_profile_id_from_url(candidate.profile_url)
+        identity_task = asyncio.create_task(_wait_for_profile_identity(page, target_profile_id))
+        response = await page.goto(
+            candidate.profile_url,
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _wait_for_load(page)
+        block = await _classify_page(page, http_status=_response_status(response))
+        profile_identity = await identity_task
+        displayed_name = await _profile_name(page)
+        identity = _identity_match(candidate.name, displayed_name, profile_identity)
+        relationship = _relationship_from_degree(profile_identity.get("degree"))
+        if block.is_blocking:
+            return {
+                "status": "blocked",
+                "relationship": relationship,
+                "evidence": _json_evidence({"identity": identity, "url": page.url}),
+                "note": block.reason,
+            }
+        if not identity["matched"]:
+            return {
+                "status": "unknown",
+                "relationship": relationship,
+                "evidence": _json_evidence({"identity": identity, "url": page.url}),
+                "note": "loaded lead identity did not match candidate",
+            }
+        if relationship == "1st":
+            return {
+                "status": "accepted",
+                "relationship": relationship,
+                "evidence": _json_evidence({"identity": identity, "url": page.url}),
+                "note": "Sales Navigator profile API shows 1st-degree relationship",
+            }
+        menu = await _open_profile_actions_menu(page)
+        menu_state = _classify_menu_labels(menu.get("labels", []))
+        if menu_state == "already-pending":
+            return {
+                "status": "pending",
+                "relationship": relationship,
+                "evidence": _json_evidence({"menu": menu}),
+                "note": "lead overflow menu shows pending invitation",
+            }
+        if menu_state == "connectable":
+            return {
+                "status": "connectable",
+                "relationship": relationship,
+                "evidence": _json_evidence({"menu": menu}),
+                "note": "lead is connectable again",
+            }
+        return {
+            "status": "unknown",
+            "relationship": relationship,
+            "evidence": _json_evidence({"identity": identity, "menu": menu}),
+            "note": "could not classify acceptance state",
+        }
+
+    async def _research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int,
+        limit: int,
+        public_web: bool,
+        max_web_results: int,
+        delay_ms: int,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        sales_page = await self._page(("linkedin.com/sales/lead/", "linkedin.com/sales/search"))
+        web_page = await self._page(("duckduckgo.com", "linkedin.com/sales/lead/"))
+        rows: list[dict[str, Any]] = []
+        selected = _window(candidates, offset=offset, limit=limit)
+        for candidate in selected:
+            sales_nav = await _extract_salesnav_research(sales_page, candidate)
+            web = await _public_web_research(
+                web_page,
+                candidate,
+                sales_nav,
+                public_web=public_web,
+                max_web_results=max_web_results,
+            )
+            rows.append(
+                {
+                    "source": candidate.source,
+                    "name": candidate.name,
+                    "profileUrl": candidate.profile_url,
+                    "salesNav": sales_nav,
+                    "web": web,
+                    "warnings": [],
+                }
+            )
+            if delay_ms > 0:
+                await sales_page.wait_for_timeout(delay_ms)
+            self._write_exact_result(
+                out,
+                _accepted_research_payload(
+                    input_path=input_path,
+                    candidates=candidates,
+                    rows=rows,
+                    offset=offset,
+                    limit=limit,
+                    complete=False,
+                ),
+                AcceptedResearchArtifact,
+            )
+        return self._write_exact_result(
+            out,
+            _accepted_research_payload(
+                input_path=input_path,
+                candidates=candidates,
+                rows=rows,
+                offset=offset,
+                limit=limit,
+                complete=True,
+            ),
+            AcceptedResearchArtifact,
+        )
+
+    async def _capture_pending_invitations(
+        self, *, load_more: int, threshold_days: int, out: Path
+    ) -> tuple[PendingCapture, str]:
+        page = await self._page(("linkedin.com/mynetwork/invitation-manager/sent", "linkedin.com"))
+        await page.goto(SENT_INVITATIONS_URL, wait_until="domcontentloaded", timeout=45000)
+        await _wait_for_load(page)
+        for _ in range(max(0, load_more)):
+            button = page.get_by_role("button", name=re.compile(r"^Load more$", re.I)).first
+            if not await _locator_count(button) or await _locator_disabled(button):
+                break
+            await button.click(timeout=8000)
+            await _short_wait(page)
+        people_count = await _sent_people_count(page)
+        rows = await _pending_capture_rows(page, threshold_days=threshold_days)
+        payload = {
+            "capturedAt": _now_iso(),
+            "url": page.url,
+            "peopleCount": people_count,
+            "thresholdDays": threshold_days,
+            "rows": rows,
+        }
+        return self._write_exact_result(out, payload, PendingCapture)
+
     async def _send_acceptance_followup(
         self,
         record: AcceptanceFollowupRecord,
@@ -713,6 +1197,15 @@ class PlaywrightBrowserClient:
     ) -> tuple[ModelT, str]:
         self._counter += 1
         path = self.out_dir / f"{self._counter:03d}-{_safe_stem(stem)}.json"
+        write_json_atomic(path, payload)
+        return model.model_validate(payload), str(path)
+
+    def _write_exact_result(
+        self,
+        path: Path,
+        payload: dict[str, Any],
+        model: type[ModelT],
+    ) -> tuple[ModelT, str]:
         write_json_atomic(path, payload)
         return model.model_validate(payload), str(path)
 
@@ -1083,6 +1576,131 @@ async def _sent_invitation_names(page: Any) -> list[str]:
     return names
 
 
+async def _sent_people_count(page: Any) -> int | None:
+    workspace = page.locator("main#workspace").first
+    text = await workspace.text_content(timeout=10000)
+    match = PEOPLE_COUNT.search(text or "")
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+async def _pending_capture_rows(page: Any, *, threshold_days: int) -> list[dict[str, Any]]:
+    links = await page.locator("a[aria-label^='Withdraw invitation sent to']").all()
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, link in enumerate(links):
+        label = await link.get_attribute("aria-label")
+        aria_name = (
+            label.removeprefix("Withdraw invitation sent to ").strip()
+            if label and label.startswith("Withdraw invitation sent to ")
+            else None
+        )
+        row = await _pending_row_payload(link)
+        age_text = _sent_age_text(row["rowText"])
+        name = aria_name or row["name"]
+        if not name or not age_text:
+            continue
+        dedupe_key = (name, age_text)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        age_months = _parse_sent_age_months(age_text)
+        age_days = _parse_sent_age_days(age_text)
+        rows.append(
+            {
+                "index": index,
+                "name": name,
+                "profileUrl": row["profileUrl"],
+                "ageText": age_text,
+                "ageMonths": age_months,
+                "ageDays": age_days,
+                "eligible": age_days is not None and age_days >= threshold_days,
+                "rowText": row["rowText"],
+            }
+        )
+    return rows
+
+
+async def _pending_row_payload(link: Any) -> dict[str, Any]:
+    value = await link.evaluate(
+        """(node) => {
+          const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+          let cursor = node;
+          while (cursor && cursor !== document.body) {
+            const text = clean(cursor.textContent || '');
+            const withdrawCount = (text.match(/\\bWithdraw\\b/g) || []).length;
+            if (withdrawCount === 1 && /\\bSent\\b/i.test(text)) {
+              const profileSelector = "a[href*='/in/'], a[href*='/sales/lead/']";
+              const profile = Array.from(cursor.querySelectorAll(profileSelector))
+                .find((anchor) => (
+                  anchor.href && !/^Withdraw\\b/i.test(clean(anchor.textContent || ''))
+                ));
+              const lines = String(cursor.textContent || '')
+                .split('\\n')
+                .map(clean)
+                .filter(Boolean);
+              const ageIndex = lines.findIndex((line) => /^Sent\\b/i.test(line));
+              const name = lines.find((line, lineIndex) => (
+                lineIndex < ageIndex && line !== 'Withdraw' && !/^Sent\\b/i.test(line)
+              )) || lines[0] || null;
+              return {
+                rowText: text,
+                name,
+                profileUrl: profile ? profile.href : null,
+              };
+            }
+            cursor = cursor.parentElement;
+          }
+          return { rowText: clean(node.textContent || ''), name: null, profileUrl: null };
+        }"""
+    )
+    return value if isinstance(value, dict) else {"rowText": "", "name": None, "profileUrl": None}
+
+
+def _sent_age_text(value: str) -> str | None:
+    match = re.search(
+        r"Sent (?:today|yesterday|\d+ minutes? ago|\d+ hours? ago|\d+ days? ago|"
+        r"\d+ weeks? ago|\d+ months? ago|\d+ years? ago)",
+        value,
+        re.I,
+    )
+    return match.group(0) if match else None
+
+
+def _parse_sent_age_months(age_text: str) -> int | None:
+    lower = age_text.lower()
+    number = _first_number(lower) or 1
+    if "year" in lower:
+        return number * 12
+    if "month" in lower:
+        return number
+    if any(marker in lower for marker in ("today", "minute", "hour", "day", "week")):
+        return 0
+    return None
+
+
+def _parse_sent_age_days(age_text: str) -> int | None:
+    lower = age_text.lower()
+    if any(marker in lower for marker in ("today", "minute", "hour")):
+        return 0
+    number = _first_number(lower) or 1
+    if "year" in lower:
+        return number * 365
+    if "month" in lower:
+        return number * 30
+    if "week" in lower:
+        return number * 7
+    if "yesterday" in lower:
+        return 1
+    if "day" in lower:
+        return number
+    return None
+
+
+def _first_number(value: str) -> int | None:
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else None
+
+
 async def _profile_name(page: Any) -> str | None:
     locator = page.locator("[data-anonymize='person-name']").first
     if not await _locator_count(locator):
@@ -1201,6 +1819,297 @@ async def _click_confirm_withdraw(page: Any) -> bool:
         return False
     await button.click(timeout=8000)
     return True
+
+
+async def _wait_for_profile_identity(page: Any, profile_id: str | None) -> dict[str, Any]:
+    if not profile_id:
+        return {}
+    try:
+        response = await page.wait_for_response(
+            lambda item: (
+                SALES_NAV_PROFILE_API.search(str(getattr(item, "url", ""))) is not None
+                and f"profileId:{profile_id}" in str(getattr(item, "url", ""))
+                and (_response_status(item) or 0) < 500
+            ),
+            timeout=8000,
+        )
+    except Exception:
+        return {}
+    payload = await _ignore_errors(response.json(), None)
+    identity = _profile_identity_from_payload(payload)
+    if identity:
+        identity["responseUrl"] = str(getattr(response, "url", ""))[:260]
+    return identity
+
+
+def _profile_identity_from_payload(payload: object) -> dict[str, Any]:
+    stack: list[object] = [payload]
+    seen: set[int] = set()
+    while stack:
+        value = stack.pop()
+        if not isinstance(value, dict):
+            continue
+        value_id = id(value)
+        if value_id in seen:
+            continue
+        seen.add(value_id)
+        full_name = _clean(
+            str(value.get("fullName") or " ".join(
+                str(part)
+                for part in (value.get("firstName"), value.get("lastName"))
+                if part
+            ))
+        )
+        if full_name:
+            return {
+                "fullName": full_name,
+                "degree": value.get("degree")
+                or value.get("relationship")
+                or value.get("connectionDegree"),
+            }
+        stack.extend(child for child in value.values() if isinstance(child, dict | list))
+        for child in value.values():
+            if isinstance(child, list):
+                stack.extend(child)
+    return {}
+
+
+def _identity_match(
+    candidate_name: str, displayed_name: str | None, profile_identity: dict[str, Any]
+) -> dict[str, Any]:
+    api_name = profile_identity.get("fullName")
+    api_matches = _names_compatible(candidate_name, api_name) if isinstance(api_name, str) else None
+    displayed_matches = (
+        _names_compatible(candidate_name, displayed_name) if displayed_name else None
+    )
+    return {
+        "candidateName": candidate_name,
+        "apiName": api_name if isinstance(api_name, str) else None,
+        "displayedName": displayed_name,
+        "apiMatches": api_matches,
+        "displayedMatches": displayed_matches,
+        "matched": api_matches is True or displayed_matches is True,
+    }
+
+
+def _names_compatible(candidate_name: str, loaded_name: str | None) -> bool:
+    candidate_tokens = _name_tokens(candidate_name)
+    loaded_tokens = _name_tokens(loaded_name or "")
+    if not candidate_tokens or not loaded_tokens:
+        return False
+    loaded_text = " ".join(loaded_tokens)
+    candidate_text = " ".join(candidate_tokens)
+    if candidate_text in loaded_text:
+        return True
+    if len(candidate_tokens) == 1:
+        return candidate_tokens[0] in loaded_tokens
+    first = candidate_tokens[0]
+    last = candidate_tokens[-1]
+    if first not in loaded_tokens:
+        return False
+    if len(last) == 1:
+        return any(token.startswith(last) for token in loaded_tokens)
+    return last in loaded_tokens
+
+
+def _name_tokens(value: str) -> list[str]:
+    return [part for part in re.split(r"[^A-Za-z0-9]+", value.casefold()) if part]
+
+
+def _relationship_from_degree(value: object) -> str | None:
+    text = str(value or "").casefold()
+    if text in {"1", "1st"} or "first" in text:
+        return "1st"
+    if text in {"2", "2nd"} or "second" in text:
+        return "2nd"
+    if text in {"3", "3rd"} or "third" in text:
+        return "3rd"
+    return None
+
+
+async def _extract_salesnav_research(
+    page: Any, candidate: AcceptedDraftCandidate
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    if not candidate.profile_url:
+        return {"warnings": ["candidate has no Sales Navigator profile URL"]}
+    await page.goto(candidate.profile_url, wait_until="domcontentloaded", timeout=45000)
+    await _wait_for_load(page)
+    block = await _classify_page(page)
+    if block.is_blocking:
+        warnings.append(f"Sales Navigator page blocked: {block.reason}")
+    title = await _text_from_first(
+        page,
+        (
+            "[data-anonymize='headline']",
+            "[data-anonymize='title']",
+        ),
+    )
+    company = await _text_from_first(
+        page,
+        (
+            "[data-anonymize='company-name']",
+            "[data-anonymize='company']",
+        ),
+    )
+    if not title and not company:
+        warnings.append("Sales Navigator title/company selectors did not produce evidence")
+    return {
+        "name": await _profile_name(page),
+        "title": title,
+        "company": company,
+        "location": await _text_from_first(page, ("[data-anonymize='location']",)),
+        "url": page.url,
+        "warnings": warnings,
+    }
+
+
+async def _text_from_first(page: Any, selectors: tuple[str, ...]) -> str | None:
+    for selector in selectors:
+        locator = page.locator(selector).first
+        if not await _locator_count(locator):
+            continue
+        text = _clean(await locator.text_content(timeout=1500))
+        if text:
+            return text
+    return None
+
+
+async def _public_web_research(
+    page: Any,
+    candidate: AcceptedDraftCandidate,
+    sales_nav: dict[str, Any],
+    *,
+    public_web: bool,
+    max_web_results: int,
+) -> dict[str, Any]:
+    if not public_web:
+        return {"query": None, "results": [], "warnings": ["public web research disabled"]}
+    query = _clean(
+        " ".join(
+            str(part)
+            for part in (
+                candidate.name,
+                sales_nav.get("company"),
+                sales_nav.get("title"),
+                "contract hiring product engineering AI workflow",
+            )
+            if part
+        )
+    )
+    if not query:
+        return {
+            "query": None,
+            "results": [],
+            "warnings": ["not enough evidence to build public web query"],
+        }
+    try:
+        await page.goto(
+            f"https://duckduckgo.com/html/?q={quote_plus(query)}",
+            wait_until="domcontentloaded",
+            timeout=45000,
+        )
+        await _wait_for_load(page)
+        results = await page.locator(".result").evaluate_all(
+            """(items, maxItems) => {
+              const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+              const selected = [];
+              for (const item of items) {
+                if (maxItems > 0 && selected.length >= maxItems) break;
+                const link = item.querySelector(".result__a");
+                const snippet = item.querySelector(".result__snippet");
+                const row = {
+                  title: clean(link ? link.textContent : null) || null,
+                  url: link ? link.getAttribute("href") : null,
+                  snippet: clean(snippet ? snippet.textContent : null) || null,
+                };
+                if (row.title || row.url || row.snippet) selected.push(row);
+              }
+              return selected;
+            }""",
+            max_web_results,
+        )
+        return {
+            "query": query,
+            "results": [
+                {
+                    "title": row.get("title"),
+                    "url": _normalize_duckduckgo_href(row.get("url")),
+                    "snippet": row.get("snippet"),
+                }
+                for row in results
+                if isinstance(row, dict)
+            ],
+            "warnings": [] if results else ["public web search returned no structured results"],
+        }
+    except Exception as exc:
+        return {
+            "query": query,
+            "results": [],
+            "warnings": [f"public web research failed: {exc}"],
+        }
+
+
+def _normalize_duckduckgo_href(href: object) -> str | None:
+    if not isinstance(href, str) or not href:
+        return None
+    parsed = urlparse(href)
+    params = parse_qs(parsed.query)
+    uddg = params.get("uddg", [None])[0]
+    return unquote(uddg) if uddg else href
+
+
+def _window[T](items: list[T], *, offset: int, limit: int) -> list[T]:
+    start = max(0, offset)
+    if limit > 0:
+        return items[start : start + limit]
+    return items[start:]
+
+
+def _acceptance_artifact_payload(
+    *,
+    input_path: Path,
+    candidates: list[AcceptanceCheckCandidate],
+    rows: list[dict[str, Any]],
+    offset: int,
+    limit: int,
+    complete: bool,
+) -> dict[str, Any]:
+    return {
+        "capturedAt": _now_iso(),
+        "input": str(input_path),
+        "count": len(rows),
+        "offset": offset,
+        "limit": limit,
+        "totalCandidates": len(candidates),
+        "complete": complete,
+        "rows": rows,
+    }
+
+
+def _accepted_research_payload(
+    *,
+    input_path: Path,
+    candidates: list[AcceptedDraftCandidate],
+    rows: list[dict[str, Any]],
+    offset: int,
+    limit: int,
+    complete: bool,
+) -> dict[str, Any]:
+    return {
+        "capturedAt": _now_iso(),
+        "input": str(input_path),
+        "count": len(rows),
+        "offset": offset,
+        "limit": limit,
+        "totalCandidates": len(candidates),
+        "complete": complete,
+        "rows": rows,
+    }
+
+
+def _json_evidence(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)[:1000]
 
 
 async def _locator_count(locator: Any) -> int:

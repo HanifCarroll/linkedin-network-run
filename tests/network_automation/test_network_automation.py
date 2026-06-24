@@ -17,20 +17,26 @@ from apps.network_automation.browser import (
 )
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
+    AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
     AcceptanceLedger,
+    AcceptanceOutcomeArtifact,
     AcceptanceStatus,
+    AcceptedDraftCandidate,
+    AcceptedResearchArtifact,
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
     DraftStrategy,
     PendingCandidateObservation,
+    PendingCapture,
     PendingWithdrawResult,
     RunState,
     SalesNavAudit,
     SalesNavCapture,
     SalesNavSendResult,
+    SavedSearchArtifact,
     default_sources,
 )
 from apps.network_automation.old_state import inspect_old_state
@@ -102,6 +108,131 @@ class FakeLiveBrowserClient:
             read_model(FIXTURES / "audit_101.json", SalesNavAudit),
             str(self.out_dir / "audit.json"),
         )
+
+    def resolve_saved_searches(
+        self, *, url: str, out: Path
+    ) -> tuple[SavedSearchArtifact, str]:
+        self.calls.append(f"saved-searches:{url}")
+        artifact = SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "url": url,
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        self.calls.append(
+            f"acceptance-check:{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
+        )
+        selected = candidates[offset : offset + limit] if limit else candidates[offset:]
+        artifact = AcceptanceOutcomeArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "input": str(input_path),
+                "count": len(selected),
+                "offset": offset,
+                "limit": limit,
+                "totalCandidates": len(candidates),
+                "complete": True,
+                "rows": [
+                    {
+                        "source": candidate.source,
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "status": "accepted",
+                        "checkedAt": "2026-06-24T12:00:00Z",
+                        "relationship": "1st",
+                        "evidence": candidate.name,
+                        "note": "fixture",
+                    }
+                    for candidate in selected
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        self.calls.append(
+            "accepted-research:"
+            f"{len(candidates)}:offset={offset}:limit={limit}:web={public_web}:"
+            f"max={max_web_results}:delay={delay_ms}"
+        )
+        selected = candidates[offset : offset + limit] if limit else candidates[offset:]
+        artifact = AcceptedResearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "rows": [
+                    {
+                        "source": candidate.source,
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "salesNav": {
+                            "name": candidate.name,
+                            "title": "Founder",
+                            "company": "Example Co",
+                            "url": candidate.profile_url,
+                        },
+                        "web": {"query": candidate.name, "results": [], "warnings": []},
+                    }
+                    for candidate in selected
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        self.calls.append(f"pending-capture:load_more={load_more}:threshold={threshold_days}")
+        artifact = PendingCapture.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "rows": [
+                    {
+                        "index": 0,
+                        "name": "Stale Invite",
+                        "profileUrl": "https://www.linkedin.com/in/stale",
+                        "ageText": "Sent 3 weeks ago",
+                        "ageDays": 21,
+                        "eligible": True,
+                        "rowText": "Stale Invite Sent 3 weeks ago Withdraw",
+                    }
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
 
     def send_acceptance_followup(
         self,
@@ -609,6 +740,160 @@ def test_cli_pending_withdraw_next_uses_live_browser(
     assert store.load_pending().withdrawn_count() == 1
 
 
+def test_cli_saved_searches_uses_live_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    out = tmp_path / "saved-searches.json"
+
+    exit_code = network_main(["--state-dir", str(tmp_path), "saved-searches", "--out", str(out)])
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "saved-searches:https://www.linkedin.com/sales/search/people"
+    ]
+    payload = json.loads(out.read_text())
+    assert payload["searches"][0]["name"] == "ASAP - Agency Owners Delivery"
+
+
+def test_cli_acceptance_check_uses_live_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    candidates = tmp_path / "candidates.json"
+    out = tmp_path / "outcomes.json"
+    candidates.write_text(
+        json.dumps(
+            [
+                {
+                    "run_id": str(_run_id()),
+                    "run_date": "2026-06-24",
+                    "source": "ASAP - Agency Owners Delivery",
+                    "name": "Duplicate Lead",
+                    "profile_url": "https://www.linkedin.com/sales/lead/dup",
+                    "sent_at": "2026-06-16T12:00:00Z",
+                    "latest_status": "sent",
+                    "latest_checked_at": None,
+                }
+            ]
+        )
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "check",
+            "--in",
+            str(candidates),
+            "--out",
+            str(out),
+            "--limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "acceptance-check:1:offset=0:limit=1:delay=500"
+    ]
+    assert json.loads(out.read_text())["rows"][0]["status"] == "accepted"
+    event = json.loads(store.acceptance_event_path.read_text().strip().splitlines()[-1])
+    assert event["kind"] == "check"
+
+
+def test_cli_acceptance_draft_followups_can_generate_research(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name="Duplicate Lead",
+            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_acceptance_ledger(ledger)
+    acceptance_import(store, FIXTURES / "acceptance_outcomes.json")
+    out_dir = tmp_path / "generated-research"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "draft-followups",
+            "--session",
+            "auto",
+            "--out-dir",
+            str(out_dir),
+            "--no-public-web",
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500"
+    ]
+    assert (out_dir / "accepted-candidates.json").exists()
+    assert (out_dir / "accepted-research.json").exists()
+    assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"
+
+
+def test_cli_pending_capture_uses_live_browser_and_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    pending_cleanup_start(store, max_withdrawals=1, threshold_days=14, force=True)
+    audit_exit = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "audit",
+            "--load-more",
+            "2",
+        ]
+    )
+    assert audit_exit == 0
+    assert FakeLiveBrowserClient.instances[-1].calls == ["audit:load_more=2"]
+    assert store.load_pending().start_audit == 101
+
+    out = tmp_path / "pending-capture.json"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "capture",
+            "--load-more",
+            "3",
+            "--threshold-weeks",
+            "2",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "pending-capture:load_more=3:threshold=14"
+    ]
+    observation = store.load_pending().next_eligible_observation()
+    assert observation is not None
+    assert observation.name == "Stale Invite"
+
+
 def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -698,6 +983,15 @@ def test_old_state_inspection_is_read_only(tmp_path: Path) -> None:
 
     assert snapshot.active_run is not None
     assert active.stat().st_mtime_ns == before
+
+
+def _write_fake_artifact(path: Path, model: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if hasattr(model, "model_dump"):
+        payload = model.model_dump(mode="json", by_alias=False)
+    else:
+        payload = model
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def _run_id() -> uuid.UUID:

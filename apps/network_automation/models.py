@@ -1113,6 +1113,17 @@ class AcceptanceOutcomeRow(AppModel):
 
 
 class AcceptanceOutcomeArtifact(AppModel):
+    captured_at: str | None = Field(
+        default=None, validation_alias=AliasChoices("captured_at", "capturedAt")
+    )
+    input: str | None = None
+    count: int | None = None
+    offset: int | None = None
+    limit: int | None = None
+    total_candidates: int | None = Field(
+        default=None, validation_alias=AliasChoices("total_candidates", "totalCandidates")
+    )
+    complete: bool | None = None
     rows: list[AcceptanceOutcomeRow] = Field(default_factory=list)
 
 
@@ -1137,6 +1148,33 @@ class AcceptanceCheckCandidate(AppModel):
     sent_at: datetime
     latest_status: AcceptanceStatus
     latest_checked_at: datetime | None
+
+
+class SavedSearchRow(AppModel):
+    saved_search_id: str = Field(
+        validation_alias=AliasChoices("saved_search_id", "savedSearchId")
+    )
+    name: str | None = None
+    view_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("view_url", "viewUrl")
+    )
+    fresh_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("fresh_url", "freshUrl")
+    )
+    fresh_text: str | None = Field(
+        default=None, validation_alias=AliasChoices("fresh_text", "freshText")
+    )
+    row_text: str | None = Field(
+        default=None, validation_alias=AliasChoices("row_text", "rowText")
+    )
+
+
+class SavedSearchArtifact(AppModel):
+    captured_at: str | None = Field(
+        default=None, validation_alias=AliasChoices("captured_at", "capturedAt")
+    )
+    url: str | None = None
+    searches: list[SavedSearchRow] = Field(default_factory=list)
 
 
 class AcceptanceSourceReport(AppModel):
