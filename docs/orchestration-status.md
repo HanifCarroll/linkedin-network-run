@@ -6,7 +6,7 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest integrated commit before follow-up parity work: `0eeb9a8`
+- Latest integrated commit before final opportunity parity work: `e1e3ca6`
 - Follow-up integration: network browser adapter and recruiter/agency command
   parity changes are included after the root routing commit.
 
@@ -123,7 +123,9 @@ Last updated: 2026-06-24
 - Top-level `linkedin-tools` dispatch now routes to the integrated Python app
   CLIs.
 - Legacy command names keep `import-legacy-state` and delegate implemented
-  commands to the app ports; legacy-only commands remain no-send placeholders.
+  commands to the app ports. Opportunity-intel compatibility now delegates all
+  recommend-only commands to the Python app, leaving only `import-legacy-state`
+  in the migration shim.
 - Runtime package data includes opportunity JSON contracts and review UI
   templates/static assets.
 - Network automation now has Python Playwright-backed command paths for
@@ -139,13 +141,18 @@ Last updated: 2026-06-24
   commands. Live recruiter/agency people capture, account capture, and
   `send-message --dry-run` passed from a temporary SQLite state directory by
   attaching to the existing Playwriter CDP endpoint.
+- Opportunity-intel now exposes the full recommend-only command surface named
+  by the compatibility shim, including source/query inspection, post queues,
+  provider CSV contracts, batch preparation/status, experiment/spike runs,
+  review/calibration/gate/action artifacts, merge/export commands, and
+  recommend-only profile/source placeholders.
 
 ## Integrated Verification
 
-After integrating Threads 1 through 7, root routing, and the follow-up
-browser/command parity slices:
+After integrating Threads 1 through 7, root routing, the follow-up
+browser/command parity slices, and opportunity command parity:
 
-- PASS: `uv run pytest` (`97 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`100 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
@@ -156,7 +163,7 @@ browser/command parity slices:
 
 ## Next Orchestration Steps
 
-1. Decide whether remaining legacy-only compatibility placeholders need direct
-   parity ports or approved archived replacements.
+1. Decide whether the selector-based Python capture is an approved consolidated
+   replacement for the old JavaScript Sales Navigator API response enrichment.
 2. Complete Hanif review and approval before archiving the Go/JavaScript
    implementation.

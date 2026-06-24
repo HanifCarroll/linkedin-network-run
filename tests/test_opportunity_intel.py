@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import ast
 import csv
 import json
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from apps.comment_extractor.contracts import PostHTMLInput
 from apps.comment_extractor.linkedin_post_comments import (
@@ -11,6 +15,9 @@ from apps.comment_extractor.linkedin_post_comments import (
     extract_comments_from_html_file,
     write_raw_comments_jsonl,
 )
+from apps.compat import OPPORTUNITY_APP_COMMANDS, OPPORTUNITY_COMMANDS
+from apps.opportunity_intel.cli import build_parser
+from apps.opportunity_intel.cli import main as opportunity_main
 from apps.opportunity_intel.contracts import CANONICAL_COMMENT_COLUMNS, RankLevel
 from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
 from apps.opportunity_intel.imports import read_comment_csv
@@ -145,6 +152,70 @@ def test_fixture_backed_experiment_writes_required_artifacts(tmp_path: Path) -> 
     assert "Opportunity Source Experiment Report" in report
 
 
+def test_opportunity_cli_covers_compatibility_command_surface() -> None:
+    parser = build_parser()
+    command_names = _parser_command_names(parser)
+    expected = set(OPPORTUNITY_COMMANDS) - {"import-legacy-state"}
+
+    assert OPPORTUNITY_APP_COMMANDS == expected
+    assert expected <= command_names
+
+
+def test_opportunity_cli_smoke_commands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert opportunity_main(["status", "--json"]) == 0
+    status_payload = json.loads(capsys.readouterr().out)
+    assert status_payload["recommend_only"] is True
+
+    provider_template = tmp_path / "provider-template.csv"
+    assert opportunity_main(["provider-export-csv", "--out", str(provider_template)]) == 0
+    capsys.readouterr()
+    with provider_template.open(newline="", encoding="utf-8") as handle:
+        assert csv.DictReader(handle).fieldnames == list(CANONICAL_COMMENT_COLUMNS)
+
+    post_queue = tmp_path / "post-queue.csv"
+    assert opportunity_main(["prepare-batch", "--out", str(post_queue)]) == 0
+    assert "post queue:" in capsys.readouterr().out
+    with post_queue.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert rows
+    assert {"source_id", "query_id", "post_url", "search_query"} <= set(rows[0])
+
+
+def test_opportunity_cli_spike_and_artifact_commands(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    comments_csv = tmp_path / "comments_100.csv"
+    runs_dir = tmp_path / "runs"
+    _write_comment_fixture_csv(comments_csv, count=100, direct_buyer_count=35)
+
+    assert (
+        opportunity_main(
+            [
+                "run-spike",
+                "--comments-csv",
+                str(comments_csv),
+                "--out-dir",
+                str(runs_dir),
+                "--run-id",
+                "spike",
+            ]
+        )
+        == 0
+    )
+    assert "source report:" in capsys.readouterr().out
+
+    assert opportunity_main(["gate-report", "--run-dir", str(runs_dir / "spike")]) == 0
+    gate_payload = json.loads(capsys.readouterr().out)
+    assert gate_payload["valid_comment_count"] == 100
+
+    assert opportunity_main(["action-plan", "--run-dir", str(runs_dir / "spike")]) == 0
+    assert "# Action Plan" in capsys.readouterr().out
+
+
 def test_ranker_rejects_recruiting_and_job_seeker_noise(tmp_path: Path) -> None:
     comments_csv = tmp_path / "noise.csv"
     _write_comment_fixture_csv(comments_csv, count=1, direct_buyer_count=0)
@@ -175,6 +246,15 @@ def test_opportunity_and_comment_modules_do_not_import_action_modules() -> None:
                 if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                     lower_name = node.name.casefold()
                     assert not any(term in lower_name for term in prohibited_action_terms)
+
+
+def _parser_command_names(parser: argparse.ArgumentParser) -> set[str]:
+    for action in parser._actions:
+        action_any = cast(Any, action)
+        choices = getattr(action_any, "choices", None)
+        if isinstance(choices, dict):
+            return set(choices)
+    raise AssertionError("parser has no subcommands")
 
 
 def _write_comment_fixture_csv(path: Path, *, count: int, direct_buyer_count: int) -> None:

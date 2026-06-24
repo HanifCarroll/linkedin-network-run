@@ -2,7 +2,7 @@
 
 Do not archive the current Go/JavaScript implementation until all items pass.
 
-- [ ] Every current CLI command has a Python equivalent.
+- [x] Every current CLI command has a Python equivalent.
 - [ ] Every current browser script has a Python Playwright equivalent or an
       approved consolidated replacement.
 - [x] Old state importers preserve data and do not mutate old state.
@@ -56,3 +56,14 @@ Do not archive the current Go/JavaScript implementation until all items pass.
       `/tmp/recruiter-agency-live-dryrun.h4e40B/account-capture-live/001-ASAP---Agency-Accounts-Product-Studio-accounts.json`.
 - [x] Legacy `serve` behavior is replaced by the consolidated Python review UI
       and compatibility routing delegates `recruiter-agency-outreach serve`.
+
+## Opportunity Intel Command Slice
+
+- [x] `linkedin-opportunity-intel` compatibility delegates every recommend-only
+      command to the Python opportunity app, except `import-legacy-state`, which
+      remains in the read-only migration shim.
+- [x] Source/query inspection, post queue generation, provider CSV contracts,
+      batch preparation/status, experiment/spike runs, artifact review commands,
+      merge/export commands, and recommend-only placeholder commands are wired.
+- [x] Tests assert the native opportunity parser covers the compatibility
+      command surface.

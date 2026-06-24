@@ -170,7 +170,9 @@ RECRUITER_AGENCY_APP_COMMANDS = frozenset(
         "agency-pool",
     }
 )
-OPPORTUNITY_APP_COMMANDS = frozenset({"validate-contracts", "post-queue", "run-experiment"})
+OPPORTUNITY_APP_COMMANDS = frozenset(
+    command for command in OPPORTUNITY_COMMANDS if command != "import-legacy-state"
+)
 
 
 def linkedin_network_run(argv: Sequence[str] | None = None) -> int:
@@ -412,6 +414,8 @@ def _dispatch_app_command(*, source_app: SourceApp, argv: Sequence[str]) -> int:
 
 def _normalize_app_argv(*, source_app: SourceApp, argv: Sequence[str]) -> list[str]:
     args = list(argv)
+    if source_app == "opportunity":
+        return _strip_compat_target_root(args)
     if source_app not in {"network", "recruiter_agency"} or not args:
         return args
 
@@ -431,6 +435,23 @@ def _normalize_app_argv(*, source_app: SourceApp, argv: Sequence[str]) -> list[s
         command_and_args.append(value)
         index += 1
     normalized.extend(command_and_args)
+    return normalized
+
+
+def _strip_compat_target_root(argv: Sequence[str]) -> list[str]:
+    normalized: list[str] = []
+    args = list(argv)
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--target-root" and index + 1 < len(args):
+            index += 2
+            continue
+        if value.startswith("--target-root="):
+            index += 1
+            continue
+        normalized.append(value)
+        index += 1
     return normalized
 
 

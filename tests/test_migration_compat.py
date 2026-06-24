@@ -180,7 +180,7 @@ def test_compat_help_status_and_no_send_paths(
 
     assert linkedin_opportunity_intel(["status", "--json", "--target-root", str(tmp_path)]) == 0
     opportunity_payload = json.loads(capsys.readouterr().out)
-    assert opportunity_payload["source_app"] == "opportunity"
+    assert opportunity_payload["recommend_only"] is True
 
     assert linkedin_opportunity_intel(["validate-contracts"]) == 0
     assert "validated" in capsys.readouterr().out
