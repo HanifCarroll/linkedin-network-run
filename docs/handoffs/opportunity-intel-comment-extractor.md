@@ -28,6 +28,7 @@ Comment extraction:
 ```sh
 uv run python -m apps.comment_extractor.cli extract --post-url <url> --html <html> --source-id <source> --query-id <query> --out-dir <dir>
 uv run python -m apps.comment_extractor.cli extract-url --post-url <url> --source-id <source> --query-id <query> --state-dir <state> --out-dir <dir>
+uv run python -m apps.comment_extractor.cli extract-url-queue --post-queue <csv> --state-dir <state> --out-dir <dir> --provider-csv <csv>
 uv run python -m apps.comment_extractor.cli extract-queue --post-queue <csv> --out-dir <dir>
 uv run python -m apps.comment_extractor.cli preflight --state-dir <state> --json
 ```
@@ -47,12 +48,17 @@ uv run python -m apps.comment_extractor.cli preflight --state-dir <state> --json
   reports, source decisions, experiment artifacts, and review queue rows.
 - Browser safety limits for scrolls, comment/reply control clicks, navigation
   timeout, action timeout, settle delay, and maximum runtime.
+- Live URL queue checkpoints, per-post manifest rows, per-post artifacts,
+  SQLite persistence, and refreshed provider CSV snapshots after each
+  successful URL.
 
 ## Tests Added
 
 - Contract validation for source registry and query pack.
 - Explicit-selector comment extraction from a fixture LinkedIn post page.
 - `raw_comments.jsonl` writer contract.
+- Live-DOM comment row conversion and incremental provider CSV snapshot
+  behavior.
 - Provider/manual CSV alias normalization.
 - 100-row batch proof gate behavior.
 - Fixture-backed source experiment artifact generation.
@@ -75,7 +81,9 @@ Results:
 - Mypy: passed, 15 source files checked.
 - Pytest: passed, 7 tests.
 - Contract CLI: validated 5 sources and 6 queries.
-- Weak-inference grep: no matches in touched opportunity/comment code or tests.
+- Weak-inference grep: no weak extraction logic in the live comment extractor;
+  expected matches are documented grep text, LinkedIn search URL fields, and
+  source-registry search terms.
 
 ## Known Gaps
 

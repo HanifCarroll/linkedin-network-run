@@ -9,6 +9,11 @@ from typing import Any, cast
 
 import pytest
 
+from apps.comment_extractor.browser import (
+    BrowserExtractionInput,
+    _comment_extraction_cdp_url,
+    _comments_from_page_rows,
+)
 from apps.comment_extractor.cli import main as comments_main
 from apps.comment_extractor.contracts import PostHTMLInput
 from apps.comment_extractor.linkedin_post_comments import (
@@ -26,7 +31,7 @@ from apps.opportunity_intel.contracts import (
     SourceKind,
 )
 from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
-from apps.opportunity_intel.imports import read_comment_csv
+from apps.opportunity_intel.imports import read_comment_csv, write_comment_csv
 from apps.opportunity_intel.normalization import normalize_and_dedupe
 from apps.opportunity_intel.post_discovery import discover_posts_from_registry
 from apps.opportunity_intel.ranking import rank_comment
@@ -165,6 +170,81 @@ def test_comment_extractor_writes_raw_comments_jsonl(tmp_path: Path) -> None:
         '[componentkey^="replaceableComment_urn:li:comment:"]',
         '[data-id^="urn:li:comment:"]',
     )
+
+
+def test_live_page_comment_rows_map_to_actual_comment_contract() -> None:
+    result = _comments_from_page_rows(
+        [
+            {
+                "comment_id": "urn:li:comment:(activity:1,comment:101)",
+                "commenter_name": "Ava Founder",
+                "commenter_profile_url": (
+                    "https://www.linkedin.com/in/ava-founder/?miniProfileUrn=abc"
+                ),
+                "commenter_headline": "Founder at Ava Ops",
+                "comment_text": (
+                    "We need help turning our internal tool spreadsheet tracker "
+                    "into a real dashboard this quarter."
+                ),
+                "commented_at": "2026-06-24T12:00:00Z",
+            }
+        ],
+        input_row=BrowserExtractionInput(
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1/",
+            source_id="known_high_signal_post_engagement",
+            query_id="known_high_signal_post_engagement",
+        ),
+    )
+
+    assert not result.warnings
+    assert len(result.comments) == 1
+    comment = result.comments[0]
+    assert comment.commenter_name == "Ava Founder"
+    assert comment.commenter_profile_url == "https://www.linkedin.com/in/ava-founder"
+    assert comment.commenter_headline == "Founder at Ava Ops"
+    assert "real dashboard" in comment.comment_text
+
+
+def test_comment_extraction_disables_implicit_cdp_attachment() -> None:
+    assert _comment_extraction_cdp_url(None) == ""
+    assert _comment_extraction_cdp_url(" ws://127.0.0.1:19988/cdp ") == ("ws://127.0.0.1:19988/cdp")
+
+
+def test_provider_csv_snapshot_preserves_incremental_persisted_comments(
+    tmp_path: Path,
+) -> None:
+    store = OpportunityStore(tmp_path / "state")
+    provider_csv = tmp_path / "provider-comments.csv"
+    first = _comment_fixture(
+        index=1,
+        text="We need help with an internal tool dashboard for our ops team.",
+    )
+    second = _comment_fixture(
+        index=2,
+        text="Our manual tracker needs to become a dashboard this quarter.",
+    )
+
+    for comment in (first, second):
+        run_id = store.start_extraction_run(
+            post_url=comment.post_url,
+            source_id=comment.source_id,
+            query_id=comment.query_id,
+            source_kind=comment.source_kind,
+            source_url=comment.source_url,
+            search_query=comment.search_query,
+            browser_profile="LinkedIn",
+            safety_limits={},
+        )
+        store.persist_comments(
+            run_id=run_id,
+            comments=(comment,),
+            query_pack=load_query_pack(),
+        )
+        write_comment_csv(provider_csv, store.export_comments())
+
+    result = read_comment_csv(provider_csv, load_query_pack())
+    assert len(result.valid_comments) == 2
+    assert not result.rejected_rows
 
 
 def test_saved_html_extraction_persists_sqlite_state(
@@ -459,6 +539,28 @@ def _parser_command_names(parser: argparse.ArgumentParser) -> set[str]:
         if isinstance(choices, dict):
             return set(choices)
     raise AssertionError("parser has no subcommands")
+
+
+def _comment_fixture(*, index: int, text: str) -> CommentEvidence:
+    return CommentEvidence(
+        query_id="internal_tools_dashboard_pain",
+        source_id="manual_actual_comment_import",
+        source_kind="manual_csv",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query='"internal tool" "need help"',
+        post_url=f"https://www.linkedin.com/feed/update/urn:li:activity:{index}/",
+        post_author_name="Post Author",
+        post_text="Operators discussing dashboard work.",
+        comment_id=f"urn:li:comment:{index}",
+        comment_url="",
+        commenter_name=f"Buyer {index}",
+        commenter_profile_url=f"https://www.linkedin.com/in/buyer-{index}/",
+        commenter_headline="Founder",
+        commenter_company="Acme Ops",
+        relationship="",
+        comment_text=text,
+        commented_at="2026-06-24T12:00:00Z",
+    )
 
 
 def _write_comment_fixture_csv(path: Path, *, count: int, direct_buyer_count: int) -> None:

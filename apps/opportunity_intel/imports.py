@@ -38,6 +38,18 @@ def read_comment_csv(path: Path, query_pack: QueryPack) -> ImportResult:
     return ImportResult(valid_comments=tuple(valid), rejected_rows=tuple(rejected))
 
 
+def write_comment_csv(path: Path, comments: Sequence[CommentEvidence]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CANONICAL_COMMENT_COLUMNS)
+        writer.writeheader()
+        for comment in comments:
+            writer.writerow(comment.to_row())
+            count += 1
+    return count
+
+
 def normalize_headers(fieldnames: Sequence[str]) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for fieldname in fieldnames:

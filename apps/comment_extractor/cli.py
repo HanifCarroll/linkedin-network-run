@@ -12,6 +12,7 @@ from apps.comment_extractor.browser import (
     BrowserExtractionInput,
     BrowserSafetyLimits,
     extract_post_comments_from_url,
+    extract_post_comments_from_url_queue,
     run_browser_preflight,
     write_preflight_artifact,
 )
@@ -56,6 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
     extract_url_parser.add_argument("--cdp-url", default=None)
     _add_safety_limit_args(extract_url_parser)
     extract_url_parser.set_defaults(handler=_handle_extract_url)
+
+    url_queue_parser = subparsers.add_parser("extract-url-queue")
+    url_queue_parser.add_argument("--post-queue", type=Path, required=True)
+    url_queue_parser.add_argument("--out-dir", type=Path, required=True)
+    url_queue_parser.add_argument("--state-dir", type=Path, default=None)
+    url_queue_parser.add_argument("--provider-csv", type=Path, default=None)
+    url_queue_parser.add_argument("--cdp-url", default=None)
+    _add_safety_limit_args(url_queue_parser)
+    url_queue_parser.set_defaults(handler=_handle_extract_url_queue)
 
     queue_parser = subparsers.add_parser("extract-queue")
     queue_parser.add_argument("--post-queue", type=Path, required=True)
@@ -152,6 +162,26 @@ def _handle_extract_url(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_extract_url_queue(args: argparse.Namespace) -> int:
+    provider_csv = args.provider_csv or args.out_dir / "provider-comments.csv"
+    result = extract_post_comments_from_url_queue(
+        input_rows=_read_browser_post_queue(args.post_queue),
+        output_dir=args.out_dir,
+        store=OpportunityStore(args.state_dir),
+        limits=_safety_limits_from_args(args),
+        provider_csv_path=provider_csv,
+        cdp_url=args.cdp_url,
+    )
+    print(f"processed={result.processed}")
+    print(f"succeeded={result.succeeded}")
+    print(f"failed={result.failed}")
+    print(f"manifest={result.manifest_path}")
+    print(f"checkpoint={result.checkpoint_path}")
+    if result.provider_csv_path is not None:
+        print(f"provider_csv={result.provider_csv_path}")
+    return 0
+
+
 def _handle_extract_queue(args: argparse.Namespace) -> int:
     comments: list[CommentEvidence] = []
     for input_row in _read_post_queue(args.post_queue):
@@ -192,6 +222,27 @@ def _read_post_queue(path: Path) -> tuple[PostHTMLInput, ...]:
                 PostHTMLInput(
                     post_url=row.get("post_url", ""),
                     html_path=Path(row.get("html_path", "")),
+                    source_id=row.get("source_id", ""),
+                    query_id=row.get("query_id", ""),
+                    source_kind=row.get("source_kind", "known_post"),
+                    source_url=row.get("source_url", ""),
+                    search_query=row.get("search_query", ""),
+                )
+            )
+    return tuple(rows)
+
+
+def _read_browser_post_queue(path: Path) -> tuple[BrowserExtractionInput, ...]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows: list[BrowserExtractionInput] = []
+        for row in reader:
+            post_url = row.get("post_url", "")
+            if not post_url:
+                continue
+            rows.append(
+                BrowserExtractionInput(
+                    post_url=post_url,
                     source_id=row.get("source_id", ""),
                     query_id=row.get("query_id", ""),
                     source_kind=row.get("source_kind", "known_post"),

@@ -109,6 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_BATCH_DIR / "raw-comments",
     )
+    run_batch_parser.add_argument("--state-dir", type=Path, default=None)
+    run_batch_parser.add_argument(
+        "--provider-csv",
+        type=Path,
+        default=DEFAULT_BATCH_DIR / "provider-comments.csv",
+    )
+    run_batch_parser.add_argument("--cdp-url", default=None)
 
     batch_status_parser = _add_command(subparsers, "batch-status", _handle_batch_status)
     batch_status_parser.add_argument("--out-dir", type=Path, default=DEFAULT_BATCH_DIR)
@@ -428,9 +435,20 @@ def _handle_company_post_capture(args: argparse.Namespace) -> int:
 
 
 def _handle_run_batch(args: argparse.Namespace) -> int:
-    return comment_extractor_main(
-        ["extract-queue", "--post-queue", str(args.post_queue), "--out-dir", str(args.out_dir)]
-    )
+    command = [
+        "extract-url-queue",
+        "--post-queue",
+        str(args.post_queue),
+        "--out-dir",
+        str(args.out_dir),
+        "--provider-csv",
+        str(args.provider_csv),
+    ]
+    if args.state_dir is not None:
+        command.extend(["--state-dir", str(args.state_dir)])
+    if args.cdp_url:
+        command.extend(["--cdp-url", str(args.cdp_url)])
+    return comment_extractor_main(command)
 
 
 def _handle_batch_status(args: argparse.Namespace) -> int:

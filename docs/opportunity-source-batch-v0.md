@@ -78,6 +78,20 @@ uv run linkedin-tools comments extract-url \
   --out-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel/artifacts"
 ```
 
+For a post queue, use the live URL queue runner so each processed post writes
+its own run artifacts, appends a manifest row, refreshes the provider CSV from
+SQLite, and writes a checkpoint before moving to the next URL:
+
+```sh
+uv run linkedin-tools comments extract-url-queue \
+  --post-queue /tmp/linkedin-opportunity-v0/post-queue.csv \
+  --state-dir /tmp/linkedin-opportunity-v0/state \
+  --out-dir /tmp/linkedin-opportunity-v0/live-capture \
+  --provider-csv /tmp/linkedin-opportunity-v0/provider-comments.csv
+```
+
+`opportunity run-batch` is wired to the same URL queue runner.
+
 Configurable safety limits:
 
 ```sh
@@ -89,8 +103,9 @@ Configurable safety limits:
 --max-runtime-seconds 90
 ```
 
-The extractor uses the Chrome profile named `LinkedIn` by default. Override the
-profile through `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` and
+The extractor uses the Chrome profile named `LinkedIn` by default. It does not
+attach to the Playwriter CDP endpoint unless `--cdp-url` is passed explicitly.
+Override the profile through `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` and
 `LINKEDIN_TOOLS_CHROME_PROFILE_NAME` if needed. It remains recommend-only and
 does not send messages, connect, withdraw, or click guarded LinkedIn actions.
 

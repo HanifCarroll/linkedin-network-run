@@ -507,6 +507,44 @@ class OpportunityStore:
                     )
         return ranked_comments
 
+    def export_comments(self) -> tuple[CommentEvidence, ...]:
+        rows = self.fetch_all(
+            """
+            SELECT query_id, source_id, source_kind, source_url, search_query, post_url,
+                   post_author_name, post_text, source_comment_id, comment_url,
+                   commenter_name, commenter_profile_url, commenter_headline,
+                   commenter_company, relationship, comment_text, commented_at,
+                   warnings_json
+            FROM comments
+            ORDER BY created_at ASC, comment_key ASC
+            """
+        )
+        comments: list[CommentEvidence] = []
+        for row in rows:
+            comments.append(
+                CommentEvidence(
+                    query_id=str(row["query_id"] or ""),
+                    source_id=str(row["source_id"] or ""),
+                    source_kind=str(row["source_kind"] or ""),
+                    source_url=str(row["source_url"] or ""),
+                    search_query=str(row["search_query"] or ""),
+                    post_url=str(row["post_url"] or ""),
+                    post_author_name=str(row["post_author_name"] or ""),
+                    post_text=str(row["post_text"] or ""),
+                    comment_id=str(row["source_comment_id"] or ""),
+                    comment_url=str(row["comment_url"] or ""),
+                    commenter_name=str(row["commenter_name"] or ""),
+                    commenter_profile_url=str(row["commenter_profile_url"] or ""),
+                    commenter_headline=str(row["commenter_headline"] or ""),
+                    commenter_company=str(row["commenter_company"] or ""),
+                    relationship=str(row["relationship"] or ""),
+                    comment_text=str(row["comment_text"] or ""),
+                    commented_at=str(row["commented_at"] or ""),
+                    warnings=_warnings_from_json(str(row["warnings_json"] or "[]")),
+                )
+            )
+        return tuple(comments)
+
     def set_review_label(
         self,
         *,
@@ -666,6 +704,13 @@ def _hash(value: str) -> str:
 
 def _json_dumps(value: object) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _warnings_from_json(value: str) -> tuple[str, ...]:
+    decoded = json.loads(value)
+    if not isinstance(decoded, list) or not all(isinstance(warning, str) for warning in decoded):
+        raise ValueError("warnings_json must be a JSON string list")
+    return tuple(decoded)
 
 
 def _now_iso() -> str:
