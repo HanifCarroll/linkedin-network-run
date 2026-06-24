@@ -72,6 +72,18 @@ func (s Store) DefaultDailyDashboardPath() string {
 	return filepath.Join(s.Dir, "dashboards", time.Now().Format("2006-01-02")+".md")
 }
 
+func (s Store) AgencySourceDir() string {
+	return filepath.Join(s.Dir, "agency-sources")
+}
+
+func (s Store) AgencySourceArtifactPath(source string) string {
+	return filepath.Join(s.AgencySourceDir(), time.Now().Format("2006-01-02")+"-"+safePathSegment(source)+".json")
+}
+
+func (s Store) AgencySourceReportPath() string {
+	return filepath.Join(s.Dir, "reports", "agency-source-"+time.Now().Format("2006-01-02")+".json")
+}
+
 func (s Store) Load() (OutreachState, error) {
 	if _, err := os.Stat(s.DatabasePath()); os.IsNotExist(err) {
 		state, err := s.loadJSONState()

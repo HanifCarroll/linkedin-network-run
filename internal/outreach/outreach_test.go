@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hanifcarroll/linkedin-network-run/internal/app"
+	"golang.org/x/net/html"
 )
 
 func TestImportCaptureClassifiesContractRecruiter(t *testing.T) {
@@ -1159,6 +1160,117 @@ func TestImportAgencySourceCaptureCreatesReviewOnlyAccountsAndCandidates(t *test
 	}
 }
 
+func TestAgencySourceCSVReplenishDedupeAndReport(t *testing.T) {
+	dir := t.TempDir()
+	csvPath := filepath.Join(dir, "reviewed-agencies.csv")
+	csvBody := strings.Join([]string{
+		"name,website,source_url,services,contact_name,contact_title,contact_profile_url",
+		"Bright Studio,https://bright.example.com,https://directory.example.com/bright,Web Development|Custom API Integrations,Jane Doe,Founder,https://www.linkedin.com/in/jane-doe/",
+		"Bright Studio LLC,https://bright.example.com,https://directory.example.com/bright-duplicate,Web Development,Jane Doe,Founder,https://www.linkedin.com/in/jane-doe/",
+	}, "\n")
+	if err := os.WriteFile(csvPath, []byte(csvBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	capture, err := LoadAgencySourceCSV(csvPath, AgencySourceCSVOptions{
+		Source:     "Reviewed agency directory",
+		SourceType: "manual_directory",
+		CapturedAt: time.Date(2026, time.June, 23, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := ValidateAgencySourceCapture(capture)
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "duplicates row 1") {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	store := Store{Dir: dir}
+	artifactPath := filepath.Join(store.AgencySourceDir(), "reviewed-agencies.json")
+	if err := WriteAgencySourceCapture(artifactPath, capture); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ReplenishAgencyPool(context.Background(), &store, AgencySourceReplenishmentOptions{
+		SourceDir:              store.AgencySourceDir(),
+		ImportLimit:            5,
+		WebsiteEnrichmentLimit: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ImportedArtifacts != 1 || len(summary.ImportedSources) != 1 {
+		t.Fatalf("summary = %#v", summary)
+	}
+	if summary.ImportedSources[0].Stored != 1 || summary.ImportedSources[0].Updated != 1 || summary.ImportedSources[0].Qualified != 2 {
+		t.Fatalf("import summary = %#v", summary.ImportedSources[0])
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.AgencyAccounts) != 1 || len(state.AgencyContactCandidates) != 1 {
+		t.Fatalf("state accounts=%#v candidates=%#v", state.AgencyAccounts, state.AgencyContactCandidates)
+	}
+	reportPath := filepath.Join(dir, "source-report.json")
+	report := BuildAgencySourceReport(state, store.StatePath(), reportPath)
+	if report.Totals.Accounts != 1 || report.Totals.QualifiedAccounts != 1 || report.Totals.ContactCandidates != 1 || report.Totals.WebsiteContactCandidates != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	if err := WriteAgencySourceReport(reportPath, report); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatal(err)
+	}
+	text := RenderAgencySourceReportText(report)
+	if !strings.Contains(text, "Reviewed agency directory") || !strings.Contains(text, "qualified") {
+		t.Fatalf("report text = %s", text)
+	}
+}
+
+func TestShopifyPartnerParserBuildsSourceRowsAndProfileWebsite(t *testing.T) {
+	directoryNode, err := html.Parse(strings.NewReader(`<html><body>
+		<a href="/partners/directory/partner/bright-studio"><img alt="Bright Studio"></a>
+		<a href="/partners/directory/partner/bright-studio"><img alt="Bright Studio"></a>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := parseShopifyPartnerDirectoryRows(directoryNode)
+	if len(rows) != 1 || rows[0].Name != "Bright Studio" || rows[0].SourceURL == nil || !strings.Contains(*rows[0].SourceURL, "/partners/directory/partner/bright-studio") {
+		t.Fatalf("rows = %#v", rows)
+	}
+	profileNode, err := html.Parse(strings.NewReader(`<html><head>
+		<meta property="og:title" content="Bright Studio">
+		<meta name="description" content="Shopify Plus design and development partner.">
+	</head><body>
+		<a href="https://bright.example.com/?utm_source=sref">bright.example.com</a>
+		<a href="https://customer.example.com/">View featured work</a>
+		<a href="https://www.linkedin.com/company/shopify">LinkedIn</a>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := parseShopifyPartnerProfile(profileNode)
+	if profile.Name != "Bright Studio" || profile.Description == "" || profile.Website != "https://bright.example.com/?utm_source=sref" {
+		t.Fatalf("profile = %#v", profile)
+	}
+}
+
+func TestAgencyContactCandidateRankingPrefersReviewedExecutives(t *testing.T) {
+	candidates := []AgencyContactCandidate{
+		{ID: "agc_generic", AgencyAccountID: "acct", AgencyAccountName: "Bright Studio", Status: AgencyContactCandidateStatusGenericInbox, ReviewStatus: AgencyContactReviewStatusNeedsReview, Email: strPtr("hello@example.com")},
+		{ID: "agc_director", AgencyAccountID: "acct", AgencyAccountName: "Bright Studio", Status: AgencyContactCandidateStatusWebsiteContactCandidate, ReviewStatus: AgencyContactReviewStatusNeedsReview, Name: strPtr("Dana Director"), Title: strPtr("Director of Delivery"), ProfileURL: strPtr("https://www.linkedin.com/in/dana-director/")},
+		{ID: "agc_founder", AgencyAccountID: "acct", AgencyAccountName: "Bright Studio", Status: AgencyContactCandidateStatusWebsiteContactCandidate, ReviewStatus: AgencyContactReviewStatusNeedsReview, Name: strPtr("Fran Founder"), Title: strPtr("Founder"), ProfileURL: strPtr("https://www.linkedin.com/in/fran-founder/")},
+	}
+	sortAgencyContactCandidates(candidates)
+	if candidates[0].ID != "agc_founder" || agencyContactCandidateRank(candidates[0]) <= agencyContactCandidateRank(candidates[1]) {
+		t.Fatalf("ranked candidates = %#v", candidates)
+	}
+	text := RenderAgencyContactCandidatesText(candidates)
+	if !strings.Contains(text, "rank") || !strings.Contains(text, "Founder") {
+		t.Fatalf("text = %s", text)
+	}
+}
+
 func TestEnrichAgencyWebsitesExtractsExplicitLinksAndForms(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -1199,6 +1311,23 @@ func TestEnrichAgencyWebsitesExtractsExplicitLinksAndForms(t *testing.T) {
 	}
 	if statuses[AgencyContactCandidateStatusGenericInbox] != 1 || statuses[AgencyContactCandidateStatusWebsiteContactCandidate] != 1 || statuses[AgencyContactCandidateStatusContactForm] != 1 {
 		t.Fatalf("candidate statuses = %#v candidates=%#v", statuses, state.AgencyContactCandidates)
+	}
+	repeat := EnrichAgencyWebsites(context.Background(), &state, AgencyWebsiteEnrichmentOptions{
+		Limit:  1,
+		Client: server.Client(),
+		Now:    time.Date(2026, time.June, 23, 12, 5, 0, 0, time.UTC),
+	})
+	if repeat.Checked != 0 || repeat.Skipped != 1 {
+		t.Fatalf("repeat summary = %#v", repeat)
+	}
+	forced := EnrichAgencyWebsites(context.Background(), &state, AgencyWebsiteEnrichmentOptions{
+		Limit:  1,
+		Force:  true,
+		Client: server.Client(),
+		Now:    time.Date(2026, time.June, 23, 12, 10, 0, 0, time.UTC),
+	})
+	if forced.Checked != 1 || forced.ContactCandidatesUpdated != 3 {
+		t.Fatalf("forced summary = %#v", forced)
 	}
 }
 

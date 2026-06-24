@@ -3,6 +3,7 @@ package outreach
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -66,6 +67,12 @@ func agencyPoolCommand(withStore func(func(*Store) error) func(*cobra.Command, [
 		Short: "Inspect agency account sourcing and contactability",
 	}
 	cmd.AddCommand(agencyPoolImportSourceCommand(withStore))
+	cmd.AddCommand(agencyPoolSourceContractCommand())
+	cmd.AddCommand(agencyPoolBuildSourceCommand())
+	cmd.AddCommand(agencyPoolImportDirectoryCommand(withStore))
+	cmd.AddCommand(agencyPoolCollectShopifyPartnersCommand(withStore))
+	cmd.AddCommand(agencyPoolReplenishCommand(withStore))
+	cmd.AddCommand(agencyPoolSourceReportCommand(withStore))
 	cmd.AddCommand(agencyPoolEnrichWebsitesCommand(withStore))
 	cmd.AddCommand(agencyPoolContactsCommand(withStore))
 	cmd.AddCommand(agencyPoolReviewContactCommand(withStore))
@@ -126,10 +133,322 @@ func agencyPoolImportSourceCommand(withStore func(func(*Store) error) func(*cobr
 	return cmd
 }
 
+func agencyPoolSourceContractCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "source-contract",
+		Short: "Show the canonical agency source artifact contract",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println(AgencySourceContractMarkdown())
+			return nil
+		},
+	}
+}
+
+func agencyPoolBuildSourceCommand() *cobra.Command {
+	var csvPath, source, sourceType, sourceURL, out string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "build-source",
+		Short: "Build a canonical agency source artifact from reviewed CSV",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			capture, err := LoadAgencySourceCSV(csvPath, AgencySourceCSVOptions{
+				Source:     source,
+				SourceType: sourceType,
+				URL:        sourceURL,
+				CapturedAt: time.Now(),
+			})
+			if err != nil {
+				return err
+			}
+			if cleanText(out) == "" {
+				return fmt.Errorf("--out is required")
+			}
+			if err := WriteAgencySourceCapture(out, capture); err != nil {
+				return err
+			}
+			summary := SummarizeAgencySourceArtifact(out, capture)
+			if asJSON {
+				raw, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Printf("artifact=%s source=%s source_type=%s rows=%d warnings=%d\n", summary.Path, summary.Source, summary.SourceType, summary.Rows, len(summary.Warnings))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&csvPath, "csv", "", "reviewed agency source CSV path")
+	cmd.Flags().StringVar(&source, "source", "", "source name")
+	cmd.Flags().StringVar(&sourceType, "source-type", "manual_directory", "source type")
+	cmd.Flags().StringVar(&sourceURL, "url", "", "source URL")
+	cmd.Flags().StringVar(&out, "out", "", "artifact output path")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	must(cmd.MarkFlagRequired("csv"))
+	must(cmd.MarkFlagRequired("source"))
+	return cmd
+}
+
+func agencyPoolImportDirectoryCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var csvPath, source, sourceType, sourceURL, out string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "import-directory",
+		Short: "Build and import a reviewed agency directory CSV",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			if cleanText(out) == "" {
+				out = store.AgencySourceArtifactPath(source)
+			}
+			capture, err := LoadAgencySourceCSV(csvPath, AgencySourceCSVOptions{
+				Source:     source,
+				SourceType: sourceType,
+				URL:        sourceURL,
+				CapturedAt: time.Now(),
+			})
+			if err != nil {
+				return err
+			}
+			if err := WriteAgencySourceCapture(out, capture); err != nil {
+				return err
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			importSummary, err := ImportAgencySourceCapture(&state, capture)
+			if err != nil {
+				return err
+			}
+			if err := store.Save(state); err != nil {
+				return err
+			}
+			result := struct {
+				Artifact AgencySourceArtifactSummary `json:"artifact"`
+				Import   AgencySourceImportSummary   `json:"import"`
+			}{
+				Artifact: SummarizeAgencySourceArtifact(out, capture),
+				Import:   importSummary,
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Printf("artifact=%s source=%s rows=%d stored=%d updated=%d qualified=%d needs_review=%d rejected=%d contact_candidates_stored=%d contact_candidates_updated=%d total_accounts=%d\n",
+				result.Artifact.Path,
+				importSummary.Source,
+				result.Artifact.Rows,
+				importSummary.Stored,
+				importSummary.Updated,
+				importSummary.Qualified,
+				importSummary.NeedsReview,
+				importSummary.Rejected,
+				importSummary.ContactCandidatesStored,
+				importSummary.ContactCandidatesUpdated,
+				importSummary.TotalAccounts,
+			)
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&csvPath, "csv", "", "reviewed agency source CSV path")
+	cmd.Flags().StringVar(&source, "source", "", "source name")
+	cmd.Flags().StringVar(&sourceType, "source-type", "manual_directory", "source type")
+	cmd.Flags().StringVar(&sourceURL, "url", "", "source URL")
+	cmd.Flags().StringVar(&out, "out", "", "artifact output path; defaults to agency source dir")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	must(cmd.MarkFlagRequired("csv"))
+	must(cmd.MarkFlagRequired("source"))
+	return cmd
+}
+
+func agencyPoolCollectShopifyPartnersCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var pages, limit, profileLimit, timeoutMS int
+	var out string
+	var importArtifact, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "collect-shopify-partners",
+		Short: "Collect Shopify service partner profiles into a canonical source artifact",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(func(store *Store) error {
+				capture, err := CollectShopifyPartnerSource(cmd.Context(), ShopifyPartnerCollectOptions{
+					Pages:        pages,
+					Limit:        limit,
+					ProfileLimit: profileLimit,
+					TimeoutMS:    timeoutMS,
+				})
+				if err != nil {
+					return err
+				}
+				if cleanText(out) == "" {
+					out = store.AgencySourceArtifactPath(capture.Source)
+				}
+				if err := WriteAgencySourceCapture(out, capture); err != nil {
+					return err
+				}
+				result := struct {
+					Artifact AgencySourceArtifactSummary `json:"artifact"`
+					Import   *AgencySourceImportSummary  `json:"import,omitempty"`
+				}{
+					Artifact: SummarizeAgencySourceArtifact(out, capture),
+				}
+				if importArtifact {
+					state, err := store.Load()
+					if err != nil {
+						return err
+					}
+					importSummary, err := ImportAgencySourceCapture(&state, capture)
+					if err != nil {
+						return err
+					}
+					if err := store.Save(state); err != nil {
+						return err
+					}
+					result.Import = &importSummary
+				}
+				if asJSON {
+					raw, err := json.MarshalIndent(result, "", "  ")
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(raw))
+					return nil
+				}
+				if result.Import != nil {
+					fmt.Printf("artifact=%s source=%s rows=%d stored=%d updated=%d qualified=%d needs_review=%d rejected=%d total_accounts=%d\n",
+						result.Artifact.Path,
+						result.Import.Source,
+						result.Artifact.Rows,
+						result.Import.Stored,
+						result.Import.Updated,
+						result.Import.Qualified,
+						result.Import.NeedsReview,
+						result.Import.Rejected,
+						result.Import.TotalAccounts,
+					)
+					return nil
+				}
+				fmt.Printf("artifact=%s source=%s source_type=%s rows=%d warnings=%d\n", result.Artifact.Path, result.Artifact.Source, result.Artifact.SourceType, result.Artifact.Rows, len(result.Artifact.Warnings))
+				return nil
+			})(cmd, args)
+		},
+	}
+	cmd.Flags().IntVar(&pages, "pages", 13, "Shopify directory pages to collect")
+	cmd.Flags().IntVar(&limit, "limit", 120, "max partner rows")
+	cmd.Flags().IntVar(&profileLimit, "profile-limit", 120, "max partner profiles to enrich with website metadata")
+	cmd.Flags().IntVar(&timeoutMS, "timeout-ms", 10000, "HTTP timeout per request in milliseconds")
+	cmd.Flags().StringVar(&out, "out", "", "artifact output path; defaults to agency source dir")
+	cmd.Flags().BoolVar(&importArtifact, "import", false, "import collected artifact into current state")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolReplenishCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var sourceDir string
+	var importLimit, enrichLimit, maxPages, timeoutMS int
+	var asJSON bool
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "replenish",
+		Short: "Import agency source artifacts and run review-only website enrichment",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withStore(func(store *Store) error {
+				if cleanText(sourceDir) == "" {
+					sourceDir = store.AgencySourceDir()
+				}
+				summary, err := ReplenishAgencyPool(cmd.Context(), store, AgencySourceReplenishmentOptions{
+					SourceDir:              sourceDir,
+					ImportLimit:            importLimit,
+					WebsiteEnrichmentLimit: enrichLimit,
+					WebsiteMaxPages:        maxPages,
+					ForceWebsiteEnrichment: force,
+					TimeoutMS:              timeoutMS,
+				})
+				if err != nil {
+					return err
+				}
+				if asJSON {
+					raw, err := json.MarshalIndent(summary, "", "  ")
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(raw))
+					return nil
+				}
+				fmt.Printf("source_dir=%s imported_artifacts=%d website_checked=%d website_candidates_stored=%d website_candidates_updated=%d website_errors=%d total_accounts=%d total_candidates=%d\n",
+					summary.SourceDir,
+					summary.ImportedArtifacts,
+					summary.WebsiteEnrichment.Checked,
+					summary.WebsiteEnrichment.ContactCandidatesStored,
+					summary.WebsiteEnrichment.ContactCandidatesUpdated,
+					summary.WebsiteEnrichment.Errors,
+					summary.TotalAccounts,
+					summary.TotalCandidates,
+				)
+				return nil
+			})(cmd, args)
+		},
+	}
+	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "agency source artifact directory")
+	cmd.Flags().IntVar(&importLimit, "import-limit", 10, "max source artifacts to import; 0 skips import, -1 means no cap")
+	cmd.Flags().IntVar(&enrichLimit, "enrich-limit", 25, "max agency websites to enrich; -1 means no cap")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 8, "max public pages to check per agency website")
+	cmd.Flags().IntVar(&timeoutMS, "timeout-ms", 10000, "HTTP timeout per request in milliseconds")
+	cmd.Flags().BoolVar(&force, "force", false, "recheck accounts already website-enriched")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
+func agencyPoolSourceReportCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var out string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "source-report",
+		Short: "Report agency source yield across accounts, contacts, drafts, sends, and dead ends",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			if cleanText(out) == "" {
+				out = store.AgencySourceReportPath()
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			report := BuildAgencySourceReport(state, store.StatePath(), out)
+			if err := WriteAgencySourceReport(out, report); err != nil {
+				return err
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(report, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderAgencySourceReportText(report))
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&out, "out", "", "source report JSON output path")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
 func agencyPoolEnrichWebsitesCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var limit int
 	var timeoutMS int
+	var maxPages int
 	var asJSON bool
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "enrich-websites",
 		Short: "Discover explicit review-only contacts from agency websites",
@@ -143,6 +462,8 @@ func agencyPoolEnrichWebsitesCommand(withStore func(func(*Store) error) func(*co
 				summary := EnrichAgencyWebsites(cmd.Context(), &state, AgencyWebsiteEnrichmentOptions{
 					Limit:     limit,
 					TimeoutMS: timeoutMS,
+					MaxPages:  maxPages,
+					Force:     force,
 				})
 				if err := store.Save(state); err != nil {
 					return err
@@ -168,6 +489,8 @@ func agencyPoolEnrichWebsitesCommand(withStore func(func(*Store) error) func(*co
 	}
 	cmd.Flags().IntVar(&limit, "limit", 25, "max agency websites to check")
 	cmd.Flags().IntVar(&timeoutMS, "timeout-ms", 10000, "HTTP timeout per request in milliseconds")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 8, "max public pages to check per agency website")
+	cmd.Flags().BoolVar(&force, "force", false, "recheck accounts already website-enriched")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
 }
@@ -485,6 +808,15 @@ func BuildAgencyPoolNextAction(state OutreachState, statePath string) AgencyPool
 			Action:      "enrich_agency_websites",
 			Reason:      fmt.Sprintf("%d agency account(s) have websites that can be checked for explicit contacts.", diagnosis.WebsiteCandidates),
 			Command:     "/Users/hanifcarroll/.local/bin/recruiter-agency-outreach agency-pool enrich-websites --limit 25",
+		}
+	}
+	if diagnosis.Funnel.Qualified == 0 || diagnosis.Drilldown.QualifiedRemaining == 0 {
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "collect_import_agency_source_batch",
+			Reason:      "No ready, drafted, reviewable, enrichable, or qualified agency account work is available; import a new source batch.",
+			Command:     fmt.Sprintf("/Users/hanifcarroll/.local/bin/recruiter-agency-outreach agency-pool collect-shopify-partners --pages 13 --limit 120 --profile-limit 120 --out %s --import", filepath.Join(filepath.Dir(statePath), "agency-sources", time.Now().Format("2006-01-02")+"-shopify-partners-services.json")),
 		}
 	}
 	recommendation := RecommendNextRun(state, statePath, 5, 5, true)
@@ -817,11 +1149,12 @@ func parseAgencyContactReviewStatus(value string) (AgencyContactReviewStatus, bo
 func RenderAgencyContactCandidatesText(candidates []AgencyContactCandidate) string {
 	lines := []string{
 		fmt.Sprintf("agency_contact_candidates=%d", len(candidates)),
-		"id\treview_status\tstatus\tsource\tagency\temail\tprofile_url\tcontact_url\tform_action\tpromoted_lead\tname",
+		"id\trank\treview_status\tstatus\tsource\tagency\temail\tprofile_url\tcontact_url\tform_action\tpromoted_lead\tname\ttitle",
 	}
 	for _, candidate := range candidates {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+		lines = append(lines, fmt.Sprintf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 			candidate.ID,
+			agencyContactCandidateRank(candidate),
 			candidate.ReviewStatus,
 			candidate.Status,
 			cleanText(candidate.Source),
@@ -832,6 +1165,7 @@ func RenderAgencyContactCandidatesText(candidates []AgencyContactCandidate) stri
 			stringOrDash(candidate.FormAction),
 			stringOrDash(candidate.PromotedLeadID),
 			stringOrDash(candidate.Name),
+			stringOrDash(candidate.Title),
 		))
 	}
 	return strings.Join(lines, "\n")

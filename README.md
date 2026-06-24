@@ -192,10 +192,27 @@ automatically messageable.
 Import reviewed directory or partner-list agency sources into the account pool:
 
 ```sh
+recruiter-agency-outreach agency-pool source-contract
+recruiter-agency-outreach agency-pool build-source \
+  --csv /path/to/reviewed-agencies.csv \
+  --source "Reviewed agency directory" \
+  --source-type manual_directory \
+  --out "/Users/hanifcarroll/Library/Application Support/recruiter-agency-outreach/agency-sources/reviewed-agencies.json"
 recruiter-agency-outreach agency-pool import-source /path/to/agency-source.json
+recruiter-agency-outreach agency-pool import-directory \
+  --csv /path/to/reviewed-agencies.csv \
+  --source "Reviewed agency directory" \
+  --source-type manual_directory
 ```
 
-The source artifact is structured JSON, not raw scraped page text:
+The source artifact is structured JSON, not raw scraped page text. The canonical
+contract is `schema_version: 1` with top-level `source`, `source_type`,
+optional `captured_at`/`url`, and `rows`. Each row needs `name` and should
+include at least one deterministic identity/evidence field: `website`,
+`account_url`, `linkedin_url`, or `source_url`. Dedupe prefers LinkedIn account
+URL, then website domain, then name. Fit status is either supplied by the
+reviewed artifact or assigned deterministically from `source_type`, `services`,
+and `specialties`.
 
 ```json
 {
@@ -220,13 +237,43 @@ The source artifact is structured JSON, not raw scraped page text:
 }
 ```
 
+The built-in Shopify source collector creates the same artifact shape from
+public Shopify service partner profiles. Use it to replenish the source
+directory, then let `replenish` import saved artifacts and run review-only
+website enrichment:
+
+```sh
+recruiter-agency-outreach agency-pool collect-shopify-partners \
+  --pages 13 \
+  --limit 120 \
+  --profile-limit 120 \
+  --import
+
+recruiter-agency-outreach agency-pool replenish \
+  --source-dir "/Users/hanifcarroll/Library/Application Support/recruiter-agency-outreach/agency-sources" \
+  --import-limit 10 \
+  --enrich-limit 25 \
+  --max-pages 8
+
+recruiter-agency-outreach agency-pool source-report
+```
+
+`source-report` writes a JSON report under
+`~/Library/Application Support/recruiter-agency-outreach/reports/` and shows
+which sources produced qualified accounts, review contacts, promoted leads,
+drafts, ready leads, sends, skipped statuses, and dead-end accounts.
+For `replenish`, `--import-limit 0` skips artifact import and `--import-limit -1`
+imports every JSON artifact in the source directory.
+Website enrichment skips accounts that already had a website pass; add `--force`
+only when intentionally rechecking the same agencies.
+
 Website enrichment is still review-only. It records explicit `mailto:` links,
 explicit LinkedIn `/in/` profile links, and contact forms from contact-oriented
 pages/actions as `agency_contact_candidates`; it does not create sendable
 LinkedIn leads:
 
 ```sh
-recruiter-agency-outreach agency-pool enrich-websites --limit 25
+recruiter-agency-outreach agency-pool enrich-websites --limit 25 --max-pages 8
 recruiter-agency-outreach agency-pool contacts --limit 20
 recruiter-agency-outreach agency-pool contacts --status generic_inbox --limit 20
 ```

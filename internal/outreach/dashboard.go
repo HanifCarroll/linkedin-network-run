@@ -389,18 +389,7 @@ func dashboardLimitingReason(state OutreachState, targetAgencies int, targetRecr
 	if allowSend {
 		agencyGap := targetAgencies - sentCountFromActions(actions, "agency")
 		if agencyGap > 0 && targetAgencies > 0 {
-			funnel := agencyAccountFunnelCounts(state)
-			drilldown := agencyDrilldownCounts(state)
-			return fmt.Sprintf("Agency target is short by %d sends. Current account pool: %d qualified accounts, %d with contacts, %d with messageable/sent contacts, %d not searched yet, %d with no contacts found, %d exhausted with no contacts, %d retryable browser errors.",
-				agencyGap,
-				funnel.Qualified,
-				funnel.WithContacts,
-				funnel.WithMessageableOrSentContacts,
-				drilldown.NotSearchedYet,
-				drilldown.NoContactsFound,
-				funnel.ExhaustedWithoutContacts,
-				drilldown.BrowserErrorRetryable,
-			)
+			return agencyStageLimitingReason(state, agencyGap, "sends")
 		}
 		recruiterGap := targetRecruiters - sentCountFromActions(actions, "recruiter")
 		if recruiterGap > 0 && targetRecruiters > 0 {
@@ -417,11 +406,7 @@ func dashboardLimitingReason(state OutreachState, targetAgencies int, targetRecr
 		return ""
 	}
 	if targetAgencies > 0 && readyCount(state, "agency") < targetAgencies {
-		return fmt.Sprintf("Agency ready-to-send pool is short by %d for this render target. Current agency queue: %d drafted/needs validation, %d ready. The remaining send goal is shown under Recommended Next Run.",
-			targetAgencies-readyCount(state, "agency"),
-			dashboardBucketCount(state, "agency", MessageStatusDrafted),
-			readyCount(state, "agency"),
-		)
+		return agencyStageLimitingReason(state, targetAgencies-readyCount(state, "agency"), "ready-to-send leads")
 	}
 	if targetRecruiters > 0 && readyCount(state, "recruiter") < targetRecruiters {
 		return fmt.Sprintf("Recruiter ready-to-send pool is short by %d for this render target. Current recruiter queue: %d drafted/needs validation, %d ready. The remaining send goal is shown under Recommended Next Run.",
@@ -431,6 +416,36 @@ func dashboardLimitingReason(state OutreachState, targetAgencies int, targetRecr
 		)
 	}
 	return ""
+}
+
+func agencyStageLimitingReason(state OutreachState, gap int, unit string) string {
+	diagnosis := BuildAgencyPoolDiagnosis(state, "", 0)
+	drafted := dashboardBucketCount(state, "agency", MessageStatusDrafted)
+	ready := readyCount(state, "agency")
+	approved := len(agencyContactCandidatesReadyForPromotion(state))
+	review := len(agencyContactCandidatesNeedingReview(state))
+	prefix := fmt.Sprintf("Agency target is short by %d %s. ", gap, unit)
+	suffix := ""
+	if unit == "ready-to-send leads" {
+		prefix = fmt.Sprintf("Agency ready-to-send pool is short by %d for this render target. ", gap)
+		suffix = " The remaining send goal is shown under Recommended Next Run."
+	}
+	switch {
+	case ready > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: send. There are %d dry_run_ready agency lead(s) available.", ready) + suffix
+	case drafted > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: validation. There are %d drafted agency lead(s) that need dry-run messageability checks.", drafted) + suffix
+	case approved > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: promotion. There are %d approved website contact candidate(s) ready to promote into drafted leads.", approved) + suffix
+	case review > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: contact review. There are %d personal LinkedIn website contact candidate(s) awaiting review.", review) + suffix
+	case diagnosis.WebsiteCandidates > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: website enrichment. There are %d agency account(s) with websites that can be checked for explicit review-only contacts.", diagnosis.WebsiteCandidates) + suffix
+	case diagnosis.Drilldown.QualifiedRemaining > 0:
+		return prefix + fmt.Sprintf("Current limiting stage: account contact search. There are %d qualified agency account(s) remaining for LinkedIn account-scoped contact search.", diagnosis.Drilldown.QualifiedRemaining) + suffix
+	default:
+		return prefix + "Current limiting stage: source accounts. Import or collect a new agency source artifact before another browser-heavy contact search." + suffix
+	}
 }
 
 func agencyAccountFunnelCounts(state OutreachState) AgencyAccountFunnel {

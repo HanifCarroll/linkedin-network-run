@@ -73,6 +73,8 @@ type AgencySourceImportSummary struct {
 type AgencyWebsiteEnrichmentOptions struct {
 	Limit     int
 	TimeoutMS int
+	MaxPages  int
+	Force     bool
 	Now       time.Time
 	Client    *http.Client
 }
@@ -397,7 +399,15 @@ func EnrichAgencyWebsites(ctx context.Context, state *OutreachState, options Age
 			summary.Skipped++
 			continue
 		}
-		candidates, err := DiscoverAgencyWebsiteContacts(ctx, client, *account)
+		if !options.Force && account.LastWebsiteEnrichedAt != nil {
+			summary.Skipped++
+			continue
+		}
+		maxPages := options.MaxPages
+		if maxPages == 0 {
+			maxPages = 8
+		}
+		candidates, err := DiscoverAgencyWebsiteContactsWithLimit(ctx, client, *account, maxPages)
 		account.LastWebsiteEnrichedAt = &now
 		account.WebsiteEnrichmentCount++
 		account.UpdatedAt = now
@@ -428,6 +438,10 @@ func EnrichAgencyWebsites(ctx context.Context, state *OutreachState, options Age
 }
 
 func DiscoverAgencyWebsiteContacts(ctx context.Context, client *http.Client, account AgencyAccount) ([]AgencyContactCandidate, error) {
+	return DiscoverAgencyWebsiteContactsWithLimit(ctx, client, account, 0)
+}
+
+func DiscoverAgencyWebsiteContactsWithLimit(ctx context.Context, client *http.Client, account AgencyAccount, maxPages int) ([]AgencyContactCandidate, error) {
 	baseURL, err := normalizedWebsiteURL(account.Website)
 	if err != nil {
 		return nil, err
@@ -436,7 +450,12 @@ func DiscoverAgencyWebsiteContacts(ctx context.Context, client *http.Client, acc
 	seen := map[string]bool{}
 	failures := []string{}
 	successes := 0
+	pageCount := 0
 	for _, pageURL := range agencyWebsiteContactPages(baseURL) {
+		if maxPages > 0 && pageCount >= maxPages {
+			break
+		}
+		pageCount++
 		found, err := discoverAgencyWebsiteContactsOnPage(ctx, client, account, pageURL)
 		if err != nil {
 			failures = append(failures, err.Error())
@@ -617,7 +636,21 @@ func agencyWebsiteContactPages(baseURL string) []string {
 	if err != nil {
 		return []string{baseURL}
 	}
-	paths := []string{"/", "/about", "/team", "/contact", "/partners", "/services"}
+	paths := []string{
+		"/",
+		"/about",
+		"/about-us",
+		"/team",
+		"/our-team",
+		"/people",
+		"/leadership",
+		"/contact",
+		"/contact-us",
+		"/get-in-touch",
+		"/work-with-us",
+		"/partners",
+		"/services",
+	}
 	pages := []string{}
 	seen := map[string]bool{}
 	for _, path := range paths {
@@ -680,6 +713,11 @@ func sortAgencyContactCandidates(candidates []AgencyContactCandidate) {
 		if candidates[i].ReviewStatus != candidates[j].ReviewStatus {
 			return candidates[i].ReviewStatus < candidates[j].ReviewStatus
 		}
+		leftRank := agencyContactCandidateRank(candidates[i])
+		rightRank := agencyContactCandidateRank(candidates[j])
+		if leftRank != rightRank {
+			return leftRank > rightRank
+		}
 		if candidates[i].Status != candidates[j].Status {
 			return candidates[i].Status < candidates[j].Status
 		}
@@ -688,6 +726,53 @@ func sortAgencyContactCandidates(candidates []AgencyContactCandidate) {
 		}
 		return candidates[i].ID < candidates[j].ID
 	})
+}
+
+func agencyContactCandidateRank(candidate AgencyContactCandidate) int {
+	rank := 0
+	switch candidate.Status {
+	case AgencyContactCandidateStatusWebsiteContactCandidate:
+		rank = 50
+	case AgencyContactCandidateStatusContactForm:
+		rank = 20
+	case AgencyContactCandidateStatusGenericInbox:
+		rank = 10
+	}
+	title := strings.ToLower(cleanText(pointerValue(candidate.Title)))
+	name := strings.ToLower(cleanText(pointerValue(candidate.Name)))
+	roleText := cleanText(title + " " + name)
+	switch {
+	case strings.Contains(roleText, "founder"),
+		strings.Contains(roleText, "co-founder"),
+		strings.Contains(roleText, "owner"),
+		strings.Contains(roleText, "partner"),
+		strings.Contains(roleText, "chief executive"),
+		strings.Contains(roleText, "ceo"),
+		strings.Contains(roleText, "president"),
+		strings.Contains(roleText, "managing director"):
+		rank += 50
+	case strings.Contains(roleText, "vp"),
+		strings.Contains(roleText, "vice president"),
+		strings.Contains(roleText, "head of"),
+		strings.Contains(roleText, "director"),
+		strings.Contains(roleText, "principal"):
+		rank += 35
+	case strings.Contains(roleText, "engineering"),
+		strings.Contains(roleText, "delivery"),
+		strings.Contains(roleText, "technology"),
+		strings.Contains(roleText, "partnership"),
+		strings.Contains(roleText, "client services"),
+		strings.Contains(roleText, "operations"),
+		strings.Contains(roleText, "resource"):
+		rank += 25
+	}
+	if candidate.ProfileURL != nil && cleanText(*candidate.ProfileURL) != "" {
+		rank += 10
+	}
+	if candidate.ReviewStatus == AgencyContactReviewStatusApproved {
+		rank += 5
+	}
+	return rank
 }
 
 func normalizedWebsiteURL(value *string) (string, error) {

@@ -1,6 +1,7 @@
 package outreach
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,36 +30,39 @@ const (
 )
 
 type DailyOptions struct {
-	RunID                  string
-	Command                string
-	Args                   []string
-	Session                string
-	Playwriter             string
-	CaptureScript          string
-	AccountCaptureScript   string
-	MessageScript          string
-	SavedSearchesScript    string
-	SavedSearches          string
-	TargetAgencies         int
-	TargetRecruiters       int
-	PagesPerCapture        uint32
-	AccountPagesPerCapture uint32
-	Limit                  uint32
-	AccountLimit           uint32
-	StopAfterConnectable   uint32
-	RowScrollDelayMS       uint32
-	MaxCaptureRounds       int
-	AllowSend              bool
-	RefreshSavedSearches   bool
-	SkipSessionReset       bool
-	CaptureOutDir          string
-	AccountCaptureOutDir   string
-	MessageOutDir          string
-	DashboardPath          string
-	PrintMarkdown          bool
-	TimeoutMS              uint32
-	StopWhenNoProgress     bool
-	MaxNoProgressSearches  int
+	RunID                        string
+	Command                      string
+	Args                         []string
+	Session                      string
+	Playwriter                   string
+	CaptureScript                string
+	AccountCaptureScript         string
+	MessageScript                string
+	SavedSearchesScript          string
+	SavedSearches                string
+	TargetAgencies               int
+	TargetRecruiters             int
+	PagesPerCapture              uint32
+	AccountPagesPerCapture       uint32
+	Limit                        uint32
+	AccountLimit                 uint32
+	StopAfterConnectable         uint32
+	RowScrollDelayMS             uint32
+	MaxCaptureRounds             int
+	AllowSend                    bool
+	RefreshSavedSearches         bool
+	SkipSessionReset             bool
+	CaptureOutDir                string
+	AccountCaptureOutDir         string
+	MessageOutDir                string
+	DashboardPath                string
+	AgencySourceDir              string
+	AgencySourceImportLimit      int
+	AgencyWebsiteEnrichmentLimit int
+	PrintMarkdown                bool
+	TimeoutMS                    uint32
+	StopWhenNoProgress           bool
+	MaxNoProgressSearches        int
 }
 
 type DailyResult struct {
@@ -393,6 +397,9 @@ func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBuck
 			return nil
 		}
 		printAgencyProgress(state, *progress, *actions, "round-start", fmt.Sprintf("round=%d", round+1))
+		if err := replenishAgencyPoolWhenLow(store, options, bucket.Target, progress); err != nil {
+			return err
+		}
 		if err := ensureAgencyAccountReservoir(store, options, bucket.Target, round+1, progress); err != nil {
 			return err
 		}
@@ -410,6 +417,38 @@ func runAgencyAccountBucket(store *Store, options DailyOptions, bucket dailyBuck
 			return err
 		}
 	}
+	return nil
+}
+
+func replenishAgencyPoolWhenLow(store *Store, options DailyOptions, target int, progress *dailyProgress) error {
+	state, err := store.Load()
+	if err != nil {
+		return err
+	}
+	desired := target * 2
+	if desired < target {
+		desired = target
+	}
+	if len(agencyAccountsNeedingContactCapture(state, desired)) >= target {
+		return nil
+	}
+	summary, err := ReplenishAgencyPool(context.Background(), store, AgencySourceReplenishmentOptions{
+		SourceDir:              options.AgencySourceDir,
+		ImportLimit:            options.AgencySourceImportLimit,
+		WebsiteEnrichmentLimit: options.AgencyWebsiteEnrichmentLimit,
+		TimeoutMS:              int(options.TimeoutMS),
+	})
+	if err != nil {
+		return err
+	}
+	if summary.ImportedArtifacts == 0 && summary.WebsiteEnrichment.Checked == 0 {
+		return nil
+	}
+	state, err = store.Load()
+	if err != nil {
+		return err
+	}
+	printAgencyProgress(state, *progress, nil, "source-replenishment", fmt.Sprintf("source_dir=%q imported_artifacts=%d website_checked=%d contact_candidates_stored=%d contact_candidates_updated=%d", summary.SourceDir, summary.ImportedArtifacts, summary.WebsiteEnrichment.Checked, summary.WebsiteEnrichment.ContactCandidatesStored, summary.WebsiteEnrichment.ContactCandidatesUpdated))
 	return nil
 }
 
@@ -913,6 +952,15 @@ func normalizeDailyOptions(store *Store, options DailyOptions) DailyOptions {
 	}
 	if options.DashboardPath == "" {
 		options.DashboardPath = store.RunDashboardPath(options.RunID)
+	}
+	if options.AgencySourceDir == "" {
+		options.AgencySourceDir = store.AgencySourceDir()
+	}
+	if options.AgencySourceImportLimit == 0 {
+		options.AgencySourceImportLimit = 10
+	}
+	if options.AgencyWebsiteEnrichmentLimit == 0 {
+		options.AgencyWebsiteEnrichmentLimit = 25
 	}
 	if options.TimeoutMS == 0 {
 		options.TimeoutMS = 90000

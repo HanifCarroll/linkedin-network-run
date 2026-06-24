@@ -238,43 +238,46 @@ func importAccountsPath(store *Store, path string) error {
 }
 
 func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
-	var session, playwriter, captureScript, accountCaptureScript, messageScript, savedSearchesScript, savedSearches, captureOutDir, accountCaptureOutDir, messageOutDir, dashboardPath string
-	var targetAgencies, targetRecruiters, maxCaptureRounds, maxNoProgressSearches int
+	var session, playwriter, captureScript, accountCaptureScript, messageScript, savedSearchesScript, savedSearches, captureOutDir, accountCaptureOutDir, messageOutDir, dashboardPath, agencySourceDir string
+	var targetAgencies, targetRecruiters, maxCaptureRounds, maxNoProgressSearches, agencySourceImportLimit, agencyWebsiteEnrichmentLimit int
 	var pages, accountPages, limit, accountLimit, stopAfterConnectable, rowScrollDelayMS, timeoutMS uint32
 	var allowSend, refreshSavedSearches, skipSessionReset, printMarkdown, stopWhenNoProgress bool
 	cmd := &cobra.Command{
 		Use: "run-daily",
 		RunE: withStore(func(store *Store) error {
 			result, err := RunDaily(store, DailyOptions{
-				Command:                "run-daily",
-				Args:                   os.Args[1:],
-				Session:                session,
-				Playwriter:             playwriter,
-				CaptureScript:          captureScript,
-				AccountCaptureScript:   accountCaptureScript,
-				MessageScript:          messageScript,
-				SavedSearchesScript:    savedSearchesScript,
-				SavedSearches:          savedSearches,
-				TargetAgencies:         targetAgencies,
-				TargetRecruiters:       targetRecruiters,
-				PagesPerCapture:        pages,
-				AccountPagesPerCapture: accountPages,
-				Limit:                  limit,
-				AccountLimit:           accountLimit,
-				StopAfterConnectable:   stopAfterConnectable,
-				RowScrollDelayMS:       rowScrollDelayMS,
-				MaxCaptureRounds:       maxCaptureRounds,
-				AllowSend:              allowSend,
-				RefreshSavedSearches:   refreshSavedSearches,
-				SkipSessionReset:       skipSessionReset,
-				CaptureOutDir:          captureOutDir,
-				AccountCaptureOutDir:   accountCaptureOutDir,
-				MessageOutDir:          messageOutDir,
-				DashboardPath:          dashboardPath,
-				PrintMarkdown:          printMarkdown,
-				TimeoutMS:              timeoutMS,
-				StopWhenNoProgress:     stopWhenNoProgress,
-				MaxNoProgressSearches:  maxNoProgressSearches,
+				Command:                      "run-daily",
+				Args:                         os.Args[1:],
+				Session:                      session,
+				Playwriter:                   playwriter,
+				CaptureScript:                captureScript,
+				AccountCaptureScript:         accountCaptureScript,
+				MessageScript:                messageScript,
+				SavedSearchesScript:          savedSearchesScript,
+				SavedSearches:                savedSearches,
+				TargetAgencies:               targetAgencies,
+				TargetRecruiters:             targetRecruiters,
+				PagesPerCapture:              pages,
+				AccountPagesPerCapture:       accountPages,
+				Limit:                        limit,
+				AccountLimit:                 accountLimit,
+				StopAfterConnectable:         stopAfterConnectable,
+				RowScrollDelayMS:             rowScrollDelayMS,
+				MaxCaptureRounds:             maxCaptureRounds,
+				AllowSend:                    allowSend,
+				RefreshSavedSearches:         refreshSavedSearches,
+				SkipSessionReset:             skipSessionReset,
+				CaptureOutDir:                captureOutDir,
+				AccountCaptureOutDir:         accountCaptureOutDir,
+				MessageOutDir:                messageOutDir,
+				DashboardPath:                dashboardPath,
+				AgencySourceDir:              agencySourceDir,
+				AgencySourceImportLimit:      agencySourceImportLimit,
+				AgencyWebsiteEnrichmentLimit: agencyWebsiteEnrichmentLimit,
+				PrintMarkdown:                printMarkdown,
+				TimeoutMS:                    timeoutMS,
+				StopWhenNoProgress:           stopWhenNoProgress,
+				MaxNoProgressSearches:        maxNoProgressSearches,
 			})
 			if err != nil {
 				return err
@@ -287,7 +290,7 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 			return nil
 		}),
 	}
-	addDailyFlags(cmd, &session, &playwriter, &captureScript, &accountCaptureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &accountCaptureOutDir, &messageOutDir, &dashboardPath, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &pages, &accountPages, &limit, &accountLimit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown, &stopWhenNoProgress, &maxNoProgressSearches)
+	addDailyFlags(cmd, &session, &playwriter, &captureScript, &accountCaptureScript, &messageScript, &savedSearchesScript, &savedSearches, &captureOutDir, &accountCaptureOutDir, &messageOutDir, &dashboardPath, &agencySourceDir, &targetAgencies, &targetRecruiters, &maxCaptureRounds, &agencySourceImportLimit, &agencyWebsiteEnrichmentLimit, &pages, &accountPages, &limit, &accountLimit, &stopAfterConnectable, &rowScrollDelayMS, &timeoutMS, &allowSend, &refreshSavedSearches, &skipSessionReset, &printMarkdown, &stopWhenNoProgress, &maxNoProgressSearches)
 	return cmd
 }
 
@@ -988,7 +991,7 @@ func addPlaywriterFlag(flags *pflag.FlagSet, target *string) {
 	flags.StringVar(target, "bunx", defaultPlaywriter, "Playwriter executable alias")
 }
 
-func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool, stopWhenNoProgress *bool, maxNoProgressSearches *int) {
+func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, captureScript *string, accountCaptureScript *string, messageScript *string, savedSearchesScript *string, savedSearches *string, captureOutDir *string, accountCaptureOutDir *string, messageOutDir *string, dashboardPath *string, agencySourceDir *string, targetAgencies *int, targetRecruiters *int, maxCaptureRounds *int, agencySourceImportLimit *int, agencyWebsiteEnrichmentLimit *int, pages *uint32, accountPages *uint32, limit *uint32, accountLimit *uint32, stopAfterConnectable *uint32, rowScrollDelayMS *uint32, timeoutMS *uint32, allowSend *bool, refreshSavedSearches *bool, skipSessionReset *bool, printMarkdown *bool, stopWhenNoProgress *bool, maxNoProgressSearches *int) {
 	cmd.Flags().StringVar(session, "session", "auto", "Playwriter session or auto")
 	addPlaywriterFlag(cmd.Flags(), playwriter)
 	cmd.Flags().StringVar(captureScript, "capture-script", defaultCaptureScript, "Sales Navigator capture script")
@@ -1000,9 +1003,12 @@ func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, capt
 	cmd.Flags().StringVar(accountCaptureOutDir, "account-capture-out-dir", defaultAccountCaptureOutDir, "account capture output directory")
 	cmd.Flags().StringVar(messageOutDir, "message-out-dir", defaultMessageOutDir, "message result output directory")
 	cmd.Flags().StringVar(dashboardPath, "dashboard", "", "dashboard output path")
+	cmd.Flags().StringVar(agencySourceDir, "agency-source-dir", "", "agency source artifact directory")
 	cmd.Flags().IntVar(targetAgencies, "target-agencies", 5, "agency target")
 	cmd.Flags().IntVar(targetRecruiters, "target-recruiters", 5, "recruiter target")
 	cmd.Flags().IntVar(maxCaptureRounds, "max-capture-rounds", 4, "max capture and validation rounds per bucket")
+	cmd.Flags().IntVar(agencySourceImportLimit, "agency-source-import-limit", 10, "max agency source artifacts to import when agency pool is low")
+	cmd.Flags().IntVar(agencyWebsiteEnrichmentLimit, "agency-website-enrichment-limit", 25, "max agency websites to enrich when agency pool is low")
 	cmd.Flags().Uint32Var(pages, "pages", 2, "pages to capture per round")
 	cmd.Flags().Uint32Var(accountPages, "account-pages", 2, "account pages to capture per round")
 	cmd.Flags().Uint32Var(limit, "limit", 25, "rows per page")
