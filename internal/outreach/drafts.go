@@ -128,18 +128,17 @@ func draftEvidence(lead Lead) []string {
 }
 
 func recruiterDraft(lead Lead) string {
-	return recruiterContractDraft(lead.FirstName)
+	return recruiterContractDraft(lead)
 }
 
 func agencyDraft(lead Lead) string {
-	target := "your team"
+	target := ""
 	if lead.AgencyAccountName != nil && cleanText(*lead.AgencyAccountName) != "" {
 		target = cleanText(*lead.AgencyAccountName)
 	} else if company := companyForDraft(lead.Company); company != "" {
 		target = company
 	}
-	_ = target
-	return agencyProjectDraft(lead.FirstName)
+	return agencyProjectDraft(lead.FirstName, target)
 }
 
 func isWebsiteAgencyLead(lead Lead) bool {
@@ -173,15 +172,45 @@ func isLikelyLocation(value string) bool {
 }
 
 func generalDraft(lead Lead) string {
-	return recruiterContractDraft(lead.FirstName)
+	return recruiterContractDraft(lead)
 }
 
-func agencyProjectDraft(firstName string) string {
-	return fmt.Sprintf("Hi %s,\n\nI'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about project or overflow work.\n\nRecent projects:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires. Comfortable collaborating with design and product teams.\n\nAre you the right person to ask about this kind of project support?", firstName)
+func agencyProjectDraft(firstName string, agencyName string) string {
+	intro := "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about project or overflow work."
+	if agencyName = cleanText(agencyName); agencyName != "" {
+		intro = fmt.Sprintf("I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I came across %s, and I'm reaching out about project or overflow work.", agencyName)
+	}
+	return fmt.Sprintf("Hi %s,\n\n%s\n\nRecent projects:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires. Comfortable collaborating with design and product teams.\n\nAre you the right person to ask about this kind of project support?", firstName, intro)
 }
 
-func recruiterContractDraft(firstName string) string {
-	return fmt.Sprintf("Hi %s,\n\nI'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract work.\n\nRecent projects:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires.\n\nAre you the right person to ask about this type of role?", firstName)
+func recruiterContractDraft(lead Lead) string {
+	opener := recruiterOpening(lead)
+	return fmt.Sprintf("Hi %s,\n\n%s\n\nI'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products.\n\nRecent projects:\n\n• Turned an AI media MVP into a production agent platform for Amazon sellers (first 100 paying customers)\n• Built and launched a Spanish reading app (iOS, Android + web) from concept to App Store with teacher workflows, AI features, and subscriptions\n\nUS citizen contracting via my LLC (1099/C2C). Available for US-hours work from Buenos Aires.\n\nAre you the right person to ask about contract roles that fit this background?", lead.FirstName, opener)
+}
+
+func recruiterOpening(lead Lead) string {
+	focus := recruiterRoleFocus(lead)
+	if company := companyForDraft(lead.Company); company != "" {
+		return fmt.Sprintf("I saw that you recruit for %s at %s, and I'm reaching out about contract work.", focus, company)
+	}
+	return fmt.Sprintf("I saw that you recruit for %s, and I'm reaching out about contract work.", focus)
+}
+
+func recruiterRoleFocus(lead Lead) string {
+	title := ""
+	if lead.Title != nil {
+		title = strings.ToLower(cleanText(*lead.Title))
+	}
+	switch {
+	case containsAny(title, "technical", "tech ", "software", "engineering", "developer"):
+		return "contract technical roles"
+	case containsAny(title, "gtm", "go-to-market"):
+		return "contract GTM roles"
+	case containsAny(title, "talent acquisition", "sourcer", "headhunter"):
+		return "contract recruiting roles"
+	default:
+		return "contract roles"
+	}
 }
 
 func RenderDraftMarkdown(report DraftReport) string {

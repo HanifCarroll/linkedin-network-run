@@ -60,7 +60,6 @@ recruiter-agency-outreach run-daily \
   --session auto \
   --target-agencies 5 \
   --target-recruiters 5 \
-  --allow-send \
   --stop-when-no-progress \
   --max-no-progress-searches 12 \
   --print-markdown
@@ -70,13 +69,24 @@ recruiter-agency-outreach run-daily \
 for this workspace, or creating one when none exists. It resets the Playwriter
 session connection, opens generated Sales Navigator searches, imports and
 dedupes accounts/leads, drafts context-aware messages, validates messageability
-in the browser, sends up to 5 agency messages and 5 recruiter messages for the
-current run when `--allow-send` is present, and writes a Markdown dashboard
-under the outreach state directory. Each run gets a stable `run_id`; default
-artifacts are written under run-specific directories, with dashboard aliases at
+in the browser, and writes a Markdown dashboard under the outreach state
+directory. It is sourcing-only and rejects `--allow-send`; real message sends
+belong to `send-ready`. Each run gets a stable `run_id`; default artifacts are
+written under run-specific directories, with dashboard aliases at
 `dashboards/latest-run.md`, `dashboards/latest-render.md`, and
-`dashboards/runs/<run_id>.md`. Use `--skip-session-reset` only when
-intentionally preserving a live Playwriter page connection.
+`dashboards/runs/<run_id>.md`. Use `--skip-session-reset` only when intentionally
+preserving a live Playwriter page connection.
+
+Send only already validated `dry_run_ready` messages:
+
+```sh
+recruiter-agency-outreach send-ready \
+  --session auto \
+  --target-agencies 5 \
+  --target-recruiters 5 \
+  --allow-send \
+  --print-markdown
+```
 
 For agency-heavy reruns, `--stop-when-no-progress` keeps the run from spending
 the whole browser budget on account-scoped people searches that produce no new
@@ -132,7 +142,6 @@ recruiter-agency-outreach run-daily \
   --session auto \
   --target-agencies 5 \
   --target-recruiters 5 \
-  --allow-send \
   --refresh-saved-searches \
   --stop-when-no-progress \
   --max-no-progress-searches 12 \
@@ -141,9 +150,10 @@ recruiter-agency-outreach run-daily \
 
 The dashboard includes visible source context, account context, fit reasons,
 draft angle, draft evidence, message text, last send check, run actions,
-latest-run evidence, agency contactability, agency drill-down counts, and a
-plain limiting reason. A standalone dashboard render is labeled as a render and
-does not claim a send run occurred:
+latest-run evidence, agency contactability, agency drill-down counts, a
+Sourcing Readiness section, a Send Results section, and a plain limiting reason.
+A standalone dashboard render is labeled as a render and does not claim a send
+run occurred:
 
 ```sh
 recruiter-agency-outreach dashboard --print-markdown

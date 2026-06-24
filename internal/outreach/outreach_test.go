@@ -545,7 +545,10 @@ func TestRecruiterDraftUsesApprovedContractTemplate(t *testing.T) {
 	if !strings.Contains(body, "Hi Jackie,") {
 		t.Fatalf("body = %q", body)
 	}
-	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about contract work.") {
+	if strings.Contains(body, "profile mentions") || !strings.Contains(body, "I saw that you recruit for contract roles at FTI Consulting, and I'm reaching out about contract work.") {
+		t.Fatalf("body = %q", body)
+	}
+	if !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products.") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(body, "Turned an AI media MVP into a production agent platform") {
@@ -554,10 +557,24 @@ func TestRecruiterDraftUsesApprovedContractTemplate(t *testing.T) {
 	if !strings.Contains(body, "Recent projects:") || strings.Contains(body, "Recent wins:") {
 		t.Fatalf("body = %q", body)
 	}
-	if !strings.Contains(body, "Are you the right person to ask about this type of role?") || strings.Contains(body, "Would you like me to send my resume and project examples?") {
+	if !strings.Contains(body, "Are you the right person to ask about contract roles that fit this background?") || strings.Contains(body, "Would you like me to send my resume and project examples?") {
 		t.Fatalf("body = %q", body)
 	}
 	if strings.Contains(body, "Best,") || strings.Contains(body, "Hanif Carroll") {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestRecruiterDraftUsesTechnicalRecruiterOpening(t *testing.T) {
+	lead := Lead{
+		Name:      "Riley Recruiter",
+		FirstName: "Riley",
+		Title:     strPtr("Senior Technical Recruiter Contract"),
+		Company:   strPtr("Randstad"),
+		LeadType:  LeadTypeContractRecruiter,
+	}
+	body := recruiterDraft(lead)
+	if !strings.Contains(body, "I saw that you recruit for contract technical roles at Randstad, and I'm reaching out about contract work.") {
 		t.Fatalf("body = %q", body)
 	}
 }
@@ -592,7 +609,7 @@ func TestAgencyDraftUsesWebsiteAgencyPitch(t *testing.T) {
 		LeadType:              LeadTypeAgencyFounder,
 	}
 	body := agencyDraft(lead)
-	if !strings.Contains(body, "I'm a full-stack product engineer (8 YoE) that builds and launches AI-powered web & mobile products. I'm reaching out about project or overflow work.") || !strings.Contains(body, "Comfortable collaborating with design and product teams.") {
+	if !strings.Contains(body, "I came across QeWebby - WordPress Development Agency, and I'm reaching out about project or overflow work.") || !strings.Contains(body, "Comfortable collaborating with design and product teams.") {
 		t.Fatalf("body = %q", body)
 	}
 	if !strings.Contains(draftAngle(lead), "web design/WordPress agency") {
@@ -744,6 +761,8 @@ func TestDashboardShowsThisRunAndLifetimeCountsSeparately(t *testing.T) {
 	}
 	markdown := RenderDashboardMarkdown(report)
 	for _, want := range []string{
+		"## Sourcing Readiness",
+		"## Send Results",
 		"- This-run sent: `1` agencies, `0` recruiters",
 		"conversation_exists `0` agencies, `1` recruiters",
 		"- Backlog drafted/needs validation: `0` agencies, `1` recruiters",
@@ -791,10 +810,10 @@ func TestDashboardRenderModeCallsOutNoRunAndLatestRun(t *testing.T) {
 func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
 	started := time.Date(2026, time.June, 23, 12, 0, 0, 0, time.UTC)
 	state := OutreachState{RunEvents: []RunEvent{
-		{At: started, RunID: "daily-2", Phase: "run-start", Command: "run-daily", StartedAt: started, TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+		{At: started, RunID: "daily-2", Phase: "run-start", Command: "send-ready", StartedAt: started, TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
 		{At: started.Add(time.Second), RunID: "daily-2", Phase: "send-message", Bucket: "recruiter", LeadID: "lead_1", Name: "Riley", Result: "sent-clicked"},
 		{At: started.Add(2 * time.Second), RunID: "daily-2", Phase: "send-message", Bucket: "agency", LeadID: "lead_2", Name: "Dana", Result: "sent-clicked"},
-		{At: started.Add(time.Minute), RunID: "daily-2", Phase: "run-finish", Command: "run-daily", Result: "completed", StartedAt: started, CompletedAt: started.Add(time.Minute), TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
+		{At: started.Add(time.Minute), RunID: "daily-2", Phase: "run-finish", Command: "send-ready", Result: "completed", StartedAt: started, CompletedAt: started.Add(time.Minute), TargetAgencies: 5, TargetRecruiters: 5, AllowSend: true, DashboardPath: "/tmp/run.md", StatePath: "/tmp/state.sqlite"},
 	}}
 	summary, ok := LatestRunSummary(state, "/tmp/state.sqlite")
 	if !ok {
@@ -803,14 +822,19 @@ func TestLatestRunSummaryAndRecommendationPreferAgencyRetry(t *testing.T) {
 	if summary.Counts.Sent.Agencies != 1 || summary.Counts.Sent.Recruiters != 1 {
 		t.Fatalf("counts = %#v", summary.Counts.Sent)
 	}
-	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "--target-agencies 4 --target-recruiters 0") {
+	if !summary.Recommendation.ShouldRetry || !strings.Contains(summary.Recommendation.Command, "send-ready --session auto --target-agencies 4 --target-recruiters 0 --allow-send") {
 		t.Fatalf("recommendation = %#v", summary.Recommendation)
 	}
-	if !strings.Contains(summary.Recommendation.Command, "--stop-when-no-progress --max-no-progress-searches 12") {
-		t.Fatalf("recommendation missing agency no-progress guard = %#v", summary.Recommendation)
+	if strings.Contains(summary.Recommendation.Command, "run-daily") || strings.Contains(summary.Recommendation.Command, "--refresh-saved-searches") {
+		t.Fatalf("send retry should not source = %#v", summary.Recommendation)
 	}
-	if !strings.Contains(summary.Recommendation.Command, "--timeout-ms 240000") {
-		t.Fatalf("recommendation missing agency timeout = %#v", summary.Recommendation)
+}
+
+func TestRunDailyRejectsAllowSend(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	_, err := RunDaily(&store, DailyOptions{Session: "auto", AllowSend: true})
+	if err == nil || !strings.Contains(err.Error(), "run-daily is sourcing-only") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

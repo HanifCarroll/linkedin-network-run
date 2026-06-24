@@ -91,6 +91,9 @@ type dailyProgress struct {
 
 func RunDaily(store *Store, options DailyOptions) (DailyResult, error) {
 	options = normalizeDailyOptions(store, options)
+	if options.AllowSend {
+		return DailyResult{}, fmt.Errorf("run-daily is sourcing-only; use send-ready --allow-send for real sends")
+	}
 	if strings.TrimSpace(options.Session) == "" {
 		return DailyResult{}, fmt.Errorf("--session is required")
 	}
@@ -238,7 +241,7 @@ bucketLoop:
 		reportStatus = "blocked"
 	}
 	report := BuildDashboardReportWithOptions(state, store.StatePath(), DashboardBuildOptions{
-		Mode:             "run",
+		Mode:             "sourcing",
 		RunID:            options.RunID,
 		RunStartedAt:     &startedAt,
 		RunCompletedAt:   &completedAt,

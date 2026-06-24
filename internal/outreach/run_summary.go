@@ -273,10 +273,24 @@ func RecommendNextRunSummary(summary RunSummary) RunRecommendation {
 			}
 		}
 	}
-	return RunRecommendation{Reason: "Latest run reached its requested send target; no retry is needed for the same target."}
+	if !summary.AllowSend {
+		return RunRecommendation{Reason: "Latest sourcing run completed. Use send-ready for already dry_run_ready leads, or continue sourcing if the dashboard shows a readiness shortfall."}
+	}
+	return RunRecommendation{Reason: "Latest sending run reached its requested send target; no retry is needed for the same target."}
 }
 
 func retryCommand(targetAgencies int, targetRecruiters int, allowSend bool) string {
+	if allowSend {
+		return strings.Join([]string{
+			"/Users/hanifcarroll/.local/bin/recruiter-agency-outreach",
+			"send-ready",
+			"--session", "auto",
+			"--target-agencies", fmt.Sprintf("%d", targetAgencies),
+			"--target-recruiters", fmt.Sprintf("%d", targetRecruiters),
+			"--allow-send",
+			"--print-markdown",
+		}, " ")
+	}
 	parts := []string{
 		"/Users/hanifcarroll/.local/bin/recruiter-agency-outreach",
 		"run-daily",
@@ -285,9 +299,6 @@ func retryCommand(targetAgencies int, targetRecruiters int, allowSend bool) stri
 		"--target-recruiters", fmt.Sprintf("%d", targetRecruiters),
 		"--refresh-saved-searches",
 		"--print-markdown",
-	}
-	if allowSend {
-		parts = append(parts, "--allow-send")
 	}
 	if targetAgencies > 0 {
 		parts = append(parts, "--timeout-ms", "240000", "--stop-when-no-progress", "--max-no-progress-searches", "12")

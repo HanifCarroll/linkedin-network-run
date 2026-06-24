@@ -243,7 +243,8 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 	var pages, accountPages, limit, accountLimit, stopAfterConnectable, rowScrollDelayMS, timeoutMS uint32
 	var allowSend, refreshSavedSearches, skipSessionReset, printMarkdown, stopWhenNoProgress bool
 	cmd := &cobra.Command{
-		Use: "run-daily",
+		Use:   "run-daily",
+		Short: "Source, draft, and validate recruiter/agency leads without real sends",
 		RunE: withStore(func(store *Store) error {
 			result, err := RunDaily(store, DailyOptions{
 				Command:                      "run-daily",
@@ -632,7 +633,8 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 	var timeoutMS uint32
 	var allowSend, printMarkdown bool
 	cmd := &cobra.Command{
-		Use: "send-ready",
+		Use:   "send-ready",
+		Short: "Send already dry_run_ready recruiter/agency messages without sourcing",
 		RunE: withStore(func(store *Store) error {
 			if !allowSend {
 				return fmt.Errorf("send-ready requires --allow-send")
@@ -690,8 +692,23 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 				return err
 			}
 			completedAt := time.Now()
+			recommendation := RecommendNextRunSummary(RunSummary{
+				RunID:            runID,
+				Command:          "send-ready",
+				Args:             os.Args[1:],
+				StartedAt:        startedAt,
+				CompletedAt:      completedAt,
+				Status:           "completed",
+				DashboardPath:    options.DashboardPath,
+				StatePath:        store.StatePath(),
+				TargetAgencies:   options.TargetAgencies,
+				TargetRecruiters: options.TargetRecruiters,
+				AllowSend:        true,
+				Counts:           dashboardRunCounts(actions),
+				Actions:          actions,
+			})
 			report := BuildDashboardReportWithOptions(state, store.StatePath(), DashboardBuildOptions{
-				Mode:             "run",
+				Mode:             "sending",
 				RunID:            runID,
 				RunStartedAt:     &startedAt,
 				RunCompletedAt:   &completedAt,
@@ -700,6 +717,7 @@ func sendReadyCommand(withStore func(func(*Store) error) func(*cobra.Command, []
 				TargetRecruiters: options.TargetRecruiters,
 				AllowSend:        true,
 				Actions:          actions,
+				Recommendation:   &recommendation,
 			})
 			if err := WriteDashboardMarkdownAliases([]string{options.DashboardPath, store.LatestRunDashboardPath(), store.DefaultDailyDashboardPath()}, report); err != nil {
 				return err
@@ -1016,7 +1034,7 @@ func addDailyFlags(cmd *cobra.Command, session *string, playwriter *string, capt
 	cmd.Flags().Uint32Var(stopAfterConnectable, "stop-after-connectable", 0, "stop after N connectable rows")
 	cmd.Flags().Uint32Var(rowScrollDelayMS, "row-scroll-delay-ms", 250, "row scroll delay")
 	cmd.Flags().Uint32Var(timeoutMS, "timeout-ms", 90000, "Playwriter timeout")
-	cmd.Flags().BoolVar(allowSend, "allow-send", false, "allow real message sends")
+	cmd.Flags().BoolVar(allowSend, "allow-send", false, "deprecated for run-daily; use send-ready --allow-send")
 	cmd.Flags().BoolVar(refreshSavedSearches, "refresh-saved-searches", false, "refresh saved-search resolver before capture")
 	cmd.Flags().BoolVar(skipSessionReset, "skip-session-reset", false, "skip the default Playwriter session reset before the daily run")
 	cmd.Flags().BoolVar(printMarkdown, "print-markdown", false, "print dashboard markdown")
