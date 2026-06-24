@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from packages.linkedin_browser import (
+    DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
     DEFAULT_BROWSER_PROFILE_NAME,
+    DEFAULT_CHROME_USER_DATA_DIR,
     ArtifactWriter,
     BrowserBlockKind,
     BrowserSession,
@@ -130,12 +132,39 @@ def test_profile_config_can_be_overridden() -> None:
         {
             "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR": "/tmp/chrome",
             "LINKEDIN_TOOLS_CHROME_PROFILE_NAME": "LinkedIn Test",
+            "LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "automation",
         }
     )
     assert config == ChromeProfileConfig(
         user_data_dir=Path("/tmp/chrome"),
         profile_name="LinkedIn Test",
     )
+
+
+def test_profile_config_can_use_automation_mode() -> None:
+    config = chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "automation"})
+
+    assert config.user_data_dir == DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR
+    assert config.profile_name == "LinkedIn"
+    assert config.channel == "chrome"
+
+
+def test_profile_config_can_use_real_mode() -> None:
+    config = chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "real"})
+
+    assert config.user_data_dir == DEFAULT_CHROME_USER_DATA_DIR
+    assert config.profile_name == "LinkedIn"
+    assert config.channel == "chrome"
+
+
+def test_profile_config_rejects_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="must be automation, real, or custom"):
+        chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "unknown"})
+
+
+def test_profile_config_custom_mode_requires_explicit_root() -> None:
+    with pytest.raises(ValueError, match="CHROME_USER_DATA_DIR is required"):
+        chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "custom"})
 
 
 def test_profile_config_can_use_bundled_chromium() -> None:
@@ -190,6 +219,7 @@ async def test_launch_linkedin_chrome_passes_clean_env_for_installed_chrome() ->
 
     assert playwright.chromium.kwargs is not None
     assert playwright.chromium.kwargs["channel"] == "chrome"
+    assert playwright.chromium.kwargs["chromium_sandbox"] is True
     launch_env = playwright.chromium.kwargs["env"]
     assert isinstance(launch_env, dict)
     assert launch_env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"

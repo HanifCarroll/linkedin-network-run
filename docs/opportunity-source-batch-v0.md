@@ -103,19 +103,27 @@ Configurable safety limits:
 --max-runtime-seconds 90
 ```
 
-The extractor uses the Chrome profile named `LinkedIn` by default. It does not
-attach to the Playwriter CDP endpoint unless `--cdp-url` is passed explicitly.
-Override the profile through `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` and
-`LINKEDIN_TOOLS_CHROME_PROFILE_NAME` if needed. For an isolated automation root
-that runs normal Google Chrome without touching your personal Chrome profile,
-use:
+The extractor uses your real Google Chrome root and the Chrome profile named
+`LinkedIn` by default. It does not attach to the Playwriter CDP endpoint unless
+`--cdp-url` is passed explicitly. Use `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE` to
+switch roots:
 
 ```sh
-export LINKEDIN_TOOLS_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/linkedin-tools/chrome-automation"
+# Default: your real Google Chrome root.
+export LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=real
 export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
-export LINKEDIN_TOOLS_BROWSER_CHANNEL=chrome
-export LINKEDIN_TOOLS_BROWSER_HEADLESS=false
+
+# Opt-in: isolated normal Google Chrome root for source experiments.
+export LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=automation
+export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
 ```
+
+Use `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=custom` plus
+`LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` for another explicit root.
+
+Chrome runs headed by default. Do not set
+`LINKEDIN_TOOLS_BROWSER_HEADLESS=true` for the opportunity source experiment;
+the browser should behave like a normal visible Google Chrome window.
 
 The isolated root needs its own LinkedIn login once. Chrome's newer remote
 debugging protections require a non-default data dir for automation debugging,

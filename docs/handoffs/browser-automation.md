@@ -44,12 +44,18 @@ No user-facing CLI commands were added in this thread. The implemented public pa
 ## Browser Assumptions
 
 - Default Chrome user data directory is `~/Library/Application Support/Google/Chrome`.
+- `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=automation` uses
+  `~/Library/Application Support/linkedin-tools/chrome-automation`.
+- Default mode is `real`, which uses the normal Google Chrome
+  root at `~/Library/Application Support/Google/Chrome`.
+- `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=custom` uses
+  `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR`.
 - Default Chrome profile name is `LinkedIn`.
 - Profile path can be changed with `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR`.
 - Profile name can be changed with `LINKEDIN_TOOLS_CHROME_PROFILE_NAME`.
 - Browser channel can be changed with `LINKEDIN_TOOLS_BROWSER_CHANNEL`; use
   `bundled` for Playwright's Chromium instead of installed Google Chrome.
-- Headless mode can be changed with `LINKEDIN_TOOLS_BROWSER_HEADLESS`.
+- Browser launches are headed by default.
 - Installed Google Chrome launches inherit a minimal Chrome-safe environment
   from `chrome_launch_env()` so local dev-shell variables do not trip Chrome's
   hardened runtime.

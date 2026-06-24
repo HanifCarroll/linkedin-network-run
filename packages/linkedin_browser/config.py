@@ -9,8 +9,12 @@ from pathlib import Path
 
 DEFAULT_BROWSER_PROFILE_NAME = "LinkedIn"
 DEFAULT_CHROME_USER_DATA_DIR = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR = (
+    Path.home() / "Library" / "Application Support" / "linkedin-tools" / "chrome-automation"
+)
 DEFAULT_PLAYWRITER_CDP_URL = "ws://127.0.0.1:19988/cdp"
 LINKEDIN_CDP_URL_ENV = "LINKEDIN_TOOLS_CDP_URL"
+LINKEDIN_BROWSER_PROFILE_MODE_ENV = "LINKEDIN_TOOLS_BROWSER_PROFILE_MODE"
 LINKEDIN_PROFILE_ENV = "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR"
 LINKEDIN_PROFILE_NAME_ENV = "LINKEDIN_TOOLS_CHROME_PROFILE_NAME"
 LINKEDIN_BROWSER_CHANNEL_ENV = "LINKEDIN_TOOLS_BROWSER_CHANNEL"
@@ -47,7 +51,7 @@ class ChromeProfileConfig:
 
 def chrome_profile_from_env(environ: Mapping[str, str] | None = None) -> ChromeProfileConfig:
     source = environ if environ is not None else os.environ
-    user_data_dir = Path(source.get(LINKEDIN_PROFILE_ENV, str(DEFAULT_CHROME_USER_DATA_DIR)))
+    user_data_dir = _user_data_dir_for_mode(source)
     profile_name = source.get(LINKEDIN_PROFILE_NAME_ENV, DEFAULT_BROWSER_PROFILE_NAME)
     channel = _browser_channel(source.get(LINKEDIN_BROWSER_CHANNEL_ENV, "chrome"))
     headless = _env_bool(source.get(LINKEDIN_BROWSER_HEADLESS_ENV), default=False)
@@ -74,6 +78,21 @@ def chrome_launch_env(environ: Mapping[str, str] | None = None) -> ChromeLaunchE
         "LC_ALL": source.get("LC_ALL", ""),
     }
     return {key: value for key, value in candidates.items() if value}
+
+
+def _user_data_dir_for_mode(source: Mapping[str, str]) -> Path:
+    explicit_dir = source.get(LINKEDIN_PROFILE_ENV)
+    if explicit_dir:
+        return Path(explicit_dir)
+
+    mode = source.get(LINKEDIN_BROWSER_PROFILE_MODE_ENV, "real").strip().casefold()
+    if mode in {"", "real"}:
+        return DEFAULT_CHROME_USER_DATA_DIR
+    if mode == "automation":
+        return DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR
+    if mode == "custom":
+        raise ValueError(f"{LINKEDIN_PROFILE_ENV} is required when profile mode is custom")
+    raise ValueError(f"{LINKEDIN_BROWSER_PROFILE_MODE_ENV} must be automation, real, or custom")
 
 
 def _browser_channel(value: str) -> str | None:
