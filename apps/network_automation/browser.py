@@ -261,8 +261,12 @@ class PlaywrightBrowserClient:
                 and hasattr(self._context, "close")
             ):
                 await self._context.close()
-            if self._playwright_manager is not None:
-                await self._playwright_manager.stop()
+            if self._playwright is not None and hasattr(self._playwright, "stop"):
+                await self._playwright.stop()
+            elif self._playwright_manager is not None and hasattr(
+                self._playwright_manager, "__aexit__"
+            ):
+                await self._playwright_manager.__aexit__(None, None, None)
 
         if not self._loop.is_closed():
             self._loop.run_until_complete(_close())
@@ -572,8 +576,13 @@ class PlaywrightBrowserClient:
                 dry_run=True,
             )
             click_result = await safety
+            status = (
+                "dry-run-messageable"
+                if click_result.safety.status == "ok"
+                else click_result.status
+            )
             payload.update(
-                {"status": "dry-run-messageable", "action": click_result.safety.__dict__}
+                {"status": status, "action": click_result.safety.__dict__}
             )
             return self._write_result(record.id, payload, AcceptanceFollowupSendResult)
         await action["locator"].click(timeout=8000)

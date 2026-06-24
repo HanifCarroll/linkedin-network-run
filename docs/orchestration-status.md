@@ -129,26 +129,34 @@ Last updated: 2026-06-24
 - Network automation now has Python Playwright-backed command paths for
   `capture`, `reconcile-audit`, `send-next`, `send-guarded`, accepted
   follow-up sends, and pending cleanup withdrawals. These are covered by fake
-  browser tests. Live `reconcile-audit`, `capture`, and `send-next --dry-run`
-  passed from a temporary state directory by attaching to the existing
-  Playwriter CDP endpoint at `ws://127.0.0.1:19988/cdp`.
+  browser tests. Live `reconcile-audit`, `capture`, `send-next --dry-run`,
+  accepted follow-up `send-followup --dry-run`, and pending cleanup
+  `withdraw-next --dry-run` passed from a temporary state directory by
+  attaching to the existing Playwriter CDP endpoint at
+  `ws://127.0.0.1:19988/cdp`.
 - Recruiter/agency outreach now exposes the remaining state-backed command
   surface in Python and compatibility routing delegates those implemented
-  commands. Live recruiter/agency capture/send runners are still pending.
+  commands. Live recruiter/agency people capture, account capture, and
+  `send-message --dry-run` passed from a temporary SQLite state directory by
+  attaching to the existing Playwriter CDP endpoint.
 
 ## Integrated Verification
 
 After integrating Threads 1 through 7, root routing, and the follow-up
 browser/command parity slices:
 
-- PASS: `uv run pytest` (`94 passed`)
+- PASS: `uv run pytest` (`97 passed`, one existing FastAPI/Starlette
+  deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
+- PASS: source-faithful grep required by `AGENTS.md`. Remaining hits are
+  existing legacy migration names, explicit score fields/classifiers, UI
+  headings/templates, and documented handoff grep examples; no new weak
+  extraction fallback remains in the browser adapters.
 
 ## Next Orchestration Steps
 
-1. Exercise browser dry-runs with the logged-in `LinkedIn` Chrome profile.
-2. Decide whether remaining legacy-only compatibility placeholders need direct
+1. Decide whether remaining legacy-only compatibility placeholders need direct
    parity ports or approved archived replacements.
-3. Complete Hanif review and approval before archiving the Go/JavaScript
+2. Complete Hanif review and approval before archiving the Go/JavaScript
    implementation.

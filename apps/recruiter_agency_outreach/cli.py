@@ -55,6 +55,9 @@ from .sourcing import (
 from .storage import Store
 from .utils import now_iso
 
+DEFAULT_CAPTURE_DIRNAME = "captures"
+DEFAULT_ACCOUNT_CAPTURE_DIRNAME = "account-captures"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -133,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_parser.add_argument("--target-recruiters", type=int, default=5)
     recommend_parser.add_argument("--allow-send", action="store_true")
     recommend_parser.add_argument("--json", action="store_true")
+
+    serve_parser = subparsers.add_parser("serve")
+    serve_parser.add_argument("--addr", default="127.0.0.1:8765")
+    serve_parser.add_argument("--access-token", default="")
+    serve_parser.add_argument("--log-level", default="info")
 
     revise_parser = subparsers.add_parser("revise")
     revise_parser.add_argument("--lead-id", required=True)
@@ -251,11 +259,12 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
         if args.print_markdown:
             print(daily_result.markdown)
         return
-    if args.command in {"capture", "capture-accounts"}:
-        raise RuntimeError(
-            "live Sales Navigator capture is not wired in the Python app; "
-            "use import-capture/import-accounts with structured artifacts"
-        )
+    if args.command == "capture":
+        _run_capture_command(args, store)
+        return
+    if args.command == "capture-accounts":
+        _run_capture_accounts_command(args, store)
+        return
     if args.command == "import-capture":
         state = store.load()
         capture_summary = import_salesnav_capture(
@@ -371,6 +380,9 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
         if recommendation.should_retry:
             print(f"next_command={recommendation.command}")
         return
+    if args.command == "serve":
+        _run_serve_command(args)
+        return
     if args.command == "revise":
         state = store.load()
         body = Path(args.body_file).read_text().replace("\r\n", "\n").strip()
@@ -460,6 +472,105 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
         _run_agency_pool_command(args, store)
         return
     raise ValueError(f"unsupported command {args.command!r}")
+
+
+def _run_capture_command(args: argparse.Namespace, store: Store) -> None:
+    source = str(args.source or "").strip()
+    if not source:
+        raise ValueError("--source is required")
+    browser = _browser_from_capture_args(args, store)
+    try:
+        _capture, artifact_path = browser.capture_salesnav(
+            source=source,
+            url=args.url or None,
+            pages=args.pages,
+            limit=args.limit,
+            only_connectable=args.only_connectable,
+        )
+    finally:
+        close = getattr(browser, "close", None)
+        if callable(close):
+            close()
+    state = store.load()
+    capture_summary = import_salesnav_capture(
+        state,
+        load_json_object(artifact_path),
+        only_connectable=args.only_connectable,
+    )
+    store.save(state)
+    print(
+        f"artifact={artifact_path} source={capture_summary.source} "
+        f"stored={capture_summary.stored} updated={capture_summary.updated} "
+        f"eligible={capture_summary.eligible} needs_review={capture_summary.reviewed} "
+        f"rejected={capture_summary.rejected} total={capture_summary.total_leads}"
+    )
+
+
+def _browser_from_capture_args(args: argparse.Namespace, store: Store) -> Any:
+    from apps.network_automation.browser import PlaywrightBrowserClient
+
+    out_dir = Path(args.out_dir) if args.out_dir else store.dir / DEFAULT_CAPTURE_DIRNAME
+    return PlaywrightBrowserClient(out_dir=out_dir)
+
+
+def _run_capture_accounts_command(args: argparse.Namespace, store: Store) -> None:
+    source = str(args.source or "").strip()
+    if not source:
+        raise ValueError("--source is required")
+    browser = _account_browser_from_args(args, store)
+    try:
+        _capture, artifact_path = browser.capture_accounts(
+            source=source,
+            url=args.url or None,
+            pages=args.pages,
+            limit=args.limit,
+        )
+    finally:
+        close = getattr(browser, "close", None)
+        if callable(close):
+            close()
+    state = store.load()
+    account_summary = import_account_capture(state, load_json_object(artifact_path))
+    store.save(state)
+    print(
+        f"artifact={artifact_path} source={account_summary.source} "
+        f"stored={account_summary.stored} updated={account_summary.updated} "
+        f"qualified={account_summary.qualified} needs_review={account_summary.needs_review} "
+        f"rejected={account_summary.rejected} total={account_summary.total}"
+    )
+
+
+def _account_browser_from_args(args: argparse.Namespace, store: Store) -> Any:
+    from .account_browser import PlaywrightAccountCaptureClient
+
+    out_dir = Path(args.out_dir) if args.out_dir else store.dir / DEFAULT_ACCOUNT_CAPTURE_DIRNAME
+    return PlaywrightAccountCaptureClient(out_dir=out_dir)
+
+
+def _run_serve_command(args: argparse.Namespace) -> None:
+    import uvicorn
+
+    from apps.review_ui.server import create_app
+    from packages.linkedin_ui import LocalAccessToken
+
+    host, port = _parse_addr(args.addr)
+    token = args.access_token or LocalAccessToken.generate().token
+    app = create_app(access_token=token)
+    print(f"review_ui=http://{host}:{port}/recruiter-agency?access_token={token}")
+    uvicorn.run(app, host=host, port=port, log_level=args.log_level)
+
+
+def _parse_addr(value: str) -> tuple[str, int]:
+    if ":" not in value:
+        raise ValueError("--addr must be HOST:PORT")
+    host, raw_port = value.rsplit(":", 1)
+    if not host:
+        raise ValueError("--addr host is required")
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise ValueError("--addr port must be an integer") from exc
+    return host, port
 
 
 def _run_lead_command(args: argparse.Namespace, store: Store) -> None:

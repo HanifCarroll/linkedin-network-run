@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
+import apps.recruiter_agency_outreach.cli as recruiter_cli
 from apps.recruiter_agency_outreach.cli import build_parser, main
 from apps.recruiter_agency_outreach.daily import DailyOptions, daily_buckets, run_daily
 from apps.recruiter_agency_outreach.dashboard import (
@@ -26,7 +29,11 @@ from apps.recruiter_agency_outreach.models import (
     MessageStatus,
     OutreachState,
 )
-from apps.recruiter_agency_outreach.send import SendMessageOptions, send_message
+from apps.recruiter_agency_outreach.send import (
+    MessageSendResult,
+    SendMessageOptions,
+    send_message,
+)
 from apps.recruiter_agency_outreach.sourcing import (
     import_account_capture,
     import_agency_source_capture,
@@ -276,6 +283,61 @@ def test_guarded_send_flow_requires_dry_run_ready_and_updates_dashboard(tmp_path
     assert len(sent.leads[0].send_attempts) == 2
 
 
+def test_send_message_uses_browser_when_result_path_is_missing(tmp_path: Path) -> None:
+    class FakeMessageBrowser:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.closed = False
+
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            self.calls.append(
+                {"config": config, "dry_run": dry_run, "allow_send": allow_send}
+            )
+            out = tmp_path / "message-result.json"
+            out.write_text(
+                json.dumps(
+                    {
+                        "status": "dry-run-messageable",
+                        "dryRun": True,
+                        "url": "https://www.linkedin.com/sales/lead/dana",
+                        "action": {"status": "ok"},
+                    }
+                )
+            )
+            return MessageSendResult.from_mapping(json.loads(out.read_text())), str(out)
+
+        def close(self) -> None:
+            self.closed = True
+
+    store = Store(tmp_path)
+    state = _sendable_state(message_status=MessageStatus.DRAFTED)
+    store.save(state)
+    browser = FakeMessageBrowser()
+
+    result = send_message(
+        store,
+        SendMessageOptions(
+            lead_id="lead_fixture",
+            session="auto",
+            browser=browser,
+        ),
+    )
+
+    assert "status=dry-run-messageable" in result
+    assert browser.calls[0]["dry_run"] is True
+    assert browser.calls[0]["allow_send"] is False
+    assert browser.closed is True
+    loaded = store.load()
+    assert loaded.leads[0].message_status == MessageStatus.DRY_RUN_READY
+    assert loaded.leads[0].send_attempts[0].out_path == str(tmp_path / "message-result.json")
+
+
 def test_run_daily_is_no_send_and_agency_bucket_is_account_first(tmp_path: Path) -> None:
     store = Store(tmp_path)
     with pytest.raises(ValueError, match="run-daily is sourcing-only"):
@@ -466,10 +528,104 @@ def test_send_ready_requires_real_send_result_artifacts(
     assert store.load().run_events[-1].result == "failed"
 
 
-def test_live_capture_commands_report_browser_gap(
-    tmp_path: Path,
+def test_serve_runs_review_ui_without_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run(app: object, *, host: str, port: int, log_level: str) -> None:
+        calls.append({"app": app, "host": host, "port": port, "log_level": log_level})
+
+    monkeypatch.setattr("uvicorn.run", fake_run)
+
+    assert (
+        main(
+            [
+                "serve",
+                "--addr",
+                "127.0.0.1:8766",
+                "--access-token",
+                "test-token",
+                "--log-level",
+                "warning",
+            ]
+        )
+        == 0
+    )
+
+    assert calls
+    assert calls[0]["host"] == "127.0.0.1"
+    assert calls[0]["port"] == 8766
+    assert calls[0]["log_level"] == "warning"
+    assert (
+        "review_ui=http://127.0.0.1:8766/recruiter-agency?access_token=test-token"
+        in capsys.readouterr().out
+    )
+
+
+def test_live_capture_command_uses_browser_and_imports_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeCaptureBrowser:
+        instances: list[FakeCaptureBrowser] = []
+
+        def __init__(self, out_dir: Path) -> None:
+            self.out_dir = out_dir
+            self.calls: list[str] = []
+            self.closed = False
+            FakeCaptureBrowser.instances.append(self)
+
+        def capture_salesnav(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+            stop_after_connectable: int = 0,
+            only_connectable: bool = False,
+            row_scroll_delay_ms: int = 250,
+        ) -> tuple[object, str]:
+            self.calls.append(
+                f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
+            )
+            _ = stop_after_connectable, row_scroll_delay_ms
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "capture-page.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-06-24T12:00:00Z",
+                        "rows": [
+                            {
+                                "index": 0,
+                                "name": "Riley Recruiter",
+                                "text": (
+                                    "Riley Recruiter\nSenior Technical Recruiter\n"
+                                    "Acme Staffing\nContract React TypeScript roles"
+                                ),
+                                "profileUrl": "https://www.linkedin.com/sales/lead/abc?_ntb=x",
+                                "menuState": "connectable",
+                            }
+                        ],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_browser(args: Namespace, store: Store) -> FakeCaptureBrowser:
+        out_dir = Path(args.out_dir or store.dir / "captures")
+        return FakeCaptureBrowser(out_dir)
+
+    monkeypatch.setattr(recruiter_cli, "_browser_from_capture_args", fake_browser)
+
     assert (
         main(
             [
@@ -480,11 +636,120 @@ def test_live_capture_commands_report_browser_gap(
                 "auto",
                 "--source",
                 "ASAP - Contract Recruiter Titles",
+                "--url",
+                "https://www.linkedin.com/sales/search/people?savedSearchId=1",
+                "--pages",
+                "2",
+                "--limit",
+                "4",
+                "--only-connectable",
             ]
         )
-        == 1
+        == 0
     )
-    assert "live Sales Navigator capture is not wired" in capsys.readouterr().err
+    browser = FakeCaptureBrowser.instances[-1]
+    assert browser.calls == [
+        (
+            "capture:ASAP - Contract Recruiter Titles:pages=2:limit=4:"
+            "only=True:url=https://www.linkedin.com/sales/search/people?savedSearchId=1"
+        )
+    ]
+    assert browser.closed is True
+    state = Store(tmp_path).load()
+    assert [lead.name for lead in state.leads] == ["Riley Recruiter"]
+    assert "artifact=" in capsys.readouterr().out
+
+
+def test_live_account_capture_command_uses_browser_and_imports_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeAccountBrowser:
+        instances: list[FakeAccountBrowser] = []
+
+        def __init__(self, out_dir: Path) -> None:
+            self.out_dir = out_dir
+            self.calls: list[str] = []
+            self.closed = False
+            FakeAccountBrowser.instances.append(self)
+
+        def capture_accounts(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+        ) -> tuple[object, str]:
+            self.calls.append(
+                f"accounts:{source}:pages={pages}:limit={limit}:url={url}"
+            )
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "accounts.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-06-24T12:00:00Z",
+                        "rows": [
+                            {
+                                "index": 0,
+                                "name": "Bright Product Studio",
+                                "text": (
+                                    "Software Development custom software AI MVP "
+                                    "product launches"
+                                ),
+                                "accountUrl": "https://www.linkedin.com/sales/company/12345?_ntb=x",
+                                "website": "https://bright.example.com",
+                                "industry": "Software Development",
+                            }
+                        ],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_browser(args: Namespace, store: Store) -> FakeAccountBrowser:
+        out_dir = Path(args.out_dir or store.dir / "account-captures")
+        return FakeAccountBrowser(out_dir)
+
+    monkeypatch.setattr(recruiter_cli, "_account_browser_from_args", fake_browser)
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "capture-accounts",
+                "--session",
+                "auto",
+                "--source",
+                "ASAP - Agency Accounts Product Studio",
+                "--url",
+                "https://www.linkedin.com/sales/search/company?savedSearchId=1",
+                "--pages",
+                "2",
+                "--limit",
+                "4",
+            ]
+        )
+        == 0
+    )
+    browser = FakeAccountBrowser.instances[-1]
+    assert browser.calls == [
+        (
+            "accounts:ASAP - Agency Accounts Product Studio:pages=2:limit=4:"
+            "url=https://www.linkedin.com/sales/search/company?savedSearchId=1"
+        )
+    ]
+    assert browser.closed is True
+    state = Store(tmp_path).load()
+    assert [account.name for account in state.agency_accounts] == ["Bright Product Studio"]
+    assert "artifact=" in capsys.readouterr().out
 
 
 def _sendable_state(*, message_status: MessageStatus) -> OutreachState:

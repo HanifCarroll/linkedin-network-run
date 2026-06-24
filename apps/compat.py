@@ -160,6 +160,7 @@ RECRUITER_AGENCY_APP_COMMANDS = frozenset(
         "dashboard",
         "last-run",
         "recommend-next-run",
+        "serve",
         "revise",
         "send-ready",
         "send-message",

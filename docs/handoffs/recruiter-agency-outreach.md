@@ -61,15 +61,16 @@ used for parity classification and queue ordering, not extraction fallbacks.
 
 ## Integration Notes
 
-- The shared browser packages have safety primitives and artifact parsers, but
-  still do not provide the concrete Playwriter runner needed for
-  `scripts/salesnav-send-message-one.js`, `scripts/salesnav-capture.js`, or
-  `scripts/salesnav-account-capture.js`. The Python `send-message` path
-  enforces gates and can apply one structured result via `--result-path`;
-  `send-ready` can apply one non-dry-run result per ready lead via
-  `--result-dir`. Live capture commands are present but fail explicitly until
-  the shared browser runner exists.
+- `capture`, `capture-accounts`, and `send-message` now have concrete Python
+  Playwright runners. `send-message` still accepts `--result-path` for
+  structured artifact replay, and `send-ready` can apply one non-dry-run result
+  per ready lead via `--result-dir`.
+- Live dry-run/capture proof artifacts from 2026-06-24:
+  `/tmp/recruiter-agency-live-dryrun.h4e40B/capture-live/001-capture-page.json`,
+  `/tmp/recruiter-agency-live-dryrun.h4e40B/account-capture-live/001-ASAP---Agency-Accounts-Product-Studio-accounts.json`,
+  and
+  `/tmp/recruiter-agency-live-dryrun.h4e40B/message-dryrun/001-lead_d17f3936.json`.
 - The root compatibility entrypoint delegates the implemented recruiter/agency
-  commands to `apps.recruiter_agency_outreach.cli:main`. Legacy-only behavior
-  such as `serve` remains outside this app slice.
+  commands to `apps.recruiter_agency_outreach.cli:main`. `serve` now launches
+  the consolidated Python review UI at the recruiter/agency route.
 - No live LinkedIn sends, messages, or browser actions were performed.

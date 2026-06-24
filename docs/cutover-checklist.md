@@ -9,7 +9,7 @@ Do not archive the current Go/JavaScript implementation until all items pass.
 - [x] Compatibility commands work during migration.
 - [x] Local UI exposes all required PRD views.
 - [x] Send and withdraw safety tests pass.
-- [ ] Browser dry-runs pass.
+- [x] Browser dry-runs pass.
 - [x] Opportunity-intel remains recommend-only.
 - [ ] Hanif approves cutover.
 
@@ -27,8 +27,12 @@ Do not archive the current Go/JavaScript implementation until all items pass.
 - [x] Live network `reconcile-audit`, `capture`, and `send-next --dry-run`
       passed against a temporary state directory on 2026-06-24 through the
       existing Playwriter CDP endpoint at `ws://127.0.0.1:19988/cdp`.
-- [ ] Live pending-withdrawal and accepted-follow-up browser dry-runs are not
-      exercised yet.
+- [x] Live accepted-follow-up `send-followup --dry-run` passed on 2026-06-24
+      with artifact
+      `/tmp/linkedin-tools-live-dryrun.84HHg5/followup-dryrun/001-afu_290bef9f8226.json`.
+- [x] Live pending-cleanup `withdraw-next --dry-run` passed on 2026-06-24 with
+      artifact
+      `/tmp/linkedin-tools-live-dryrun.84HHg5/withdraw-dryrun-actual-age/001-withdraw-result.json`.
 - [ ] Python capture does not yet include the old JS Sales Navigator API
       response enrichment; it uses exact row/profile/menu selectors only.
 
@@ -41,7 +45,14 @@ Do not archive the current Go/JavaScript implementation until all items pass.
       implemented recruiter/agency commands to the Python app CLI.
 - [x] `send-ready` preserves the real-send gate and applies explicit
       structured non-dry-run result artifacts only.
-- [ ] Live recruiter/agency browser capture and message-send runners are not
-      wired. `capture` and `capture-accounts` fail explicitly until a safe
-      concrete browser runner replaces the old JS scripts.
-- [ ] Legacy `serve` behavior is not ported.
+- [x] Live recruiter/agency people capture is wired through the shared
+      SalesNav people-capture adapter and passed on 2026-06-24 with artifact
+      `/tmp/recruiter-agency-live-dryrun.h4e40B/capture-live/001-capture-page.json`.
+- [x] Live recruiter/agency `send-message --dry-run` is wired through the
+      Python message adapter and passed on 2026-06-24 with artifact
+      `/tmp/recruiter-agency-live-dryrun.h4e40B/message-dryrun/001-lead_d17f3936.json`.
+- [x] Live recruiter/agency account capture is wired through the Python
+      account-capture adapter and passed on 2026-06-24 with artifact
+      `/tmp/recruiter-agency-live-dryrun.h4e40B/account-capture-live/001-ASAP---Agency-Accounts-Product-Studio-accounts.json`.
+- [x] Legacy `serve` behavior is replaced by the consolidated Python review UI
+      and compatibility routing delegates `recruiter-agency-outreach serve`.

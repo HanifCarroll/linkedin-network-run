@@ -112,6 +112,7 @@ def test_missing_opportunity_import_records_warning_without_source_mutation(
 
 def test_compat_help_status_and_no_send_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert linkedin_network_run(["--help"]) == 0
@@ -155,6 +156,21 @@ def test_compat_help_status_and_no_send_paths(
 
     assert recruiter_agency_outreach(["queue", "--json", "--state-dir", str(tmp_path)]) == 0
     assert json.loads(capsys.readouterr().out) == []
+
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+    assert (
+        recruiter_agency_outreach(
+            [
+                "serve",
+                "--addr",
+                "127.0.0.1:8767",
+                "--access-token",
+                "compat-token",
+            ]
+        )
+        == 0
+    )
+    assert "compatibility placeholder" not in capsys.readouterr().out
 
     assert (
         recruiter_agency_outreach(["run-daily", "--state-dir", str(tmp_path), "--allow-send"])

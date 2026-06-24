@@ -37,6 +37,7 @@ class SendMessageOptions:
     dry_run: bool = False
     allow_send: bool = False
     result_path: str = ""
+    browser: Any = None
 
 
 def build_message_candidate(state: OutreachState, lead: Lead) -> MessageCandidate:
@@ -108,18 +109,26 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
     if not dry_run and not options.allow_send:
         raise ValueError("real send requires --allow-send")
 
-    _ = prepare_message_config(state, lead, dry_run, options.allow_send)
-    if not options.result_path:
-        raise RuntimeError(
-            "browser message adapter is not wired in this workstream; "
-            "pass --result-path to apply a structured dry-run/send result"
-        )
-    result = load_message_send_result(options.result_path)
+    config = prepare_message_config(state, lead, dry_run, options.allow_send)
+    if options.result_path:
+        result = load_message_send_result(options.result_path)
+        out_path = options.result_path
+    else:
+        browser = options.browser or _default_message_browser(options, store)
+        try:
+            result, out_path = browser.send_message(
+                config,
+                dry_run=dry_run,
+                allow_send=options.allow_send,
+            )
+        finally:
+            close = getattr(browser, "close", None)
+            if callable(close):
+                close()
     if not result.dry_run and dry_run:
         raise ValueError("real send result requires --allow-send")
     if result.status == "sent-clicked" and result.dry_run:
         raise ValueError("sent-clicked result cannot be dry_run=true")
-    out_path = options.result_path
     apply_message_send_result(lead, result, out_path, run_id)
     append_run_event(
         state,
@@ -142,6 +151,13 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
         f"lead={lead.id} status={result.status} "
         f"dry_run={str(result.dry_run).lower()} out={out_path}"
     )
+
+
+def _default_message_browser(options: SendMessageOptions, store: Store) -> Any:
+    from .message_browser import PlaywrightMessageBrowserClient
+
+    out_dir = Path(options.out_dir) if options.out_dir else store.dir / "message-results"
+    return PlaywrightMessageBrowserClient(out_dir=out_dir)
 
 
 @dataclass(slots=True)
