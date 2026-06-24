@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Browser - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Browser artifacts{% endblock %}
+{% block heading %}Browser And Artifact Review{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Configured Browser Profile And Session</h2>
+      <span class="badge badge--warning">Thread 2 read model pending</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Session State</th>
+            <th>Current Session</th>
+            <th>Account Safety Warning</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for session in snapshot.browser_sessions %}
+            <tr>
+              <td>{{ session.profile_name }}</td>
+              <td>{{ session.session_state }}</td>
+              <td>{{ session.current_session }}</td>
+              <td>{{ session.safety_warning }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Latest Playwright Artifacts And Failed Actions</h2>
+      <span class="badge">Screenshots and raw JSON paths</span>
+    </div>
+    <div hx-get="/partials/browser/artifacts" hx-trigger="load">
+      {% include "partials/browser_artifacts.html" %}
+    </div>
+  </section>
+{% endblock %}

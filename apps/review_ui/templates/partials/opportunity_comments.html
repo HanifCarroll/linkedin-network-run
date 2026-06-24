@@ -1,0 +1,59 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Commenter</th>
+        <th>Comment</th>
+        <th>Evidence</th>
+        <th>Fit</th>
+        <th>Reject</th>
+        <th>Level</th>
+        <th>Score</th>
+        <th>Source</th>
+        <th>Calibration</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows|default(snapshot.ranked_comments) %}
+        <tr>
+          <td>
+            <strong>{{ row.commenter }}</strong><br>
+            <span class="muted">{{ row.headline }}</span><br>
+            <a href="{{ row.profile_url }}" target="_blank" rel="noreferrer">Profile</a>
+          </td>
+          <td>
+            {{ row.comment_text }}<br>
+            <a href="{{ row.post_url }}" target="_blank" rel="noreferrer">Post</a>
+          </td>
+          <td>{{ row.evidence_quote }}</td>
+          <td>{{ row.fit_reasons }}</td>
+          <td>{{ row.reject_reasons }}</td>
+          <td><span class="badge {% if row.level == 'hot' %}badge--good{% endif %}">{{ row.level }}</span></td>
+          <td>{{ row.signal_score }}</td>
+          <td>{{ row.source_id }}</td>
+          <td>
+            {% if access_token %}
+              <form
+                hx-post="/opportunities/comments/{{ row.comment_id }}/label"
+                hx-target="#label-result-{{ row.comment_id }}"
+                hx-swap="innerHTML"
+                method="post"
+              >
+                <input type="hidden" name="{{ auth_form_field }}" value="{{ access_token }}">
+                <div class="segmented">
+                  <button type="submit" name="label" value="qualified">Qualified</button>
+                  <button type="submit" name="label" value="rejected">Reject</button>
+                  <button type="submit" name="label" value="maybe">Maybe</button>
+                  <button type="submit" name="label" value="skip">Skip</button>
+                </div>
+              </form>
+              <div id="label-result-{{ row.comment_id }}"></div>
+            {% else %}
+              <span class="badge badge--warning">Token required</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

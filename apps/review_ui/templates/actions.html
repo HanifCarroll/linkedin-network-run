@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Guarded Actions - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Token gated{% endblock %}
+{% block heading %}Guarded Real-Action Review{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Registered Guarded Paths</h2>
+      <span class="badge badge--warning">Disabled until app services land</span>
+    </div>
+    <div class="section-stack">
+      {% for action in actions %}
+        <article class="panel">
+          <div class="toolbar">
+            <div>
+              <h3>{{ action.label }}</h3>
+              <p class="muted">{{ action.app }} / {{ action.workflow }}</p>
+            </div>
+            <span class="badge badge--danger">{{ action.safety.value }}</span>
+          </div>
+          <code class="code">{{ command_text(action.guarded_command.argv) }}</code>
+          <p class="muted">{{ action.integration_dependency }}</p>
+          <form
+            hx-post="/actions/{{ action.id }}"
+            hx-target="#action-result-{{ action.id }}"
+            hx-swap="innerHTML"
+            method="post"
+          >
+            <input type="hidden" name="{{ auth_form_field }}" value="{{ access_token }}">
+            <button class="button {% if not action.enabled %}button--disabled{% endif %}" type="submit" {% if not action.enabled %}disabled{% endif %}>
+              {{ action.label }}
+            </button>
+          </form>
+          <div id="action-result-{{ action.id }}"></div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

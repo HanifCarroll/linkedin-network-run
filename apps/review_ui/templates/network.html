@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Network - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Send-capable workflow{% endblock %}
+{% block heading %}Network Automation Review{% endblock %}
+
+{% block content %}
+  <section class="grid grid--2">
+    <article class="panel">
+      <h2>Current Run Status</h2>
+      <p><strong>Run:</strong> {{ snapshot.network_status.run_id }}</p>
+      <p><strong>Phase:</strong> {{ snapshot.network_status.phase }}</p>
+      <p><strong>Plan:</strong> {{ snapshot.network_status.plan_next_action }}</p>
+      <p><strong>Safety:</strong> {{ snapshot.network_status.safety_state }}</p>
+    </article>
+    <article class="panel">
+      <h2>Audit And Reconciliation</h2>
+      <p><strong>Audit:</strong> {{ snapshot.network_status.audit_status }}</p>
+      <p><strong>Reconciliation:</strong> {{ snapshot.network_status.reconciliation_status }}</p>
+      <a class="button button--secondary" href="/actions{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}">Open guarded action page</a>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Candidate Reservoir And Next Candidate</h2>
+      <span class="badge badge--warning">Thread 4 read model pending</span>
+    </div>
+    <div hx-get="/partials/network/queue" hx-trigger="load">
+      {% include "partials/network_queue.html" %}
+    </div>
+  </section>
+{% endblock %}

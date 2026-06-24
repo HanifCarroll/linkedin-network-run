@@ -1,0 +1,26 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Lead</th>
+        <th>Type</th>
+        <th>Draft</th>
+        <th>Messageability</th>
+        <th>Send Readiness</th>
+        <th>Blocker</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lead in snapshot.recruiter_leads %}
+        <tr>
+          <td>{{ lead.name }}<br><span class="muted">{{ lead.lead_id }}</span></td>
+          <td>{{ lead.lead_type }}</td>
+          <td>{{ lead.draft_status }}</td>
+          <td>{{ lead.messageability_status }}</td>
+          <td>{{ lead.send_readiness }}</td>
+          <td>{{ lead.blocker }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

@@ -1,0 +1,12 @@
+<div class="action-result">
+  <span class="badge {% if result.status == 'blocked' %}badge--danger{% else %}badge--warning{% endif %}">
+    {{ result.status }}
+  </span>
+  <p>{{ result.message }}</p>
+  {% if result.command %}
+    <code class="code">{{ result.command }}</code>
+  {% endif %}
+  {% for warning in result.warnings %}
+    <p class="muted">{{ warning }}</p>
+  {% endfor %}
+</div>

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Recruiter/Agency - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Send-capable workflow{% endblock %}
+{% block heading %}Recruiter/Agency Review{% endblock %}
+
+{% block content %}
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Latest Run Summary</h2>
+      <span class="badge badge--warning">Thread 5 read model pending</span>
+    </div>
+    <p><strong>Run:</strong> {{ snapshot.recruiter_summary.run_id }}</p>
+    <p><strong>Started:</strong> {{ snapshot.recruiter_summary.started_at }}</p>
+    <p><strong>Result:</strong> {{ snapshot.recruiter_summary.result }}</p>
+    <p><strong>Next:</strong> {{ snapshot.recruiter_summary.next_recommendation }}</p>
+    <p><strong>Blockers:</strong> {{ snapshot.recruiter_summary.blockers }}</p>
+  </section>
+
+  <section class="grid grid--2">
+    <article class="panel">
+      <h2>Agency Account Pool</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Agency</th>
+              <th>Status</th>
+              <th>Contactability</th>
+              <th>Blocker</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for account in snapshot.agency_accounts %}
+              <tr>
+                <td>{{ account.agency }}<br><span class="muted">{{ account.account_id }}</span></td>
+                <td>{{ account.status }}</td>
+                <td>{{ account.contactability }}</td>
+                <td>{{ account.blocker }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <h2>Source Quality And Blockers</h2>
+      <p>Website contacts remain review context until Sales Navigator identity resolution exists.</p>
+      <p class="muted">Send-ready rows must come from the recruiter/agency guarded message service.</p>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Lead Queue, Drafts, And Messageability</h2>
+      <a class="button button--secondary" href="/actions{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}">Open guarded action page</a>
+    </div>
+    <div hx-get="/partials/recruiter-agency/leads" hx-trigger="load">
+      {% include "partials/recruiter_leads.html" %}
+    </div>
+  </section>
+{% endblock %}

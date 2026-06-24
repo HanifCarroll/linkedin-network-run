@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block title %}Overview - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Overview{% endblock %}
+{% block heading %}Cross-System Review{% endblock %}
+
+{% block content %}
+  <section class="grid grid--4">
+    {% for metric in snapshot.system_metrics %}
+      <article class="panel metric">
+        <span class="badge {% if metric.state == 'warning' %}badge--warning{% elif metric.state == 'good' %}badge--good{% endif %}">
+          {{ metric.label }}
+        </span>
+        <div class="metric__value">{{ metric.value }}</div>
+        <p class="muted">{{ metric.detail }}</p>
+      </article>
+    {% endfor %}
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <h2>Integration Notices</h2>
+      <span class="badge badge--warning">Stubbed read models</span>
+    </div>
+    <div class="notice-list">
+      {% for notice in snapshot.notices %}
+        <div class="notice">
+          <strong>{{ notice.area }}</strong>
+          <div class="muted">{{ notice.owner }}: {{ notice.dependency }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="grid grid--2">
+    <article class="panel">
+      <h2>Safety Boundary</h2>
+      <p>Opportunity pages expose review and labeling only. Send-capable workflows are isolated on token-gated guarded action pages.</p>
+      <p class="muted">State-changing routes require the local access token generated when the server starts.</p>
+    </article>
+    <article class="panel">
+      <h2>Action Surface</h2>
+      <p>{{ actions|length }} guarded real-action definitions are registered. All are disabled until the owning app services land.</p>
+      <a class="button button--secondary" href="/actions{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}">
+        Review guarded actions
+      </a>
+    </article>
+  </section>
+{% endblock %}

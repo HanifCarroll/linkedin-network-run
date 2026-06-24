@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}LinkedIn Tools Review{% endblock %}</title>
+    <link rel="stylesheet" href="/static/review.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="https://unpkg.com/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell" x-data="{ navOpen: true }">
+      <aside class="sidebar" x-show="navOpen">
+        <div class="brand">
+          <div class="brand__title">LinkedIn Tools</div>
+          <div class="brand__subtitle">Local review UI</div>
+        </div>
+        <nav class="nav" aria-label="Primary">
+          {% for item in nav_items %}
+            <a
+              href="{{ item.href }}{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}"
+              {% if section == item.id %}aria-current="page"{% endif %}
+            >{{ item.label }}</a>
+          {% endfor %}
+        </nav>
+      </aside>
+      <main class="main">
+        <div class="topbar">
+          <div>
+            <div class="eyebrow">{% block eyebrow %}Review{% endblock %}</div>
+            <h1>{% block heading %}System Review{% endblock %}</h1>
+          </div>
+          <button class="button button--secondary" type="button" @click="navOpen = !navOpen">
+            Toggle navigation
+          </button>
+        </div>
+        {% if message %}
+          <div class="panel notice">{{ message }}</div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Artifact</th>
+        <th>App</th>
+        <th>Kind</th>
+        <th>Path</th>
+        <th>Status</th>
+        <th>Retryable Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for artifact in snapshot.browser_artifacts %}
+        <tr>
+          <td>{{ artifact.artifact_id }}</td>
+          <td>{{ artifact.app }}</td>
+          <td>{{ artifact.kind }}</td>
+          <td><code>{{ artifact.path }}</code></td>
+          <td>{{ artifact.status }}</td>
+          <td>{{ artifact.retryable_error }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

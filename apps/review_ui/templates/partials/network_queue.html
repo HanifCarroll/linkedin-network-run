@@ -1,0 +1,70 @@
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Candidate</th>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Next Step</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for candidate in snapshot.network_candidates %}
+        <tr>
+          <td>{{ candidate.name }}<br><span class="muted">{{ candidate.candidate_id }}</span></td>
+          <td>{{ candidate.source }}</td>
+          <td>{{ candidate.status }}</td>
+          <td>{{ candidate.next_step }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap" style="margin-top: 14px;">
+  <table>
+    <thead>
+      <tr>
+        <th>Acceptance Draft</th>
+        <th>Status</th>
+        <th>Dry Run</th>
+        <th>Send History</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for draft in snapshot.acceptance_drafts %}
+        <tr>
+          <td>{{ draft.person }}<br><span class="muted">{{ draft.draft_id }}</span></td>
+          <td>{{ draft.draft_status }}</td>
+          <td>{{ draft.dry_run_status }}</td>
+          <td>{{ draft.send_history }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="table-wrap" style="margin-top: 14px;">
+  <table>
+    <thead>
+      <tr>
+        <th>Pending Invite</th>
+        <th>Age</th>
+        <th>Threshold</th>
+        <th>Dry Run</th>
+        <th>Withdraw History</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for invite in snapshot.pending_cleanup %}
+        <tr>
+          <td>{{ invite.name }}<br><span class="muted">{{ invite.invite_id }}</span></td>
+          <td>{{ invite.age }}</td>
+          <td>{{ invite.threshold }}</td>
+          <td>{{ invite.dry_run_status }}</td>
+          <td>{{ invite.withdraw_history }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

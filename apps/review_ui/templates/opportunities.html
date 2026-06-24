@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Opportunities - LinkedIn Tools Review{% endblock %}
+{% block eyebrow %}Recommend-only{% endblock %}
+{% block heading %}Opportunity Intelligence Review{% endblock %}
+
+{% block content %}
+  <section class="grid grid--4">
+    {% for metric in snapshot.opportunity_metrics %}
+      <article class="panel metric">
+        <span class="badge {% if metric.state == 'good' %}badge--good{% endif %}">{{ metric.label }}</span>
+        <div class="metric__value">{{ metric.value }}</div>
+        <p class="muted">{{ metric.detail }}</p>
+      </article>
+    {% endfor %}
+  </section>
+
+  <div class="panel" x-data="{ tab: 'sources' }">
+    <div class="tabs" role="tablist">
+      <button class="tab-button" type="button" @click="tab = 'sources'" :aria-selected="tab === 'sources'">Sources</button>
+      <button class="tab-button" type="button" @click="tab = 'posts'" :aria-selected="tab === 'posts'">Post Queue</button>
+      <button class="tab-button" type="button" @click="tab = 'extraction'" :aria-selected="tab === 'extraction'">Extraction</button>
+      <button class="tab-button" type="button" @click="tab = 'comments'" :aria-selected="tab === 'comments'">Ranked Comments</button>
+      <button class="tab-button" type="button" @click="tab = 'experiments'" :aria-selected="tab === 'experiments'">Experiments</button>
+      <button class="tab-button" type="button" @click="tab = 'calibration'" :aria-selected="tab === 'calibration'">Calibration</button>
+    </div>
+
+    <section class="section-stack" x-show="tab === 'sources'">
+      <div class="toolbar">
+        <h2>Source Registry</h2>
+        <span class="badge badge--warning">Thread 3 read model pending</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Type</th>
+              <th>State</th>
+              <th>Priority</th>
+              <th>Hypothesis</th>
+              <th>Target Needs</th>
+              <th>Latest Yield</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for source in snapshot.opportunity_sources %}
+              <tr>
+                <td><strong>{{ source.label }}</strong><br><span class="muted">{{ source.source_id }}</span></td>
+                <td>{{ source.source_type }}</td>
+                <td><span class="badge {% if source.enabled %}badge--good{% endif %}">{{ "enabled" if source.enabled else "disabled" }}</span></td>
+                <td>{{ source.priority }}</td>
+                <td>{{ source.hypothesis }}</td>
+                <td>{{ source.target_needs }}</td>
+                <td>{{ source.latest_yield }}</td>
+                <td>{{ source.notes }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-stack" x-show="tab === 'posts'">
+      <div class="toolbar">
+        <h2>Post Queue</h2>
+        <span class="badge">Read-only links</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Post</th>
+              <th>Source</th>
+              <th>Author</th>
+              <th>Prioritization Reasons</th>
+              <th>Extraction Status</th>
+              <th>Artifact</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for post in snapshot.post_queue %}
+              <tr>
+                <td><a href="{{ post.post_url }}" target="_blank" rel="noreferrer">{{ post.post_id }}</a></td>
+                <td>{{ post.source_id }}</td>
+                <td>{{ post.author }}</td>
+                <td>{{ post.priority_reasons }}</td>
+                <td>{{ post.extraction_status }}</td>
+                <td><code>{{ post.artifact_path }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-stack" x-show="tab === 'extraction'">
+      <div class="toolbar">
+        <h2>Comment Extraction Runs</h2>
+        <span class="badge">Read-only retry recommendations</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Post URL</th>
+              <th>Comments</th>
+              <th>Failures</th>
+              <th>Screenshot</th>
+              <th>Raw Artifact</th>
+              <th>Retry Recommendation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in snapshot.extraction_runs %}
+              <tr>
+                <td>{{ run.run_id }}</td>
+                <td><a href="{{ run.post_url }}" target="_blank" rel="noreferrer">Open post</a></td>
+                <td>{{ run.comments_found }}</td>
+                <td>{{ run.failures }}</td>
+                <td><code>{{ run.screenshot_path }}</code></td>
+                <td><code>{{ run.raw_artifact_path }}</code></td>
+                <td>{{ run.retry_recommendation }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-stack" x-show="tab === 'comments'">
+      <div class="toolbar">
+        <h2>Ranked Comments</h2>
+        <div class="segmented">
+          <a hx-get="/partials/opportunities/comments{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">All</a>
+          <a hx-get="/partials/opportunities/comments?level=hot{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Hot</a>
+          <a hx-get="/partials/opportunities/comments?level=watch{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Watch</a>
+        </div>
+      </div>
+      <div id="comment-table">
+        {% include "partials/opportunity_comments.html" with context %}
+      </div>
+    </section>
+
+    <section class="section-stack" x-show="tab === 'experiments'">
+      <div class="toolbar">
+        <h2>Experiment Report</h2>
+        <span class="badge">Source decisions are review-only here</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Valid</th>
+              <th>Qualified</th>
+              <th>Qualified / 100</th>
+              <th>Direct Buyer</th>
+              <th>Noise</th>
+              <th>Warm/Hot</th>
+              <th>Decision</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for experiment in snapshot.experiments %}
+              <tr>
+                <td>{{ experiment.source_id }}</td>
+                <td>{{ experiment.valid_comments }}</td>
+                <td>{{ experiment.qualified_comments }}</td>
+                <td>{{ "%.1f"|format(experiment.qualified_per_100) }}</td>
+                <td>{{ experiment.direct_buyer_rate }}</td>
+                <td>{{ experiment.noise_rate }}</td>
+                <td>{{ experiment.warm_hot_rate }}</td>
+                <td>{{ experiment.source_decision }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-stack" x-show="tab === 'calibration'">
+      <div class="toolbar">
+        <h2>Calibration Queue</h2>
+        <span class="badge">Human labels persist through server routes only</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Machine Label</th>
+              <th>Human Label</th>
+              <th>Disagreement</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in snapshot.calibration_queue %}
+              <tr>
+                <td>{{ row.item_id }}</td>
+                <td>{{ row.machine_label }}</td>
+                <td>{{ row.human_label }}</td>
+                <td>{{ "yes" if row.disagreement else "no" }}</td>
+                <td>{{ row.evidence }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+{% endblock %}
