@@ -86,6 +86,7 @@ OPPORTUNITY_COMMANDS = (
     "collection-queue",
     "collection-coverage",
     "prepare-batch",
+    "company-post-capture",
     "run-batch",
     "batch-status",
     "provider-readiness",

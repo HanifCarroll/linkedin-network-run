@@ -20,7 +20,22 @@
         "spreadsheet_operations"
       ],
       "source_ids": [
-        "internal_tools_comment_search",
+        "creator_thomas_varekamp",
+        "creator_mike_rizzo",
+        "product_n8n",
+        "product_make",
+        "product_zapier",
+        "product_power_automate",
+        "product_coda",
+        "product_notion",
+        "product_attio",
+        "product_hubspot_data_hub",
+        "competitor_revops_consultants",
+        "competitor_automation_agencies",
+        "pain_spreadsheet_operations",
+        "pain_manual_operations",
+        "pain_growth_ops_breaking",
+        "secondary_make_community",
         "manual_actual_comment_import"
       ]
     },
@@ -44,7 +59,23 @@
       ],
       "source_ids": [
         "known_high_signal_post_engagement",
-        "internal_tools_comment_search",
+        "creator_bill_yost",
+        "creator_nick_valiotti",
+        "creator_aaron_cooley",
+        "creator_sebastian_hewing",
+        "creator_obiageli_okafor",
+        "creator_darragh_mckay",
+        "product_retool",
+        "product_airtable",
+        "product_coda",
+        "product_notion",
+        "product_metabase",
+        "product_power_bi",
+        "competitor_bi_analytics_consultants",
+        "competitor_internal_tool_platform_voices",
+        "pain_dashboard_decision_support",
+        "pain_manual_operations",
+        "pain_internal_tools",
         "manual_actual_comment_import"
       ]
     },
@@ -66,6 +97,14 @@
         "data_dashboards"
       ],
       "source_ids": [
+        "creator_mike_rizzo",
+        "product_power_automate",
+        "product_airtable",
+        "product_metabase",
+        "product_power_bi",
+        "competitor_revops_consultants",
+        "competitor_bi_analytics_consultants",
+        "pain_spreadsheet_operations",
         "finance_tax_manual_work_feed",
         "manual_actual_comment_import"
       ]
@@ -88,7 +127,17 @@
       ],
       "source_ids": [
         "known_high_signal_post_engagement",
-        "product_engineering_operator_watchlist",
+        "creator_aaron_cooley",
+        "creator_thomas_varekamp",
+        "creator_obiageli_okafor",
+        "creator_darragh_mckay",
+        "creator_ali_rohde",
+        "creator_shreyas_doshi",
+        "product_retool",
+        "competitor_internal_tool_platform_voices",
+        "pain_ai_workflow_production",
+        "pain_internal_tools",
+        "pain_growth_ops_breaking",
         "manual_actual_comment_import"
       ]
     },
@@ -112,7 +161,17 @@
         "internal_tools"
       ],
       "source_ids": [
-        "product_engineering_operator_watchlist",
+        "creator_mike_rizzo",
+        "creator_ali_rohde",
+        "creator_shreyas_doshi",
+        "product_n8n",
+        "product_make",
+        "product_zapier",
+        "product_attio",
+        "product_hubspot_data_hub",
+        "competitor_automation_agencies",
+        "pain_ai_workflow_production",
+        "secondary_make_community",
         "manual_actual_comment_import"
       ]
     },
@@ -136,6 +195,12 @@
       ],
       "source_ids": [
         "known_high_signal_post_engagement",
+        "creator_bill_yost",
+        "creator_nick_valiotti",
+        "creator_sebastian_hewing",
+        "pain_dashboard_decision_support",
+        "secondary_hacker_news_social_listening",
+        "secondary_reddit_signal_prospecting",
         "manual_actual_comment_import"
       ]
     }

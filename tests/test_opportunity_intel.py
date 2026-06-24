@@ -18,10 +18,11 @@ from apps.comment_extractor.linkedin_post_comments import (
 from apps.compat import OPPORTUNITY_APP_COMMANDS, OPPORTUNITY_COMMANDS
 from apps.opportunity_intel.cli import build_parser
 from apps.opportunity_intel.cli import main as opportunity_main
-from apps.opportunity_intel.contracts import CANONICAL_COMMENT_COLUMNS, RankLevel
+from apps.opportunity_intel.contracts import CANONICAL_COMMENT_COLUMNS, RankLevel, SourceKind
 from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
 from apps.opportunity_intel.imports import read_comment_csv
 from apps.opportunity_intel.normalization import normalize_and_dedupe
+from apps.opportunity_intel.post_discovery import discover_posts_from_registry
 from apps.opportunity_intel.ranking import rank_comment
 from apps.opportunity_intel.sources import (
     DEFAULT_QUERY_PACK_PATH,
@@ -42,7 +43,95 @@ def test_source_registry_and_query_pack_validate() -> None:
 
     assert registry.contract_version == "opportunity-source-registry.v1"
     assert query_pack.contract_version == "opportunity-comment-signal-queries.v1"
+    assert len(registry.sources) == 38
     assert len(query_pack.queries) == 6
+    assert {
+        "creator_bill_yost",
+        "product_retool",
+        "competitor_revops_consultants",
+        "pain_dashboard_decision_support",
+    } <= {source.source_id for source in registry.sources}
+    assert registry.require_source("product_retool").source_kind is SourceKind.COMPANY_PAGE
+
+
+def test_v0_source_batch_generates_actionable_post_queue() -> None:
+    candidates = discover_posts_from_registry(load_source_registry())
+
+    assert len(candidates) >= 100
+    assert any(
+        candidate.source_id == "known_high_signal_post_engagement"
+        and candidate.reason == "known_post_url"
+        and candidate.post_url.startswith("https://www.linkedin.com/posts/")
+        for candidate in candidates
+    )
+    assert any(
+        candidate.source_id == "creator_bill_yost"
+        and candidate.reason == "watchlist_search"
+        and candidate.source_url == "https://www.linkedin.com/in/billyost"
+        and candidate.search_query
+        for candidate in candidates
+    )
+    assert any(
+        candidate.source_id == "product_retool"
+        and candidate.reason == "company_page_posts"
+        and candidate.source_url == "https://www.linkedin.com/company/tryretool/posts/"
+        for candidate in candidates
+    )
+    assert any(
+        candidate.source_id == "product_retool"
+        and candidate.reason == "company_page_search"
+        and candidate.search_query
+        and candidate.source_url == "https://www.linkedin.com/company/tryretool/posts/"
+        for candidate in candidates
+    )
+    assert any(
+        candidate.source_id == "pain_dashboard_decision_support"
+        and candidate.reason == "search_query"
+        and candidate.source_url.startswith(
+            "https://www.linkedin.com/search/results/content/?keywords="
+        )
+        for candidate in candidates
+    )
+
+
+def test_company_page_capture_exports_post_queue_from_saved_html(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_path = tmp_path / "company-post-queue.csv"
+
+    assert (
+        opportunity_main(
+            [
+                "company-post-capture",
+                "--source-id",
+                "product_retool",
+                "--html",
+                str(FIXTURE_DIR / "company_page_posts.html"),
+                "--out",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+
+    assert "rows=4" in capsys.readouterr().out
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 4
+    assert {row["post_url"] for row in rows} == {
+        "https://www.linkedin.com/posts/tryretool_internal-tools-dashboard-activity-7450000000000000001-abcd",
+        "https://www.linkedin.com/feed/update/urn:li:activity:7450000000000000002",
+    }
+    assert {row["query_id"] for row in rows} == {
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need",
+    }
+    assert {row["reason"] for row in rows} == {"company_page_post_url"}
+    assert {row["source_url"] for row in rows} == {
+        "https://www.linkedin.com/company/tryretool/posts/"
+    }
 
 
 def test_comment_extractor_writes_raw_comments_jsonl(tmp_path: Path) -> None:
@@ -269,7 +358,7 @@ def _write_comment_fixture_csv(path: Path, *, count: int, direct_buyer_count: in
                     "source_id": "manual_actual_comment_import",
                     "source_kind": "manual_csv",
                     "source_url": "https://www.linkedin.com/search/results/content/",
-                    "search_query": "\"internal tool\" \"need help\"",
+                    "search_query": '"internal tool" "need help"',
                     "post_url": (
                         "https://www.linkedin.com/feed/update/"
                         f"urn:li:activity:735000000000000{index:04d}/"

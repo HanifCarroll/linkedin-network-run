@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from apps.comment_extractor.cli import main as comment_extractor_main
+from apps.opportunity_intel.company_pages import extract_company_page_post_candidates_from_html_file
 from apps.opportunity_intel.contracts import (
     CANONICAL_COMMENT_COLUMNS,
     CommentEvidence,
@@ -81,6 +82,16 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser = _add_command(subparsers, "prepare-batch", _handle_prepare_batch)
     _add_contract_args(prepare_parser)
     prepare_parser.add_argument("--out", type=Path, default=DEFAULT_BATCH_DIR / "post-queue.csv")
+
+    company_capture_parser = _add_command(
+        subparsers,
+        "company-post-capture",
+        _handle_company_post_capture,
+    )
+    _add_contract_args(company_capture_parser)
+    company_capture_parser.add_argument("--source-id", required=True)
+    company_capture_parser.add_argument("--html", type=Path, required=True)
+    company_capture_parser.add_argument("--out", type=Path, required=True)
 
     run_batch_parser = _add_command(subparsers, "run-batch", _handle_run_batch)
     run_batch_parser.add_argument("--post-queue", type=Path, required=True)
@@ -313,8 +324,7 @@ def _handle_collection_coverage(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(
-            f"post_candidates={len(candidates)} "
-            f"enabled_sources={len(registry.enabled_sources())}"
+            f"post_candidates={len(candidates)} enabled_sources={len(registry.enabled_sources())}"
         )
         for source_id, count in sorted(by_source.items()):
             print(f"{source_id}\t{count}")
@@ -360,6 +370,20 @@ def _handle_prepare_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_company_post_capture(args: argparse.Namespace) -> int:
+    registry = load_source_registry(args.source_registry)
+    query_pack = load_query_pack(args.query_pack)
+    validate_registry_against_queries(registry, query_pack)
+    source = registry.require_source(args.source_id)
+    candidates = extract_company_page_post_candidates_from_html_file(
+        source=source,
+        html_path=args.html,
+    )
+    _write_post_queue_csv(args.out, candidates)
+    print(f"company post queue: {args.out} rows={len(candidates)}")
+    return 0
+
+
 def _handle_run_batch(args: argparse.Namespace) -> int:
     return comment_extractor_main(
         ["extract-queue", "--post-queue", str(args.post_queue), "--out-dir", str(args.out_dir)]
@@ -372,9 +396,7 @@ def _handle_batch_status(args: argparse.Namespace) -> int:
         "out_dir": str(args.out_dir),
         "exists": args.out_dir.exists(),
         "file_count": sum(1 for path in files if path.is_file()),
-        "raw_comment_files": [
-            str(path) for path in files if path.name == "raw_comments.jsonl"
-        ],
+        "raw_comment_files": [str(path) for path in files if path.name == "raw_comments.jsonl"],
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -486,8 +508,7 @@ def _handle_iteration_plan(args: argparse.Namespace) -> int:
         print("iteration_plan=collect_actual_comment_batch")
         print(
             "next_command=opportunity-intel run-experiment "
-            "--comments-csv <csv> --out-dir "
-            + str(args.out_dir)
+            "--comments-csv <csv> --out-dir " + str(args.out_dir)
         )
         return 0
     lines = [line for line in history.read_text(encoding="utf-8").splitlines() if line]

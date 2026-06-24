@@ -4,34 +4,658 @@
     {
       "source_id": "known_high_signal_post_engagement",
       "source_kind": "known_post",
-      "title": "Known high-signal LinkedIn post engagement",
-      "description": "Known post URLs whose comments can be collected with explicit comment extraction.",
+      "title": "Known high-signal dashboard and spreadsheet posts",
+      "description": "Concrete LinkedIn post URLs from the report themes whose comments can be collected first for calibration.",
       "query_ids": [
         "known_high_signal_post_engagement",
         "internal_tools_dashboard_pain",
         "product_engineering_build_need"
       ],
       "urls": [
-        "https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/"
+        "https://www.linkedin.com/posts/valiotti_i-need-a-dashboard-every-analyst-gets-this-activity-7389684177211740162-HL1N",
+        "https://www.linkedin.com/posts/valiotti_i-need-a-dashboard-every-analyst-gets-this-activity-7424799843409317888-5mKm",
+        "https://www.linkedin.com/posts/mikedrizzo_from-spreadsheet-model-to-live-decision-surface-activity-7437120579171704832-bL7m",
+        "https://www.linkedin.com/posts/mikedrizzo_a-mistake-many-of-us-make-when-stepping-into-activity-7442541070103711745-25UF",
+        "https://www.linkedin.com/posts/sebastianhewing_18-years-in-data-one-lesson-that-changed-activity-7385219339748085760-70YJ",
+        "https://www.linkedin.com/posts/sebastianhewing_17-years-in-data-one-lesson-that-changed-activity-7367462333993938944-TbuD",
+        "https://www.linkedin.com/posts/sebastianhewing_i-used-to-run-a-very-efficient-dashboard-activity-7453710646254338048-eO0V"
       ],
       "priority": 100,
       "enabled": true
     },
     {
-      "source_id": "internal_tools_comment_search",
+      "source_id": "creator_bill_yost",
+      "source_kind": "watchlist",
+      "title": "Bill Yost audience",
+      "description": "People analytics and dashboard-confessional audience likely to discuss reporting, dashboards, and spreadsheet reality.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "known_high_signal_post_engagement"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/billyost"
+      ],
+      "search_queries": [
+        "\"Bill Yost\" dashboard spreadsheet",
+        "\"Bill Yost\" \"Dashboard Confessionals\""
+      ],
+      "priority": 96,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_nick_valiotti",
+      "source_kind": "watchlist",
+      "title": "Nick Valiotti / Valiotti Data audience",
+      "description": "Dashboard-decision framing audience around 'I need a dashboard' posts.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "known_high_signal_post_engagement"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/valiotti/"
+      ],
+      "search_queries": [
+        "\"Nick Valiotti\" \"I need a dashboard\"",
+        "\"Valiotti\" \"dashboard\" \"confusion\""
+      ],
+      "priority": 98,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_aaron_cooley",
+      "source_kind": "watchlist",
+      "title": "Aaron Cooley audience",
+      "description": "Data, analytics, and AI audience around stakeholder dashboard requests and productized analytics.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/aaron-cooley-227502a"
+      ],
+      "search_queries": [
+        "\"Aaron Cooley\" dashboard stakeholder",
+        "\"Aaron Cooley\" data analytics AI dashboard"
+      ],
+      "priority": 86,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_thomas_varekamp",
+      "source_kind": "watchlist",
+      "title": "Thomas Varekamp audience",
+      "description": "Operator AI and margin-improvement audience likely to discuss manual work, reporting, and automation needs.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "product_engineering_build_need"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/thomasvarekamp"
+      ],
+      "search_queries": [
+        "\"Thomas Varekamp\" AI handwerk",
+        "\"Thomas Varekamp\" automation operations"
+      ],
+      "priority": 78,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_sebastian_hewing",
+      "source_kind": "watchlist",
+      "title": "Sebastian Hewing audience",
+      "description": "Data-strategy audience around dashboard factories, business impact, and spreadsheet exports.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "known_high_signal_post_engagement"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/sebastianhewing"
+      ],
+      "search_queries": [
+        "\"Sebastian Hewing\" \"dashboard factory\"",
+        "\"Sebastian Hewing\" spreadsheet dashboard"
+      ],
+      "priority": 95,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_mike_rizzo",
+      "source_kind": "watchlist",
+      "title": "Mike Rizzo / MO Pros audience",
+      "description": "RevOps and marketing-ops audience around spreadsheets, routing, reporting debt, and GTM systems.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "finance_tax_spreadsheet_workflows",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/mikedrizzo/"
+      ],
+      "search_queries": [
+        "\"Mike Rizzo\" RevOps spreadsheets",
+        "\"Mike Rizzo\" GTM Engineer spreadsheets"
+      ],
+      "priority": 94,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_obiageli_okafor",
+      "source_kind": "watchlist",
+      "title": "Obiageli Okafor internal-tools audience",
+      "description": "Report-named internal-tools voice; use name-plus-topic search until profile identity is verified.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "search_queries": [
+        "\"Obiageli Okafor\" \"internal tools\"",
+        "\"Obiageli Okafor\" workarounds manual processes"
+      ],
+      "priority": 72,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_darragh_mckay",
+      "source_kind": "watchlist",
+      "title": "Darragh McKay / Noloco audience",
+      "description": "Internal tools and spreadsheet-to-system audience for agencies and professional services operators.",
+      "query_ids": [
+        "product_engineering_build_need",
+        "internal_tools_dashboard_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/darraghmckay"
+      ],
+      "search_queries": [
+        "\"Darragh McKay\" internal tools",
+        "\"Darragh McKay\" spreadsheets disconnected tools"
+      ],
+      "priority": 88,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_ali_rohde",
+      "source_kind": "watchlist",
+      "title": "Ali Rohde audience",
+      "description": "AI company and workflow-architecture audience for productionized AI workflow and product-engineering needs.",
+      "query_ids": [
+        "automation_tool_migration_pain",
+        "product_engineering_build_need"
+      ],
+      "urls": [
+        "https://www.linkedin.com/in/ali-rohde-90719970"
+      ],
+      "search_queries": [
+        "\"Ali Rohde\" AI workflow",
+        "\"Ali Rohde\" internal tools automation"
+      ],
+      "priority": 84,
+      "enabled": true
+    },
+    {
+      "source_id": "creator_shreyas_doshi",
+      "source_kind": "watchlist",
+      "title": "Shreyas Doshi product-leader audience",
+      "description": "Product-leader audience discussing AI automation tradeoffs and product-engineering decisions; use name-plus-topic search until profile identity is verified.",
+      "query_ids": [
+        "product_engineering_build_need",
+        "automation_tool_migration_pain"
+      ],
+      "search_queries": [
+        "\"Shreyas Doshi\" AI automation",
+        "\"Shreyas Doshi\" product engineering"
+      ],
+      "priority": 80,
+      "enabled": true
+    },
+    {
+      "source_id": "product_retool",
+      "source_kind": "company_page",
+      "title": "Retool audience",
+      "description": "Internal-tools audience for governed apps, admin panels, workflows, and operational systems.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/tryretool"
+      ],
+      "search_queries": [
+        "\"Retool\" \"internal tools\"",
+        "\"Retool\" workflow dashboard operations"
+      ],
+      "priority": 90,
+      "enabled": true
+    },
+    {
+      "source_id": "product_n8n",
+      "source_kind": "company_page",
+      "title": "n8n audience",
+      "description": "Technical workflow automation and AI-agent audience.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/n8n"
+      ],
+      "search_queries": [
+        "\"n8n\" workflow automation",
+        "\"n8n\" AI agent workflow"
+      ],
+      "priority": 88,
+      "enabled": true
+    },
+    {
+      "source_id": "product_make",
+      "source_kind": "company_page",
+      "title": "Make audience",
+      "description": "Visual automation audience for teams outgrowing manual process and no-code workflows.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/itsmakehq"
+      ],
+      "search_queries": [
+        "\"Make\" automation workflow operations",
+        "\"Make.com\" automation broken workflow"
+      ],
+      "priority": 84,
+      "enabled": true
+    },
+    {
+      "source_id": "product_zapier",
+      "source_kind": "company_page",
+      "title": "Zapier audience",
+      "description": "SMB and ops automation audience whose simple automations may be getting complex.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/zapier"
+      ],
+      "search_queries": [
+        "\"Zapier\" \"manual process\"",
+        "\"Zapier\" \"automation broke\""
+      ],
+      "priority": 82,
+      "enabled": true
+    },
+    {
+      "source_id": "product_power_automate",
+      "source_kind": "company_page",
+      "title": "Power Automate audience",
+      "description": "Microsoft-heavy finance and ops automation audience.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "urls": [
+        "https://www.linkedin.com/showcase/microsoft-power-platform"
+      ],
+      "search_queries": [
+        "\"Power Automate\" approval workflow spreadsheet",
+        "\"Power Automate\" manual process finance"
+      ],
+      "priority": 80,
+      "enabled": true
+    },
+    {
+      "source_id": "product_airtable",
+      "source_kind": "company_page",
+      "title": "Airtable audience",
+      "description": "Spreadsheet-to-app and operations database audience.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/airtable"
+      ],
+      "search_queries": [
+        "\"Airtable\" spreadsheet operations",
+        "\"Airtable\" internal tool workflow"
+      ],
+      "priority": 82,
+      "enabled": true
+    },
+    {
+      "source_id": "product_coda",
+      "source_kind": "company_page",
+      "title": "Coda audience",
+      "description": "Doc-spreadsheet-app audience stretching documents into operational systems.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "first_party_automation_backlog"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/codainc"
+      ],
+      "search_queries": [
+        "\"Coda\" operational workflow",
+        "\"Coda\" spreadsheet automation"
+      ],
+      "priority": 76,
+      "enabled": true
+    },
+    {
+      "source_id": "product_notion",
+      "source_kind": "company_page",
+      "title": "Notion audience",
+      "description": "Workspace-as-system audience trying to centralize operations and automate busywork.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "internal_tools_dashboard_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/notionhq"
+      ],
+      "search_queries": [
+        "\"Notion\" operations workflow automation",
+        "\"Notion\" internal tools dashboard"
+      ],
+      "priority": 74,
+      "enabled": true
+    },
+    {
+      "source_id": "product_metabase",
+      "source_kind": "company_page",
+      "title": "Metabase audience",
+      "description": "Analytics and dashboard audience with self-serve reporting pain.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/metabase"
+      ],
+      "search_queries": [
+        "\"Metabase\" dashboard reporting pain",
+        "\"Metabase\" self serve analytics spreadsheet"
+      ],
+      "priority": 78,
+      "enabled": true
+    },
+    {
+      "source_id": "product_power_bi",
+      "source_kind": "company_page",
+      "title": "Power BI audience",
+      "description": "Finance, ops, and reporting audience around dashboard and decision-support pain.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "urls": [
+        "https://www.linkedin.com/showcase/microsoft-power-platform"
+      ],
+      "search_queries": [
+        "\"Power BI\" dashboard spreadsheet operations",
+        "\"Power BI\" reporting takes days"
+      ],
+      "priority": 78,
+      "enabled": true
+    },
+    {
+      "source_id": "product_attio",
+      "source_kind": "company_page",
+      "title": "Attio audience",
+      "description": "CRM and revenue-ops audience around data models, workflows, and messy operational systems.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/attio"
+      ],
+      "search_queries": [
+        "\"Attio\" workflow automation CRM",
+        "\"Attio\" RevOps systems"
+      ],
+      "priority": 72,
+      "enabled": true
+    },
+    {
+      "source_id": "product_hubspot_data_hub",
+      "source_kind": "company_page",
+      "title": "HubSpot Data Hub / Operations Hub audience",
+      "description": "Ops leaders wrestling with sync, routing, automation, and messy business-tool integrations.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "urls": [
+        "https://www.linkedin.com/company/hubspot"
+      ],
+      "search_queries": [
+        "\"HubSpot Data Hub\" automation sync",
+        "\"HubSpot Operations Hub\" workflow data sync"
+      ],
+      "priority": 74,
+      "enabled": true
+    },
+    {
+      "source_id": "competitor_revops_consultants",
       "source_kind": "linkedin_search",
-      "title": "Internal tools and dashboards comment search",
-      "description": "Searches for first-party operators asking for help with internal tools and dashboards.",
+      "title": "RevOps consultant audience mining",
+      "description": "Posts by RevOps consultants/agencies used only as comment-section sources; captured commenters must exclude consultants and agencies.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "search_queries": [
+        "\"RevOps\" spreadsheets forecasting routing",
+        "\"RevOps\" CRM hygiene reporting debt",
+        "\"revenue operations\" \"spreadsheet\" \"dashboard\""
+      ],
+      "priority": 76,
+      "enabled": true
+    },
+    {
+      "source_id": "competitor_bi_analytics_consultants",
+      "source_kind": "linkedin_search",
+      "title": "BI and analytics consultant audience mining",
+      "description": "Dashboard misuse and reporting-pain posts used as sources; agencies/consultants are excluded downstream.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "search_queries": [
+        "\"dashboard nobody uses\" analytics consultant",
+        "\"self serve analytics\" spreadsheet dashboard",
+        "\"reporting takes days\" Power BI dashboard"
+      ],
+      "priority": 74,
+      "enabled": true
+    },
+    {
+      "source_id": "competitor_automation_agencies",
+      "source_kind": "linkedin_search",
+      "title": "Automation agency audience mining",
+      "description": "Automation-agency posts used as comment-section sources for operators asking how to apply the workflow in their own business.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "search_queries": [
+        "\"automation agency\" Make Zapier workflow",
+        "\"n8n\" \"Zapier\" \"how do I\"",
+        "\"Power Automate\" agency workflow"
+      ],
+      "priority": 74,
+      "enabled": true
+    },
+    {
+      "source_id": "competitor_internal_tool_platform_voices",
+      "source_kind": "linkedin_search",
+      "title": "Internal-tool and platform-engineering audience mining",
+      "description": "Platform/internal-tool posts about process debt, workarounds, ownership, and systems used as comment-section sources.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "search_queries": [
+        "\"internal tools\" process debt ownership",
+        "\"internal tool\" manual workaround legacy",
+        "\"platform engineering\" internal tools workflow"
+      ],
+      "priority": 76,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_spreadsheet_operations",
+      "source_kind": "linkedin_search",
+      "title": "Spreadsheet pain scan",
+      "description": "Broad LinkedIn post search for spreadsheet-heavy ops, finance, and RevOps pain.",
+      "query_ids": [
+        "finance_tax_spreadsheet_workflows",
+        "first_party_automation_backlog"
+      ],
+      "search_queries": [
+        "\"spreadsheet hell\" operations",
+        "\"too many tabs\" spreadsheet",
+        "\"still in Excel\" operations",
+        "\"spreadsheet dependency\""
+      ],
+      "priority": 86,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_dashboard_decision_support",
+      "source_kind": "linkedin_search",
+      "title": "Dashboard pain scan",
+      "description": "Broad LinkedIn post search for dashboard requests, abandoned dashboards, and reporting friction.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "known_high_signal_post_engagement"
+      ],
+      "search_queries": [
+        "\"we need a dashboard\"",
+        "\"dashboard abandoned\"",
+        "\"dashboard vs spreadsheet\"",
+        "\"reporting takes days\""
+      ],
+      "priority": 88,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_manual_operations",
+      "source_kind": "linkedin_search",
+      "title": "Manual operations pain scan",
+      "description": "Broad LinkedIn post search for manual process, copy-paste, approval, reconciliation, and handoff problems.",
       "query_ids": [
         "first_party_automation_backlog",
         "internal_tools_dashboard_pain"
       ],
       "search_queries": [
-        "\"we need\" \"internal tool\"",
-        "\"dashboard\" \"need help\" \"LinkedIn\"",
-        "\"we still do this manually\" automation"
+        "\"manual process\" \"copy paste\"",
+        "\"approval workflow\" manual spreadsheet",
+        "\"reconciliation\" \"manual\" operations",
+        "\"operational bottleneck\" workflow"
       ],
-      "priority": 90,
+      "priority": 86,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_ai_workflow_production",
+      "source_kind": "linkedin_search",
+      "title": "AI workflow productionization pain scan",
+      "description": "Broad LinkedIn post search for AI automation, agent workflows, and prototype-to-production pain.",
+      "query_ids": [
+        "automation_tool_migration_pain",
+        "product_engineering_build_need"
+      ],
+      "search_queries": [
+        "\"AI workflow\" automation operations",
+        "\"agent workflow\" production",
+        "\"prototype to production\" AI automation",
+        "\"stitching tools together\" AI"
+      ],
+      "priority": 84,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_internal_tools",
+      "source_kind": "linkedin_search",
+      "title": "Internal tool pain scan",
+      "description": "Broad LinkedIn post search for back-office tooling, workarounds, legacy process, and tribal knowledge.",
+      "query_ids": [
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "search_queries": [
+        "\"internal tools\" workaround",
+        "\"back office tooling\" manual",
+        "\"ops tooling\" legacy process",
+        "\"tribal knowledge\" \"internal tools\""
+      ],
+      "priority": 86,
+      "enabled": true
+    },
+    {
+      "source_id": "pain_growth_ops_breaking",
+      "source_kind": "linkedin_search",
+      "title": "Growth-through-ops pain scan",
+      "description": "Broad LinkedIn post search for founders and operators whose processes are breaking as they scale.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "product_engineering_build_need"
+      ],
+      "search_queries": [
+        "\"ops breaking\" startup",
+        "\"can't scale with spreadsheets\"",
+        "\"process debt\" startup operations",
+        "\"we outgrew\" spreadsheet systems"
+      ],
+      "priority": 82,
+      "enabled": true
+    },
+    {
+      "source_id": "secondary_make_community",
+      "source_kind": "linkedin_search",
+      "title": "Make Community discovery",
+      "description": "Secondary discovery source for new language patterns and automation-source ideas, not a primary LinkedIn comment capture lane.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "automation_tool_migration_pain"
+      ],
+      "search_queries": [
+        "\"Make Community\" LinkedIn automation workflow",
+        "\"Make.com\" community workflow LinkedIn"
+      ],
+      "priority": 52,
+      "enabled": true
+    },
+    {
+      "source_id": "secondary_hacker_news_social_listening",
+      "source_kind": "linkedin_search",
+      "title": "Hacker News social-listening discovery",
+      "description": "Secondary discovery source for tooling and language patterns around social listening and monitoring.",
+      "query_ids": [
+        "known_high_signal_post_engagement"
+      ],
+      "search_queries": [
+        "\"Hacker News\" \"LinkedIn\" \"social listening\"",
+        "\"Hacker News\" \"LinkedIn comments\""
+      ],
+      "priority": 44,
+      "enabled": true
+    },
+    {
+      "source_id": "secondary_reddit_signal_prospecting",
+      "source_kind": "linkedin_search",
+      "title": "Reddit signal-prospecting discovery",
+      "description": "Secondary discovery source for prospecting language and tool ecosystems; not a primary LinkedIn capture lane.",
+      "query_ids": [
+        "known_high_signal_post_engagement"
+      ],
+      "search_queries": [
+        "\"Reddit\" \"LinkedIn comments\" prospecting",
+        "\"Reddit\" \"buying signals\" LinkedIn"
+      ],
+      "priority": 42,
       "enabled": true
     },
     {
@@ -43,18 +667,6 @@
         "finance_tax_spreadsheet_workflows"
       ],
       "priority": 75,
-      "enabled": true
-    },
-    {
-      "source_id": "product_engineering_operator_watchlist",
-      "source_kind": "watchlist",
-      "title": "Product engineering operator watchlist",
-      "description": "Creator/operator/company watchlist for product engineering build requests.",
-      "query_ids": [
-        "product_engineering_build_need",
-        "automation_tool_migration_pain"
-      ],
-      "priority": 80,
       "enabled": true
     },
     {

@@ -70,6 +70,7 @@ class OpportunityContractError(ValueError):
 class SourceKind(StrEnum):
     LINKEDIN_SEARCH = "linkedin_search"
     KNOWN_POST = "known_post"
+    COMPANY_PAGE = "company_page"
     MANUAL_CSV = "manual_csv"
     PROVIDER_CSV = "provider_csv"
     WATCHLIST = "watchlist"

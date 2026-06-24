@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import quote_plus, urlparse, urlunparse
 
 from apps.opportunity_intel.contracts import (
     CommentEvidence,
@@ -97,10 +98,73 @@ def _source_candidates(source: SourceDefinition) -> tuple[PostCandidate, ...]:
                         source_kind=source.source_kind.value,
                         query_id=query_id,
                         post_url="",
-                        source_url="",
+                        source_url=_linkedin_content_search_url(search_query),
                         search_query=search_query,
                         priority=source.priority,
                         reason="search_query",
                     )
                 )
+    if source.source_kind is SourceKind.COMPANY_PAGE:
+        for source_url in source.urls:
+            posts_url = linkedin_company_posts_url(source_url)
+            for query_id in query_ids:
+                candidates.append(
+                    PostCandidate(
+                        source_id=source.source_id,
+                        source_kind=source.source_kind.value,
+                        query_id=query_id,
+                        post_url="",
+                        source_url=posts_url,
+                        search_query="",
+                        priority=source.priority,
+                        reason="company_page_posts",
+                    )
+                )
+            for search_query in source.search_queries:
+                for query_id in query_ids:
+                    candidates.append(
+                        PostCandidate(
+                            source_id=source.source_id,
+                            source_kind=source.source_kind.value,
+                            query_id=query_id,
+                            post_url="",
+                            source_url=posts_url,
+                            search_query=search_query,
+                            priority=source.priority,
+                            reason="company_page_search",
+                        )
+                    )
+    if source.source_kind is SourceKind.WATCHLIST:
+        source_urls = source.urls or ("",)
+        for source_url in source_urls:
+            for search_query in source.search_queries:
+                for query_id in query_ids:
+                    candidates.append(
+                        PostCandidate(
+                            source_id=source.source_id,
+                            source_kind=source.source_kind.value,
+                            query_id=query_id,
+                            post_url="",
+                            source_url=source_url or _linkedin_content_search_url(search_query),
+                            search_query=search_query,
+                            priority=source.priority,
+                            reason="watchlist_search",
+                        )
+                    )
     return tuple(candidates)
+
+
+def _linkedin_content_search_url(search_query: str) -> str:
+    return "https://www.linkedin.com/search/results/content/?keywords=" + quote_plus(search_query)
+
+
+def linkedin_company_posts_url(company_url: str) -> str:
+    parsed = urlparse(company_url)
+    if not parsed.netloc.endswith("linkedin.com"):
+        return company_url
+    path = parsed.path.rstrip("/")
+    if path.endswith("/posts"):
+        posts_path = path
+    else:
+        posts_path = f"{path}/posts"
+    return urlunparse(("https", "www.linkedin.com", posts_path + "/", "", "", ""))
