@@ -46,7 +46,7 @@ sends or withdrawals were performed during verification.
 
 ## Verification
 
-- PASS: `uv run pytest` (`114 passed`, one existing FastAPI/Starlette warning)
+- PASS: `uv run pytest` (`118 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy

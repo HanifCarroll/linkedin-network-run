@@ -19,6 +19,8 @@ the only pending cutover item.
 - `uv run linkedin-tools opportunity --help`
 - `uv run linkedin-tools comments --help`
 - `uv run linkedin-tools ui --help`
+- `uv run linkedin-tools cutover --help`
+- `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
 - `uv run linkedin-network-run --help`
 - `uv run recruiter-agency-outreach --help`
 - `uv run linkedin-opportunity-intel --help`
@@ -52,7 +54,7 @@ toolchain. Both commands completed without modifying the git worktree.
 | Every current browser script has a Python Playwright equivalent or documented consolidated replacement. | Proven | `docs/cutover-checklist.md`; `docs/cutover-automation-inventory.md`; live dry-run artifact paths checked; Sales Navigator API enrichment port covered by `bc3b923`; focused tests cover saved-search, acceptance-check, accepted-research, pending-audit, and pending-capture artifact producers. |
 | Existing state can be imported or read without data loss. | Proven | `uv run pytest tests/test_storage_migrations.py tests/test_migration_compat.py`; migration tests hash source state before and after import; temp-root import of real local network and recruiter/agency state completed with no warnings. |
 | Existing reports can be regenerated from migrated state. | Proven | Temp-root import of real local state regenerated `linkedin-tools network ... status --json` and `linkedin-tools recruiter-agency ... report --json`; report helper tests also pass. |
-| Current tests have Python equivalents. | Proven | `uv run pytest` collected and passed 114 Python tests. |
+| Current tests have Python equivalents. | Proven | `uv run pytest` collected and passed 118 Python tests. |
 | Send/withdraw safety gates have parity tests. | Proven | `tests/test_browser_layer.py`, `tests/test_salesnav_primitives.py`, `tests/network_automation/test_network_automation.py`, and `tests/test_recruiter_agency_outreach.py` passed. |
 | Opportunity-intel recommend-only boundaries have import-boundary tests. | Proven | `tests/test_opportunity_intel.py` passed; static import/action boundary test rejects action modules and send/connect/withdraw definitions. |
 | The current Go repo can be frozen or archived after successful cutover. | Pending approval | Technical prerequisites are checked; `docs/cutover-checklist.md` still requires Hanif approval before archive/freeze. |
@@ -62,7 +64,7 @@ toolchain. Both commands completed without modifying the git worktree.
 | # | Criterion | Status | Evidence |
 | --- | --- | --- | --- |
 | 1 | The Python monorepo exists and installs with `uv sync`. | Proven | `uv sync` completed successfully; `pyproject.toml` defines package `linkedin-tools`. |
-| 2 | `linkedin-tools` exposes all planned namespaces. | Proven | `uv run linkedin-tools --help` listed `network`, `recruiter-agency`, `opportunity`, `comments`, and `ui`; each namespace help command succeeded. |
+| 2 | `linkedin-tools` exposes all planned namespaces plus cutover readiness checks. | Proven | `uv run linkedin-tools --help` listed `network`, `recruiter-agency`, `opportunity`, `comments`, `ui`, and `cutover`; each namespace help command succeeded. |
 | 3 | Compatibility commands exist for the three current CLIs. | Proven | `uv run linkedin-network-run --help`, `uv run recruiter-agency-outreach --help`, and `uv run linkedin-opportunity-intel --help` succeeded. |
 | 4 | All current networking behavior is ported. | Proven | Compatibility coverage has no network gaps; `drain-stale-candidates` and `top-up-reconcile` are Python commands; network tests passed. |
 | 5 | All current recruiter/agency behavior is ported. | Proven | Compatibility coverage has no recruiter/agency gaps; recruiter/agency tests passed. |
@@ -72,7 +74,7 @@ toolchain. Both commands completed without modifying the git worktree.
 | 9 | Real-send and real-withdraw safety gates are covered by tests. | Proven | Browser and workflow safety tests passed; real-action routes require approval flags/tokens. |
 | 10 | Recommend-only opportunity modules cannot call send/withdraw code. | Proven | `tests/test_opportunity_intel.py` static boundary test passed. |
 | 11 | Existing state can be imported without mutating old state. | Proven | Migration compatibility tests passed and hash old-state fixtures before/after import; network promotion writes `network-automation`, recruiter/agency promotion writes `recruiter-agency-outreach/outreach.sqlite`. |
-| 12 | Tests pass. | Proven | `uv run pytest`: 114 passed, 1 existing FastAPI/Starlette deprecation warning. |
+| 12 | Tests pass. | Proven | `uv run pytest`: 118 passed, 1 existing FastAPI/Starlette deprecation warning. |
 | 13 | Browser dry-runs pass. | Proven | Existing live dry-run artifacts are present; no real send/withdraw was performed. |
 | 14 | The local review UI exposes required opportunity, networking, recruiter/agency, and browser/artifact views. | Proven | `tests/test_review_ui.py` passed. |
 | 15 | UI safety tests prove recommend-only pages cannot call send/withdraw and real-action controls use guarded command paths. | Proven | `tests/test_review_ui.py` passed; tests assert opportunity pages exclude real action commands and action routes require token. |

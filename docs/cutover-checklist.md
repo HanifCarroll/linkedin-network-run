@@ -17,6 +17,8 @@ and archive sequence.
 - [x] Opportunity-intel remains recommend-only.
 - [x] Active local Codex automation prompt dependencies have Python command
       replacements documented in `docs/cutover-automation-inventory.md`.
+- [x] Read-only automation prompt cutover audit exists for pre-approval and
+      post-approval verification.
 - [ ] Hanif approves cutover.
 
 ## Network Automation Browser Slice

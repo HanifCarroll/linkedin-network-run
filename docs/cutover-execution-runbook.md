@@ -57,6 +57,7 @@ uv run linkedin-tools ui --help
 uv run linkedin-network-run --help
 uv run recruiter-agency-outreach --help
 uv run linkedin-opportunity-intel --help
+uv run linkedin-tools cutover audit-automations --expect pre-cutover
 uv run pytest
 uv run ruff check apps packages tests
 uv run mypy apps packages tests
@@ -188,10 +189,16 @@ matching approval flag:
 
 3. Update operational docs and automation references to use Python commands
    using `docs/cutover-automation-inventory.md`.
-4. Run the pre-cutover verification commands again.
-5. In a separate archive commit, freeze or remove legacy Go/JavaScript entry
+4. Verify the live automation prompts now point at Python commands:
+
+   ```sh
+   uv run linkedin-tools cutover audit-automations --expect post-cutover
+   ```
+
+5. Run the pre-cutover verification commands again.
+6. In a separate archive commit, freeze or remove legacy Go/JavaScript entry
    points according to the approved archive decision.
-6. Run the pre-cutover verification commands after the archive commit.
+7. Run the pre-cutover verification commands after the archive commit.
 
 ## Archive Targets
 

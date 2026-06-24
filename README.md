@@ -39,6 +39,7 @@ uv run linkedin-tools recruiter-agency --help
 uv run linkedin-tools opportunity --help
 uv run linkedin-tools comments --help
 uv run linkedin-tools ui --help
+uv run linkedin-tools cutover --help
 ```
 
 Compatibility commands are kept during migration:
@@ -91,6 +92,13 @@ uv run linkedin-opportunity-intel import-legacy-state \
 Run the rehearsal commands in
 [docs/cutover-execution-runbook.md](docs/cutover-execution-runbook.md)
 before importing into the live Python state root.
+
+Before approval, verify the active local Codex automation prompts are still in
+their expected pre-cutover state:
+
+```sh
+uv run linkedin-tools cutover audit-automations --expect pre-cutover
+```
 
 Most runtime examples below use this shell variable:
 

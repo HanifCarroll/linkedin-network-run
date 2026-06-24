@@ -34,6 +34,7 @@ linkedin-opportunity-intel = "apps.compat:linkedin_opportunity_intel"
 [tool.setuptools]
 packages = [
   "apps",
+  "apps.cutover",
   "apps.network_automation",
   "apps.recruiter_agency_outreach",
   "apps.opportunity_intel",

@@ -38,6 +38,10 @@ edit the live automation prompts until Hanif approves cutover in
 
 ## Verification Added
 
+- `linkedin-tools cutover audit-automations` now checks the six active local
+  Codex automation prompts without editing them. Use
+  `--expect pre-cutover` before approval and `--expect post-cutover` after the
+  prompt edits.
 - `tests/network_automation/test_network_automation.py` covers Python browser
   routing for `saved-searches`, `acceptance check`, accepted research inside
   `acceptance draft-followups --session`, `pending-cleanup audit`, and

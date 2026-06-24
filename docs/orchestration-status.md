@@ -174,7 +174,7 @@ After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, opportunity command parity, and cutover state
 promotion:
 
-- PASS: `uv run pytest` (`114 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`118 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
