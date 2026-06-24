@@ -95,9 +95,7 @@ class BrowserClient(Protocol):
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]: ...
 
-    def resolve_saved_searches(
-        self, *, url: str, out: Path
-    ) -> tuple[SavedSearchArtifact, str]: ...
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]: ...
 
     def check_acceptance_outcomes(
         self,
@@ -172,9 +170,7 @@ class UnavailableBrowserClient:
         _ = load_more
         raise RuntimeError("browser client is not configured")
 
-    def resolve_saved_searches(
-        self, *, url: str, out: Path
-    ) -> tuple[SavedSearchArtifact, str]:
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         _ = url, out
         raise RuntimeError("browser client is not configured")
 
@@ -290,9 +286,7 @@ class FixtureBrowserClient:
             raise RuntimeError("audit fixture was not provided")
         return read_model(self.audit, SalesNavAudit), str(self.audit)
 
-    def resolve_saved_searches(
-        self, *, url: str, out: Path
-    ) -> tuple[SavedSearchArtifact, str]:
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         _ = url, out
         if self.saved_searches is None:
             raise RuntimeError("saved-search fixture was not provided")
@@ -380,6 +374,7 @@ class PlaywrightBrowserClient:
         context: Any | None = None,
         context_factory: Callable[[], Awaitable[Any]] | None = None,
         max_load_more: int = 260,
+        withdraw_timeout_seconds: float = 90.0,
     ) -> None:
         self.out_dir = out_dir
         self._context = context
@@ -390,6 +385,7 @@ class PlaywrightBrowserClient:
         self._loop = asyncio.new_event_loop()
         self._counter = 0
         self.max_load_more = max_load_more
+        self.withdraw_timeout_seconds = withdraw_timeout_seconds
 
     def close(self) -> None:
         async def _close() -> None:
@@ -446,9 +442,7 @@ class PlaywrightBrowserClient:
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         return self._run(self._audit_sent_invitations(load_more=load_more))
 
-    def resolve_saved_searches(
-        self, *, url: str, out: Path
-    ) -> tuple[SavedSearchArtifact, str]:
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         return self._run(self._resolve_saved_searches(url=url, out=out))
 
     def check_acceptance_outcomes(
@@ -541,7 +535,11 @@ class PlaywrightBrowserClient:
         if not dry_run and not allow_withdraw:
             raise RuntimeError("real withdrawal requires allow_withdraw=True")
         return self._run(
-            self._withdraw_pending(candidate, dry_run=dry_run, allow_withdraw=allow_withdraw)
+            self._withdraw_pending_with_timeout(
+                candidate,
+                dry_run=dry_run,
+                allow_withdraw=allow_withdraw,
+            )
         )
 
     def _run(self, coroutine: Coroutine[Any, Any, ResultT]) -> ResultT:
@@ -1097,13 +1095,9 @@ class PlaywrightBrowserClient:
             )
             click_result = await safety
             status = (
-                "dry-run-messageable"
-                if click_result.safety.status == "ok"
-                else click_result.status
+                "dry-run-messageable" if click_result.safety.status == "ok" else click_result.status
             )
-            payload.update(
-                {"status": status, "action": click_result.safety.__dict__}
-            )
+            payload.update({"status": status, "action": click_result.safety.__dict__})
             return self._write_result(record.id, payload, AcceptanceFollowupSendResult)
         await action["locator"].click(timeout=8000)
         await _medium_wait(page)
@@ -1188,6 +1182,35 @@ class PlaywrightBrowserClient:
                 still_visible = bool(await _ignore_errors(found["link"].is_visible(), False))
                 payload["status"] = "unverified" if still_visible else "withdrawn-verified"
         return self._write_result("withdraw-result", payload, PendingWithdrawResult)
+
+    async def _withdraw_pending_with_timeout(
+        self,
+        candidate: PendingCandidateObservation,
+        *,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawResult, str]:
+        try:
+            return await asyncio.wait_for(
+                self._withdraw_pending(
+                    candidate,
+                    dry_run=dry_run,
+                    allow_withdraw=allow_withdraw,
+                ),
+                timeout=self.withdraw_timeout_seconds,
+            )
+        except TimeoutError:
+            payload = _withdraw_result_base(candidate, dry_run=dry_run, url="")
+            payload.update(
+                {
+                    "status": "timeout",
+                    "detail": {
+                        "timeoutSeconds": self.withdraw_timeout_seconds,
+                        "reason": "pending withdrawal browser operation timed out",
+                    },
+                }
+            )
+            return self._write_result("withdraw-result", payload, PendingWithdrawResult)
 
     def _write_result(
         self,
@@ -1854,11 +1877,12 @@ def _profile_identity_from_payload(payload: object) -> dict[str, Any]:
             continue
         seen.add(value_id)
         full_name = _clean(
-            str(value.get("fullName") or " ".join(
-                str(part)
-                for part in (value.get("firstName"), value.get("lastName"))
-                if part
-            ))
+            str(
+                value.get("fullName")
+                or " ".join(
+                    str(part) for part in (value.get("firstName"), value.get("lastName")) if part
+                )
+            )
         )
         if full_name:
             return {

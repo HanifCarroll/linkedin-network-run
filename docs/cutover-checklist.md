@@ -1,6 +1,6 @@
 # Python LinkedIn Tools Cutover Checklist
 
-Do not archive the current Go/JavaScript implementation until all items pass.
+The legacy Go/JavaScript implementation was archived after all items passed.
 Use `docs/cutover-execution-runbook.md` for the approval, import, smoke-test,
 and archive sequence.
 
@@ -19,7 +19,12 @@ and archive sequence.
       replacements documented in `docs/cutover-automation-inventory.md`.
 - [x] Read-only automation prompt cutover audit exists for pre-approval and
       post-approval verification.
-- [ ] Hanif approves cutover.
+- [x] Hanif approves cutover on 2026-06-24.
+- [x] Six active local Codex automation prompts point at Python commands and
+      pass `uv run linkedin-tools cutover audit-automations --expect
+      post-cutover`.
+- [x] Legacy Go/JavaScript implementation is archived under
+      `archive/legacy-go-js/`.
 
 ## Network Automation Browser Slice
 

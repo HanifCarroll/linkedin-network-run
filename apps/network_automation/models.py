@@ -1151,22 +1151,16 @@ class AcceptanceCheckCandidate(AppModel):
 
 
 class SavedSearchRow(AppModel):
-    saved_search_id: str = Field(
-        validation_alias=AliasChoices("saved_search_id", "savedSearchId")
-    )
+    saved_search_id: str = Field(validation_alias=AliasChoices("saved_search_id", "savedSearchId"))
     name: str | None = None
-    view_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("view_url", "viewUrl")
-    )
+    view_url: str | None = Field(default=None, validation_alias=AliasChoices("view_url", "viewUrl"))
     fresh_url: str | None = Field(
         default=None, validation_alias=AliasChoices("fresh_url", "freshUrl")
     )
     fresh_text: str | None = Field(
         default=None, validation_alias=AliasChoices("fresh_text", "freshText")
     )
-    row_text: str | None = Field(
-        default=None, validation_alias=AliasChoices("row_text", "rowText")
-    )
+    row_text: str | None = Field(default=None, validation_alias=AliasChoices("row_text", "rowText"))
 
 
 class SavedSearchArtifact(AppModel):
@@ -2103,7 +2097,7 @@ class PendingCleanupRun(AppModel):
     date: Date = Field(default_factory=today)
     max_withdrawals: int
     threshold_months: int = 0
-    threshold_days: int
+    threshold_days: int = 0
     state: PendingCleanupState = PendingCleanupState.STARTED
     start_audit: int | None = None
     latest_audit: int | None = None

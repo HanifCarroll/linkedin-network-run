@@ -145,9 +145,8 @@ Last updated: 2026-06-24
   command replacements: `saved-searches`, `acceptance check`,
   `acceptance research`, `acceptance draft-followups --session`,
   `pending-cleanup audit`, and `pending-cleanup capture`.
-- Active local Codex automation prompts have a read-only cutover audit command;
-  the current verified state remains `pre-cutover` until Hanif approves prompt
-  edits.
+- Active local Codex automation prompts were updated after Hanif approved
+  cutover on 2026-06-24; the current verified state is `post-cutover`.
 - Active local Codex automation prompts also have a read-only
   `plan-automation-edits` command that prints exact old-command to new-command
   replacements for the post-approval prompt update.
@@ -180,11 +179,11 @@ After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, opportunity command parity, and cutover state
 promotion:
 
-- PASS: `uv run pytest` (`119 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest -q` (`121 passed`, one existing FastAPI/Starlette
   deprecation warning)
-- PASS: `uv run ruff check apps packages tests`
+- PASS: `uv run ruff check .`
 - PASS: `uv run mypy apps packages tests`
-- PASS: `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
+- PASS: `uv run linkedin-tools cutover audit-automations --expect post-cutover`
 - PASS: `uv run linkedin-tools cutover plan-automation-edits --json`
 - PASS: temp-root import rehearsal for real local network and recruiter/agency
   state, followed by Python `network status --json` and
@@ -194,7 +193,8 @@ promotion:
   headings/templates, and documented handoff grep examples; no new weak
   extraction fallback remains in the browser adapters.
 
-## Next Orchestration Steps
+## Current Cutover State
 
-1. Complete Hanif review and approval before archiving the Go/JavaScript
-   implementation.
+Hanif approved cutover on 2026-06-24. Python commands own the live automations
+and active state root; the old Go/JavaScript implementation is archived under
+`archive/legacy-go-js/` for reference and rollback/audit work.

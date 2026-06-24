@@ -263,9 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_draft.add_argument("--session", default=None)
     acceptance_draft.add_argument("--research", default=None)
     acceptance_draft.add_argument("--out", default=None)
-    acceptance_draft.add_argument(
-        "--out-dir", default="/tmp/linkedin-accepted-followups"
-    )
+    acceptance_draft.add_argument("--out-dir", default="/tmp/linkedin-accepted-followups")
     acceptance_draft.add_argument("--include-drafted", action="store_true")
     acceptance_draft.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
     acceptance_draft.add_argument("--no-public-web", action="store_true")
@@ -358,6 +356,7 @@ def build_parser() -> argparse.ArgumentParser:
     pending_withdraw.add_argument("--fixture-result", default=None)
     pending_withdraw.add_argument("--out-dir", default=str(DEFAULT_WITHDRAW_OUT_DIR))
     pending_withdraw.add_argument("--max-load-more", type=int, default=260)
+    pending_withdraw.add_argument("--withdraw-timeout-seconds", type=float, default=90.0)
     pending_status = pending_sub.add_parser("status")
     pending_status.add_argument("--json", action="store_true")
     pending_sub.add_parser("report")
@@ -781,6 +780,7 @@ def browser_from_args(
     return PlaywrightBrowserClient(
         out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
         max_load_more=int(getattr(args, "max_load_more", 260)),
+        withdraw_timeout_seconds=float(getattr(args, "withdraw_timeout_seconds", 90.0)),
     )
 
 

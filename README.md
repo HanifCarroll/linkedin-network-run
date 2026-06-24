@@ -3,9 +3,9 @@
 Python monorepo for Hanif's LinkedIn networking, recruiter/agency outreach,
 opportunity intelligence, comment extraction, and local review UI tools.
 
-The Python port is the candidate implementation for cutover. The old
-Go/JavaScript implementation is still present in this repository until Hanif
-explicitly approves cutover.
+The Python implementation is the active implementation after the approved
+2026-06-24 cutover. The old Go/JavaScript implementation is archived under
+`archive/legacy-go-js/` for reference.
 
 ## Current Status
 
@@ -13,6 +13,7 @@ explicitly approves cutover.
 - Python package: `linkedin-tools`
 - Runtime: Python, `uv`, SQLite, FastAPI/Jinja, and Python Playwright
 - New state root: `~/Library/Application Support/linkedin-tools/`
+- Cutover status: approved and executed on 2026-06-24
 - Cutover gate: [docs/cutover-checklist.md](docs/cutover-checklist.md)
 - Cutover runbook: [docs/cutover-execution-runbook.md](docs/cutover-execution-runbook.md)
 - Acceptance audit: [docs/cutover-acceptance-audit.md](docs/cutover-acceptance-audit.md)
@@ -93,11 +94,11 @@ Run the rehearsal commands in
 [docs/cutover-execution-runbook.md](docs/cutover-execution-runbook.md)
 before importing into the live Python state root.
 
-Before approval, verify the active local Codex automation prompts are still in
-their expected pre-cutover state:
+After cutover, verify the active local Codex automation prompts point at the
+Python commands:
 
 ```sh
-uv run linkedin-tools cutover audit-automations --expect pre-cutover
+uv run linkedin-tools cutover audit-automations --expect post-cutover
 ```
 
 Most runtime examples below use this shell variable:
@@ -227,7 +228,8 @@ recruiter/agency state, browser artifacts, and guarded action paths.
 - No real pending-invitation withdrawals without `--allow-withdraw`.
 - Opportunity intelligence is recommend-only.
 - Browser flows should start with dry-runs.
-- Keep old Go/JavaScript code in place until Hanif approves cutover.
+- Keep archived Go/JavaScript code read-only unless restoring or auditing
+  legacy behavior.
 
 ## Project Layout
 
@@ -252,12 +254,12 @@ tests/
 docs/
 ```
 
-Legacy Go/JavaScript paths remain until approved archive:
+Archived legacy Go/JavaScript paths:
 
 ```text
-cmd/
-internal/
-scripts/
-go.mod
-go.sum
+archive/legacy-go-js/cmd/
+archive/legacy-go-js/internal/
+archive/legacy-go-js/scripts/
+archive/legacy-go-js/go.mod
+archive/legacy-go-js/go.sum
 ```

@@ -3,9 +3,8 @@
 Date: 2026-06-24
 
 This inventory maps the active local Codex LinkedIn automations to the Python
-`linkedin-tools` command surface. It is preparation for cutover only. Do not
-edit the live automation prompts until Hanif approves cutover in
-`docs/cutover-checklist.md`.
+`linkedin-tools` command surface. Hanif approved cutover on 2026-06-24 and the
+live automation prompts have been updated through the Codex automation API.
 
 ## Active Automations Checked
 
@@ -64,14 +63,14 @@ edit the live automation prompts until Hanif approves cutover in
 
 ## Cutover Prompt Edits
 
-After Hanif approves cutover, update the six active automation prompts above to
-call `uv run linkedin-tools ...` with explicit Python state directories under:
+The six active automation prompts now call `uv run linkedin-tools ...` with
+explicit Python state directories under:
 
 ```text
 ~/Library/Application Support/linkedin-tools/
 ```
 
-Generate the exact edit checklist first:
+The exact edit checklist remains available for audit:
 
 ```sh
 uv run linkedin-tools cutover plan-automation-edits

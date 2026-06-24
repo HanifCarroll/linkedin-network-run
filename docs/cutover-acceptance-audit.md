@@ -4,8 +4,9 @@ Date: 2026-06-24
 Branch: `python-port/orchestrator-scaffold`
 
 This audit maps the PRD acceptance criteria and migration requirements to
-current repository evidence. It does not approve cutover; Hanif approval remains
-the only pending cutover item.
+current repository evidence. Hanif approved cutover on 2026-06-24, the live
+automation prompts now point at Python commands, and the old Go/JavaScript
+implementation is archived under `archive/legacy-go-js/`.
 
 ## Verification Commands Run
 
@@ -21,6 +22,7 @@ the only pending cutover item.
 - `uv run linkedin-tools ui --help`
 - `uv run linkedin-tools cutover --help`
 - `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
+- `uv run linkedin-tools cutover audit-automations --expect post-cutover`
 - `uv run linkedin-tools cutover plan-automation-edits --json`
 - `uv run linkedin-network-run --help`
 - `uv run recruiter-agency-outreach --help`
@@ -55,10 +57,10 @@ toolchain. Both commands completed without modifying the git worktree.
 | Every current browser script has a Python Playwright equivalent or documented consolidated replacement. | Proven | `docs/cutover-checklist.md`; `docs/cutover-automation-inventory.md`; live dry-run artifact paths checked; Sales Navigator API enrichment port covered by `bc3b923`; focused tests cover saved-search, acceptance-check, accepted-research, pending-audit, and pending-capture artifact producers. |
 | Existing state can be imported or read without data loss. | Proven | `uv run pytest tests/test_storage_migrations.py tests/test_migration_compat.py`; migration tests hash source state before and after import; temp-root import of real local network and recruiter/agency state completed with no warnings. |
 | Existing reports can be regenerated from migrated state. | Proven | Temp-root import of real local state regenerated `linkedin-tools network ... status --json` and `linkedin-tools recruiter-agency ... report --json`; report helper tests also pass. |
-| Current tests have Python equivalents. | Proven | `uv run pytest` collected and passed 119 Python tests. |
+| Current tests have Python equivalents. | Proven | `uv run pytest -q` collected and passed 121 Python tests. |
 | Send/withdraw safety gates have parity tests. | Proven | `tests/test_browser_layer.py`, `tests/test_salesnav_primitives.py`, `tests/network_automation/test_network_automation.py`, and `tests/test_recruiter_agency_outreach.py` passed. |
 | Opportunity-intel recommend-only boundaries have import-boundary tests. | Proven | `tests/test_opportunity_intel.py` passed; static import/action boundary test rejects action modules and send/connect/withdraw definitions. |
-| The current Go repo can be frozen or archived after successful cutover. | Pending approval | Technical prerequisites are checked; `docs/cutover-checklist.md` still requires Hanif approval before archive/freeze. |
+| The current Go repo can be frozen or archived after successful cutover. | Proven | Hanif approved cutover on 2026-06-24; old Go/JavaScript entry points are archived under `archive/legacy-go-js/`. |
 
 ## PRD Acceptance Criteria
 
@@ -75,11 +77,28 @@ toolchain. Both commands completed without modifying the git worktree.
 | 9 | Real-send and real-withdraw safety gates are covered by tests. | Proven | Browser and workflow safety tests passed; real-action routes require approval flags/tokens. |
 | 10 | Recommend-only opportunity modules cannot call send/withdraw code. | Proven | `tests/test_opportunity_intel.py` static boundary test passed. |
 | 11 | Existing state can be imported without mutating old state. | Proven | Migration compatibility tests passed and hash old-state fixtures before/after import; network promotion writes `network-automation`, recruiter/agency promotion writes `recruiter-agency-outreach/outreach.sqlite`. |
-| 12 | Tests pass. | Proven | `uv run pytest`: 119 passed, 1 existing FastAPI/Starlette deprecation warning. |
+| 12 | Tests pass. | Proven | `uv run pytest -q`: 121 passed, 1 existing FastAPI/Starlette deprecation warning. |
 | 13 | Browser dry-runs pass. | Proven | Existing live dry-run artifacts are present; no real send/withdraw was performed. |
 | 14 | The local review UI exposes required opportunity, networking, recruiter/agency, and browser/artifact views. | Proven | `tests/test_review_ui.py` passed. |
 | 15 | UI safety tests prove recommend-only pages cannot call send/withdraw and real-action controls use guarded command paths. | Proven | `tests/test_review_ui.py` passed; tests assert opportunity pages exclude real action commands and action routes require token. |
-| 16 | Hanif reviews and approves cutover. | Pending | Explicit user approval has not been given. |
+| 16 | Hanif reviews and approves cutover. | Proven | Hanif approved cutover on 2026-06-24. |
+
+## Cutover Execution Evidence
+
+- Rollback tag: `python-cutover-approved-20260624`.
+- Pre-cutover Python state backup:
+  `/Users/hanifcarroll/Library/Application Support/linkedin-tools-backups/pre-cutover-20260624-152024`.
+- Live network import after smoke restoration:
+  `b6e3885f-2288-49a8-9ea1-dbadfe466f17`, 52 artifacts, no warnings.
+- Live recruiter/agency import:
+  `31a44040-ff2c-46a0-8115-c5a5413c31ab`, 33 artifacts, no warnings.
+- Live opportunity import:
+  `6d801152-76d4-4fe4-81e9-293b5241ab4d`, 1279 artifacts, no warnings.
+- Live network state after restoration: run
+  `6a9de241-d15e-4355-9930-471e98441766`, state `Done`, target `30`,
+  start audit `107`, latest audit `137`.
+- Post-cutover automation audit passed for all six active local Codex
+  automations with zero old markers and all required Python markers.
 
 ## Live Dry-Run Artifacts Checked
 
@@ -110,6 +129,6 @@ Results:
 
 ## Current Conclusion
 
-The technical implementation is ready for Hanif review. The cutover should not
-be marked complete, and the old Go/JavaScript implementation should not be
-archived or frozen, until Hanif explicitly approves cutover.
+The approved cutover is complete. Python commands own the live automations and
+active state root; archived Go/JavaScript code remains only for reference and
+rollback/audit work.

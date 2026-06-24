@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -11,6 +12,7 @@ import pytest
 import apps.network_automation.cli as network_cli
 from apps.network_automation.browser import (
     FixtureBrowserClient,
+    PlaywrightBrowserClient,
     _apply_salesnav_api_state,
     _capture_salesnav_api_response,
     _classify_menu_labels,
@@ -67,9 +69,16 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automatio
 class FakeLiveBrowserClient:
     instances: ClassVar[list[FakeLiveBrowserClient]] = []
 
-    def __init__(self, *, out_dir: Path, max_load_more: int = 260) -> None:
+    def __init__(
+        self,
+        *,
+        out_dir: Path,
+        max_load_more: int = 260,
+        withdraw_timeout_seconds: float = 90.0,
+    ) -> None:
         self.out_dir = Path(out_dir)
         self.max_load_more = max_load_more
+        self.withdraw_timeout_seconds = withdraw_timeout_seconds
         self.calls: list[str] = []
         FakeLiveBrowserClient.instances.append(self)
 
@@ -109,9 +118,7 @@ class FakeLiveBrowserClient:
             str(self.out_dir / "audit.json"),
         )
 
-    def resolve_saved_searches(
-        self, *, url: str, out: Path
-    ) -> tuple[SavedSearchArtifact, str]:
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         self.calls.append(f"saved-searches:{url}")
         artifact = SavedSearchArtifact.model_validate(
             {
@@ -619,6 +626,66 @@ def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path
     assert "Stale Invite" in report
 
 
+def test_pending_cleanup_loads_legacy_month_threshold(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    store.pending_active_path.write_text(
+        json.dumps(
+            {
+                "id": "74965971-cea3-4949-9cc7-549d1aec07e9",
+                "date": "2026-06-21",
+                "max_withdrawals": 75,
+                "threshold_months": 2,
+                "state": "Withdrawing",
+                "observations": [],
+                "withdrawals": [],
+            }
+        )
+    )
+
+    run = store.load_pending()
+
+    assert run.threshold_days == 60
+    assert run.threshold_months == 2
+
+
+def test_pending_withdraw_browser_timeout_writes_failed_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = PlaywrightBrowserClient(
+        out_dir=tmp_path,
+        withdraw_timeout_seconds=0.001,
+    )
+
+    async def slow_withdraw(
+        candidate: PendingCandidateObservation,
+        *,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawResult, str]:
+        _ = candidate, dry_run, allow_withdraw
+        await asyncio.sleep(60)
+        raise AssertionError("timeout did not fire")
+
+    monkeypatch.setattr(client, "_withdraw_pending", slow_withdraw)
+    candidate = PendingCandidateObservation(
+        index=0,
+        name="Stale Invite",
+        profile_url="https://www.linkedin.com/in/stale",
+        age_text="Sent 2 weeks ago",
+        eligible=True,
+    )
+
+    try:
+        result, path = client.withdraw_pending(candidate, dry_run=True, allow_withdraw=False)
+    finally:
+        client.close()
+
+    assert result.status == "timeout"
+    assert "timed out" in str(result.detail)
+    assert Path(path).exists()
+
+
 def test_cli_namespace_runs_network_commands(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -651,9 +718,7 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
-    assert FakeLiveBrowserClient.instances[-1].calls == [
-        "send:Duplicate Lead:dry=False:allow=True"
-    ]
+    assert FakeLiveBrowserClient.instances[-1].calls == ["send:Duplicate Lead:dry=False:allow=True"]
     assert store.load_run().verified_count() == 1
 
 
@@ -886,9 +951,7 @@ def test_cli_pending_capture_uses_live_browser_and_imports(
     )
 
     assert exit_code == 0
-    assert FakeLiveBrowserClient.instances[-1].calls == [
-        "pending-capture:load_more=3:threshold=14"
-    ]
+    assert FakeLiveBrowserClient.instances[-1].calls == ["pending-capture:load_more=3:threshold=14"]
     observation = store.load_pending().next_eligible_observation()
     assert observation is not None
     assert observation.name == "Stale Invite"
@@ -921,8 +984,9 @@ def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
 
     assert capture_exit == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == capture_out
-    assert "capture:ASAP - Agency Owners Delivery:pages=2:limit=4:only=True" in (
-        FakeLiveBrowserClient.instances[-1].calls[0]
+    assert (
+        "capture:ASAP - Agency Owners Delivery:pages=2:limit=4:only=True"
+        in (FakeLiveBrowserClient.instances[-1].calls[0])
     )
     assert [observation.name for observation in store.load_run().observations] == [
         "Duplicate Lead",

@@ -5,25 +5,38 @@ Act like a high-performing senior engineer. Be concise, direct, and execution-fo
 ## Operating Standard
 
 - Search before building. Inspect current files and state before changing behavior.
-- Make narrow, production-friendly changes that follow the existing Go and Playwriter patterns.
+- Make narrow, production-friendly changes that follow the existing Python,
+  Playwright, SQLite, and CLI patterns.
 - Protect user work. Do not revert or overwrite uncommitted changes you did not make.
 - Test before shipping. For docs-only changes, at least verify syntax and relevant references.
 - State blockers, assumptions, changed files, and verification results clearly.
 
 ## Project Overview
 
-This is a Go 1.26 module with two command-line tools and Playwriter browser adapters:
+This is the active Python `linkedin-tools` monorepo after the approved
+2026-06-24 cutover:
 
-- `cmd/linkedin-network-run`: deterministic controller for LinkedIn Sales Navigator connection-request runs, acceptance tracking, reservoir capture, audit reconciliation, and pending-invitation cleanup.
-- `cmd/recruiter-agency-outreach`: separate recruiter/agency sourcing, drafting, dashboard, and guarded message workflow.
-- `internal/app`: controller state, planning, run mutations, Sales Navigator artifact import, acceptance ledgers, pending cleanup, reports, and Playwriter orchestration.
-- `internal/outreach`: recruiter/agency capture classification, account-first agency sourcing, draft generation, dashboard/server, guarded message sends, and SQLite-backed state.
-- `scripts/salesnav-*.js`: Playwriter browser adapters and artifact extractors. Treat these as live-browser automation code with explicit safety contracts.
+- `apps/network_automation`: deterministic controller for LinkedIn Sales
+  Navigator connection-request runs, acceptance tracking, reservoir capture,
+  audit reconciliation, accepted follow-ups, and pending-invitation cleanup.
+- `apps/recruiter_agency_outreach`: separate recruiter/agency sourcing,
+  drafting, dashboard, guarded message dry-runs, and guarded sends.
+- `apps/opportunity_intel` and `apps/comment_extractor`: recommend-only
+  opportunity/comment discovery and source experiments.
+- `apps/review_ui`: local review UI for opportunities, networking,
+  recruiter/agency state, browser artifacts, and guarded action paths.
+- `packages/`: shared browser, Sales Navigator, storage, report, UI, schema,
+  and experiment helpers.
+- `archive/legacy-go-js`: read-only archive of the old Go/JavaScript
+  implementation.
 
 Default local state:
 
-- `linkedin-network-run`: `~/Library/Application Support/linkedin-network-run/`
-- `recruiter-agency-outreach`: `~/Library/Application Support/recruiter-agency-outreach/`
+- Active Python root: `~/Library/Application Support/linkedin-tools/`
+- Network state: `~/Library/Application Support/linkedin-tools/network-automation/`
+- Recruiter/agency state: `~/Library/Application Support/linkedin-tools/recruiter-agency-outreach/`
+- Legacy import sources remain `~/Library/Application Support/linkedin-network-run/`
+  and `~/Library/Application Support/recruiter-agency-outreach/`.
 
 The current stable workspace is `/Users/hanifcarroll/projects/linkedin-network-automation`. Older logs or comments may still mention `/Users/hanifcarroll/projects/tool`; do not reintroduce that path.
 
@@ -32,40 +45,47 @@ The current stable workspace is `/Users/hanifcarroll/projects/linkedin-network-a
 Use the smallest relevant test target, then broaden when touching shared behavior:
 
 ```sh
-go test ./internal/app
-go test ./internal/outreach
-go test ./...
+uv run pytest tests/network_automation/test_network_automation.py -q
+uv run pytest tests/test_recruiter_agency_outreach.py -q
+uv run pytest -q
+uv run ruff check .
+uv run mypy apps packages tests
 ```
 
-Build local binaries with:
+The main CLI is:
 
 ```sh
-go build -o linkedin-network-run ./cmd/linkedin-network-run
-go build -o recruiter-agency-outreach ./cmd/recruiter-agency-outreach
+uv run linkedin-tools --help
 ```
 
-When a change affects installed automation behavior, rebuild the installed binary:
+Compatibility commands remain available through Python shims for legacy
+operator workflows and import commands:
 
 ```sh
-go build -o /Users/hanifcarroll/.local/bin/linkedin-network-run ./cmd/linkedin-network-run
-go build -o /Users/hanifcarroll/.local/bin/recruiter-agency-outreach ./cmd/recruiter-agency-outreach
+uv run linkedin-network-run --help
+uv run recruiter-agency-outreach --help
+uv run linkedin-opportunity-intel --help
 ```
-
-The Playwriter default is `/Users/hanifcarroll/.bun/bin/playwriter`. The `--bunx` flag is a compatibility alias and should not become the primary path again.
 
 ## Workflow Boundaries
 
-- `linkedin-network-run` is the source of truth for connection-request runs. Let `linkedin-network-run plan --json` drive the next action.
+- `linkedin-tools network` is the source of truth for connection-request runs.
+  Let `linkedin-tools network ... plan --json` drive the next action.
 - `linkedin-network` automation sends and reconciles new connection requests only.
 - `linkedin-acceptance-daily` owns acceptance outcome checks, imports, draft follow-ups, and guarded accepted-follow-up sends.
 - `linkedin-acceptance-weekly` is report-only. It should not open LinkedIn, run Playwriter classification, import outcomes, or draft messages.
-- `recruiter-agency-outreach` is separate from `linkedin-network-run` state. It must not send connection requests and must not write into the networking controller state directory.
-- Pending-invitation cleanup must go through `linkedin-network-run pending-cleanup`. Treat the age threshold as a hard safety boundary.
+- `linkedin-tools recruiter-agency` is separate from network state. It must not
+  send connection requests and must not write into the networking controller
+  state directory.
+- Pending-invitation cleanup must go through
+  `linkedin-tools network ... pending-cleanup`. Treat the age threshold as a
+  hard safety boundary.
 
 ## Live Browser Safety
 
 - Browser operations default to dry-run. Real sends require explicit user intent plus the matching flag: `--allow-send` or `--allow-withdraw`.
-- Send or withdraw one candidate at a time through the controller. Do not ad hoc click LinkedIn buttons outside the guarded scripts.
+- Send or withdraw one candidate at a time through the controller. Do not ad
+  hoc click LinkedIn buttons outside guarded Python browser paths.
 - Use `send-guarded --single-pass` for the normal connection-request path. Use `send-next --dry-run` or `send-guarded --dry-run` for focused validation.
 - Record browser artifacts back into the controller with the matching import or record command.
 - After uncertainty, blocked browser state, or possible real sends, audit before declaring success.
@@ -95,31 +115,33 @@ rg -n "slice\(|substring\(|substr\(|visibleText|innerText|document\.title|legacy
 Networking controller:
 
 ```sh
-linkedin-network-run status --json
-linkedin-network-run plan --json
-linkedin-network-run send-guarded --session <session> --allow-send --single-pass --max-attempts 30
-linkedin-network-run reconcile-audit --session <session> --attempts 3 --delay-ms 5000 --finish
-linkedin-network-run report
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" status --json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" plan --json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" send-guarded --session auto --allow-send --single-pass --max-attempts 30
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" reconcile-audit --session auto --attempts 3 --delay-ms 5000 --finish
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" report
 ```
 
 Acceptance tracking:
 
 ```sh
-linkedin-network-run acceptance seed-history
-linkedin-network-run acceptance export --min-age-days 1 --max-age-days 45 --out /tmp/linkedin-acceptance-candidates.json
-linkedin-network-run acceptance import /tmp/linkedin-acceptance-outcomes.json
-linkedin-network-run acceptance report --min-age-days 1 --max-age-days 45
-linkedin-network-run acceptance draft-followups --session <session>
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance seed-history
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export --min-age-days 1 --max-age-days 45 --out /tmp/linkedin-acceptance-candidates.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance import /tmp/linkedin-acceptance-outcomes.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance report --min-age-days 1 --max-age-days 45
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance draft-followups --session auto
 ```
 
-For large acceptance classification or accepted-research batches, use the scripts' `offset` and `limit` support with incremental chunk artifacts. One-shot large Playwriter runs are fragile.
+For large acceptance classification or accepted-research batches, use the
+Python `acceptance check` and `acceptance research` `offset` / `limit` support
+with incremental chunk artifacts. One-shot large browser runs are fragile.
 
 Accepted follow-ups:
 
 ```sh
-linkedin-network-run acceptance dry-run-followups --session <session> --limit 5
-linkedin-network-run acceptance send-followup --id <id> --session <session> --preview-fill
-linkedin-network-run acceptance send-ready-followups --session <session> --limit 5 --allow-send
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance dry-run-followups --session auto --limit 5
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-followup --id <id> --session auto --preview-fill
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-ready-followups --session auto --limit 5 --allow-send
 ```
 
 Real accepted-follow-up sends require a stored draft, prior `dry_run_ready` status for batch sends, and `--allow-send`.
@@ -127,10 +149,10 @@ Real accepted-follow-up sends require a stored draft, prior `dry_run_ready` stat
 Recruiter/agency outreach:
 
 ```sh
-recruiter-agency-outreach run-daily --session <session> --target-agencies 5 --target-recruiters 5 --print-markdown
-recruiter-agency-outreach dashboard --print-markdown
-recruiter-agency-outreach send-message --lead-id <id> --session <session>
-recruiter-agency-outreach send-message --lead-id <id> --session <session> --allow-send
+uv run linkedin-tools recruiter-agency --state-dir "$HOME/Library/Application Support/linkedin-tools/recruiter-agency-outreach" run-daily --session auto --target-agencies 5 --target-recruiters 5 --print-markdown
+uv run linkedin-tools recruiter-agency --state-dir "$HOME/Library/Application Support/linkedin-tools/recruiter-agency-outreach" dashboard --print-markdown
+uv run linkedin-tools recruiter-agency --state-dir "$HOME/Library/Application Support/linkedin-tools/recruiter-agency-outreach" send-message --lead-id <id> --session auto
+uv run linkedin-tools recruiter-agency --state-dir "$HOME/Library/Application Support/linkedin-tools/recruiter-agency-outreach" send-message --lead-id <id> --session auto --allow-send
 ```
 
 This flow sends already-drafted LinkedIn messages only. It must never click `Connect`.
@@ -138,20 +160,24 @@ This flow sends already-drafted LinkedIn messages only. It must never click `Con
 Pending cleanup:
 
 ```sh
-linkedin-network-run pending-cleanup start --max-withdrawals 75 --threshold-weeks 2
-linkedin-network-run pending-cleanup plan --json
-linkedin-network-run pending-cleanup withdraw-next --session <session> --dry-run
-linkedin-network-run pending-cleanup withdraw-next --session <session> --allow-withdraw
-linkedin-network-run pending-cleanup finish
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" pending-cleanup start --max-withdrawals 75 --threshold-weeks 2
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" pending-cleanup plan --json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" pending-cleanup withdraw-next --session auto --dry-run --withdraw-timeout-seconds 90
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" pending-cleanup withdraw-next --session auto --allow-withdraw --withdraw-timeout-seconds 90
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" pending-cleanup finish
 ```
 
 Re-audit before finishing. `pending-cleanup finish` should only pass when the sent-page delta matches `-withdrawn_count`.
 
 ## Code Change Guidance
 
-- Keep CLI entrypoints thin. Put command wiring in `internal/app/cli.go` or `internal/outreach/cli.go`; put behavior in the corresponding package modules.
-- Add behavior tests in `internal/app/app_test.go` or `internal/outreach/outreach_test.go`.
-- When browser artifact schemas change, update the Go parser/import tests and the README contract.
+- Keep CLI entrypoints thin. Put command wiring in the relevant `apps/*/cli.py`
+  module; put behavior in the corresponding application or package module.
+- Add focused behavior tests under `tests/`, especially
+  `tests/network_automation/test_network_automation.py` and
+  `tests/test_recruiter_agency_outreach.py` for workflow changes.
+- When browser artifact schemas change, update the Python parser/import tests
+  and the README contract.
 - Use structured JSON parsing and explicit status transitions. Avoid hidden string heuristics.
 - Keep real-send and real-withdraw safety gates close to the code that performs the browser action.
 - Preserve draft formatting and line breaks for recruiter/agency and accepted-follow-up messages.
