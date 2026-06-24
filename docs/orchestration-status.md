@@ -123,9 +123,9 @@ Last updated: 2026-06-24
 - Top-level `linkedin-tools` dispatch now routes to the integrated Python app
   CLIs.
 - Legacy command names keep `import-legacy-state` and delegate implemented
-  commands to the app ports. Opportunity-intel compatibility now delegates all
-  recommend-only commands to the Python app, leaving only `import-legacy-state`
-  in the migration shim.
+  commands to the app ports. Compatibility now delegates every known network,
+  recruiter/agency, and opportunity command to the Python app ports, leaving
+  only `import-legacy-state` in the migration shim.
 - Runtime package data includes opportunity JSON contracts and review UI
   templates/static assets.
 - Network automation now has Python Playwright-backed command paths for
@@ -141,6 +141,10 @@ Last updated: 2026-06-24
   including top-level API metadata, per-row API state, API-derived profile
   URLs, and `pendingInvitation` menu-state classification with exact menu
   fallback.
+- Network command parity now includes `drain-stale-candidates` and
+  `top-up-reconcile`; top-up reconciliation uses the Python browser client,
+  preserves the real-send `--allow-send` gate, records audit-top-up send
+  results, and re-audits through the Python audit path.
 - Recruiter/agency outreach now exposes the remaining state-backed command
   surface in Python and compatibility routing delegates those implemented
   commands. Live recruiter/agency people capture, account capture, and
@@ -157,7 +161,7 @@ Last updated: 2026-06-24
 After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, and opportunity command parity:
 
-- PASS: `uv run pytest` (`101 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`104 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`

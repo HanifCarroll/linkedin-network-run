@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,8 @@ from apps.network_automation.service import (
     pending_cleanup_record_withdraw_result,
     pending_cleanup_start,
     pending_cleanup_withdraw_next,
+    record_audit,
+    record_candidate,
     send_guarded,
     send_next,
     start_run,
@@ -221,6 +224,122 @@ def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path)
     resume_url = run.capture_cursors["ASAP - Agency Owners Delivery"].resume_url
     assert resume_url is not None
     assert resume_url.endswith("page=2")
+
+
+def test_cli_drain_stale_candidates_delegates_to_python_app(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    record_candidate(store, source=source, name="Sent Lead", status=CandidateStatus.PENDING)
+    run = store.load_run()
+    run.observations.append(
+        CandidateObservation(
+            source=source,
+            index=1,
+            name="Stale Lead",
+            profile_url="https://www.linkedin.com/sales/lead/stale,NAME_SEARCH,x",
+            menu_state="connectable",
+        )
+    )
+    store.save_run(run)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "drain-stale-candidates",
+            "--source",
+            source,
+        ]
+    )
+
+    assert exit_code == 0
+    assert "auto-skipped 1 stale queued candidates" in capsys.readouterr().out
+    drained = [
+        event
+        for event in store.load_run().candidates
+        if event.name == "Stale Lead" and event.status == CandidateStatus.SKIPPED
+    ]
+    assert len(drained) == 1
+
+
+def test_cli_top_up_reconcile_records_audit_top_up_with_fixtures(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    record_audit(store, 100, "starting count")
+    record_candidate(
+        store,
+        source="ASAP - Agency Owners Delivery",
+        name="Original Send",
+        status=CandidateStatus.PENDING,
+    )
+    record_audit(store, 100, "short final audit")
+    run = store.load_run()
+    run.observations.append(
+        CandidateObservation(
+            source="FO - Founders - Urgent",
+            index=1,
+            name="Top Up Candidate",
+            profile_url="https://www.linkedin.com/sales/lead/topup,NAME_SEARCH,x",
+            menu_state="connectable",
+        )
+    )
+    store.save_run(run)
+    send_result = tmp_path / "top-up-send.json"
+    send_result.write_text(
+        json.dumps(
+            {
+                "candidate": {
+                    "source": "FO - Founders - Urgent",
+                    "name": "Top Up Candidate",
+                    "profileUrl": "https://www.linkedin.com/sales/lead/topup,NAME_SEARCH,x",
+                },
+                "status": "pending-verified",
+                "send": {"clicked": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    audit_result = tmp_path / "top-up-audit.json"
+    audit_result.write_text(
+        json.dumps({"peopleCount": 101, "recentNames": ["Top Up Candidate"]}),
+        encoding="utf-8",
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "top-up-reconcile",
+            "--allow-send",
+            "--max-attempts",
+            "1",
+            "--delay-ms",
+            "0",
+            "--no-fallback-capture",
+            "--fixture-send-result",
+            str(send_result),
+            "--fixture-audit-result",
+            str(audit_result),
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "top-up send status: pending-verified" in output
+    assert "top-up audit 1/1: People (101), delta Some(1)" in output
+    run = store.load_run()
+    assert run.audited_delta() == 1
+    assert any(
+        event.name == "Top Up Candidate" and event.status == CandidateStatus.AUDIT_TOP_UP
+        for event in run.candidates
+    )
 
 
 def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> None:

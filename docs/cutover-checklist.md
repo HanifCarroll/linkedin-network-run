@@ -24,6 +24,9 @@ Do not archive the current Go/JavaScript implementation until all items pass.
 - [x] `reconcile-audit`, active-run `capture`, and `reservoir capture` have
       Python browser-backed CLI paths that feed existing state import/apply
       functions.
+- [x] `drain-stale-candidates` and `top-up-reconcile` are delegated to Python
+      app commands, with top-up preserving the real-send `--allow-send` gate
+      and fixture-backed tests for send/audit recording.
 - [x] Live network `reconcile-audit`, `capture`, and `send-next --dry-run`
       passed against a temporary state directory on 2026-06-24 through the
       existing Playwriter CDP endpoint at `ws://127.0.0.1:19988/cdp`.

@@ -9,6 +9,12 @@ from typing import cast
 import pytest
 
 from apps.compat import (
+    NETWORK_APP_COMMANDS,
+    NETWORK_COMMANDS,
+    OPPORTUNITY_APP_COMMANDS,
+    OPPORTUNITY_COMMANDS,
+    RECRUITER_AGENCY_APP_COMMANDS,
+    RECRUITER_AGENCY_COMMANDS,
     linkedin_network_run,
     linkedin_opportunity_intel,
     recruiter_agency_outreach,
@@ -108,6 +114,14 @@ def test_missing_opportunity_import_records_warning_without_source_mutation(
     assert result.artifact_count == 0
     assert result.warnings == (f"source directory does not exist: {missing_source}",)
     assert (target_root / LEGACY_IMPORTS_DB_NAME).exists()
+
+
+def test_compatibility_command_sets_delegate_known_commands() -> None:
+    assert set(NETWORK_COMMANDS) - NETWORK_APP_COMMANDS == {"import-legacy-state"}
+    assert set(RECRUITER_AGENCY_COMMANDS) - RECRUITER_AGENCY_APP_COMMANDS == {
+        "import-legacy-state"
+    }
+    assert set(OPPORTUNITY_COMMANDS) - OPPORTUNITY_APP_COMMANDS == {"import-legacy-state"}
 
 
 def test_compat_help_status_and_no_send_paths(

@@ -206,6 +206,18 @@ def record_send_result_from_path(store: Store, path: Path) -> str:
     )
 
 
+def drain_stale_candidates(store: Store, source: str | None = None) -> str:
+    run = store.load_run()
+    drained = drain_stale_connectable_candidates(run, source)
+    store.save_run(run)
+    store.append_event(
+        run,
+        "drain-stale-candidates",
+        {"source": source, "events": drained},
+    )
+    return f"auto-skipped {len(drained)} stale queued candidates"
+
+
 def send_next(
     store: Store,
     browser: BrowserClient,
@@ -330,6 +342,125 @@ def send_guarded(
                 "import a fresh sent-page audit before continuing"
             )
     return "\n".join(messages) if messages else "guarded send had no candidate to process"
+
+
+def top_up_reconcile(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    max_attempts: int = 20,
+    delay_ms: int = 1000,
+    allow_send: bool = False,
+    finish: bool = False,
+    fallback_source: str = "FO - Founders - Urgent",
+    fallback_url: str | None = None,
+    saved_searches: Path | None = None,
+    fallback_pages: int = 5,
+    fallback_stop_after_connectable: int = 10,
+    fallback_limit: int = 18,
+    fallback_row_scroll_delay_ms: int = 250,
+    no_fallback_capture: bool = False,
+) -> str:
+    if not allow_send:
+        raise RuntimeError("top-up reconciliation can send real invites; pass --allow-send")
+    attempts = max(1, max_attempts)
+    messages: list[str] = []
+    for attempt in range(1, attempts + 1):
+        run = store.load_run()
+        delta = run.audited_delta()
+        if delta == run.target:
+            messages.append("audited delta already matches target; no top-up needed")
+            if finish and run.state != RunState.DONE:
+                messages.append(finish_run(store))
+            break
+        if delta is not None and delta > run.target:
+            raise RuntimeError(
+                f"audited delta {format_delta(delta)} already exceeds target {run.target}; "
+                "stopping"
+            )
+        if run.verified_count() < run.target:
+            raise RuntimeError(
+                f"row-level verified sends are {run.verified_count()}/{run.target}; "
+                "continue normal guarded sends before audit top-up"
+            )
+        candidate = run.next_top_up_observation()
+        if candidate is None and not no_fallback_capture:
+            messages.append(
+                capture_source(
+                    store,
+                    browser,
+                    source=fallback_source,
+                    url=fallback_url,
+                    saved_searches=saved_searches,
+                    pages=fallback_pages,
+                    limit=fallback_limit,
+                    stop_after_connectable=fallback_stop_after_connectable,
+                    only_connectable=True,
+                    row_scroll_delay_ms=fallback_row_scroll_delay_ms,
+                )
+            )
+            candidate = store.load_run().next_top_up_observation()
+        if candidate is None:
+            raise RuntimeError("no distinct connectable candidate available for top-up")
+        messages.append(
+            f"top-up attempt {attempt}/{attempts}: {candidate.name} ({candidate.source})"
+        )
+        result, result_path = browser.send_connection(
+            candidate,
+            dry_run=False,
+            allow_send=True,
+        )
+        run = store.load_run()
+        event = record_top_up_send_result(
+            run,
+            result,
+            result_path,
+            "controller top-up reconciliation",
+        )
+        store.save_run(run)
+        store.append_event(
+            run,
+            "record-top-up-result",
+            {"path": result_path, "event": event, "via": "top-up-reconcile"},
+        )
+        messages.append(f"top-up send status: {result.status}")
+        if event.status != CandidateStatus.AUDIT_TOP_UP:
+            messages.append("top-up did not send a verified invite; trying next distinct candidate")
+            continue
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000)
+        audit, audit_path = browser.audit_sent_invitations(load_more=0)
+        run = store.load_run()
+        apply_audit(run, audit.people_count, f"top-up reconcile audit attempt {attempt}/{attempts}")
+        latest_delta = run.audited_delta()
+        should_finish = finish and latest_delta == run.target
+        store.save_run(run)
+        store.append_event(
+            run,
+            "top-up-reconcile-audit",
+            {
+                "attempt": attempt,
+                "path": audit_path,
+                "people_count": audit.people_count,
+                "delta": latest_delta,
+                "finished": should_finish,
+            },
+        )
+        messages.append(
+            f"top-up audit {attempt}/{attempts}: People ({audit.people_count}), "
+            f"delta {format_delta(latest_delta)}"
+        )
+        if should_finish:
+            messages.append(finish_run(store))
+        if latest_delta == run.target:
+            break
+    run = store.load_run()
+    if finish and run.state != RunState.DONE:
+        raise RuntimeError(
+            f"final audit delta is {format_delta(run.audited_delta())}, expected "
+            f"{run.target}; top-up reconciliation did not finish"
+        )
+    return "\n".join(messages + [render_report(run)])
 
 
 def import_capture_path(store: Store, path: Path, only_connectable: bool = False) -> str:

@@ -34,6 +34,7 @@ from .service import (
     acceptance_send_followup,
     acceptance_send_ready_followups,
     capture_source,
+    drain_stale_candidates,
     finish_run,
     import_audit,
     import_capture_path,
@@ -58,6 +59,7 @@ from .service import (
     send_next,
     source_exhausted,
     start_run,
+    top_up_reconcile,
     tune_sources,
 )
 from .store import Store
@@ -111,6 +113,9 @@ def build_parser() -> argparse.ArgumentParser:
     record_top_up.add_argument("path")
     record_top_up.add_argument("--note", default=None)
 
+    drain_stale = subparsers.add_parser("drain-stale-candidates")
+    drain_stale.add_argument("--source", default=None)
+
     for name in ("send-next", "send-guarded"):
         send = subparsers.add_parser(name)
         send.add_argument("--session", default="auto")
@@ -129,6 +134,25 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "send-guarded":
             send.add_argument("--single-pass", action="store_true")
             send.add_argument("--max-attempts", type=int, default=30)
+
+    top_up = subparsers.add_parser("top-up-reconcile")
+    top_up.add_argument("--session", default="auto")
+    top_up.add_argument("--out-dir", default="/tmp/linkedin-network-run-top-up-reconcile")
+    top_up.add_argument("--max-attempts", type=int, default=20)
+    top_up.add_argument("--delay-ms", type=int, default=1000)
+    top_up.add_argument("--allow-send", action="store_true")
+    top_up.add_argument("--finish", action="store_true")
+    top_up.add_argument("--fallback-source", default="FO - Founders - Urgent")
+    top_up.add_argument("--fallback-url", default=None)
+    top_up.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
+    top_up.add_argument("--fallback-pages", type=int, default=5)
+    top_up.add_argument("--fallback-stop-after", type=int, default=10)
+    top_up.add_argument("--fallback-limit", type=int, default=18)
+    top_up.add_argument("--fallback-row-scroll-delay-ms", type=int, default=250)
+    top_up.add_argument("--no-fallback-capture", action="store_true")
+    top_up.add_argument("--fixture-send-result", default=None)
+    top_up.add_argument("--fixture-audit-result", default=None)
+    top_up.add_argument("--fixture-capture-result", default=None)
 
     source = subparsers.add_parser("source-exhausted")
     source.add_argument("--source", required=True)
@@ -338,6 +362,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return record_send_result_from_path(store, Path(args.path))
     if command == "record-top-up-result":
         return record_top_up_result_from_path(store, Path(args.path), args.note)
+    if command == "drain-stale-candidates":
+        return drain_stale_candidates(store, args.source)
     if command == "send-next":
         return send_next(
             store,
@@ -355,6 +381,23 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             max_attempts=args.max_attempts,
             single_pass=args.single_pass,
             no_record=args.no_record,
+        )
+    if command == "top-up-reconcile":
+        return top_up_reconcile(
+            store,
+            browser_from_args(args, send=True, capture=True, audit=True),
+            max_attempts=args.max_attempts,
+            delay_ms=args.delay_ms,
+            allow_send=args.allow_send,
+            finish=args.finish,
+            fallback_source=args.fallback_source,
+            fallback_url=args.fallback_url,
+            saved_searches=Path(args.saved_searches) if args.saved_searches else None,
+            fallback_pages=args.fallback_pages,
+            fallback_stop_after_connectable=args.fallback_stop_after,
+            fallback_limit=args.fallback_limit,
+            fallback_row_scroll_delay_ms=args.fallback_row_scroll_delay_ms,
+            no_fallback_capture=args.no_fallback_capture,
         )
     if command == "source-exhausted":
         return source_exhausted(store, args.source, args.note)
@@ -594,6 +637,15 @@ def browser_from_args(
             audit=path if audit else None,
             followup_result=path if followup else None,
             withdraw_result=path if withdraw else None,
+        )
+    send_fixture = getattr(args, "fixture_send_result", None)
+    capture_fixture = getattr(args, "fixture_capture_result", None)
+    audit_fixture = getattr(args, "fixture_audit_result", None)
+    if send_fixture or capture_fixture or audit_fixture:
+        return FixtureBrowserClient(
+            send_result=Path(send_fixture) if send_fixture and send else None,
+            capture=Path(capture_fixture) if capture_fixture and capture else None,
+            audit=Path(audit_fixture) if audit_fixture and audit else None,
         )
     return PlaywrightBrowserClient(
         out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
