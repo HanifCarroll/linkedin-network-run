@@ -49,6 +49,10 @@ packages = [
   "packages.linkedin_experiments",
 ]
 
+[tool.setuptools.package-data]
+"apps.opportunity_intel" = ["data/*.json"]
+"apps.review_ui" = ["templates/*.html", "templates/partials/*.html", "static/*.css"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

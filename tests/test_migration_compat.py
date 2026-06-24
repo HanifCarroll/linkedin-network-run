@@ -117,23 +117,39 @@ def test_compat_help_status_and_no_send_paths(
     assert linkedin_network_run(["--help"]) == 0
     assert "send-guarded" in capsys.readouterr().out
 
-    assert linkedin_network_run(["status", "--json", "--target-root", str(tmp_path)]) == 0
+    assert linkedin_network_run(["start", "--target", "1", "--state-dir", str(tmp_path)]) == 0
+    capsys.readouterr()
+    assert linkedin_network_run(["status", "--json", "--state-dir", str(tmp_path)]) == 0
     status_payload = json.loads(capsys.readouterr().out)
-    assert status_payload["compatibility_shim"] is True
-    assert status_payload["status"] == "not_ported"
+    assert status_payload["target"] == 1
 
-    assert linkedin_network_run(["send-next", "--session", "1"]) == 0
-    assert "no-send compatibility placeholder" in capsys.readouterr().out
+    assert (
+        linkedin_network_run(
+            ["send-next", "--session", "1", "--dry-run", "--state-dir", str(tmp_path)]
+        )
+        == 1
+    )
+    network_error = capsys.readouterr().err
+    assert "browser is unavailable" in network_error or "connectable candidate" in network_error
 
-    assert linkedin_network_run(["send-next", "--session", "1", "--allow-send"]) == 2
+    assert linkedin_network_run(["reconcile-audit", "--allow-send"]) == 2
     assert "blocked" in capsys.readouterr().err
 
-    assert recruiter_agency_outreach(["run-daily", "--allow-send"]) == 2
-    assert "blocked" in capsys.readouterr().err
+    assert recruiter_agency_outreach(["dashboard", "--state-dir", str(tmp_path)]) == 0
+    assert "dashboard=" in capsys.readouterr().out
+
+    assert (
+        recruiter_agency_outreach(["run-daily", "--state-dir", str(tmp_path), "--allow-send"])
+        == 1
+    )
+    assert "run-daily is sourcing-only" in capsys.readouterr().err
 
     assert linkedin_opportunity_intel(["status", "--json", "--target-root", str(tmp_path)]) == 0
     opportunity_payload = json.loads(capsys.readouterr().out)
     assert opportunity_payload["source_app"] == "opportunity"
+
+    assert linkedin_opportunity_intel(["validate-contracts"]) == 0
+    assert "validated" in capsys.readouterr().out
 
 
 def test_network_compat_import_command(

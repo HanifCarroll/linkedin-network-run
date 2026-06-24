@@ -9,6 +9,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO
 
+from apps.network_automation.cli import main as network_main
+from apps.opportunity_intel.cli import main as opportunity_main
+from apps.recruiter_agency_outreach.cli import main as recruiter_agency_main
 from packages.linkedin_common.paths import DEFAULT_STATE_ROOT
 from packages.linkedin_storage.migrations import (
     SourceApp,
@@ -45,6 +48,7 @@ NETWORK_COMMANDS = (
     "reservoir",
     "tune-sources",
     "pending-cleanup",
+    "old-state",
     "import-legacy-state",
 )
 
@@ -73,6 +77,9 @@ RECRUITER_AGENCY_COMMANDS = (
 )
 
 OPPORTUNITY_COMMANDS = (
+    "validate-contracts",
+    "post-queue",
+    "run-experiment",
     "sources",
     "query-pack",
     "collection-queue",
@@ -107,6 +114,48 @@ OPPORTUNITY_COMMANDS = (
 )
 
 REAL_SEND_FLAGS = frozenset({"--allow-send", "--allow-withdraw"})
+
+NETWORK_APP_COMMANDS = frozenset(
+    {
+        "start",
+        "audit",
+        "import-audit",
+        "record",
+        "record-send-result",
+        "record-top-up-result",
+        "send-next",
+        "send-guarded",
+        "source-exhausted",
+        "needs-reaudit",
+        "resume-blocked",
+        "import-capture",
+        "next",
+        "next-candidate",
+        "candidates",
+        "plan",
+        "status",
+        "report",
+        "finish",
+        "tune-sources",
+        "acceptance",
+        "reservoir",
+        "pending-cleanup",
+        "old-state",
+    }
+)
+RECRUITER_AGENCY_APP_COMMANDS = frozenset(
+    {
+        "run-daily",
+        "import-capture",
+        "import-accounts",
+        "draft",
+        "dashboard",
+        "send-message",
+        "mark-message",
+        "agency-pool",
+    }
+)
+OPPORTUNITY_APP_COMMANDS = frozenset({"validate-contracts", "post-queue", "run-experiment"})
 
 
 def linkedin_network_run(argv: Sequence[str] | None = None) -> int:
@@ -159,10 +208,12 @@ def _dispatch_compat_command(
         print(f"{command_name}: unsupported compatibility command: {command}", file=sys.stderr)
         _print_help(command_name, commands, stream=sys.stderr)
         return 2
+    if _is_app_command(source_app=source_app, command=command):
+        return _dispatch_app_command(source_app=source_app, argv=args)
     if _has_real_action_flag(command_args):
         print(
             f"{command_name} {command}: real send/withdraw flags are blocked in the "
-            "temporary Python compatibility shim until the owning app port lands.",
+            "temporary Python compatibility shim for legacy-only commands.",
             file=sys.stderr,
         )
         return 2
@@ -194,7 +245,8 @@ def _print_help(
     for command in commands:
         print(f"  {command}", file=output)
     print(
-        "\nReal send and withdraw flags are blocked until the owning Python app port lands.",
+        "\nImplemented commands delegate to the Python app ports. Legacy-only commands "
+        "remain no-send placeholders.",
         file=output,
     )
 
@@ -285,7 +337,7 @@ def _no_send_placeholder(
     else:
         print(
             f"{command_name} {command}: no-send compatibility placeholder; "
-            "owning app behavior is pending."
+            "legacy-only behavior is not ported."
         )
     return 0
 
@@ -308,7 +360,7 @@ def _placeholder_payload(
             source_app=source_app,
             target_root=target_root,
         ),
-        "parity_gap": "Python app behavior is owned by a separate porting workstream.",
+        "parity_gap": "This legacy command is not implemented by the Python app port.",
     }
 
 
@@ -324,6 +376,47 @@ def _target_root_from_args(argv: Sequence[str]) -> Path:
 
 def _has_real_action_flag(argv: Sequence[str]) -> bool:
     return any(arg in REAL_SEND_FLAGS for arg in argv)
+
+
+def _is_app_command(*, source_app: SourceApp, command: str) -> bool:
+    if source_app == "network":
+        return command in NETWORK_APP_COMMANDS
+    if source_app == "recruiter_agency":
+        return command in RECRUITER_AGENCY_APP_COMMANDS
+    return command in OPPORTUNITY_APP_COMMANDS
+
+
+def _dispatch_app_command(*, source_app: SourceApp, argv: Sequence[str]) -> int:
+    normalized_argv = _normalize_app_argv(source_app=source_app, argv=argv)
+    if source_app == "network":
+        return network_main(normalized_argv)
+    if source_app == "recruiter_agency":
+        return recruiter_agency_main(normalized_argv)
+    return opportunity_main(normalized_argv)
+
+
+def _normalize_app_argv(*, source_app: SourceApp, argv: Sequence[str]) -> list[str]:
+    args = list(argv)
+    if source_app not in {"network", "recruiter_agency"} or not args:
+        return args
+
+    normalized: list[str] = []
+    command_and_args: list[str] = []
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value == "--state-dir" and index + 1 < len(args):
+            normalized.extend([value, args[index + 1]])
+            index += 2
+            continue
+        if value.startswith("--state-dir="):
+            normalized.append(value)
+            index += 1
+            continue
+        command_and_args.append(value)
+        index += 1
+    normalized.extend(command_and_args)
+    return normalized
 
 
 def _command_name_for_source(source_app: SourceApp) -> str:

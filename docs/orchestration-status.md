@@ -6,7 +6,7 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest integrated commit: `16fb1c4`
+- Latest integrated commit: `0f2864a`
 
 ## Integrated Workstreams
 
@@ -56,6 +56,36 @@ Last updated: 2026-06-24
   - Explicit-selector LinkedIn comment extractor and `raw_comments.jsonl`
     contract.
 
+### Thread 4: Network Automation Port
+
+- Thread ID: `019efa1d-ac54-74f3-80a2-f82de6401f37`
+- Worktree: `/Users/hanifcarroll/.codex/worktrees/8c13/linkedin-network-automation`
+- Source commit: `3ff9fda`
+- Integrated commit: `ce1cdf5`
+- Handoff: `docs/handoffs/network-automation.md`
+- Scope integrated:
+  - Run controller, plan/status/report, audit import, capture import, source
+    tuning, and reservoir operations.
+  - Guarded connection send path and browser fixture interface.
+  - Acceptance tracking, accepted follow-up drafts, guarded follow-up sends,
+    and pending cleanup guarded withdrawals.
+  - Read-only old-state inspection hook and parity fixtures/tests.
+
+### Thread 5: Recruiter/Agency Outreach Port
+
+- Thread ID: `019efa1d-d601-7570-97a5-0a5c1fd97a02`
+- Worktree: `/Users/hanifcarroll/.codex/worktrees/e8e0/linkedin-network-automation`
+- Source commit: `7e56380`
+- Integrated commit: `0f2864a`
+- Handoff: `docs/handoffs/recruiter-agency-outreach.md`
+- Scope integrated:
+  - Recruiter and agency capture/import.
+  - Account-first agency sourcing and agency pool reporting.
+  - Sales Navigator identity-gated agency contact promotion.
+  - Draft generation, messageability validation, dashboard/reporting, and
+    guarded message-send state transitions.
+  - `run-daily` no-send behavior and parity fixtures/tests.
+
 ### Thread 6: Review UI
 
 - Thread ID: `019efa1e-05c6-7570-a1db-bc8786b62af5`
@@ -86,50 +116,28 @@ Last updated: 2026-06-24
     `recruiter-agency-outreach`, and `linkedin-opportunity-intel`.
   - Real-action flag blocking in compatibility shims.
 
-## Active Workstreams
+## Orchestrator-Owned Integration
 
-### Thread 4: Network Automation Port
-
-- Thread ID: `019efa1d-ac54-74f3-80a2-f82de6401f37`
-- Worktree: `/Users/hanifcarroll/.codex/worktrees/8c13/linkedin-network-automation`
-- Current status: active.
-- Last observed work:
-  - Network models, file-backed store, browser fixture interface, and
-    controller service wiring were being implemented.
-- Required handoff:
-  `docs/handoffs/network-automation.md`
-
-### Thread 5: Recruiter/Agency Outreach Port
-
-- Thread ID: `019efa1d-d601-7570-97a5-0a5c1fd97a02`
-- Worktree: `/Users/hanifcarroll/.codex/worktrees/e8e0/linkedin-network-automation`
-- Current status: active.
-- Last observed work:
-  - Data model, SQLite-backed store, URL/ID helpers, classification, sourcing,
-    and draft generation were being implemented.
-- Required handoff:
-  `docs/handoffs/recruiter-agency-outreach.md`
+- Top-level `linkedin-tools` dispatch now routes to the integrated Python app
+  CLIs.
+- Legacy command names keep `import-legacy-state` and delegate implemented
+  commands to the app ports; legacy-only commands remain no-send placeholders.
+- Runtime package data includes opportunity JSON contracts and review UI
+  templates/static assets.
 
 ## Integrated Verification
 
-After integrating Threads 1, 2, 3, 6, and 7:
+After integrating Threads 1 through 7 and root routing:
 
-- PASS: `uv run pytest` (`64 passed`)
+- PASS: `uv run pytest` (`83 passed`)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 
 ## Next Orchestration Steps
 
-1. Poll active workstreams until each reaches an idle/completed thread state.
-2. For each completed worktree:
-   - Read its handoff.
-   - Inspect changed paths for ownership violations.
-   - Run its stated verification commands.
-   - Commit the completed worktree changes, excluding transient local files.
-   - Cherry-pick into the orchestrator branch.
-   - Run integrated `uv run pytest`, `uv run ruff check apps packages tests`,
-     and `uv run mypy apps packages tests`.
-3. Resolve cross-thread conflicts in this branch, not inside completed
-   subthread worktrees unless a correction must be delegated back.
-4. After all workstreams are integrated, run the cutover checklist in
-   `docs/cutover-checklist.md`.
+1. Run final full-suite verification after the status/cutover docs update.
+2. Exercise browser dry-runs with the logged-in `LinkedIn` Chrome profile.
+3. Decide whether remaining legacy-only compatibility placeholders need direct
+   parity ports or approved archived replacements.
+4. Complete Hanif review and approval before archiving the Go/JavaScript
+   implementation.

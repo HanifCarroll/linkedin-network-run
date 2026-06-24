@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
 from typing import Any
@@ -141,7 +142,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         _run_command(args, store)
     except Exception as exc:
-        parser.exit(1, f"error: {exc}\n")
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
