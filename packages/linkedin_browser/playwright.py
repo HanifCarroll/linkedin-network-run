@@ -15,6 +15,8 @@ from .config import (
     chrome_profile_from_env,
 )
 
+CHROME_LAUNCH_TIMEOUT_MS = 30_000
+
 
 @dataclass(frozen=True)
 class BrowserContextHandle:
@@ -65,6 +67,7 @@ async def launch_linkedin_chrome(
                 user_data_dir=str(selected.user_data_dir),
                 headless=selected.headless,
                 args=selected.launch_args(),
+                timeout=CHROME_LAUNCH_TIMEOUT_MS,
             )
         return await playwright.chromium.launch_persistent_context(
             user_data_dir=str(selected.user_data_dir),
@@ -72,6 +75,7 @@ async def launch_linkedin_chrome(
             headless=selected.headless,
             args=selected.launch_args(),
             env=chrome_launch_env(),
+            timeout=CHROME_LAUNCH_TIMEOUT_MS,
         )
     except Exception as exc:
         message = str(exc)
