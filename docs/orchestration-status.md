@@ -87,7 +87,8 @@ Last updated: 2026-06-24
   - Sales Navigator identity-gated agency contact promotion.
   - Draft generation, messageability validation, dashboard/reporting, and
     guarded message-send state transitions.
-  - `run-daily` no-send behavior and parity fixtures/tests.
+  - `run-daily` no-send behavior, recruiter capture, agency account/contact
+    capture, dry-run validation, and parity fixtures/tests.
 
 ### Thread 6: Review UI
 
@@ -157,7 +158,10 @@ Last updated: 2026-06-24
   surface in Python and compatibility routing delegates those implemented
   commands. Live recruiter/agency people capture, account capture, and
   `send-message --dry-run` passed from a temporary SQLite state directory by
-  attaching to the existing Playwriter CDP endpoint.
+  attaching to the existing Playwriter CDP endpoint. `run-daily` now wires the
+  default recruiter source, agency account sources, agency-account contact
+  capture, drafting, and guarded dry-run validation into one no-send daily
+  orchestration path.
 - Opportunity-intel now exposes the full recommend-only command surface named
   by the compatibility shim, including source/query inspection, post queues,
   provider CSV contracts, batch preparation/status, experiment/spike runs,
@@ -170,7 +174,7 @@ After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, opportunity command parity, and cutover state
 promotion:
 
-- PASS: `uv run pytest` (`109 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`114 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`

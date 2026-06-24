@@ -36,6 +36,7 @@ sends or withdrawals were performed during verification.
 
 ## Recent Closure Commits
 
+- `a0bfe6e feat: complete recruiter daily orchestration parity`
 - `f620d70 feat: close remaining network command parity`
 - `a46869d feat: promote legacy state for cutover`
 - `bc3b923 feat: preserve salesnav capture api enrichment`
@@ -45,7 +46,7 @@ sends or withdrawals were performed during verification.
 
 ## Verification
 
-- PASS: `uv run pytest` (`109 passed`, one existing FastAPI/Starlette warning)
+- PASS: `uv run pytest` (`114 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy

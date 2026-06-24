@@ -58,8 +58,14 @@ and archive sequence.
       `reject`, and `report`.
 - [x] Legacy `recruiter-agency-outreach` compatibility now delegates
       implemented recruiter/agency commands to the Python app CLI.
-- [x] `send-ready` preserves the real-send gate and applies explicit
-      structured non-dry-run result artifacts only.
+- [x] `run-daily` remains no-send, accepts the existing
+      `--refresh-saved-searches` automation flag, captures recruiter people,
+      captures agency accounts, captures agency-account contacts, drafts
+      messages, and validates drafted leads through guarded dry-run message
+      checks.
+- [x] `send-ready` preserves the real-send gate, uses the guarded browser
+      adapter when no `--result-dir` is supplied, and still supports explicit
+      structured non-dry-run result artifacts for tests/replay.
 - [x] Live recruiter/agency people capture is wired through the shared
       SalesNav people-capture adapter and passed on 2026-06-24 with artifact
       `/tmp/recruiter-agency-live-dryrun.h4e40B/capture-live/001-capture-page.json`.

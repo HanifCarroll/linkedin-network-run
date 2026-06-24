@@ -73,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_daily_parser.add_argument("--target-recruiters", type=int, default=5)
     run_daily_parser.add_argument("--allow-send", action="store_true")
     run_daily_parser.add_argument("--print-markdown", action="store_true")
+    run_daily_parser.add_argument("--refresh-saved-searches", action="store_true")
+    run_daily_parser.add_argument("--pages", type=int, default=2)
+    run_daily_parser.add_argument("--account-pages", type=int, default=2)
+    run_daily_parser.add_argument("--limit", type=int, default=25)
+    run_daily_parser.add_argument("--account-limit", type=int, default=25)
+    run_daily_parser.add_argument("--max-capture-rounds", type=int, default=4)
+    run_daily_parser.add_argument("--stop-after-connectable", type=int, default=0)
+    run_daily_parser.add_argument("--row-scroll-delay-ms", type=int, default=250)
+    run_daily_parser.add_argument("--capture-out-dir", default="")
+    run_daily_parser.add_argument("--account-capture-out-dir", default="")
+    run_daily_parser.add_argument("--message-out-dir", default="")
 
     capture_parser = subparsers.add_parser("capture")
     capture_parser.add_argument("--session", default="auto")
@@ -253,6 +264,17 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
                 target_recruiters=args.target_recruiters,
                 allow_send=args.allow_send,
                 print_markdown=args.print_markdown,
+                refresh_saved_searches=args.refresh_saved_searches,
+                pages_per_capture=args.pages,
+                account_pages_per_capture=args.account_pages,
+                limit=args.limit,
+                account_limit=args.account_limit,
+                max_capture_rounds=args.max_capture_rounds,
+                stop_after_connectable=args.stop_after_connectable,
+                row_scroll_delay_ms=args.row_scroll_delay_ms,
+                capture_out_dir=args.capture_out_dir,
+                account_capture_out_dir=args.account_capture_out_dir,
+                message_out_dir=args.message_out_dir,
             ),
         )
         print(f"dashboard={daily_result.dashboard_path}")

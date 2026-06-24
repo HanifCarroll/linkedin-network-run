@@ -33,8 +33,8 @@ edit the live automation prompts until Hanif approves cutover in
 | `linkedin-pending-cleanup` | `scripts/salesnav-audit.js` plus `pending-cleanup import-audit` | `linkedin-tools network pending-cleanup audit --session auto` |
 | `linkedin-pending-cleanup` | `scripts/salesnav-pending-capture.js` plus `pending-cleanup import-capture` | `linkedin-tools network pending-cleanup capture --session auto --load-more <n>` |
 | `linkedin-pending-cleanup` | `pending-cleanup withdraw-next` | `linkedin-tools network pending-cleanup withdraw-next --session auto ...` |
-| `recruiter-agency-outreach-daily` | `/Users/hanifcarroll/.local/bin/recruiter-agency-outreach run-daily` | `uv run linkedin-tools recruiter-agency run-daily ...` |
-| `recruiter-agency-sending-daily` | `/Users/hanifcarroll/.local/bin/recruiter-agency-outreach send-ready` | `uv run linkedin-tools recruiter-agency send-ready ...` |
+| `recruiter-agency-outreach-daily` | `/Users/hanifcarroll/.local/bin/recruiter-agency-outreach run-daily --refresh-saved-searches` | `uv run linkedin-tools recruiter-agency run-daily --refresh-saved-searches ...` |
+| `recruiter-agency-sending-daily` | `/Users/hanifcarroll/.local/bin/recruiter-agency-outreach send-ready` | `uv run linkedin-tools recruiter-agency send-ready --allow-send ...` |
 
 ## Verification Added
 
@@ -47,6 +47,12 @@ edit the live automation prompts until Hanif approves cutover in
   of only the top-level namespace stub.
 - `apps.compat` now routes `linkedin-network-run saved-searches` through the
   Python network app during migration.
+- `apps.recruiter_agency_outreach` accepts the existing
+  `run-daily --refresh-saved-searches` automation flag, captures recruiter
+  people, captures agency accounts, captures agency-account contacts, drafts
+  messages, validates drafted leads through guarded dry-run message checks,
+  and lets `send-ready` use the guarded live message adapter when no
+  structured `--result-dir` is supplied.
 
 ## Cutover Prompt Edits
 

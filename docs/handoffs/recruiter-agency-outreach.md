@@ -17,21 +17,28 @@ Implemented:
 - Draft generation using the current shorter recruiter/agency copy.
 - Dashboard/report rendering with agency/recruiter buckets.
 - Messageability/send-result application and guarded real-send state gates.
-- `run-daily` no-send behavior that rejects `--allow-send`.
+- `run-daily` no-send behavior that rejects `--allow-send`, accepts the
+  existing automation `--refresh-saved-searches` flag, captures recruiter
+  people, captures agency accounts, captures agency-account contacts, drafts
+  messages, and validates drafted leads through guarded browser dry-runs.
 - Python CLI parity for state-backed commands: `accounts`, `lead show`,
   `queue`, `last-run`, `recommend-next-run`, `revise`, `send-ready`,
   `reject`, and `report`.
-- `send-ready` structured-result replay for already `dry_run_ready` leads.
-  It requires `--allow-send`, rejects dry-run artifacts, records run lifecycle
-  and send-message events, and writes the sending dashboard.
+- `send-ready` for already `dry_run_ready` leads. It requires `--allow-send`,
+  uses the guarded browser adapter when no `--result-dir` is provided, still
+  supports structured non-dry-run artifact replay, records run lifecycle and
+  send-message events, and writes the sending dashboard.
 - App-local CLI namespace in `apps/recruiter_agency_outreach/cli.py`.
 
 ## Safety Preserved
 
-- `run-daily` is sourcing/drafting/reporting only and rejects send flags.
+- `run-daily` is sourcing/drafting/validation/reporting only and rejects send
+  flags. It may open Sales Navigator capture and dry-run message validation
+  pages, but it does not send messages.
 - Real message sends require `--allow-send` and a prior `dry_run_ready` state.
-- Python `send-ready` does not click LinkedIn. It only applies explicit
-  structured result artifacts supplied by `--result-dir`.
+- Python `send-ready` uses the same guarded message adapter as `send-message`
+  when no `--result-dir` is supplied. It still requires `--allow-send` and a
+  prior `dry_run_ready` state for every live send.
 - Agency sends require a qualified agency account context.
 - Public LinkedIn `/in/...` URLs found from agency websites remain review
   context only.
@@ -63,8 +70,12 @@ used for parity classification and queue ordering, not extraction fallbacks.
 
 - `capture`, `capture-accounts`, and `send-message` now have concrete Python
   Playwright runners. `send-message` still accepts `--result-path` for
-  structured artifact replay, and `send-ready` can apply one non-dry-run result
-  per ready lead via `--result-dir`.
+  structured artifact replay, and `send-ready` can either use the live guarded
+  message adapter or apply one non-dry-run result per ready lead via
+  `--result-dir`.
+- `run-daily` now uses generated Sales Navigator URLs for the default recruiter
+  source and agency account sources, then captures account-scoped agency
+  contacts before drafting and dry-run validating.
 - Live dry-run/capture proof artifacts from 2026-06-24:
   `/tmp/recruiter-agency-live-dryrun.h4e40B/capture-live/001-capture-page.json`,
   `/tmp/recruiter-agency-live-dryrun.h4e40B/account-capture-live/001-ASAP---Agency-Accounts-Product-Studio-accounts.json`,
