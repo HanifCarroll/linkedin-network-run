@@ -7,9 +7,10 @@ import json
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any
 
-from .daily import DailyOptions, run_daily
+from .daily import DailyOptions, SendReadyOptions, run_daily, send_ready
 from .dashboard import (
     build_agency_pool_diagnosis,
     build_agency_pool_next_action,
@@ -18,8 +19,27 @@ from .dashboard import (
     render_dashboard_markdown,
     write_dashboard_markdown,
 )
-from .drafts import draft_messages, write_draft_markdown
-from .models import AgencyContactReviewStatus, MessageStatus
+from .drafts import draft_evidence, draft_messages, message_subject, write_draft_markdown
+from .inspection import (
+    agency_account_queue,
+    build_lead_detail,
+    parse_lead_statuses,
+    parse_message_status,
+    queue_item_by_lead_id,
+    queue_items,
+    render_agency_accounts_text,
+    render_counts_text,
+    render_lead_detail_text,
+    render_queue_text,
+)
+from .models import (
+    AgencyAccountStatus,
+    AgencyContactReviewStatus,
+    LeadStatus,
+    MessageDraft,
+    MessageStatus,
+)
+from .run_summary import latest_run_summary, recommend_next_run, render_run_summary_text
 from .send import SendMessageOptions, send_message
 from .sourcing import (
     import_account_capture,
@@ -33,6 +53,7 @@ from .sourcing import (
     write_agency_source_capture,
 )
 from .storage import Store
+from .utils import now_iso
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,12 +71,47 @@ def build_parser() -> argparse.ArgumentParser:
     run_daily_parser.add_argument("--allow-send", action="store_true")
     run_daily_parser.add_argument("--print-markdown", action="store_true")
 
+    capture_parser = subparsers.add_parser("capture")
+    capture_parser.add_argument("--session", default="auto")
+    capture_parser.add_argument("--source", default="")
+    capture_parser.add_argument("--url", default="")
+    capture_parser.add_argument("--out-dir", default="")
+    capture_parser.add_argument("--pages", type=int, default=2)
+    capture_parser.add_argument("--limit", type=int, default=25)
+    capture_parser.add_argument("--only-connectable", action="store_true")
+
+    capture_accounts_parser = subparsers.add_parser("capture-accounts")
+    capture_accounts_parser.add_argument("--session", default="auto")
+    capture_accounts_parser.add_argument("--source", default="")
+    capture_accounts_parser.add_argument("--url", default="")
+    capture_accounts_parser.add_argument("--out-dir", default="")
+    capture_accounts_parser.add_argument("--pages", type=int, default=2)
+    capture_accounts_parser.add_argument("--limit", type=int, default=25)
+
     import_capture_parser = subparsers.add_parser("import-capture")
     import_capture_parser.add_argument("path")
     import_capture_parser.add_argument("--only-connectable", action="store_true")
 
     import_accounts_parser = subparsers.add_parser("import-accounts")
     import_accounts_parser.add_argument("path")
+
+    accounts_parser = subparsers.add_parser("accounts")
+    accounts_parser.add_argument("--limit", type=int, default=20)
+    accounts_parser.add_argument("--status", action="append", default=None)
+    accounts_parser.add_argument("--json", action="store_true")
+
+    lead_parser = subparsers.add_parser("lead")
+    lead_subparsers = lead_parser.add_subparsers(dest="lead_command")
+    lead_show_parser = lead_subparsers.add_parser("show")
+    lead_show_parser.add_argument("--lead-id", required=True)
+    lead_show_parser.add_argument("--json", action="store_true")
+
+    queue_parser = subparsers.add_parser("queue")
+    queue_parser.add_argument("--limit", type=int, default=20)
+    queue_parser.add_argument("--lead-id", default="")
+    queue_parser.add_argument("--status", action="append", default=None)
+    queue_parser.add_argument("--json", action="store_true")
+    queue_parser.add_argument("--include-drafts", action="store_true")
 
     draft_parser = subparsers.add_parser("draft")
     draft_parser.add_argument("--limit", type=int, default=20)
@@ -69,6 +125,30 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--allow-send", action="store_true")
     dashboard_parser.add_argument("--print-markdown", action="store_true")
 
+    last_run_parser = subparsers.add_parser("last-run")
+    last_run_parser.add_argument("--json", action="store_true")
+
+    recommend_parser = subparsers.add_parser("recommend-next-run")
+    recommend_parser.add_argument("--target-agencies", type=int, default=5)
+    recommend_parser.add_argument("--target-recruiters", type=int, default=5)
+    recommend_parser.add_argument("--allow-send", action="store_true")
+    recommend_parser.add_argument("--json", action="store_true")
+
+    revise_parser = subparsers.add_parser("revise")
+    revise_parser.add_argument("--lead-id", required=True)
+    revise_parser.add_argument("--body-file", required=True)
+    revise_parser.add_argument("--subject", default="")
+    revise_parser.add_argument("--angle", default="")
+
+    send_ready_parser = subparsers.add_parser("send-ready")
+    send_ready_parser.add_argument("--session", default="auto")
+    send_ready_parser.add_argument("--target-agencies", type=int, default=5)
+    send_ready_parser.add_argument("--target-recruiters", type=int, default=5)
+    send_ready_parser.add_argument("--allow-send", action="store_true")
+    send_ready_parser.add_argument("--result-dir", default="")
+    send_ready_parser.add_argument("--dashboard", default="")
+    send_ready_parser.add_argument("--print-markdown", action="store_true")
+
     send_parser = subparsers.add_parser("send-message")
     send_parser.add_argument("--lead-id", required=True)
     send_parser.add_argument("--session", default="auto")
@@ -80,6 +160,14 @@ def build_parser() -> argparse.ArgumentParser:
     mark_parser = subparsers.add_parser("mark-message")
     mark_parser.add_argument("--lead-id", required=True)
     mark_parser.add_argument("--status", required=True)
+    mark_parser.add_argument("--note", default="")
+
+    reject_parser = subparsers.add_parser("reject")
+    reject_parser.add_argument("--lead-id", required=True)
+    reject_parser.add_argument("--reason", required=True)
+
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("--json", action="store_true")
 
     agency_pool = subparsers.add_parser("agency-pool")
     agency_subparsers = agency_pool.add_subparsers(dest="agency_command")
@@ -149,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run_command(args: argparse.Namespace, store: Store) -> None:
     if args.command == "run-daily":
-        result = run_daily(
+        daily_result = run_daily(
             store,
             DailyOptions(
                 session=args.session,
@@ -159,10 +247,15 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
                 print_markdown=args.print_markdown,
             ),
         )
-        print(f"dashboard={result.dashboard_path}")
+        print(f"dashboard={daily_result.dashboard_path}")
         if args.print_markdown:
-            print(result.markdown)
+            print(daily_result.markdown)
         return
+    if args.command in {"capture", "capture-accounts"}:
+        raise RuntimeError(
+            "live Sales Navigator capture is not wired in the Python app; "
+            "use import-capture/import-accounts with structured artifacts"
+        )
     if args.command == "import-capture":
         state = store.load()
         capture_summary = import_salesnav_capture(
@@ -188,6 +281,41 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
             f"needs_review={account_summary.needs_review} "
             f"rejected={account_summary.rejected} total={account_summary.total}"
         )
+        return
+    if args.command == "accounts":
+        state = store.load()
+        statuses = _parse_account_statuses(args.status or [AgencyAccountStatus.QUALIFIED.value])
+        account_items = agency_account_queue(state, statuses, args.limit)
+        if args.json:
+            print(_json(account_items))
+            return
+        print(render_agency_accounts_text(account_items))
+        return
+    if args.command == "lead":
+        _run_lead_command(args, store)
+        return
+    if args.command == "queue":
+        state = store.load()
+        if args.lead_id:
+            item = queue_item_by_lead_id(
+                state,
+                args.lead_id,
+                include_drafts=args.include_drafts,
+            )
+            if item is None:
+                raise ValueError(f"unknown lead id {args.lead_id!r}")
+            queue_result = [item]
+        else:
+            queue_result = queue_items(
+                state,
+                parse_lead_statuses(args.status or [LeadStatus.ELIGIBLE.value]),
+                args.limit,
+                include_drafts=args.include_drafts,
+            )
+        if args.json:
+            print(_json(queue_result))
+            return
+        print(render_queue_text(queue_result))
         return
     if args.command == "draft":
         state = store.load()
@@ -215,6 +343,76 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
         if args.print_markdown:
             print(render_dashboard_markdown(dashboard_report))
         return
+    if args.command == "last-run":
+        state = store.load()
+        summary = latest_run_summary(state, str(store.state_path))
+        if summary is None:
+            raise ValueError("no run summary found")
+        if args.json:
+            print(_json(summary))
+            return
+        print(render_run_summary_text(summary))
+        return
+    if args.command == "recommend-next-run":
+        state = store.load()
+        recommendation = recommend_next_run(
+            state,
+            str(store.state_path),
+            target_agencies=args.target_agencies,
+            target_recruiters=args.target_recruiters,
+            allow_send=args.allow_send,
+        )
+        if args.json:
+            print(_json(recommendation))
+            return
+        print(f"recommendation={recommendation.reason}")
+        if recommendation.blocker:
+            print(f"blocker={recommendation.blocker}")
+        if recommendation.should_retry:
+            print(f"next_command={recommendation.command}")
+        return
+    if args.command == "revise":
+        state = store.load()
+        body = Path(args.body_file).read_text().replace("\r\n", "\n").strip()
+        if not body:
+            raise ValueError("revision body is empty")
+        for lead in state.leads:
+            if lead.id == args.lead_id:
+                subject = args.subject or (lead.draft.subject if lead.draft else "")
+                if not subject:
+                    subject = message_subject(lead)
+                angle = args.angle or (lead.draft.angle if lead.draft else "")
+                lead.draft = MessageDraft(
+                    subject=subject,
+                    body=body,
+                    angle=angle,
+                    evidence=list(lead.draft.evidence) if lead.draft else draft_evidence(lead),
+                    generated_at=now_iso(),
+                )
+                lead.message_status = MessageStatus.DRAFTED
+                store.save(state)
+                print(f"revised={lead.id}")
+                return
+        raise ValueError(f"unknown lead id {args.lead_id!r}")
+    if args.command == "send-ready":
+        ready_result = send_ready(
+            store,
+            SendReadyOptions(
+                session=args.session,
+                target_agencies=args.target_agencies,
+                target_recruiters=args.target_recruiters,
+                allow_send=args.allow_send,
+                result_dir=args.result_dir,
+                dashboard_path=args.dashboard,
+                print_markdown=args.print_markdown,
+            ),
+        )
+        if ready_result.summary_text:
+            print(ready_result.summary_text)
+        print(f"dashboard={ready_result.dashboard_path}")
+        if args.print_markdown:
+            print(ready_result.markdown)
+        return
     if args.command == "send-message":
         print(
             send_message(
@@ -234,15 +432,61 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
         state = store.load()
         for lead in state.leads:
             if lead.id == args.lead_id:
-                lead.message_status = MessageStatus(args.status)
+                lead.message_status = parse_message_status(args.status)
+                if args.note:
+                    lead.notes.append(args.note)
                 store.save(state)
                 print(f"lead={lead.id} message_status={lead.message_status.value}")
                 return
         raise ValueError(f"unknown lead id {args.lead_id!r}")
+    if args.command == "reject":
+        state = store.load()
+        for lead in state.leads:
+            if lead.id == args.lead_id:
+                lead.status = LeadStatus.REJECTED
+                lead.reject_reasons.append(args.reason)
+                store.save(state)
+                print(f"rejected={lead.id}")
+                return
+        raise ValueError(f"unknown lead id {args.lead_id!r}")
+    if args.command == "report":
+        state = store.load()
+        if args.json:
+            print(_json(build_dashboard_report(state, str(store.state_path)).counts))
+            return
+        print(render_counts_text(state, str(store.state_path)))
+        return
     if args.command == "agency-pool":
         _run_agency_pool_command(args, store)
         return
     raise ValueError(f"unsupported command {args.command!r}")
+
+
+def _run_lead_command(args: argparse.Namespace, store: Store) -> None:
+    if args.lead_command is None:
+        raise ValueError("lead command is required")
+    if args.lead_command == "show":
+        state = store.load()
+        detail = build_lead_detail(state, str(store.state_path), args.lead_id)
+        if detail is None:
+            raise ValueError(f"unknown lead id {args.lead_id!r}")
+        if args.json:
+            print(_json(detail))
+            return
+        print(render_lead_detail_text(detail))
+        return
+    raise ValueError(f"unsupported lead command {args.lead_command!r}")
+
+
+def _parse_account_statuses(values: list[str]) -> list[str]:
+    statuses: list[str] = []
+    for value in values:
+        for item in value.split(","):
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            statuses.append(AgencyAccountStatus(cleaned).value)
+    return statuses
 
 
 def _run_agency_pool_command(args: argparse.Namespace, store: Store) -> None:

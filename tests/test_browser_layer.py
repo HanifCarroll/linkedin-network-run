@@ -20,6 +20,10 @@ from packages.linkedin_browser import (
     classify_browser_state,
     guarded_click,
 )
+from packages.linkedin_browser.playwright import (
+    launch_linkedin_chrome,
+    open_linkedin_browser_context,
+)
 
 
 class FakePage:
@@ -61,6 +65,44 @@ class FakeContext:
         return page
 
 
+class ProfileLockedChromium:
+    async def launch_persistent_context(self, **kwargs: object) -> object:
+        _ = kwargs
+        raise RuntimeError(
+            "BrowserType.launch_persistent_context: Opening in existing browser session."
+        )
+
+
+class ProfileLockedPlaywright:
+    chromium = ProfileLockedChromium()
+
+
+class FakeCdpBrowser:
+    def __init__(self) -> None:
+        self.contexts = [FakeContext([FakePage("https://www.linkedin.com/sales/lead/abc")])]
+
+
+class FakeCdpChromium:
+    def __init__(self) -> None:
+        self.connected_url: str | None = None
+        self.launched = False
+
+    async def connect_over_cdp(self, url: str, *, timeout: int) -> FakeCdpBrowser:
+        _ = timeout
+        self.connected_url = url
+        return FakeCdpBrowser()
+
+    async def launch_persistent_context(self, **kwargs: object) -> object:
+        _ = kwargs
+        self.launched = True
+        raise AssertionError("CDP attach should avoid profile launch")
+
+
+class FakeCdpPlaywright:
+    def __init__(self) -> None:
+        self.chromium = FakeCdpChromium()
+
+
 def test_profile_config_defaults_to_linkedin_profile() -> None:
     config = chrome_profile_from_env({})
     assert config.profile_name == DEFAULT_BROWSER_PROFILE_NAME
@@ -79,6 +121,30 @@ def test_profile_config_can_be_overridden() -> None:
         user_data_dir=Path("/tmp/chrome"),
         profile_name="LinkedIn Test",
     )
+
+
+@pytest.mark.asyncio
+async def test_launch_linkedin_chrome_explains_locked_profile() -> None:
+    with pytest.raises(RuntimeError, match="Chrome profile is already open"):
+        await launch_linkedin_chrome(
+            ProfileLockedPlaywright(),  # type: ignore[arg-type]
+            ChromeProfileConfig(profile_name="LinkedIn"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_open_linkedin_browser_context_prefers_cdp_attach() -> None:
+    playwright = FakeCdpPlaywright()
+
+    handle = await open_linkedin_browser_context(
+        playwright,  # type: ignore[arg-type]
+        cdp_url="ws://127.0.0.1:19988/cdp",
+    )
+
+    assert handle.close_context is False
+    assert handle.context.pages[0].url == "https://www.linkedin.com/sales/lead/abc"
+    assert playwright.chromium.connected_url == "ws://127.0.0.1:19988/cdp"
+    assert playwright.chromium.launched is False
 
 
 def test_choose_reusable_page_prefers_salesnav_page() -> None:

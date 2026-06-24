@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
+from typing import Any
 
 from .browser import BrowserClient
 from .models import (
@@ -89,6 +92,63 @@ def import_audit(store: Store, path: Path) -> str:
     store.save_run(run)
     store.append_event(run, "import-audit", {"path": str(path), "people_count": audit.people_count})
     return f"audit imported: People ({audit.people_count}){_delta_suffix(run.audited_delta())}"
+
+
+def reconcile_audit(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    attempts: int = 3,
+    delay_ms: int = 5000,
+    finish: bool = False,
+) -> str:
+    attempts = max(1, attempts)
+    latest_delta: int | None = None
+    messages: list[str] = []
+    for attempt in range(1, attempts + 1):
+        audit, path = browser.audit_sent_invitations(load_more=0)
+        run = store.load_run()
+        apply_audit(run, audit.people_count, f"reconcile audit attempt {attempt}/{attempts}")
+        latest_delta = run.audited_delta()
+        should_finish = finish and latest_delta == run.target
+        if should_finish:
+            run.state = RunState.DONE
+        store.save_run(run)
+        store.append_event(
+            run,
+            "reconcile-audit",
+            {
+                "attempt": attempt,
+                "path": path,
+                "people_count": audit.people_count,
+                "delta": latest_delta,
+                "finished": should_finish,
+            },
+        )
+        if should_finish:
+            ledger = store.load_acceptance_ledger()
+            seeded = ledger.upsert_from_run(run)
+            store.save_acceptance_ledger(ledger)
+            store.append_event(run, "finish", {"audited_delta": latest_delta})
+            store.append_acceptance_event(
+                "seed-from-finish", {"run_id": str(run.id), "seeded": seeded}
+            )
+        messages.append(
+            f"reconcile audit {attempt}/{attempts}: People ({audit.people_count}), "
+            f"delta {format_delta(latest_delta)}; out={path}"
+        )
+        if latest_delta == run.target:
+            break
+        if attempt < attempts and delay_ms > 0:
+            time.sleep(delay_ms / 1000)
+    if finish and latest_delta is not None:
+        run = store.load_run()
+        if run.state != RunState.DONE and latest_delta != run.target:
+            raise RuntimeError(
+                f"final audit delta is {format_delta(latest_delta)}, expected {run.target}; "
+                "top up or re-run reconcile-audit"
+            )
+    return "\n".join(messages + [render_report(store.load_run())])
 
 
 def record_candidate(
@@ -288,6 +348,59 @@ def import_capture_path(store: Store, path: Path, only_connectable: bool = False
     return f"imported {imported} candidate observations"
 
 
+def capture_source(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    source: str | None,
+    url: str | None,
+    saved_searches: Path | None,
+    pages: int,
+    limit: int,
+    stop_after_connectable: int,
+    only_connectable: bool,
+    row_scroll_delay_ms: int,
+) -> str:
+    run = store.load_run()
+    next_source = run.next_source()
+    capture_source_name = source or (next_source.name if next_source else None)
+    if capture_source_name is None:
+        raise RuntimeError("no source provided and no active run source available")
+    cursor = run.capture_cursors.get(capture_source_name)
+    resolved_url = resolve_capture_url(
+        explicit_url=url,
+        saved_searches=saved_searches,
+        source=capture_source_name,
+        cursor_url=cursor.resume_url if cursor else None,
+    )
+    capture, path = browser.capture_salesnav(
+        source=capture_source_name,
+        url=resolved_url,
+        pages=pages,
+        limit=limit,
+        stop_after_connectable=stop_after_connectable,
+        only_connectable=only_connectable,
+        row_scroll_delay_ms=row_scroll_delay_ms,
+    )
+    run = store.load_run()
+    imported = import_capture(run, capture, only_connectable)
+    drained = drain_stale_connectable_candidates(run)
+    store.save_run(run)
+    store.append_event(
+        run,
+        "capture",
+        {
+            "path": path,
+            "source": capture_source_name,
+            "imported": imported,
+            "only_connectable": only_connectable,
+        },
+    )
+    if drained:
+        store.append_event(run, "drain-stale-candidates", {"events": drained})
+    return f"captured {imported} candidate observations from {capture_source_name}; out={path}"
+
+
 def source_exhausted(store: Store, source: str, note: str | None = None) -> str:
     run = store.load_run()
     for source_plan in run.sources:
@@ -382,6 +495,43 @@ def reservoir_import_capture(store: Store, path: Path, only_connectable: bool = 
     )
 
 
+def reservoir_capture(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    source: str,
+    url: str | None,
+    saved_searches: Path | None,
+    pages: int,
+    limit: int,
+    stop_after_connectable: int,
+    only_connectable: bool,
+    row_scroll_delay_ms: int,
+) -> str:
+    resolved_url = resolve_capture_url(
+        explicit_url=url,
+        saved_searches=saved_searches,
+        source=source,
+        cursor_url=None,
+    )
+    capture, path = browser.capture_salesnav(
+        source=source,
+        url=resolved_url,
+        pages=pages,
+        limit=limit,
+        stop_after_connectable=stop_after_connectable,
+        only_connectable=only_connectable,
+        row_scroll_delay_ms=row_scroll_delay_ms,
+    )
+    reservoir = store.load_reservoir()
+    imported = import_capture_into_reservoir(reservoir, capture, only_connectable)
+    store.save_reservoir(reservoir)
+    return (
+        f"reservoir captured {imported} candidate observations from {source}; "
+        f"total {len(reservoir.observations)}; out={path}"
+    )
+
+
 def reservoir_fill_run(store: Store, *, source: str | None = None, limit: int | None = None) -> str:
     run = store.load_run()
     reservoir = store.load_reservoir()
@@ -414,6 +564,45 @@ def reservoir_clear(store: Store, source: str | None = None) -> str:
     reservoir.updated_at = now_utc()
     store.save_reservoir(reservoir)
     return f"removed {before - len(reservoir.observations)} reservoir candidates"
+
+
+def resolve_capture_url(
+    *,
+    explicit_url: str | None,
+    saved_searches: Path | None,
+    source: str,
+    cursor_url: str | None,
+) -> str | None:
+    if explicit_url:
+        return explicit_url
+    if cursor_url:
+        return cursor_url
+    if saved_searches is None:
+        return None
+    resolved = resolve_saved_search_url(saved_searches, source)
+    if resolved:
+        return resolved
+    raise RuntimeError(
+        f"no URL for source {source}; pass --url or provide a saved-searches artifact"
+    )
+
+
+def resolve_saved_search_url(path: Path, source: str) -> str | None:
+    if not path.exists():
+        return None
+    data: Any = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"saved searches artifact must be a JSON object: {path}")
+    searches = data.get("searches", data.get("savedSearches"))
+    if not isinstance(searches, list):
+        raise ValueError(f"saved searches artifact has no searches array: {path}")
+    for item in searches:
+        if not isinstance(item, dict) or item.get("name") != source:
+            continue
+        view_url = item.get("viewUrl", item.get("view_url"))
+        if isinstance(view_url, str) and view_url.strip():
+            return view_url
+    return None
 
 
 def acceptance_seed(store: Store, *, include_unfinished: bool = False) -> str:
@@ -736,6 +925,7 @@ def load_fixture_browser(
     *,
     send_result: Path | None = None,
     capture: Path | None = None,
+    audit: Path | None = None,
     followup_result: Path | None = None,
     withdraw_result: Path | None = None,
 ) -> BrowserClient:
@@ -744,6 +934,7 @@ def load_fixture_browser(
     return FixtureBrowserClient(
         send_result=send_result,
         capture=capture,
+        audit=audit,
         followup_result=followup_result,
         withdraw_result=withdraw_result,
     )

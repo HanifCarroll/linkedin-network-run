@@ -10,7 +10,16 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from .browser import FixtureBrowserClient, UnavailableBrowserClient
+from .browser import (
+    DEFAULT_AUDIT_OUT_DIR,
+    DEFAULT_CAPTURE_OUT_DIR,
+    DEFAULT_FOLLOWUP_OUT_DIR,
+    DEFAULT_SEND_OUT_DIR,
+    DEFAULT_WITHDRAW_OUT_DIR,
+    BrowserClient,
+    FixtureBrowserClient,
+    PlaywrightBrowserClient,
+)
 from .models import CandidateStatus, DraftStrategy
 from .old_state import inspect_old_state
 from .reports import render_pending_report, render_report
@@ -24,6 +33,7 @@ from .service import (
     acceptance_seed_history,
     acceptance_send_followup,
     acceptance_send_ready_followups,
+    capture_source,
     finish_run,
     import_audit,
     import_capture_path,
@@ -34,10 +44,12 @@ from .service import (
     pending_cleanup_record_withdraw_result,
     pending_cleanup_start,
     pending_cleanup_withdraw_next,
+    reconcile_audit,
     record_audit,
     record_candidate,
     record_send_result_from_path,
     record_top_up_result_from_path,
+    reservoir_capture,
     reservoir_clear,
     reservoir_fill_run,
     reservoir_import_capture,
@@ -49,6 +61,9 @@ from .service import (
     tune_sources,
 )
 from .store import Store
+
+DEFAULT_RESERVOIR_CAPTURE_OUT_DIR = Path("/tmp/linkedin-network-run-reservoir-capture")
+DEFAULT_SAVED_SEARCHES = Path("/tmp/linkedin-network-run-saved-searches.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,6 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_audit_parser = subparsers.add_parser("import-audit")
     import_audit_parser.add_argument("path")
+
+    reconcile = subparsers.add_parser("reconcile-audit")
+    reconcile.add_argument("--session", default="auto")
+    reconcile.add_argument("--attempts", type=int, default=3)
+    reconcile.add_argument("--delay-ms", type=int, default=5000)
+    reconcile.add_argument("--finish", action="store_true")
+    reconcile.add_argument("--out-dir", default=str(DEFAULT_AUDIT_OUT_DIR))
+    reconcile.add_argument("--fixture-result", default=None)
 
     record = subparsers.add_parser("record")
     record.add_argument("--source", required=True)
@@ -95,6 +118,14 @@ def build_parser() -> argparse.ArgumentParser:
         send.add_argument("--allow-send", action="store_true")
         send.add_argument("--no-record", action="store_true")
         send.add_argument("--fixture-result", default=None)
+        send.add_argument(
+            "--out-dir",
+            default=str(
+                DEFAULT_SEND_OUT_DIR
+                if name == "send-next"
+                else Path("/tmp/linkedin-network-run-send-guarded")
+            ),
+        )
         if name == "send-guarded":
             send.add_argument("--single-pass", action="store_true")
             send.add_argument("--max-attempts", type=int, default=30)
@@ -112,6 +143,19 @@ def build_parser() -> argparse.ArgumentParser:
     import_capture = subparsers.add_parser("import-capture")
     import_capture.add_argument("path")
     import_capture.add_argument("--only-connectable", action="store_true")
+
+    capture = subparsers.add_parser("capture")
+    capture.add_argument("--session", default="auto")
+    capture.add_argument("--source", default=None)
+    capture.add_argument("--url", default=None)
+    capture.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
+    capture.add_argument("--pages", type=int, default=5)
+    capture.add_argument("--limit", type=int, default=18)
+    capture.add_argument("--stop-after-connectable", type=int, default=10)
+    capture.add_argument("--row-scroll-delay-ms", type=int, default=250)
+    capture.add_argument("--only-connectable", action="store_true")
+    capture.add_argument("--out-dir", default=str(DEFAULT_CAPTURE_OUT_DIR))
+    capture.add_argument("--fixture-result", default=None)
 
     subparsers.add_parser("next")
     next_candidate = subparsers.add_parser("next-candidate")
@@ -161,18 +205,35 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_send.add_argument("--preview-fill", action="store_true")
     acceptance_send.add_argument("--allow-send", action="store_true")
     acceptance_send.add_argument("--fixture-result", default=None)
+    acceptance_send.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
     acceptance_dry = acceptance_sub.add_parser("dry-run-followups")
     acceptance_dry.add_argument("--session", default="auto")
     acceptance_dry.add_argument("--limit", type=int, default=5)
     acceptance_dry.add_argument("--fixture-result", default=None)
+    acceptance_dry.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
     acceptance_ready = acceptance_sub.add_parser("send-ready-followups")
     acceptance_ready.add_argument("--session", default="auto")
     acceptance_ready.add_argument("--limit", type=int, default=5)
     acceptance_ready.add_argument("--allow-send", action="store_true")
     acceptance_ready.add_argument("--fixture-result", default=None)
+    acceptance_ready.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
 
     reservoir = subparsers.add_parser("reservoir")
     reservoir_sub = reservoir.add_subparsers(dest="reservoir_command", required=True)
+    reservoir_capture_parser = reservoir_sub.add_parser("capture")
+    reservoir_capture_parser.add_argument("--session", default="auto")
+    reservoir_capture_parser.add_argument("--source", required=True)
+    reservoir_capture_parser.add_argument("--url", default=None)
+    reservoir_capture_parser.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
+    reservoir_capture_parser.add_argument("--pages", type=int, default=5)
+    reservoir_capture_parser.add_argument("--limit", type=int, default=18)
+    reservoir_capture_parser.add_argument("--stop-after-connectable", type=int, default=10)
+    reservoir_capture_parser.add_argument("--row-scroll-delay-ms", type=int, default=250)
+    reservoir_capture_parser.add_argument("--only-connectable", action="store_true")
+    reservoir_capture_parser.add_argument(
+        "--out-dir", default=str(DEFAULT_RESERVOIR_CAPTURE_OUT_DIR)
+    )
+    reservoir_capture_parser.add_argument("--fixture-result", default=None)
     reservoir_import = reservoir_sub.add_parser("import-capture")
     reservoir_import.add_argument("path")
     reservoir_import.add_argument("--only-connectable", action="store_true")
@@ -208,6 +269,8 @@ def build_parser() -> argparse.ArgumentParser:
     pending_withdraw.add_argument("--allow-withdraw", action="store_true")
     pending_withdraw.add_argument("--no-record", action="store_true")
     pending_withdraw.add_argument("--fixture-result", default=None)
+    pending_withdraw.add_argument("--out-dir", default=str(DEFAULT_WITHDRAW_OUT_DIR))
+    pending_withdraw.add_argument("--max-load-more", type=int, default=260)
     pending_status = pending_sub.add_parser("status")
     pending_status.add_argument("--json", action="store_true")
     pending_sub.add_parser("report")
@@ -254,6 +317,14 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return record_audit(store, args.people_count, args.note)
     if command == "import-audit":
         return import_audit(store, Path(args.path))
+    if command == "reconcile-audit":
+        return reconcile_audit(
+            store,
+            browser_from_args(args, audit=True),
+            attempts=args.attempts,
+            delay_ms=args.delay_ms,
+            finish=args.finish,
+        )
     if command == "record":
         return record_candidate(
             store,
@@ -293,6 +364,19 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return resume_blocked(store, args.reason)
     if command == "import-capture":
         return import_capture_path(store, Path(args.path), args.only_connectable)
+    if command == "capture":
+        return capture_source(
+            store,
+            browser_from_args(args, capture=True),
+            source=args.source,
+            url=args.url,
+            saved_searches=Path(args.saved_searches) if args.saved_searches else None,
+            pages=args.pages,
+            limit=args.limit,
+            stop_after_connectable=args.stop_after_connectable,
+            only_connectable=args.only_connectable,
+            row_scroll_delay_ms=args.row_scroll_delay_ms,
+        )
     if command == "next":
         return json_model_or_text(store.load_run().next_source())
     if command == "next-candidate":
@@ -391,6 +475,19 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
 
 def dispatch_reservoir(args: argparse.Namespace, store: Store) -> str:
     command = str(args.reservoir_command)
+    if command == "capture":
+        return reservoir_capture(
+            store,
+            browser_from_args(args, capture=True),
+            source=args.source,
+            url=args.url,
+            saved_searches=Path(args.saved_searches) if args.saved_searches else None,
+            pages=args.pages,
+            limit=args.limit,
+            stop_after_connectable=args.stop_after_connectable,
+            only_connectable=args.only_connectable,
+            row_scroll_delay_ms=args.row_scroll_delay_ms,
+        )
     if command == "import-capture":
         return reservoir_import_capture(store, Path(args.path), args.only_connectable)
     if command == "fill-run":
@@ -483,18 +580,25 @@ def browser_from_args(
     args: argparse.Namespace,
     *,
     send: bool = False,
+    capture: bool = False,
+    audit: bool = False,
     followup: bool = False,
     withdraw: bool = False,
-) -> FixtureBrowserClient | UnavailableBrowserClient:
+) -> BrowserClient:
     fixture = getattr(args, "fixture_result", None)
     if fixture:
         path = Path(fixture)
         return FixtureBrowserClient(
             send_result=path if send else None,
+            capture=path if capture else None,
+            audit=path if audit else None,
             followup_result=path if followup else None,
             withdraw_result=path if withdraw else None,
         )
-    return UnavailableBrowserClient()
+    return PlaywrightBrowserClient(
+        out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
+        max_load_more=int(getattr(args, "max_load_more", 260)),
+    )
 
 
 def json_model_or_text(value: BaseModel | object | None, *, as_json: bool = True) -> str:

@@ -132,11 +132,29 @@ def test_compat_help_status_and_no_send_paths(
     network_error = capsys.readouterr().err
     assert "browser is unavailable" in network_error or "connectable candidate" in network_error
 
-    assert linkedin_network_run(["reconcile-audit", "--allow-send"]) == 2
-    assert "blocked" in capsys.readouterr().err
+    assert (
+        linkedin_network_run(
+            [
+                "capture",
+                "--source",
+                "ASAP - Agency Owners Delivery",
+                "--saved-searches",
+                "",
+                "--fixture-result",
+                "tests/fixtures/network_automation/capture.json",
+                "--state-dir",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert "captured 3 candidate observations" in capsys.readouterr().out
 
     assert recruiter_agency_outreach(["dashboard", "--state-dir", str(tmp_path)]) == 0
     assert "dashboard=" in capsys.readouterr().out
+
+    assert recruiter_agency_outreach(["queue", "--json", "--state-dir", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out) == []
 
     assert (
         recruiter_agency_outreach(["run-daily", "--state-dir", str(tmp_path), "--allow-send"])

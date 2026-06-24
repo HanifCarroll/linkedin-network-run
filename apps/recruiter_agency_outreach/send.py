@@ -10,9 +10,9 @@ from typing import Any
 
 from .dashboard import bucket_for_lead, lead_matches_sendable_bucket
 from .drafts import draft_subject
-from .models import Lead, MessageStatus, OutreachState, SendAttempt
+from .models import Lead, MessageStatus, OutreachState, RunEvent, SendAttempt
 from .sourcing import find_lead_by_id
-from .storage import Store
+from .storage import Store, append_run_event
 from .utils import clean_text, now_iso, truncate_evidence
 
 
@@ -83,6 +83,7 @@ def prepare_message_config(
 
 
 def send_message(store: Store, options: SendMessageOptions) -> str:
+    run_id = options.run_id or _default_run_id("message")
     state = store.load()
     lead = find_lead_by_id(state.leads, options.lead_id)
     if lead is None:
@@ -114,8 +115,28 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
             "pass --result-path to apply a structured dry-run/send result"
         )
     result = load_message_send_result(options.result_path)
+    if not result.dry_run and dry_run:
+        raise ValueError("real send result requires --allow-send")
+    if result.status == "sent-clicked" and result.dry_run:
+        raise ValueError("sent-clicked result cannot be dry_run=true")
     out_path = options.result_path
-    apply_message_send_result(lead, result, out_path, options.run_id or "message")
+    apply_message_send_result(lead, result, out_path, run_id)
+    append_run_event(
+        state,
+        RunEvent(
+            at=now_iso(),
+            run_id=run_id,
+            phase="send-message",
+            command="send-message",
+            bucket=bucket,
+            lead_id=lead.id,
+            name=lead.name,
+            result=result.status,
+            note=result_note(result) or "",
+            out_path=out_path,
+            state_path=str(store.state_path),
+        ),
+    )
     store.save(state)
     return (
         f"lead={lead.id} status={result.status} "
@@ -244,3 +265,8 @@ def _optional_list_dict(value: object) -> list[dict[str, Any]] | None:
     if not isinstance(value, list):
         return None
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _default_run_id(prefix: str) -> str:
+    stamp = now_iso().replace(":", "").replace("-", "").replace(".", "")
+    return f"{prefix}-{stamp}"

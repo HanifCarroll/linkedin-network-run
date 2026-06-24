@@ -237,6 +237,16 @@ def test_guarded_send_flow_requires_dry_run_ready_and_updates_dashboard(tmp_path
             ),
         )
 
+    with pytest.raises(ValueError, match="real send result requires --allow-send"):
+        send_message(
+            store,
+            SendMessageOptions(
+                lead_id="lead_fixture",
+                session="auto",
+                result_path=str(FIXTURES / "sent_clicked.json"),
+            ),
+        )
+
     send_message(
         store,
         SendMessageOptions(
@@ -281,3 +291,227 @@ def test_cli_namespace_is_wired(tmp_path: Path) -> None:
     args = parser.parse_args(["--state-dir", str(tmp_path), "dashboard", "--print-markdown"])
     assert args.command == "dashboard"
     assert main(["--state-dir", str(tmp_path), "run-daily", "--session", "auto"]) == 0
+
+
+def test_cli_state_parity_commands_update_and_render(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.DRAFTED))
+    body_file = tmp_path / "revision.txt"
+    body_file.write_text("Revised message body")
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "revise",
+                "--lead-id",
+                "lead_fixture",
+                "--body-file",
+                str(body_file),
+                "--subject",
+                "Updated subject",
+            ]
+        )
+        == 0
+    )
+    revised_draft = store.load().leads[0].draft
+    assert revised_draft is not None
+    assert revised_draft.body == "Revised message body"
+
+    assert main(["--state-dir", str(tmp_path), "lead", "show", "--lead-id", "lead_fixture"]) == 0
+    assert "lead=lead_fixture" in capsys.readouterr().out
+
+    assert main(["--state-dir", str(tmp_path), "queue", "--lead-id", "lead_fixture"]) == 0
+    assert "lead_fixture" in capsys.readouterr().out
+
+    assert main(["--state-dir", str(tmp_path), "accounts"]) == 0
+    assert "Bright Product Studio" in capsys.readouterr().out
+
+    assert main(["--state-dir", str(tmp_path), "report"]) == 0
+    assert "by message status:" in capsys.readouterr().out
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "mark-message",
+                "--lead-id",
+                "lead_fixture",
+                "--status",
+                "needs_edit",
+                "--note",
+                "manual review",
+            ]
+        )
+        == 0
+    )
+    marked = store.load().leads[0]
+    assert marked.message_status == MessageStatus.NEEDS_EDIT
+    assert "manual review" in marked.notes
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "reject",
+                "--lead-id",
+                "lead_fixture",
+                "--reason",
+                "not a fit",
+            ]
+        )
+        == 0
+    )
+    rejected = store.load().leads[0]
+    assert rejected.status == LeadStatus.REJECTED
+    assert "not a fit" in rejected.reject_reasons
+
+
+def test_send_ready_applies_structured_results_and_records_last_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.DRY_RUN_READY))
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    (result_dir / "lead_fixture.json").write_text((FIXTURES / "sent_clicked.json").read_text())
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "send-ready",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "1",
+                "--target-recruiters",
+                "0",
+                "--allow-send",
+                "--result-dir",
+                str(result_dir),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "sent=1 agencies,0 recruiters" in output
+    sent = store.load()
+    assert sent.leads[0].message_status == MessageStatus.SENT
+    assert [event.phase for event in sent.run_events] == [
+        "run-start",
+        "send-message",
+        "run-finish",
+    ]
+
+    assert main(["--state-dir", str(tmp_path), "last-run"]) == 0
+    assert "status=completed" in capsys.readouterr().out
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "recommend-next-run",
+                "--target-recruiters",
+                "0",
+                "--allow-send",
+            ]
+        )
+        == 0
+    )
+    assert "no retry is needed" in capsys.readouterr().out
+
+
+def test_send_ready_requires_real_send_result_artifacts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.DRY_RUN_READY))
+    result_dir = tmp_path / "results"
+    result_dir.mkdir()
+    (result_dir / "lead_fixture.json").write_text(
+        (FIXTURES / "dry_run_messageable.json").read_text()
+    )
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "send-ready",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "1",
+                "--target-recruiters",
+                "0",
+                "--allow-send",
+                "--result-dir",
+                str(result_dir),
+            ]
+        )
+        == 1
+    )
+    assert "dry_run=true" in capsys.readouterr().err
+    assert store.load().run_events[-1].result == "failed"
+
+
+def test_live_capture_commands_report_browser_gap(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "capture",
+                "--session",
+                "auto",
+                "--source",
+                "ASAP - Contract Recruiter Titles",
+            ]
+        )
+        == 1
+    )
+    assert "live Sales Navigator capture is not wired" in capsys.readouterr().err
+
+
+def _sendable_state(*, message_status: MessageStatus) -> OutreachState:
+    return OutreachState(
+        agency_accounts=[
+            AgencyAccount(
+                id="acct_bright",
+                source="manual",
+                name="Bright Product Studio",
+                status=AgencyAccountStatus.QUALIFIED,
+                fit_score=95,
+            )
+        ],
+        leads=[
+            Lead(
+                id="lead_fixture",
+                source="Agency website contact - Bright Product Studio",
+                name="Dana Delivery",
+                first_name="Dana",
+                lead_type=LeadType.AGENCY_DELIVERY,
+                status=LeadStatus.ELIGIBLE,
+                message_status=message_status,
+                fit_score=95,
+                profile_url="https://www.linkedin.com/sales/lead/dana",
+                agency_account_id="acct_bright",
+                agency_account_name="Bright Product Studio",
+                draft=MessageDraft(subject="Subject", body="Body", angle="agency"),
+            )
+        ],
+    )
