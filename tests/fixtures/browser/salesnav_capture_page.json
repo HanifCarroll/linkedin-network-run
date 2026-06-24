@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-06-24T12:00:00Z",
+  "url": "https://www.linkedin.com/sales/search/people?page=1",
+  "resumeUrl": "https://www.linkedin.com/sales/search/people?page=1",
+  "source": "Network - test",
+  "menuInspection": "api-state-only",
+  "rawRowCount": 2,
+  "outputRowCount": 1,
+  "rows": [
+    {
+      "index": 0,
+      "globalIndex": 0,
+      "pageNumber": 1,
+      "name": "Ada Lovelace",
+      "profileUrl": "https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
+      "scrollUrn": "urn:li:fs_salesProfile:(abc,NAME_SEARCH,token)",
+      "menuState": "connectable",
+      "visibleState": {
+        "saved": false,
+        "viewed": true,
+        "hasMessage": true,
+        "hasSave": false
+      },
+      "menuLabels": [
+        {
+          "index": 0,
+          "text": "Connect",
+          "aria": null,
+          "tag": "API",
+          "disabled": false
+        }
+      ]
+    }
+  ]
+}
