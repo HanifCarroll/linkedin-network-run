@@ -47,6 +47,9 @@ No user-facing CLI commands were added in this thread. The implemented public pa
 - Default Chrome profile name is `LinkedIn`.
 - Profile path can be changed with `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR`.
 - Profile name can be changed with `LINKEDIN_TOOLS_CHROME_PROFILE_NAME`.
+- Browser channel can be changed with `LINKEDIN_TOOLS_BROWSER_CHANNEL`; use
+  `bundled` for Playwright's Chromium instead of installed Google Chrome.
+- Headless mode can be changed with `LINKEDIN_TOOLS_BROWSER_HEADLESS`.
 - Browser sessions should reuse an existing LinkedIn/Sales Navigator page when possible to avoid tab growth.
 - Closing extra pages is explicit, not automatic, so app threads do not unexpectedly close unrelated browser state.
 

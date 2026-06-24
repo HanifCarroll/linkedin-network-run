@@ -106,8 +106,21 @@ Configurable safety limits:
 The extractor uses the Chrome profile named `LinkedIn` by default. It does not
 attach to the Playwriter CDP endpoint unless `--cdp-url` is passed explicitly.
 Override the profile through `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` and
-`LINKEDIN_TOOLS_CHROME_PROFILE_NAME` if needed. It remains recommend-only and
-does not send messages, connect, withdraw, or click guarded LinkedIn actions.
+`LINKEDIN_TOOLS_CHROME_PROFILE_NAME` if needed. For an isolated automation root
+that does not attach to normal Chrome, use:
+
+```sh
+export LINKEDIN_TOOLS_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/linkedin-tools/chrome-automation"
+export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
+export LINKEDIN_TOOLS_BROWSER_CHANNEL=bundled
+export LINKEDIN_TOOLS_BROWSER_HEADLESS=false
+```
+
+The isolated root needs its own LinkedIn login once. Chrome's newer remote
+debugging protections use a different encryption key for non-default data dirs,
+so copying a profile folder does not reliably copy the logged-in session. It
+remains recommend-only and does not send messages, connect, withdraw, or click
+guarded LinkedIn actions.
 
 For saved HTML fixtures or manual captures:
 

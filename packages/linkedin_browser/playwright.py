@@ -59,6 +59,12 @@ async def launch_linkedin_chrome(
 ) -> BrowserContext:
     selected = config or chrome_profile_from_env()
     try:
+        if selected.channel is None:
+            return await playwright.chromium.launch_persistent_context(
+                user_data_dir=str(selected.user_data_dir),
+                headless=selected.headless,
+                args=selected.launch_args(),
+            )
         return await playwright.chromium.launch_persistent_context(
             user_data_dir=str(selected.user_data_dir),
             channel=selected.channel,

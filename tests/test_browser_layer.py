@@ -123,6 +123,21 @@ def test_profile_config_can_be_overridden() -> None:
     )
 
 
+def test_profile_config_can_use_bundled_chromium() -> None:
+    config = chrome_profile_from_env(
+        {
+            "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR": "/tmp/chrome-automation",
+            "LINKEDIN_TOOLS_BROWSER_CHANNEL": "bundled",
+            "LINKEDIN_TOOLS_BROWSER_HEADLESS": "true",
+        }
+    )
+
+    assert config.user_data_dir == Path("/tmp/chrome-automation")
+    assert config.profile_name == "LinkedIn"
+    assert config.channel is None
+    assert config.headless is True
+
+
 @pytest.mark.asyncio
 async def test_launch_linkedin_chrome_explains_locked_profile() -> None:
     with pytest.raises(RuntimeError, match="Chrome profile is already open"):
