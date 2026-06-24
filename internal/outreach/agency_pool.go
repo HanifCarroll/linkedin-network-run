@@ -26,6 +26,17 @@ type AgencyPoolDiagnosis struct {
 	Accounts                      []AgencyPoolAccountDiagnosis         `json:"accounts"`
 }
 
+type AgencyPoolNextAction struct {
+	GeneratedAt time.Time               `json:"generated_at"`
+	StatePath   string                  `json:"state_path"`
+	Action      string                  `json:"action"`
+	Reason      string                  `json:"reason"`
+	Command     string                  `json:"command,omitempty"`
+	Lead        *Lead                   `json:"lead,omitempty"`
+	Candidate   *AgencyContactCandidate `json:"candidate,omitempty"`
+	Account     *AgencyAccount          `json:"account,omitempty"`
+}
+
 type AgencyPoolAccountDiagnosis struct {
 	ID                   string              `json:"id"`
 	Name                 string              `json:"name"`
@@ -60,6 +71,7 @@ func agencyPoolCommand(withStore func(func(*Store) error) func(*cobra.Command, [
 	cmd.AddCommand(agencyPoolReviewContactCommand(withStore))
 	cmd.AddCommand(agencyPoolPromoteContactCommand(withStore))
 	cmd.AddCommand(agencyPoolPromoteContactsCommand(withStore))
+	cmd.AddCommand(agencyPoolNextCommand(withStore))
 	cmd.AddCommand(agencyPoolDiagnoseCommand(withStore))
 	return cmd
 }
@@ -360,6 +372,34 @@ func agencyPoolPromoteContactsCommand(withStore func(func(*Store) error) func(*c
 	return cmd
 }
 
+func agencyPoolNextCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "next",
+		Short: "Show the next agency-pool action and exact command",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			next := BuildAgencyPoolNextAction(state, store.StatePath())
+			if asJSON {
+				raw, err := json.MarshalIndent(next, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderAgencyPoolNextActionText(next))
+			return nil
+		}),
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	return cmd
+}
+
 func agencyPoolDiagnoseCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var limit int
 	var asJSON bool
@@ -388,6 +428,147 @@ func agencyPoolDiagnoseCommand(withStore func(func(*Store) error) func(*cobra.Co
 	cmd.Flags().IntVar(&limit, "limit", 20, "max account rows")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	return cmd
+}
+
+func BuildAgencyPoolNextAction(state OutreachState, statePath string) AgencyPoolNextAction {
+	state.Normalize()
+	now := time.Now()
+	if leads := readyLeads(state, "agency"); len(leads) > 0 {
+		lead := leads[0]
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "send_ready_agency_lead",
+			Reason:      "Agency lead is already validated as messageable.",
+			Command:     fmt.Sprintf("/Users/hanifcarroll/.local/bin/recruiter-agency-outreach send-message --lead-id %s --session auto --allow-send --timeout-ms 60000", lead.ID),
+			Lead:        &lead,
+		}
+	}
+	if leads := leadsForMessageValidation(state, "agency"); len(leads) > 0 {
+		lead := leads[0]
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "validate_drafted_agency_lead",
+			Reason:      "Agency lead has a draft and needs a dry-run messageability check before any real send.",
+			Command:     fmt.Sprintf("/Users/hanifcarroll/.local/bin/recruiter-agency-outreach send-message --lead-id %s --session auto --timeout-ms 60000", lead.ID),
+			Lead:        &lead,
+		}
+	}
+	if candidates := agencyContactCandidatesReadyForPromotion(state); len(candidates) > 0 {
+		candidate := candidates[0]
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "promote_approved_agency_contact",
+			Reason:      "Reviewed agency website contact can be promoted into a drafted lead.",
+			Command:     fmt.Sprintf("/Users/hanifcarroll/.local/bin/recruiter-agency-outreach agency-pool promote-contact --candidate-id %s --draft", candidate.ID),
+			Candidate:   &candidate,
+		}
+	}
+	if candidates := agencyContactCandidatesNeedingReview(state); len(candidates) > 0 {
+		candidate := candidates[0]
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "review_agency_website_contacts",
+			Reason:      "Agency website contacts need human review before promotion.",
+			Command:     "/Users/hanifcarroll/.local/bin/recruiter-agency-outreach agency-pool contacts --status website_contact_candidate --review-status needs_review --limit 20",
+			Candidate:   &candidate,
+		}
+	}
+	diagnosis := BuildAgencyPoolDiagnosis(state, statePath, 20)
+	if diagnosis.WebsiteCandidates > 0 {
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "enrich_agency_websites",
+			Reason:      fmt.Sprintf("%d agency account(s) have websites that can be checked for explicit contacts.", diagnosis.WebsiteCandidates),
+			Command:     "/Users/hanifcarroll/.local/bin/recruiter-agency-outreach agency-pool enrich-websites --limit 25",
+		}
+	}
+	recommendation := RecommendNextRun(state, statePath, 5, 5, true)
+	if recommendation.ShouldRetry {
+		return AgencyPoolNextAction{
+			GeneratedAt: now,
+			StatePath:   statePath,
+			Action:      "run_agency_sourcing",
+			Reason:      recommendation.Reason,
+			Command:     recommendation.Command,
+		}
+	}
+	return AgencyPoolNextAction{
+		GeneratedAt: now,
+		StatePath:   statePath,
+		Action:      "no_action",
+		Reason:      "No agency ready lead, drafted lead, reviewable contact, enrichable website, or retry recommendation is available.",
+	}
+}
+
+func RenderAgencyPoolNextActionText(next AgencyPoolNextAction) string {
+	lines := []string{
+		"action=" + next.Action,
+		"reason=" + cleanText(next.Reason),
+		"state=" + cleanText(next.StatePath),
+	}
+	if next.Command != "" {
+		lines = append(lines, "command="+next.Command)
+	}
+	if next.Lead != nil {
+		lines = append(lines,
+			"lead="+next.Lead.ID,
+			"lead_name="+cleanText(next.Lead.Name),
+			"lead_status="+string(next.Lead.Status),
+			"message_status="+string(next.Lead.MessageStatus),
+		)
+		if next.Lead.AgencyAccountName != nil {
+			lines = append(lines, "agency="+cleanText(*next.Lead.AgencyAccountName))
+		}
+	}
+	if next.Candidate != nil {
+		lines = append(lines,
+			"candidate="+next.Candidate.ID,
+			"candidate_status="+string(next.Candidate.Status),
+			"candidate_review_status="+string(next.Candidate.ReviewStatus),
+			"agency="+cleanText(next.Candidate.AgencyAccountName),
+		)
+		if next.Candidate.ProfileURL != nil {
+			lines = append(lines, "profile_url="+cleanText(*next.Candidate.ProfileURL))
+		}
+		if next.Candidate.SourceURL != nil {
+			lines = append(lines, "source_url="+cleanText(*next.Candidate.SourceURL))
+		}
+	}
+	if next.Account != nil {
+		lines = append(lines,
+			"account="+next.Account.ID,
+			"account_name="+cleanText(next.Account.Name),
+			"account_status="+string(next.Account.Status),
+		)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func agencyContactCandidatesReadyForPromotion(state OutreachState) []AgencyContactCandidate {
+	candidates := []AgencyContactCandidate{}
+	for _, candidate := range state.AgencyContactCandidates {
+		if candidate.Status == AgencyContactCandidateStatusWebsiteContactCandidate && candidate.ReviewStatus == AgencyContactReviewStatusApproved {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sortAgencyContactCandidates(candidates)
+	return candidates
+}
+
+func agencyContactCandidatesNeedingReview(state OutreachState) []AgencyContactCandidate {
+	candidates := []AgencyContactCandidate{}
+	for _, candidate := range state.AgencyContactCandidates {
+		if candidate.Status == AgencyContactCandidateStatusWebsiteContactCandidate && candidate.ReviewStatus == AgencyContactReviewStatusNeedsReview {
+			candidates = append(candidates, candidate)
+		}
+	}
+	sortAgencyContactCandidates(candidates)
+	return candidates
 }
 
 func BuildAgencyPoolDiagnosis(state OutreachState, statePath string, limit int) AgencyPoolDiagnosis {

@@ -53,6 +53,7 @@ func Execute(ctx context.Context, args []string) error {
 	root.AddCommand(importAccountsCommand(withStore))
 	root.AddCommand(accountsCommand(withStore))
 	root.AddCommand(agencyPoolCommand(withStore))
+	root.AddCommand(leadCommand(withStore))
 	root.AddCommand(queueCommand(withStore))
 	root.AddCommand(draftCommand(withStore))
 	root.AddCommand(dashboardCommand(withStore))
@@ -290,8 +291,52 @@ func runDailyCommand(withStore func(func(*Store) error) func(*cobra.Command, []s
 	return cmd
 }
 
+func leadCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "lead",
+		Short: "Inspect outreach leads",
+	}
+	cmd.AddCommand(leadShowCommand(withStore))
+	return cmd
+}
+
+func leadShowCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
+	var leadID string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show a lead, draft, source candidate, attempts, and status",
+		Args:  cobra.NoArgs,
+		RunE: withStore(func(store *Store) error {
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			detail, ok := BuildLeadDetail(state, store.StatePath(), leadID)
+			if !ok {
+				return fmt.Errorf("unknown lead id %q", leadID)
+			}
+			if asJSON {
+				raw, err := json.MarshalIndent(detail, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(raw))
+				return nil
+			}
+			fmt.Println(RenderLeadDetailText(detail))
+			return nil
+		}),
+	}
+	cmd.Flags().StringVar(&leadID, "lead-id", "", "lead id")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	must(cmd.MarkFlagRequired("lead-id"))
+	return cmd
+}
+
 func queueCommand(withStore func(func(*Store) error) func(*cobra.Command, []string) error) *cobra.Command {
 	var limit int
+	var leadID string
 	var statuses []string
 	var asJSON, includeDrafts bool
 	cmd := &cobra.Command{
@@ -301,11 +346,20 @@ func queueCommand(withStore func(func(*Store) error) func(*cobra.Command, []stri
 			if err != nil {
 				return err
 			}
-			parsed, err := parseStatuses(statuses)
-			if err != nil {
-				return err
+			items := []QueueItem{}
+			if cleanText(leadID) != "" {
+				item, ok := QueueItemByLeadID(state, leadID, includeDrafts)
+				if !ok {
+					return fmt.Errorf("unknown lead id %q", leadID)
+				}
+				items = append(items, item)
+			} else {
+				parsed, err := parseStatuses(statuses)
+				if err != nil {
+					return err
+				}
+				items = Queue(state, parsed, limit, includeDrafts)
 			}
-			items := Queue(state, parsed, limit, includeDrafts)
 			if asJSON {
 				raw, err := json.MarshalIndent(items, "", "  ")
 				if err != nil {
@@ -319,6 +373,7 @@ func queueCommand(withStore func(func(*Store) error) func(*cobra.Command, []stri
 		}),
 	}
 	cmd.Flags().IntVar(&limit, "limit", 20, "max rows")
+	cmd.Flags().StringVar(&leadID, "lead-id", "", "show one lead by id, ignoring status and limit filters")
 	cmd.Flags().StringSliceVar(&statuses, "status", []string{string(LeadStatusEligible)}, "lead status filter")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&includeDrafts, "include-drafts", false, "include draft text")

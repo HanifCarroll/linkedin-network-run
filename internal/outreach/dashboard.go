@@ -417,10 +417,18 @@ func dashboardLimitingReason(state OutreachState, targetAgencies int, targetRecr
 		return ""
 	}
 	if targetAgencies > 0 && readyCount(state, "agency") < targetAgencies {
-		return fmt.Sprintf("Agency validation target is short by %d ready contacts.", targetAgencies-readyCount(state, "agency"))
+		return fmt.Sprintf("Agency ready-to-send pool is short by %d for this render target. Current agency queue: %d drafted/needs validation, %d ready. The remaining send goal is shown under Recommended Next Run.",
+			targetAgencies-readyCount(state, "agency"),
+			dashboardBucketCount(state, "agency", MessageStatusDrafted),
+			readyCount(state, "agency"),
+		)
 	}
 	if targetRecruiters > 0 && readyCount(state, "recruiter") < targetRecruiters {
-		return fmt.Sprintf("Recruiter validation target is short by %d ready contacts.", targetRecruiters-readyCount(state, "recruiter"))
+		return fmt.Sprintf("Recruiter ready-to-send pool is short by %d for this render target. Current recruiter queue: %d drafted/needs validation, %d ready. The remaining send goal is shown under Recommended Next Run.",
+			targetRecruiters-readyCount(state, "recruiter"),
+			dashboardBucketCount(state, "recruiter", MessageStatusDrafted),
+			readyCount(state, "recruiter"),
+		)
 	}
 	return ""
 }

@@ -276,29 +276,7 @@ func Queue(state OutreachState, statuses []LeadStatus, limit int, includeDraft b
 		if len(statusSet) > 0 && !statusSet[lead.Status] {
 			continue
 		}
-		draft := (*string)(nil)
-		if includeDraft && lead.Draft != nil {
-			draft = &lead.Draft.Body
-		}
-		items = append(items, QueueItem{
-			ID:                    lead.ID,
-			Name:                  lead.Name,
-			ProfileURL:            lead.ProfileURL,
-			Title:                 lead.Title,
-			Company:               lead.Company,
-			AgencyAccountName:     lead.AgencyAccountName,
-			AgencyAccountURL:      lead.AgencyAccountURL,
-			AgencyAccountReasons:  lead.AgencyAccountReasons,
-			AgencyAccountEvidence: lead.AgencyAccountEvidence,
-			Source:                lead.Source,
-			LeadType:              lead.LeadType,
-			Status:                lead.Status,
-			MessageStatus:         lead.MessageStatus,
-			FitScore:              lead.FitScore,
-			FitReasons:            lead.FitReasons,
-			EvidenceText:          lead.EvidenceText,
-			Draft:                 draft,
-		})
+		items = append(items, queueItemFromLead(lead, includeDraft))
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].FitScore == items[j].FitScore {
@@ -310,6 +288,46 @@ func Queue(state OutreachState, statuses []LeadStatus, limit int, includeDraft b
 		return items[:limit]
 	}
 	return items
+}
+
+func QueueItemByLeadID(state OutreachState, leadID string, includeDraft bool) (QueueItem, bool) {
+	state.Normalize()
+	cleanedID := cleanText(leadID)
+	if cleanedID == "" {
+		return QueueItem{}, false
+	}
+	for _, lead := range state.Leads {
+		if lead.ID == cleanedID {
+			return queueItemFromLead(lead, includeDraft), true
+		}
+	}
+	return QueueItem{}, false
+}
+
+func queueItemFromLead(lead Lead, includeDraft bool) QueueItem {
+	draft := (*string)(nil)
+	if includeDraft && lead.Draft != nil {
+		draft = &lead.Draft.Body
+	}
+	return QueueItem{
+		ID:                    lead.ID,
+		Name:                  lead.Name,
+		ProfileURL:            lead.ProfileURL,
+		Title:                 lead.Title,
+		Company:               lead.Company,
+		AgencyAccountName:     lead.AgencyAccountName,
+		AgencyAccountURL:      lead.AgencyAccountURL,
+		AgencyAccountReasons:  lead.AgencyAccountReasons,
+		AgencyAccountEvidence: lead.AgencyAccountEvidence,
+		Source:                lead.Source,
+		LeadType:              lead.LeadType,
+		Status:                lead.Status,
+		MessageStatus:         lead.MessageStatus,
+		FitScore:              lead.FitScore,
+		FitReasons:            lead.FitReasons,
+		EvidenceText:          lead.EvidenceText,
+		Draft:                 draft,
+	}
 }
 
 func Counts(state OutreachState) StatusCounts {

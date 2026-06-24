@@ -95,7 +95,7 @@ func PromoteAgencyContactCandidates(state *OutreachState, options AgencyContactP
 	}
 	summary := AgencyContactPromotionSummary{Skipped: []AgencyContactPromotionSkip{}, Leads: []Lead{}}
 	maxPerAgency := promotionMaxPerAgency(options)
-	activeByAgency := activeAgencyLeadCounts(*state)
+	activeByAgency := activeAgencyLeadsByAccount(*state)
 	for _, candidateIndex := range selected {
 		candidate := state.AgencyContactCandidates[candidateIndex]
 		lead, ok, reason := leadFromAgencyContactCandidate(*state, candidate, now)
@@ -109,10 +109,11 @@ func PromoteAgencyContactCandidates(state *OutreachState, options AgencyContactP
 		}
 		leadIndex := findLeadIndex(state.Leads, lead)
 		existingLeadWasActive := leadIndex >= 0 && activeAgencyPromotionLead(state.Leads[leadIndex])
-		if maxPerAgency > 0 && accountID != "" && activeByAgency[accountID] >= maxPerAgency && !existingLeadWasActive {
+		activeLeads := activeByAgency[accountID]
+		if maxPerAgency > 0 && accountID != "" && len(activeLeads) >= maxPerAgency && !existingLeadWasActive {
 			summary.Skipped = append(summary.Skipped, AgencyContactPromotionSkip{
 				CandidateID: candidate.ID,
-				Reason:      fmt.Sprintf("agency already has %d active outreach lead(s); max per agency is %d", activeByAgency[accountID], maxPerAgency),
+				Reason:      fmt.Sprintf("agency already has %d active outreach lead(s); max per agency is %d; active lead(s): %s", len(activeLeads), maxPerAgency, renderActiveAgencyLeadRefs(activeLeads)),
 			})
 			continue
 		}
@@ -140,7 +141,7 @@ func PromoteAgencyContactCandidates(state *OutreachState, options AgencyContactP
 		state.AgencyContactCandidates[candidateIndex] = candidate
 		summary.Leads = append(summary.Leads, state.Leads[leadIndex])
 		if !existingLeadWasActive && activeAgencyPromotionLead(state.Leads[leadIndex]) && accountID != "" {
-			activeByAgency[accountID]++
+			activeByAgency[accountID] = append(activeByAgency[accountID], state.Leads[leadIndex])
 		}
 	}
 	sortLeads(state.Leads)
@@ -158,9 +159,9 @@ func promotionMaxPerAgency(options AgencyContactPromotionOptions) int {
 	return options.MaxPerAgency
 }
 
-func activeAgencyLeadCounts(state OutreachState) map[string]int {
+func activeAgencyLeadsByAccount(state OutreachState) map[string][]Lead {
 	state.Normalize()
-	counts := map[string]int{}
+	byAccount := map[string][]Lead{}
 	for _, lead := range state.Leads {
 		if !activeAgencyPromotionLead(lead) || lead.AgencyAccountID == nil {
 			continue
@@ -169,9 +170,12 @@ func activeAgencyLeadCounts(state OutreachState) map[string]int {
 		if accountID == "" {
 			continue
 		}
-		counts[accountID]++
+		byAccount[accountID] = append(byAccount[accountID], lead)
 	}
-	return counts
+	for accountID := range byAccount {
+		sortLeads(byAccount[accountID])
+	}
+	return byAccount
 }
 
 func activeAgencyPromotionLead(lead Lead) bool {
@@ -184,6 +188,17 @@ func activeAgencyPromotionLead(lead Lead) bool {
 	default:
 		return true
 	}
+}
+
+func renderActiveAgencyLeadRefs(leads []Lead) string {
+	parts := []string{}
+	for _, lead := range leads {
+		parts = append(parts, fmt.Sprintf("%s (%s, %s)", cleanText(lead.Name), lead.ID, lead.MessageStatus))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func selectedAgencyContactCandidateIndexes(candidates []AgencyContactCandidate, ids []string, limit int) ([]int, error) {

@@ -161,12 +161,27 @@ Diagnose the agency account pool before another agency-only rerun:
 
 ```sh
 recruiter-agency-outreach agency-pool diagnose --limit 20
+recruiter-agency-outreach agency-pool next
 ```
 
-This is read-only. It shows the state path, account statuses, contactability
-funnel, drill-down counts, retryable browser errors, and the next useful account
-actions such as `continue_linkedin_contact_search`, `validate_or_send_open_lead`,
-or `website_enrichment`.
+These are read-only. `diagnose` shows the state path, account statuses,
+contactability funnel, drill-down counts, retryable browser errors, and the next
+useful account actions such as `continue_linkedin_contact_search`,
+`validate_or_send_open_lead`, or `website_enrichment`. `next` gives the next
+single operator action and command, such as validating a drafted agency lead,
+promoting an approved website contact, reviewing website contacts, enriching
+websites, or rerunning agency sourcing.
+
+Inspect one lead or queue item directly:
+
+```sh
+recruiter-agency-outreach lead show --lead-id <id>
+recruiter-agency-outreach queue --lead-id <id> --include-drafts
+```
+
+`lead show` includes lead status, draft body, source agency contact candidate,
+agency account context, send attempts, and notes. `queue --lead-id` ignores the
+normal queue limit and status filters so a known lead can always be reviewed.
 
 Website checks are a second-stage agency source. Use them after LinkedIn
 account/contact searches fail to find a messageable person, and only from public

@@ -778,6 +778,8 @@ func TestDashboardRenderModeCallsOutNoRunAndLatestRun(t *testing.T) {
 		"## Latest Run",
 		"Run ID: `daily-1`",
 		"Sent: `0` agencies, `1` recruiters",
+		"Agency ready-to-send pool is short by 5 for this render target.",
+		"The remaining send goal is shown under Recommended Next Run.",
 	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, markdown)
@@ -823,6 +825,67 @@ func TestLatestRunSummaryFallsBackToLegacyRunEvents(t *testing.T) {
 	}
 	if !strings.HasPrefix(summary.RunID, "legacy-") || summary.Counts.Sent.Recruiters != 1 || summary.Counts.Sent.Agencies != 1 {
 		t.Fatalf("summary = %#v", summary)
+	}
+}
+
+func TestQueueItemByLeadIDIncludesDraftOutsideQueueLimit(t *testing.T) {
+	state := OutreachState{Leads: []Lead{
+		{ID: "high", Name: "High", LeadType: LeadTypeContractRecruiter, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 99},
+		{ID: "target", Name: "Target", LeadType: LeadTypeAgencyDelivery, Status: LeadStatusEligible, MessageStatus: MessageStatusDrafted, FitScore: 10, Draft: &MessageDraft{Body: "draft body"}},
+	}}
+	items := Queue(state, []LeadStatus{LeadStatusEligible}, 1, true)
+	if len(items) != 1 || items[0].ID != "high" {
+		t.Fatalf("limited queue = %#v", items)
+	}
+	item, ok := QueueItemByLeadID(state, "target", true)
+	if !ok || item.ID != "target" || item.Draft == nil || *item.Draft != "draft body" {
+		t.Fatalf("direct queue item = %#v ok=%t", item, ok)
+	}
+}
+
+func TestBuildLeadDetailIncludesDraftCandidateAndAttempts(t *testing.T) {
+	now := time.Date(2026, time.June, 23, 20, 0, 0, 0, time.UTC)
+	state := OutreachState{
+		Leads: []Lead{{
+			ID:              "lead_lorenzo",
+			Name:            "Lorenzo Fernandez",
+			LeadType:        LeadTypeAgencyDelivery,
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusDrafted,
+			FitScore:        88,
+			ProfileURL:      strPtr("https://www.linkedin.com/in/lorenzo-fernandez-297017b/"),
+			Title:           strPtr("Sales Engineering"),
+			Company:         strPtr("Oktana"),
+			AgencyAccountID: strPtr("acct_oktana"),
+			Draft:           &MessageDraft{Subject: "Subject", Body: "Hi Lorenzo", Angle: "agency", GeneratedAt: now},
+			SendAttempts:    []SendAttempt{{At: now, RunID: "run-1", DryRun: true, Status: "dry-run-messageable", OutPath: "/tmp/result.json"}},
+		}},
+		AgencyAccounts: []AgencyAccount{{
+			ID:         "acct_oktana",
+			Name:       "Oktana",
+			Status:     AgencyAccountStatusQualified,
+			AccountURL: strPtr("https://www.linkedin.com/sales/company/3880229"),
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{{
+			ID:                "agc_lorenzo",
+			AgencyAccountID:   "acct_oktana",
+			AgencyAccountName: "Oktana",
+			Source:            "website_enrichment",
+			SourceURL:         strPtr("https://oktana.com/about"),
+			Status:            AgencyContactCandidateStatusConverted,
+			ReviewStatus:      AgencyContactReviewStatusConverted,
+			PromotedLeadID:    strPtr("lead_lorenzo"),
+		}},
+	}
+	detail, ok := BuildLeadDetail(state, "/tmp/outreach.sqlite", "lead_lorenzo")
+	if !ok || detail.AgencyAccount == nil || detail.AgencyContactCandidate == nil || detail.Lead.Draft == nil || len(detail.Lead.SendAttempts) != 1 {
+		t.Fatalf("detail = %#v ok=%t", detail, ok)
+	}
+	text := RenderLeadDetailText(detail)
+	for _, want := range []string{"lead=lead_lorenzo", "agency_contact_candidate=agc_lorenzo", "candidate_source=website_enrichment", "body:\nHi Lorenzo", "send_attempts:"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("detail text missing %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -994,6 +1057,46 @@ func TestBuildAgencyPoolDiagnosisIdentifiesWebsiteEnrichmentCandidates(t *testin
 	text := RenderAgencyPoolDiagnosisText(diagnosis)
 	if !strings.Contains(text, "website_candidates=all 2; qualified 1; exhausted 1") || !strings.Contains(text, "acct_website") {
 		t.Fatalf("diagnosis text = %s", text)
+	}
+}
+
+func TestBuildAgencyPoolNextActionPrioritizesDraftValidation(t *testing.T) {
+	state := OutreachState{
+		AgencyAccounts: []AgencyAccount{{
+			ID:     "acct_oktana",
+			Name:   "Oktana",
+			Status: AgencyAccountStatusQualified,
+		}},
+		Leads: []Lead{{
+			ID:              "lead_lorenzo",
+			Name:            "Lorenzo Fernandez",
+			Status:          LeadStatusEligible,
+			MessageStatus:   MessageStatusDrafted,
+			LeadType:        LeadTypeAgencyDelivery,
+			FitScore:        88,
+			ProfileURL:      strPtr("https://www.linkedin.com/in/lorenzo-fernandez-297017b/"),
+			Draft:           &MessageDraft{Body: "body"},
+			AgencyAccountID: strPtr("acct_oktana"),
+		}},
+		AgencyContactCandidates: []AgencyContactCandidate{{
+			ID:                "agc_needs_review",
+			AgencyAccountID:   "acct_oktana",
+			AgencyAccountName: "Oktana",
+			Status:            AgencyContactCandidateStatusWebsiteContactCandidate,
+			ReviewStatus:      AgencyContactReviewStatusNeedsReview,
+			ProfileURL:        strPtr("https://www.linkedin.com/in/other/"),
+		}},
+	}
+	next := BuildAgencyPoolNextAction(state, "/tmp/outreach.sqlite")
+	if next.Action != "validate_drafted_agency_lead" || next.Lead == nil || next.Lead.ID != "lead_lorenzo" {
+		t.Fatalf("next = %#v", next)
+	}
+	if !strings.Contains(next.Command, "send-message --lead-id lead_lorenzo --session auto") || strings.Contains(next.Command, "--allow-send") {
+		t.Fatalf("command = %q", next.Command)
+	}
+	text := RenderAgencyPoolNextActionText(next)
+	if !strings.Contains(text, "action=validate_drafted_agency_lead") || !strings.Contains(text, "lead=lead_lorenzo") {
+		t.Fatalf("text = %s", text)
 	}
 }
 
@@ -1252,7 +1355,7 @@ func TestPromoteAgencyContactCandidatesLimitsActiveLeadsPerAgency(t *testing.T) 
 	if summary.Stored != 1 || summary.Drafted != 1 || len(summary.Leads) != 1 || len(summary.Skipped) != 1 {
 		t.Fatalf("summary = %#v", summary)
 	}
-	if !strings.Contains(summary.Skipped[0].Reason, "max per agency is 1") {
+	if !strings.Contains(summary.Skipped[0].Reason, "max per agency is 1") || !strings.Contains(summary.Skipped[0].Reason, "active lead(s):") || !strings.Contains(summary.Skipped[0].Reason, summary.Leads[0].ID) {
 		t.Fatalf("skip reason = %#v", summary.Skipped)
 	}
 	converted := 0
@@ -1645,6 +1748,22 @@ func TestStoreImportsLegacyJSONAndPersistsSQLite(t *testing.T) {
 	}
 	if len(reloaded.AgencyContactCandidates) != 1 {
 		t.Fatalf("reloaded candidates = %#v", reloaded.AgencyContactCandidates)
+	}
+}
+
+func TestStoreOpenDBSetsBusyTimeout(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	db, err := store.openDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var timeout int
+	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != sqliteBusyTimeoutMS {
+		t.Fatalf("busy_timeout = %d, want %d", timeout, sqliteBusyTimeoutMS)
 	}
 }
 
