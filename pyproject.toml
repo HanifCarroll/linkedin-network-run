@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linkedin-tools"
+version = "0.1.0"
+description = "Python monorepo for LinkedIn networking, outreach, and opportunity intelligence tools."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "jinja2>=3.1",
+  "pydantic>=2.8",
+  "python-multipart>=0.0.9",
+  "uvicorn>=0.30",
+  "playwright>=1.45",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+linkedin-tools = "apps.cli:main"
+linkedin-network-run = "apps.compat:linkedin_network_run"
+recruiter-agency-outreach = "apps.compat:recruiter_agency_outreach"
+linkedin-opportunity-intel = "apps.compat:linkedin_opportunity_intel"
+
+[tool.setuptools]
+packages = [
+  "apps",
+  "apps.network_automation",
+  "apps.recruiter_agency_outreach",
+  "apps.opportunity_intel",
+  "apps.comment_extractor",
+  "apps.review_ui",
+  "packages",
+  "packages.linkedin_common",
+  "packages.linkedin_browser",
+  "packages.linkedin_salesnav",
+  "packages.linkedin_storage",
+  "packages.linkedin_reports",
+  "packages.linkedin_ui",
+  "packages.linkedin_experiments",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["apps", "packages"]
