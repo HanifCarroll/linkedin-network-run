@@ -15,6 +15,8 @@ LINKEDIN_PROFILE_ENV = "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR"
 LINKEDIN_PROFILE_NAME_ENV = "LINKEDIN_TOOLS_CHROME_PROFILE_NAME"
 LINKEDIN_BROWSER_CHANNEL_ENV = "LINKEDIN_TOOLS_BROWSER_CHANNEL"
 LINKEDIN_BROWSER_HEADLESS_ENV = "LINKEDIN_TOOLS_BROWSER_HEADLESS"
+SYSTEM_CHROME_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+ChromeLaunchEnv = dict[str, str | float | bool]
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,23 @@ def chrome_profile_from_env(environ: Mapping[str, str] | None = None) -> ChromeP
         channel=channel,
         headless=headless,
     )
+
+
+def chrome_launch_env(environ: Mapping[str, str] | None = None) -> ChromeLaunchEnv:
+    """Return an environment that installed Chrome can inherit safely."""
+
+    source = environ if environ is not None else os.environ
+    candidates = {
+        "HOME": source.get("HOME", str(Path.home())),
+        "PATH": SYSTEM_CHROME_PATH,
+        "TMPDIR": source.get("TMPDIR", "/tmp"),
+        "USER": source.get("USER", ""),
+        "LOGNAME": source.get("LOGNAME", source.get("USER", "")),
+        "SHELL": source.get("SHELL", "/bin/zsh"),
+        "LANG": source.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": source.get("LC_ALL", ""),
+    }
+    return {key: value for key, value in candidates.items() if value}
 
 
 def _browser_channel(value: str) -> str | None:

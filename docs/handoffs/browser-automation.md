@@ -50,6 +50,9 @@ No user-facing CLI commands were added in this thread. The implemented public pa
 - Browser channel can be changed with `LINKEDIN_TOOLS_BROWSER_CHANNEL`; use
   `bundled` for Playwright's Chromium instead of installed Google Chrome.
 - Headless mode can be changed with `LINKEDIN_TOOLS_BROWSER_HEADLESS`.
+- Installed Google Chrome launches inherit a minimal Chrome-safe environment
+  from `chrome_launch_env()` so local dev-shell variables do not trip Chrome's
+  hardened runtime.
 - Browser sessions should reuse an existing LinkedIn/Sales Navigator page when possible to avoid tab growth.
 - Closing extra pages is explicit, not automatic, so app threads do not unexpectedly close unrelated browser state.
 

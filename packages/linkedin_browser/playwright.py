@@ -11,6 +11,7 @@ from .config import (
     DEFAULT_PLAYWRITER_CDP_URL,
     LINKEDIN_CDP_URL_ENV,
     ChromeProfileConfig,
+    chrome_launch_env,
     chrome_profile_from_env,
 )
 
@@ -70,6 +71,7 @@ async def launch_linkedin_chrome(
             channel=selected.channel,
             headless=selected.headless,
             args=selected.launch_args(),
+            env=chrome_launch_env(),
         )
     except Exception as exc:
         message = str(exc)

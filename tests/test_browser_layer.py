@@ -16,6 +16,7 @@ from packages.linkedin_browser import (
     RealActionApproval,
     UnsafeRealActionError,
     choose_reusable_page,
+    chrome_launch_env,
     chrome_profile_from_env,
     classify_browser_state,
     guarded_click,
@@ -103,6 +104,20 @@ class FakeCdpPlaywright:
         self.chromium = FakeCdpChromium()
 
 
+class SuccessfulLaunchChromium:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, object] | None = None
+
+    async def launch_persistent_context(self, **kwargs: object) -> FakeContext:
+        self.kwargs = kwargs
+        return FakeContext([FakePage("about:blank")])
+
+
+class SuccessfulLaunchPlaywright:
+    def __init__(self) -> None:
+        self.chromium = SuccessfulLaunchChromium()
+
+
 def test_profile_config_defaults_to_linkedin_profile() -> None:
     config = chrome_profile_from_env({})
     assert config.profile_name == DEFAULT_BROWSER_PROFILE_NAME
@@ -136,6 +151,50 @@ def test_profile_config_can_use_bundled_chromium() -> None:
     assert config.profile_name == "LinkedIn"
     assert config.channel is None
     assert config.headless is True
+
+
+def test_chrome_launch_env_keeps_only_chrome_safe_values() -> None:
+    env = chrome_launch_env(
+        {
+            "HOME": "/Users/example",
+            "PATH": "/custom/bin",
+            "TMPDIR": "/tmp/custom",
+            "USER": "example",
+            "LOGNAME": "example",
+            "SHELL": "/bin/zsh",
+            "LANG": "en_US.UTF-8",
+            "VIRTUAL_ENV": "/tmp/venv",
+            "PYTHONPATH": "/tmp/python",
+        }
+    )
+
+    assert env == {
+        "HOME": "/Users/example",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "TMPDIR": "/tmp/custom",
+        "USER": "example",
+        "LOGNAME": "example",
+        "SHELL": "/bin/zsh",
+        "LANG": "en_US.UTF-8",
+    }
+
+
+@pytest.mark.asyncio
+async def test_launch_linkedin_chrome_passes_clean_env_for_installed_chrome() -> None:
+    playwright = SuccessfulLaunchPlaywright()
+
+    await launch_linkedin_chrome(
+        playwright,  # type: ignore[arg-type]
+        ChromeProfileConfig(user_data_dir=Path("/tmp/chrome"), profile_name="LinkedIn"),
+    )
+
+    assert playwright.chromium.kwargs is not None
+    assert playwright.chromium.kwargs["channel"] == "chrome"
+    launch_env = playwright.chromium.kwargs["env"]
+    assert isinstance(launch_env, dict)
+    assert launch_env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert "VIRTUAL_ENV" not in launch_env
+    assert "PYTHONPATH" not in launch_env
 
 
 @pytest.mark.asyncio
