@@ -6,10 +6,11 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest cutover-prep commit: `a46869d`
+- Latest cutover-prep commit: `23f1d02`
 - Follow-up integration: network browser adapter, recruiter/agency command
-  parity, opportunity command parity, cutover audit, and legacy state promotion
-  are included after the root routing commit.
+  parity, opportunity command parity, automation prompt readiness audit,
+  remaining artifact producer replacements, and legacy state promotion are
+  included after the root routing commit.
 
 ## Integrated Workstreams
 
@@ -145,6 +146,9 @@ Last updated: 2026-06-24
   command replacements: `saved-searches`, `acceptance check`,
   `acceptance research`, `acceptance draft-followups --session`,
   `pending-cleanup audit`, and `pending-cleanup capture`.
+- Active local Codex automation prompts have a read-only cutover audit command;
+  the current verified state remains `pre-cutover` until Hanif approves prompt
+  edits.
 - Python Sales Navigator people capture now preserves the old JavaScript
   capture API-response enrichment from `/sales-api/salesApiLeadSearch`,
   including top-level API metadata, per-row API state, API-derived profile
@@ -178,6 +182,7 @@ promotion:
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
+- PASS: `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
 - PASS: temp-root import rehearsal for real local network and recruiter/agency
   state, followed by Python `network status --json` and
   `recruiter-agency report --json`.

@@ -36,9 +36,12 @@ sends or withdrawals were performed during verification.
 
 ## Recent Closure Commits
 
-- `a0bfe6e feat: complete recruiter daily orchestration parity`
-- `f620d70 feat: close remaining network command parity`
+- `23f1d02 feat: add cutover automation prompt audit`
+- `bf737d6 feat: complete recruiter daily orchestration parity`
+- `3412f31 feat: replace remaining automation artifact producers`
+- `3c2fad1 docs: refresh python cutover guidance`
 - `a46869d feat: promote legacy state for cutover`
+- `f620d70 feat: close remaining network command parity`
 - `bc3b923 feat: preserve salesnav capture api enrichment`
 - `c807cf9 feat: expand opportunity command parity`
 - `e1e3ca6 feat: complete recruiter browser parity`
@@ -49,6 +52,7 @@ sends or withdrawals were performed during verification.
 - PASS: `uv run pytest` (`118 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
+- PASS: `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy
   migration names, explicit score fields/classifiers, UI headings/templates,
   documented grep examples, and explicit browser/menu fallback terminology.
