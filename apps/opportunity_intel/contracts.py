@@ -77,10 +77,33 @@ class SourceKind(StrEnum):
 
 
 class RankLevel(StrEnum):
-    HOT = "hot"
-    WARM = "warm"
-    WATCH = "watch"
+    STRONG = "strong"
+    POSSIBLE = "possible"
+    WEAK = "weak"
+    IRRELEVANT = "irrelevant"
+    HOT = "strong"
+    WARM = "possible"
+    WATCH = "weak"
+    REJECT = "irrelevant"
+
+
+class ReviewLabel(StrEnum):
+    STRONG = "strong"
+    POSSIBLE = "possible"
+    WEAK = "weak"
     REJECT = "reject"
+    NEEDS_RESEARCH = "needs research"
+    READY_FOR_OUTREACH = "ready for outreach"
+
+
+class RejectReason(StrEnum):
+    RECRUITER = "recruiter"
+    AGENCY = "agency"
+    VENDOR = "vendor"
+    JOB_SEEKER = "job seeker"
+    NOT_BUYER = "not buyer"
+    NOT_RELEVANT = "not relevant"
+    DUPLICATE = "duplicate"
 
 
 class SourceDecisionKind(StrEnum):
@@ -250,6 +273,11 @@ class RankedComment:
     comment: CommentEvidence
     rank_level: RankLevel
     rank_points: int
+    problem_fit: int
+    buying_signal: int
+    buyer_fit: int
+    actionability: int
+    immediacy: int
     direct_buyer: bool
     need_categories: tuple[str, ...]
     positive_signals: tuple[str, ...]
@@ -261,6 +289,11 @@ class RankedComment:
         return {
             "rank_level": self.rank_level.value,
             "rank_points": str(self.rank_points),
+            "problem_fit": str(self.problem_fit),
+            "buying_signal": str(self.buying_signal),
+            "buyer_fit": str(self.buyer_fit),
+            "actionability": str(self.actionability),
+            "immediacy": str(self.immediacy),
             "direct_buyer": str(self.direct_buyer).lower(),
             "query_id": self.comment.query_id,
             "source_id": self.comment.source_id,

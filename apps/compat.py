@@ -80,6 +80,7 @@ RECRUITER_AGENCY_COMMANDS = (
 OPPORTUNITY_COMMANDS = (
     "validate-contracts",
     "post-queue",
+    "preflight",
     "run-experiment",
     "sources",
     "query-pack",

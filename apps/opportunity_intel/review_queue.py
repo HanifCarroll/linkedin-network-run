@@ -11,6 +11,11 @@ from apps.opportunity_intel.contracts import RankedComment, RankLevel
 REVIEW_QUEUE_COLUMNS: tuple[str, ...] = (
     "rank_level",
     "rank_points",
+    "problem_fit",
+    "buying_signal",
+    "buyer_fit",
+    "actionability",
+    "immediacy",
     "direct_buyer",
     "query_id",
     "source_id",

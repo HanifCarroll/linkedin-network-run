@@ -27,9 +27,17 @@ it does not send messages, connect, withdraw, or change LinkedIn state.
 ```sh
 uv run linkedin-tools opportunity validate-contracts
 uv run linkedin-tools opportunity collection-coverage --json
+uv run linkedin-tools opportunity preflight \
+  --state-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel" \
+  --json
 uv run linkedin-tools opportunity post-queue --out /tmp/linkedin-opportunity-v0/post-queue.csv
 uv run linkedin-tools opportunity provider-export-csv --out /tmp/linkedin-opportunity-v0/provider-comments.csv
 ```
+
+`preflight` does not collect comments. It validates the registry/query pack,
+syncs the configured source batch into SQLite, checks the configured Chrome
+profile path, and writes a browser preflight artifact under the opportunity
+state directory.
 
 `post-queue.csv` has three row shapes:
 
@@ -54,6 +62,66 @@ uv run linkedin-tools opportunity company-post-capture \
 
 The output uses the same post queue columns as `post-queue.csv`, with concrete
 `post_url` values ready for visible-comment capture.
+
+## Browser Comment Extraction
+
+Use the `comments` namespace for LinkedIn post comment extraction. It owns the
+post URL to comment rows process, including browser navigation, comment/reply
+expansion, scrolling, artifacts, errors, and SQLite persistence.
+
+```sh
+uv run linkedin-tools comments extract-url \
+  --post-url <linkedin-post-url> \
+  --source-id <source-id> \
+  --query-id <query-id> \
+  --state-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel" \
+  --out-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel/artifacts"
+```
+
+Configurable safety limits:
+
+```sh
+--max-scrolls 6
+--max-comment-control-clicks 12
+--max-reply-control-clicks 8
+--navigation-timeout-ms 30000
+--action-timeout-ms 5000
+--max-runtime-seconds 90
+```
+
+The extractor uses the Chrome profile named `LinkedIn` by default. Override the
+profile through `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` and
+`LINKEDIN_TOOLS_CHROME_PROFILE_NAME` if needed. It remains recommend-only and
+does not send messages, connect, withdraw, or click guarded LinkedIn actions.
+
+For saved HTML fixtures or manual captures:
+
+```sh
+uv run linkedin-tools comments extract \
+  --post-url <linkedin-post-url> \
+  --html /path/to/post.html \
+  --source-id <source-id> \
+  --query-id <query-id> \
+  --state-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel" \
+  --out-dir /tmp/linkedin-comments
+```
+
+## Review UI
+
+Start the local review UI against the opportunity SQLite state:
+
+```sh
+uv run linkedin-tools ui \
+  --host 127.0.0.1 \
+  --port 8787 \
+  --opportunity-state-dir "$HOME/Library/Application Support/linkedin-tools/opportunity-intel"
+```
+
+The opportunity tabs read live SQLite rows for sources, post queue, extraction
+runs, ranked comments, source summaries, calibration rows, and browser
+artifacts. Labels persist as `strong`, `possible`, `weak`, `reject`, `needs
+research`, or `ready for outreach`. Reject reasons persist as `recruiter`,
+`agency`, `vendor`, `job seeker`, `not buyer`, `not relevant`, or `duplicate`.
 
 ## First Proof Gate
 

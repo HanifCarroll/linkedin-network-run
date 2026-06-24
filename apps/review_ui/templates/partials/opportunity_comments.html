@@ -28,10 +28,11 @@
           <td>{{ row.evidence_quote }}</td>
           <td>{{ row.fit_reasons }}</td>
           <td>{{ row.reject_reasons }}</td>
-          <td><span class="badge {% if row.level == 'hot' %}badge--good{% endif %}">{{ row.level }}</span></td>
+          <td><span class="badge {% if row.level == 'strong' %}badge--good{% endif %}">{{ row.level }}</span></td>
           <td>{{ row.signal_score }}</td>
           <td>{{ row.source_id }}</td>
           <td>
+            <div class="muted">{{ row.human_label }}</div>
             {% if access_token %}
               <form
                 hx-post="/opportunities/comments/{{ row.comment_id }}/label"
@@ -41,11 +42,24 @@
               >
                 <input type="hidden" name="{{ auth_form_field }}" value="{{ access_token }}">
                 <div class="segmented">
-                  <button type="submit" name="label" value="qualified">Qualified</button>
-                  <button type="submit" name="label" value="rejected">Reject</button>
-                  <button type="submit" name="label" value="maybe">Maybe</button>
-                  <button type="submit" name="label" value="skip">Skip</button>
+                  <button type="submit" name="label" value="strong">Strong</button>
+                  <button type="submit" name="label" value="possible">Possible</button>
+                  <button type="submit" name="label" value="weak">Weak</button>
+                  <button type="submit" name="label" value="needs research">Needs research</button>
+                  <button type="submit" name="label" value="ready for outreach">Ready</button>
+                  <button type="submit" name="label" value="reject">Reject</button>
                 </div>
+                <select name="reject_reason">
+                  <option value="">No reject reason</option>
+                  <option value="recruiter">Recruiter</option>
+                  <option value="agency">Agency</option>
+                  <option value="vendor">Vendor</option>
+                  <option value="job seeker">Job seeker</option>
+                  <option value="not buyer">Not buyer</option>
+                  <option value="not relevant">Not relevant</option>
+                  <option value="duplicate">Duplicate</option>
+                </select>
+                <input type="text" name="notes" placeholder="Note">
               </form>
               <div id="label-result-{{ row.comment_id }}"></div>
             {% else %}

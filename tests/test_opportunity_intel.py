@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from apps.comment_extractor.cli import main as comments_main
 from apps.comment_extractor.contracts import PostHTMLInput
 from apps.comment_extractor.linkedin_post_comments import (
     EXPLICIT_COMMENT_SELECTORS,
@@ -18,7 +19,12 @@ from apps.comment_extractor.linkedin_post_comments import (
 from apps.compat import OPPORTUNITY_APP_COMMANDS, OPPORTUNITY_COMMANDS
 from apps.opportunity_intel.cli import build_parser
 from apps.opportunity_intel.cli import main as opportunity_main
-from apps.opportunity_intel.contracts import CANONICAL_COMMENT_COLUMNS, RankLevel, SourceKind
+from apps.opportunity_intel.contracts import (
+    CANONICAL_COMMENT_COLUMNS,
+    CommentEvidence,
+    RankLevel,
+    SourceKind,
+)
 from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
 from apps.opportunity_intel.imports import read_comment_csv
 from apps.opportunity_intel.normalization import normalize_and_dedupe
@@ -31,6 +37,7 @@ from apps.opportunity_intel.sources import (
     load_source_registry,
     validate_registry_against_queries,
 )
+from apps.opportunity_intel.store import OpportunityStore, stable_comment_key
 
 FIXTURE_DIR = Path("tests/fixtures/opportunity_intel")
 
@@ -158,6 +165,76 @@ def test_comment_extractor_writes_raw_comments_jsonl(tmp_path: Path) -> None:
         '[componentkey^="replaceableComment_urn:li:comment:"]',
         '[data-id^="urn:li:comment:"]',
     )
+
+
+def test_saved_html_extraction_persists_sqlite_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_dir = tmp_path / "state"
+    out_dir = tmp_path / "comments"
+
+    assert (
+        comments_main(
+            [
+                "extract",
+                "--post-url",
+                "https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/",
+                "--html",
+                str(FIXTURE_DIR / "linkedin_post_comments.html"),
+                "--source-id",
+                "known_high_signal_post_engagement",
+                "--query-id",
+                "known_high_signal_post_engagement",
+                "--state-dir",
+                str(state_dir),
+                "--out-dir",
+                str(out_dir),
+            ]
+        )
+        == 0
+    )
+
+    assert "raw comments:" in capsys.readouterr().out
+    store = OpportunityStore(state_dir)
+    rows = store.fetch_all(
+        """
+        SELECT c.comment_key, r.rank_level, r.rank_points, r.problem_fit,
+               r.buying_signal, r.buyer_fit, r.actionability, r.immediacy
+        FROM comments c
+        JOIN rankings r ON r.comment_key = c.comment_key
+        ORDER BY r.rank_points DESC
+        """
+    )
+    assert len(rows) == 2
+    assert rows[0]["rank_level"] == "strong"
+    assert rows[0]["rank_points"] == 12
+    assert rows[0]["problem_fit"] == 4
+    assert rows[0]["buying_signal"] == 2
+    assert rows[0]["buyer_fit"] == 2
+    assert rows[0]["actionability"] == 2
+    assert rows[0]["immediacy"] == 2
+    artifacts = store.fetch_all("SELECT kind FROM extraction_artifacts ORDER BY kind")
+    assert {row["kind"] for row in artifacts} == {"html", "raw_comments"}
+
+
+def test_opportunity_preflight_syncs_source_batch_without_collecting_comments(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_dir = tmp_path / "state"
+
+    assert opportunity_main(["preflight", "--state-dir", str(state_dir), "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recommend_only"] is True
+    assert payload["sources"] == 38
+    assert payload["post_candidates"] >= 100
+    assert Path(payload["artifact_path"]).exists()
+    store = OpportunityStore(state_dir)
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM sources")[0]["count"] == 38
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM posts")[0]["count"] >= 100
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM comments")[0]["count"] == 0
 
 
 def test_provider_csv_aliases_normalize_to_actual_comment_contract(tmp_path: Path) -> None:
@@ -313,7 +390,45 @@ def test_ranker_rejects_recruiting_and_job_seeker_noise(tmp_path: Path) -> None:
     ranked = rank_comment(comment, load_query_pack().require_query(comment.query_id))
 
     assert ranked.rank_level is RankLevel.REJECT
-    assert "not_direct_buyer" in ranked.reject_reasons or "job_seeker" in ranked.reject_reasons
+    assert "not buyer" in ranked.reject_reasons or "job seeker" in ranked.reject_reasons
+
+
+def test_ranker_uses_requested_buyer_signal_dimensions() -> None:
+    comment = CommentEvidence(
+        query_id="known_high_signal_post_engagement",
+        source_id="manual_actual_comment_import",
+        source_kind="manual_csv",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/feed/update/urn:li:activity:1/",
+        post_author_name="",
+        post_text="",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Ava Founder",
+        commenter_profile_url="https://www.linkedin.com/in/ava-founder/",
+        commenter_headline="Founder",
+        commenter_company="Ava Ops",
+        relationship="",
+        comment_text=(
+            "We need help turning our spreadsheet tracker into an internal tool "
+            "dashboard this quarter. Who can help build this?"
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    ranked = rank_comment(comment, load_query_pack().require_query(comment.query_id))
+
+    assert ranked.rank_level is RankLevel.STRONG
+    assert ranked.rank_points == 15
+    assert (
+        ranked.problem_fit,
+        ranked.buying_signal,
+        ranked.buyer_fit,
+        ranked.actionability,
+        ranked.immediacy,
+    ) == (4, 4, 3, 2, 2)
+    assert stable_comment_key(comment).startswith("comment_")
 
 
 def test_opportunity_and_comment_modules_do_not_import_action_modules() -> None:

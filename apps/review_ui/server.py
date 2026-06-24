@@ -11,6 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import FormData
 
+from apps.opportunity_intel.contracts import RejectReason, ReviewLabel
+from apps.opportunity_intel.store import OpportunityStore
 from packages.linkedin_ui import (
     AUTH_FORM_FIELD,
     AUTH_HEADER,
@@ -23,7 +25,11 @@ from packages.linkedin_ui import (
     list_review_actions,
 )
 
-from .view_models import RankedCommentRow, ReviewReadModelProvider, StubReviewReadModelProvider
+from .view_models import (
+    RankedCommentRow,
+    ReviewReadModelProvider,
+    SQLiteReviewReadModelProvider,
+)
 
 TEMPLATE_DIR = Path(__file__).with_name("templates")
 STATIC_DIR = Path(__file__).with_name("static")
@@ -34,8 +40,10 @@ def create_app(
     provider: ReviewReadModelProvider | None = None,
     action_service: ActionService | None = None,
     access_token: str | None = None,
+    opportunity_store: OpportunityStore | None = None,
 ) -> FastAPI:
-    read_models = provider or StubReviewReadModelProvider()
+    store = opportunity_store or OpportunityStore()
+    read_models = provider or SQLiteReviewReadModelProvider(store=store)
     actions = list_review_actions()
     service = action_service or GuardedCommandActionService()
     gate = (
@@ -191,23 +199,34 @@ def create_app(
         supplied = await _require_token(request, gate)
         form = await request.form()
         label = _string_form_value(form, "label")
-        if label not in {"qualified", "rejected", "maybe", "skip"}:
-            raise HTTPException(status_code=400, detail="Unsupported label")
+        try:
+            review_label = ReviewLabel(label or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Unsupported label") from exc
+        reject_reason_value = _string_form_value(form, "reject_reason") or ""
+        reject_reason = _reject_reason(reject_reason_value)
+        notes = _string_form_value(form, "notes") or ""
         row = _find_comment(read_models.snapshot().ranked_comments, comment_id)
-        message = (
-            f"{row.commenter} would be marked {label}; persistence waits for "
-            "the opportunity read model service."
-        )
+        try:
+            store.set_review_label(
+                comment_key=comment_id,
+                label=review_label,
+                reject_reason=reject_reason,
+                notes=notes,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        message = f"{row.commenter} marked {review_label.value}"
         return templates.TemplateResponse(
             request,
             "partials/action_result.html",
             {
                 "request": request,
                 "result": {
-                    "status": "stubbed",
+                    "status": "recorded",
                     "message": message,
                     "command": "",
-                    "warnings": ("No durable mutation was written.",),
+                    "warnings": (),
                 },
                 "access_token": supplied,
             },
@@ -284,6 +303,15 @@ def _find_comment(rows: Iterable[RankedCommentRow], comment_id: str) -> RankedCo
         if row.comment_id == comment_id:
             return row
     raise HTTPException(status_code=404, detail="Comment not found")
+
+
+def _reject_reason(value: str) -> RejectReason | None:
+    if not value:
+        return None
+    try:
+        return RejectReason(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Unsupported reject reason") from exc
 
 
 def action_is_enabled(action: ReviewAction) -> bool:

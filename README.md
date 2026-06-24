@@ -193,7 +193,42 @@ uv run linkedin-tools opportunity sources --json
 uv run linkedin-tools opportunity post-queue --out /tmp/linkedin-opportunity-posts.csv
 ```
 
-Known-post HTML comment extraction:
+Run preflight before collection. This validates the configured source batch,
+syncs sources and post candidates into SQLite, checks the configured Chrome
+profile path, and writes a browser preflight artifact without collecting
+comments:
+
+```sh
+uv run linkedin-tools opportunity preflight \
+  --state-dir "$state_root/opportunity-intel" \
+  --json
+```
+
+Known-post URL extraction uses the local LinkedIn browser profile and persists
+the run, artifacts, comments, people, rankings, errors, and status transitions
+to SQLite:
+
+```sh
+uv run linkedin-tools comments extract-url \
+  --post-url <linkedin-post-url> \
+  --source-id <source-id> \
+  --query-id <query-id> \
+  --state-dir "$state_root/opportunity-intel" \
+  --out-dir "$state_root/opportunity-intel/artifacts"
+```
+
+Useful browser safety limits are configurable on `extract-url`:
+
+```sh
+--max-scrolls 6 \
+--max-comment-control-clicks 12 \
+--max-reply-control-clicks 8 \
+--navigation-timeout-ms 30000 \
+--action-timeout-ms 5000 \
+--max-runtime-seconds 90
+```
+
+Saved HTML extraction remains available and can also persist to SQLite:
 
 ```sh
 uv run linkedin-tools comments extract \
@@ -201,8 +236,21 @@ uv run linkedin-tools comments extract \
   --html /path/to/post.html \
   --source-id <source-id> \
   --query-id <query-id> \
+  --state-dir "$state_root/opportunity-intel" \
   --out-dir /tmp/linkedin-comments
 ```
+
+The scoring model is:
+
+- `0-4` problem fit
+- `0-4` buying signal
+- `0-3` buyer fit
+- `0-2` actionability
+- `0-2` immediacy
+
+Classification is `strong` for 11-15, `possible` for 7-10, `weak` for 4-6,
+and `irrelevant` for 0-3. Recruiter, agency, vendor, and job-seeker signals
+are rejected regardless of score.
 
 Source experiments:
 
@@ -216,11 +264,18 @@ uv run linkedin-tools opportunity run-experiment \
 ## Local Review UI
 
 ```sh
-uv run linkedin-tools ui --host 127.0.0.1 --port 8787
+uv run linkedin-tools ui \
+  --host 127.0.0.1 \
+  --port 8787 \
+  --opportunity-state-dir "$state_root/opportunity-intel"
 ```
 
 The UI exposes review surfaces for opportunities, networking state,
 recruiter/agency state, browser artifacts, and guarded action paths.
+Opportunity review labels persist to SQLite: `strong`, `possible`, `weak`,
+`reject`, `needs research`, and `ready for outreach`. Reject reasons are
+`recruiter`, `agency`, `vendor`, `job seeker`, `not buyer`, `not relevant`,
+and `duplicate`.
 
 ## Safety Rules
 

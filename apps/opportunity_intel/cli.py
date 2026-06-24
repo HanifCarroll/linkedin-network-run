@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from apps.comment_extractor.browser import run_browser_preflight, write_preflight_artifact
 from apps.comment_extractor.cli import main as comment_extractor_main
 from apps.opportunity_intel.company_pages import extract_company_page_post_candidates_from_html_file
 from apps.opportunity_intel.contracts import (
@@ -28,6 +29,7 @@ from apps.opportunity_intel.sources import (
     load_source_registry,
     validate_registry_against_queries,
 )
+from apps.opportunity_intel.store import OpportunityStore
 
 DEFAULT_BATCH_DIR = Path("/tmp/linkedin-opportunity-intel")
 
@@ -53,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = _add_command(subparsers, "status", _handle_status)
     _add_contract_args(status_parser)
     status_parser.add_argument("--json", action="store_true")
+
+    preflight_parser = _add_command(subparsers, "preflight", _handle_preflight)
+    _add_contract_args(preflight_parser)
+    preflight_parser.add_argument("--state-dir", type=Path, default=None)
+    preflight_parser.add_argument("--check-browser", action="store_true")
+    preflight_parser.add_argument("--cdp-url", default=None)
+    preflight_parser.add_argument("--json", action="store_true")
 
     for name in ("post-queue", "collection-queue", "salesnav-feeder", "salesnav-activity"):
         queue_parser = _add_command(subparsers, name, _handle_post_queue)
@@ -276,6 +285,40 @@ def _handle_status(args: argparse.Namespace) -> int:
             f"sources={payload['sources']} enabled={payload['enabled_sources']} "
             f"queries={payload['queries']} recommend_only=true"
         )
+    return 0
+
+
+def _handle_preflight(args: argparse.Namespace) -> int:
+    registry = load_source_registry(args.source_registry)
+    query_pack = load_query_pack(args.query_pack)
+    validate_registry_against_queries(registry, query_pack)
+    candidates = discover_posts_from_registry(registry)
+    store = OpportunityStore(args.state_dir)
+    store.sync_source_registry(registry)
+    store.sync_post_candidates(candidates)
+    browser = run_browser_preflight(check_browser=args.check_browser, cdp_url=args.cdp_url)
+    artifact_path = write_preflight_artifact(store=store, result=browser)
+    payload = {
+        "ready": browser.ready,
+        "recommend_only": True,
+        "sources": len(registry.sources),
+        "enabled_sources": len(registry.enabled_sources()),
+        "post_candidates": len(candidates),
+        "browser": browser.to_json_object(),
+        "artifact_path": str(artifact_path),
+        "state_dir": str(store.dir),
+        "database_path": str(store.database_path),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"preflight_ready={str(browser.ready).lower()}")
+        print(f"sources={payload['sources']} enabled={payload['enabled_sources']}")
+        print(f"post_candidates={payload['post_candidates']}")
+        print(f"state_dir={store.dir}")
+        print(f"artifact={artifact_path}")
+        for warning in browser.warnings:
+            print(f"warning={warning}")
     return 0
 
 

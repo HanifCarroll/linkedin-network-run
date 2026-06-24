@@ -66,12 +66,13 @@ tests or local validation.
 
 ## Known Gaps
 
-- App read models are not implemented yet by Threads 3-5, so the UI uses
-  clearly labeled stub rows.
+- Opportunity and browser artifact read models are now SQLite-backed for the
+  opportunity/comment discovery system. Network and recruiter/agency read
+  models still use placeholder rows until their app-specific read models land.
 - Guarded real-action buttons are registered but disabled until app service
   integrations land.
-- Opportunity state-changing routes validate the token and return a stub result;
-  they do not write durable SQLite state yet.
+- Opportunity comment label routes validate the token and write durable SQLite
+  review labels, reject reasons, notes, and status transitions.
 - No live browser actions, send actions, message sends, or withdrawals were
   exercised.
 - Template/static package data may need orchestrator-owned packaging review

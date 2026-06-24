@@ -28,7 +28,7 @@
     <section class="section-stack" x-show="tab === 'sources'">
       <div class="toolbar">
         <h2>Source Registry</h2>
-        <span class="badge badge--warning">Thread 3 read model pending</span>
+        <span class="badge">SQLite read model</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -135,8 +135,9 @@
         <h2>Ranked Comments</h2>
         <div class="segmented">
           <a hx-get="/partials/opportunities/comments{% if access_token %}?{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">All</a>
-          <a hx-get="/partials/opportunities/comments?level=hot{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Hot</a>
-          <a hx-get="/partials/opportunities/comments?level=watch{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Watch</a>
+          <a hx-get="/partials/opportunities/comments?level=strong{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Strong</a>
+          <a hx-get="/partials/opportunities/comments?level=possible{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Possible</a>
+          <a hx-get="/partials/opportunities/comments?level=weak{% if access_token %}&{{ token_param }}={{ access_token }}{% endif %}" hx-target="#comment-table" hx-swap="innerHTML">Weak</a>
         </div>
       </div>
       <div id="comment-table">

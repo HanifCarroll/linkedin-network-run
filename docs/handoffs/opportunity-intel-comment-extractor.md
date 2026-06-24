@@ -27,7 +27,9 @@ Comment extraction:
 
 ```sh
 uv run python -m apps.comment_extractor.cli extract --post-url <url> --html <html> --source-id <source> --query-id <query> --out-dir <dir>
+uv run python -m apps.comment_extractor.cli extract-url --post-url <url> --source-id <source> --query-id <query> --state-dir <state> --out-dir <dir>
 uv run python -m apps.comment_extractor.cli extract-queue --post-queue <csv> --out-dir <dir>
+uv run python -m apps.comment_extractor.cli preflight --state-dir <state> --json
 ```
 
 ## Data Models Introduced
@@ -38,8 +40,13 @@ uv run python -m apps.comment_extractor.cli extract-queue --post-queue <csv> --o
 - Canonical provider/manual CSV columns and aliases from the salvage note.
 - Actual-comment evidence rows with required LinkedIn post URL, commenter
   profile URL, commenter name, comment text, and source/query attribution.
+- SQLite state for sources, posts, comments, people, extraction runs,
+  extraction artifacts, rankings, review labels, notes, errors, and status
+  transitions.
 - Post queue candidates, ranked comments, proof gate results, calibration
   reports, source decisions, experiment artifacts, and review queue rows.
+- Browser safety limits for scrolls, comment/reply control clicks, navigation
+  timeout, action timeout, settle delay, and maximum runtime.
 
 ## Tests Added
 
@@ -72,9 +79,6 @@ Results:
 
 ## Known Gaps
 
-- The extractor currently consumes known post URLs with saved HTML artifacts or
-  a queue CSV pointing at those artifacts. Live LinkedIn post comment capture is
-  outside the implemented extractor surface.
 - Calibration report generation currently creates the report/template and blocks
   promotion until labels exist. Label import/storage should be integrated once
   the orchestrator settles shared experiment storage.
