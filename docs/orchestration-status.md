@@ -6,7 +6,7 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest integrated commit: `c7dc53b`
+- Latest integrated commit: `16fb1c4`
 
 ## Integrated Workstreams
 
@@ -40,19 +40,53 @@ Last updated: 2026-06-24
   - Guarded real-action primitives.
   - Sales Navigator capture/audit/message primitives.
 
-## Active Workstreams
-
 ### Thread 3: Opportunity Intel And Comment Extractor
 
 - Thread ID: `019efa1d-854b-7903-a838-8f058b82da1e`
 - Worktree: `/Users/hanifcarroll/.codex/worktrees/e350/linkedin-network-automation`
-- Current status: active.
-- Last observed work:
-  - Opportunity contracts, source registry, query pack, import validation,
-    dedupe, ranking, post queue, review queue, experiment artifacts, comment
-    extractor, fixtures, and tests were being implemented.
-- Required handoff:
-  `docs/handoffs/opportunity-intel-comment-extractor.md`
+- Source commit: `ace709c`
+- Integrated commit: `16fb1c4`
+- Handoff: `docs/handoffs/opportunity-intel-comment-extractor.md`
+- Scope integrated:
+  - Source registry and query pack contracts.
+  - Provider/manual CSV import contract and dedupe.
+  - Direct-buyer ranking with recruiter/staffing noise rejection.
+  - Post queue, source experiments, proof gate, calibration, action plan, and
+    review queue exports.
+  - Explicit-selector LinkedIn comment extractor and `raw_comments.jsonl`
+    contract.
+
+### Thread 6: Review UI
+
+- Thread ID: `019efa1e-05c6-7570-a1db-bc8786b62af5`
+- Worktree: `/Users/hanifcarroll/.codex/worktrees/ee92/linkedin-network-automation`
+- Source commit: `5139106`
+- Integrated commit: `e814b6d`
+- Handoff: `docs/handoffs/review-ui.md`
+- Scope integrated:
+  - FastAPI review server.
+  - Jinja templates, HTMX partials, and Alpine presentation state.
+  - Opportunity, network, recruiter/agency, browser, and guarded-action review
+    screens.
+  - Local token enforcement and UI action registry.
+  - UI safety tests.
+
+### Thread 7: Migration And Compatibility
+
+- Thread ID: `019efa1e-2818-7282-ac5d-b322717c080b`
+- Worktree: `/Users/hanifcarroll/.codex/worktrees/972b/linkedin-network-automation`
+- Source commit: `6e48328`
+- Integrated commit: `29ae3a0`
+- Handoff: `docs/handoffs/migration-compatibility.md`
+- Scope integrated:
+  - Read-only legacy importers for network, recruiter/agency, and opportunity
+    artifacts.
+  - Immutable read-only SQLite snapshots for old recruiter/agency state.
+  - Temporary compatibility shims for `linkedin-network-run`,
+    `recruiter-agency-outreach`, and `linkedin-opportunity-intel`.
+  - Real-action flag blocking in compatibility shims.
+
+## Active Workstreams
 
 ### Thread 4: Network Automation Port
 
@@ -76,35 +110,11 @@ Last updated: 2026-06-24
 - Required handoff:
   `docs/handoffs/recruiter-agency-outreach.md`
 
-### Thread 6: Review UI
-
-- Thread ID: `019efa1e-05c6-7570-a1db-bc8786b62af5`
-- Worktree: `/Users/hanifcarroll/.codex/worktrees/ee92/linkedin-network-automation`
-- Current status: active.
-- Last observed work:
-  - FastAPI server, Jinja templates, HTMX partials, UI action/auth helpers,
-    fixtures, tests, and local smoke test were complete; handoff was being
-    written.
-- Required handoff:
-  `docs/handoffs/review-ui.md`
-
-### Thread 7: Migration And Compatibility
-
-- Thread ID: `019efa1e-2818-7282-ac5d-b322717c080b`
-- Worktree: `/Users/hanifcarroll/.codex/worktrees/972b/linkedin-network-automation`
-- Current status: active.
-- Last observed work:
-  - Read-only old-state import, compatibility shims, migration tests,
-    immutable SQLite old-state reads, and live immutability checks were being
-    completed.
-- Required handoff:
-  `docs/handoffs/migration-compatibility.md`
-
 ## Integrated Verification
 
-After integrating Threads 1 and 2:
+After integrating Threads 1, 2, 3, 6, and 7:
 
-- PASS: `uv run pytest` (`45 passed`)
+- PASS: `uv run pytest` (`64 passed`)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 
