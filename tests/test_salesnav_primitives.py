@@ -29,6 +29,10 @@ def test_capture_artifact_parser_preserves_rows() -> None:
     row = artifact.rows[0]
     assert row.name == "Ada Lovelace"
     assert row.menu_state == "connectable"
+    assert artifact.api_state is not None
+    assert artifact.api_state["responses"] == 1
+    assert row.api_state is not None
+    assert row.api_state["pendingInvitation"] is False
     assert row.visible_has_message is True
     assert row.menu_labels[0].text == "Connect"
 

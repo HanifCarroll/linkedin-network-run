@@ -681,6 +681,7 @@ class SalesNavCaptureRow(AppModel):
     visible_state: Any = Field(
         default=None, validation_alias=AliasChoices("visible_state", "visibleState")
     )
+    api_state: Any = Field(default=None, validation_alias=AliasChoices("api_state", "apiState"))
     menu_state: str | None = Field(
         default=None, validation_alias=AliasChoices("menu_state", "menuState")
     )
@@ -714,6 +715,7 @@ class SalesNavCapture(AppModel):
     state_counts: dict[str, int] = Field(
         default_factory=dict, validation_alias=AliasChoices("state_counts", "stateCounts")
     )
+    api_state: Any = Field(default=None, validation_alias=AliasChoices("api_state", "apiState"))
     raw_row_count: int | None = Field(
         default=None, validation_alias=AliasChoices("raw_row_count", "rawRowCount")
     )

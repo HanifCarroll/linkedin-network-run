@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -41,6 +42,7 @@ class SalesNavCaptureRow:
     visible_viewed: bool | None = None
     visible_has_message: bool | None = None
     visible_has_save: bool | None = None
+    api_state: Mapping[str, object] | None = None
     menu_labels: tuple[MenuLabel, ...] = field(default_factory=tuple)
 
 
@@ -55,3 +57,4 @@ class SalesNavCaptureArtifact:
     raw_row_count: int
     output_row_count: int
     rows: tuple[SalesNavCaptureRow, ...]
+    api_state: Mapping[str, object] | None = None

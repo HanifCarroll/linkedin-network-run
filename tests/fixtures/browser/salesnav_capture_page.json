@@ -5,6 +5,12 @@
   "resumeUrl": "https://www.linkedin.com/sales/search/people?page=1",
   "source": "Network - test",
   "menuInspection": "api-state-only",
+  "apiState": {
+    "enabled": true,
+    "responses": 1,
+    "rows": 1,
+    "errors": []
+  },
   "rawRowCount": 2,
   "outputRowCount": 1,
   "rows": [
@@ -16,6 +22,15 @@
       "profileUrl": "https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
       "scrollUrn": "urn:li:fs_salesProfile:(abc,NAME_SEARCH,token)",
       "menuState": "connectable",
+      "apiState": {
+        "entityUrn": "urn:li:fs_salesProfile:(abc,NAME_SEARCH,token)",
+        "fullName": "Ada Lovelace",
+        "pendingInvitation": false,
+        "degree": 2,
+        "saved": false,
+        "viewed": true,
+        "openLink": "/sales/lead/abc,NAME_SEARCH,token"
+      },
       "visibleState": {
         "saved": false,
         "viewed": true,

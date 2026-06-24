@@ -63,6 +63,7 @@ SEND_INVITATION_BUTTON = re.compile(r"^(Send Invitation|Send invite|Send now|Sen
 MESSAGE_ACTION = re.compile(r"^(Message|InMail)\b", re.I)
 SEND_MESSAGE_BUTTON = re.compile(r"^(Send|Send message)$", re.I)
 PEOPLE_COUNT = re.compile(r"People \(([\d,]+)\)")
+SALES_NAV_LEAD_SEARCH_API = re.compile(r"/sales-api/salesApiLeadSearch", re.I)
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -445,66 +446,101 @@ class PlaywrightBrowserClient:
         row_scroll_delay_ms: int,
     ) -> tuple[SalesNavCapture, str]:
         page = await self._page(("linkedin.com/sales/search/people", "linkedin.com/sales/lead/"))
+        api_rows_by_urn: dict[str, dict[str, Any]] = {}
+        api_state: dict[str, Any] = {"enabled": True, "responses": 0, "rows": 0, "errors": []}
+        api_response_tasks: list[asyncio.Task[None]] = []
+
+        def queue_api_response(response: Any) -> None:
+            if not SALES_NAV_LEAD_SEARCH_API.search(str(getattr(response, "url", ""))):
+                return
+            api_response_tasks.append(
+                asyncio.create_task(
+                    _capture_salesnav_api_response(
+                        response,
+                        api_rows_by_urn=api_rows_by_urn,
+                        api_state=api_state,
+                    )
+                )
+            )
+
+        page.on("response", queue_api_response)
         if url:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             await _wait_for_load(page)
-        all_rows: list[dict[str, Any]] = []
-        page_summaries: list[dict[str, Any]] = []
-        for page_number in range(1, max(1, pages) + 1):
-            await _short_wait(page)
-            page_summaries.append({"url": page.url, "pageLabel": None})
-            row_locators = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all()
-            for row_index, row in enumerate(row_locators[:limit]):
-                await _ignore_errors(row.scroll_into_view_if_needed())
-                if row_scroll_delay_ms > 0:
-                    await page.wait_for_timeout(row_scroll_delay_ms)
-                item = await _capture_salesnav_row(row, row_index, len(all_rows), page_number)
-                if item["profileUrl"] is None and item["scrollUrn"]:
-                    item["profileUrl"] = sales_profile_urn_to_lead_url(item["scrollUrn"])
-                menu = await _open_row_menu(page, row)
-                item["menuLabels"] = menu["labels"]
-                item["menuState"] = _classify_menu_labels(menu["labels"])
-                all_rows.append(item)
+        try:
+            all_rows: list[dict[str, Any]] = []
+            page_summaries: list[dict[str, Any]] = []
+            for page_number in range(1, max(1, pages) + 1):
+                await _short_wait(page)
+                await _drain_api_response_tasks(api_response_tasks)
+                page_summaries.append({"url": page.url, "pageLabel": None})
+                row_locators = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all()
+                for row_index, row in enumerate(row_locators[:limit]):
+                    await _ignore_errors(row.scroll_into_view_if_needed())
+                    if row_scroll_delay_ms > 0:
+                        await page.wait_for_timeout(row_scroll_delay_ms)
+                    item = await _capture_salesnav_row(
+                        row,
+                        row_index,
+                        len(all_rows),
+                        page_number,
+                    )
+                    api_classified = _apply_salesnav_api_state(item, api_rows_by_urn)
+                    if item["profileUrl"] is None and item["scrollUrn"]:
+                        item["profileUrl"] = sales_profile_urn_to_lead_url(item["scrollUrn"])
+                    if not api_classified:
+                        menu = await _open_row_menu(page, row)
+                        item["menuLabels"] = menu["labels"]
+                        item["menuState"] = _classify_menu_labels(menu["labels"])
+                    all_rows.append(item)
+                    if (
+                        stop_after_connectable > 0
+                        and _count_state(all_rows, "connectable") >= stop_after_connectable
+                    ):
+                        break
                 if (
                     stop_after_connectable > 0
                     and _count_state(all_rows, "connectable") >= stop_after_connectable
                 ):
                     break
-            if (
-                stop_after_connectable > 0
-                and _count_state(all_rows, "connectable") >= stop_after_connectable
-            ):
-                break
-            if page_number < pages and not await _click_next_results_page(page):
-                break
-        output_rows = (
-            [row for row in all_rows if row["menuState"] == "connectable"]
-            if only_connectable
-            else all_rows
-        )
-        payload = {
-            "schemaVersion": 1,
-            "capturedAt": _now_iso(),
-            "url": page.url,
-            "resumeUrl": page.url,
-            "source": source,
-            "page": page_summaries[-1] if page_summaries else None,
-            "pages": page_summaries,
-            "menuInspection": "opened-row-overflow-menus",
-            "filters": {"onlyConnectable": only_connectable},
-            "captureOptions": {
-                "limit": limit,
-                "pages": pages,
-                "stopAfterConnectable": stop_after_connectable,
-                "rowScrollDelayMs": row_scroll_delay_ms,
-                "openMenus": True,
-            },
-            "stateCounts": _state_counts(all_rows),
-            "rawRowCount": len(all_rows),
-            "outputRowCount": len(output_rows),
-            "rows": output_rows,
-        }
-        return self._write_result("capture-page", payload, SalesNavCapture)
+                if page_number < pages and not await _click_next_results_page(page):
+                    break
+            await _drain_api_response_tasks(api_response_tasks)
+            output_rows = (
+                [row for row in all_rows if row["menuState"] == "connectable"]
+                if only_connectable
+                else all_rows
+            )
+            payload = {
+                "schemaVersion": 1,
+                "capturedAt": _now_iso(),
+                "url": page.url,
+                "resumeUrl": page.url,
+                "source": source,
+                "page": page_summaries[-1] if page_summaries else None,
+                "pages": page_summaries,
+                "menuInspection": "api-state-with-menu-fallback",
+                "filters": {"onlyConnectable": only_connectable},
+                "captureOptions": {
+                    "limit": limit,
+                    "pages": pages,
+                    "stopAfterConnectable": stop_after_connectable,
+                    "rowScrollDelayMs": row_scroll_delay_ms,
+                    "openMenus": True,
+                    "apiState": True,
+                },
+                "apiState": api_state,
+                "stateCounts": _state_counts(all_rows),
+                "rawRowCount": len(all_rows),
+                "outputRowCount": len(output_rows),
+                "rows": output_rows,
+            }
+            return self._write_result("capture-page", payload, SalesNavCapture)
+        finally:
+            await _drain_api_response_tasks(api_response_tasks)
+            remove_listener = getattr(page, "remove_listener", None)
+            if callable(remove_listener):
+                remove_listener("response", queue_api_response)
 
     async def _audit_sent_invitations(self, *, load_more: int) -> tuple[SalesNavAudit, str]:
         page = await self._page(("linkedin.com/mynetwork/invitation-manager/sent", "linkedin.com"))
@@ -926,6 +962,107 @@ async def _capture_salesnav_row(
     }
 
 
+async def _capture_salesnav_api_response(
+    response: Any,
+    *,
+    api_rows_by_urn: dict[str, dict[str, Any]],
+    api_state: dict[str, Any],
+) -> None:
+    try:
+        payload = await response.json()
+        api_state["responses"] = _int_count(api_state.get("responses")) + 1
+        if not isinstance(payload, dict):
+            api_state["rows"] = len(api_rows_by_urn)
+            return
+        elements = payload.get("elements")
+        if not isinstance(elements, list):
+            api_state["rows"] = len(api_rows_by_urn)
+            return
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            entity_urn = element.get("entityUrn")
+            if not isinstance(entity_urn, str) or entity_urn == "":
+                continue
+            api_rows_by_urn[entity_urn] = {
+                "entityUrn": entity_urn,
+                "fullName": _optional_api_value(element.get("fullName")),
+                "pendingInvitation": _optional_api_value(element.get("pendingInvitation")),
+                "degree": _optional_api_value(element.get("degree")),
+                "saved": _optional_api_value(element.get("saved")),
+                "viewed": _optional_api_value(element.get("viewed")),
+                "openLink": _optional_api_value(element.get("openLink")),
+            }
+        api_state["rows"] = len(api_rows_by_urn)
+    except Exception as error:
+        errors = api_state.setdefault("errors", [])
+        if isinstance(errors, list):
+            errors.append(str(error))
+
+
+def _apply_salesnav_api_state(
+    row: dict[str, Any],
+    api_rows_by_urn: dict[str, dict[str, Any]],
+) -> bool:
+    scroll_urn = row.get("scrollUrn")
+    api_row = api_rows_by_urn.get(scroll_urn) if isinstance(scroll_urn, str) else None
+    if api_row is None:
+        return False
+    row["apiState"] = api_row
+    if row.get("profileUrl") is None:
+        row["profileUrl"] = _api_sales_profile_url(api_row) or sales_profile_urn_to_lead_url(
+            scroll_urn
+        )
+    pending_invitation = api_row.get("pendingInvitation")
+    degree = api_row.get("degree")
+    if pending_invitation is True:
+        row["menuState"] = "already-pending"
+        row["menuLabels"] = [
+            {
+                "index": 0,
+                "text": "Connect - Pending (API pendingInvitation)",
+                "aria": None,
+                "tag": "API",
+                "disabled": False,
+            }
+        ]
+        return True
+    if pending_invitation is False and (degree is None or degree == 2):
+        row["menuState"] = "connectable"
+        row["menuLabels"] = [
+            {
+                "index": 0,
+                "text": "Connect (API pendingInvitation=false)",
+                "aria": None,
+                "tag": "API",
+                "disabled": False,
+            }
+        ]
+        return True
+    return False
+
+
+async def _drain_api_response_tasks(tasks: list[asyncio.Task[None]]) -> None:
+    if not tasks:
+        return
+    pending = list(tasks)
+    tasks.clear()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _optional_api_value(value: object) -> object:
+    if isinstance(value, str | bool | int | float) or value is None:
+        return value
+    return None
+
+
+def _api_sales_profile_url(api_row: dict[str, Any]) -> str | None:
+    open_link = api_row.get("openLink")
+    if not isinstance(open_link, str) or "/sales/lead/" not in open_link:
+        return None
+    return _absolute_linkedin_url(open_link)
+
+
 async def _click_next_results_page(page: Any) -> bool:
     button = page.get_by_role("button", name=re.compile(r"^Next$", re.I)).first
     if not await _locator_count(button) or await _locator_disabled(button):
@@ -1116,6 +1253,10 @@ def _state_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 def _count_state(rows: list[dict[str, Any]], state: str) -> int:
     return sum(1 for row in rows if row.get("menuState") == state)
+
+
+def _int_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _clean(value: str | None) -> str:

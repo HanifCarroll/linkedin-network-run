@@ -43,6 +43,7 @@ def capture_artifact_from_mapping(payload: Mapping[str, object]) -> SalesNavCapt
         raw_row_count=_int_value(payload.get("rawRowCount"), default=len(rows)),
         output_row_count=_int_value(payload.get("outputRowCount"), default=len(rows)),
         rows=rows,
+        api_state=_optional_mapping(payload.get("apiState")),
     )
 
 
@@ -66,6 +67,7 @@ def _capture_row_from_mapping(payload: Mapping[str, object]) -> SalesNavCaptureR
             visible_state.get("hasMessage") if visible_state else None
         ),
         visible_has_save=_optional_bool(visible_state.get("hasSave") if visible_state else None),
+        api_state=_optional_mapping(payload.get("apiState")),
         menu_labels=labels,
     )
 

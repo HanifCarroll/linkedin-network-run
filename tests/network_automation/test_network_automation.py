@@ -3,12 +3,17 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
 import apps.network_automation.cli as network_cli
-from apps.network_automation.browser import FixtureBrowserClient, _classify_menu_labels
+from apps.network_automation.browser import (
+    FixtureBrowserClient,
+    _apply_salesnav_api_state,
+    _capture_salesnav_api_response,
+    _classify_menu_labels,
+)
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
     AcceptanceFollowupRecord,
@@ -125,6 +130,14 @@ class FakeLiveBrowserClient:
         )
 
 
+class FakeSalesNavApiResponse:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+    async def json(self) -> object:
+        return self.payload
+
+
 def test_default_source_mix_matches_current_contract() -> None:
     sources = default_sources(30)
     assert [(source.name, source.target) for source in sources[:5]] == [
@@ -143,6 +156,49 @@ def test_menu_classifier_handles_linkedin_pending_dash() -> None:
         _classify_menu_labels([{"text": "Connect — Pending", "disabled": True}])
         == "already-pending"
     )
+
+
+@pytest.mark.asyncio
+async def test_salesnav_api_response_enriches_capture_rows() -> None:
+    api_rows_by_urn: dict[str, dict[str, Any]] = {}
+    api_state: dict[str, Any] = {"enabled": True, "responses": 0, "rows": 0, "errors": []}
+    scroll_urn = "urn:li:fs_salesProfile:(abc,NAME_SEARCH,token)"
+
+    await _capture_salesnav_api_response(
+        FakeSalesNavApiResponse(
+            {
+                "elements": [
+                    {
+                        "entityUrn": scroll_urn,
+                        "fullName": "Ada Lovelace",
+                        "pendingInvitation": False,
+                        "degree": 2,
+                        "saved": False,
+                        "viewed": True,
+                        "openLink": "/sales/lead/abc,NAME_SEARCH,token",
+                    }
+                ]
+            }
+        ),
+        api_rows_by_urn=api_rows_by_urn,
+        api_state=api_state,
+    )
+    row: dict[str, Any] = {
+        "scrollUrn": scroll_urn,
+        "profileUrl": None,
+        "menuState": "not-opened",
+        "menuLabels": [],
+    }
+
+    classified = _apply_salesnav_api_state(row, api_rows_by_urn)
+
+    assert classified is True
+    assert api_state["responses"] == 1
+    assert api_state["rows"] == 1
+    assert row["apiState"] == api_rows_by_urn[scroll_urn]
+    assert row["profileUrl"] == "https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
+    assert row["menuState"] == "connectable"
+    assert row["menuLabels"][0]["tag"] == "API"
 
 
 def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path) -> None:

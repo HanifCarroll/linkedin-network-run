@@ -136,6 +136,11 @@ Last updated: 2026-06-24
   `withdraw-next --dry-run` passed from a temporary state directory by
   attaching to the existing Playwriter CDP endpoint at
   `ws://127.0.0.1:19988/cdp`.
+- Python Sales Navigator people capture now preserves the old JavaScript
+  capture API-response enrichment from `/sales-api/salesApiLeadSearch`,
+  including top-level API metadata, per-row API state, API-derived profile
+  URLs, and `pendingInvitation` menu-state classification with exact menu
+  fallback.
 - Recruiter/agency outreach now exposes the remaining state-backed command
   surface in Python and compatibility routing delegates those implemented
   commands. Live recruiter/agency people capture, account capture, and
@@ -152,7 +157,7 @@ Last updated: 2026-06-24
 After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, and opportunity command parity:
 
-- PASS: `uv run pytest` (`100 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`101 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
@@ -163,7 +168,5 @@ browser/command parity slices, and opportunity command parity:
 
 ## Next Orchestration Steps
 
-1. Decide whether the selector-based Python capture is an approved consolidated
-   replacement for the old JavaScript Sales Navigator API response enrichment.
-2. Complete Hanif review and approval before archiving the Go/JavaScript
+1. Complete Hanif review and approval before archiving the Go/JavaScript
    implementation.

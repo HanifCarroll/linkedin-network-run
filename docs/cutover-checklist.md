@@ -3,7 +3,7 @@
 Do not archive the current Go/JavaScript implementation until all items pass.
 
 - [x] Every current CLI command has a Python equivalent.
-- [ ] Every current browser script has a Python Playwright equivalent or an
+- [x] Every current browser script has a Python Playwright equivalent or an
       approved consolidated replacement.
 - [x] Old state importers preserve data and do not mutate old state.
 - [x] Compatibility commands work during migration.
@@ -33,8 +33,10 @@ Do not archive the current Go/JavaScript implementation until all items pass.
 - [x] Live pending-cleanup `withdraw-next --dry-run` passed on 2026-06-24 with
       artifact
       `/tmp/linkedin-tools-live-dryrun.84HHg5/withdraw-dryrun-actual-age/001-withdraw-result.json`.
-- [ ] Python capture does not yet include the old JS Sales Navigator API
-      response enrichment; it uses exact row/profile/menu selectors only.
+- [x] Python people capture preserves Sales Navigator API response enrichment
+      from `/sales-api/salesApiLeadSearch`, including artifact-level API
+      metadata, per-row API state, API-derived profile URLs, and
+      `pendingInvitation` menu-state classification with menu fallback.
 
 ## Recruiter/Agency Browser And Command Slice
 
