@@ -126,6 +126,50 @@ def test_cutover_automation_audit_fails_partial_post_cutover_prompt(
     assert "Application Support/linkedin-tools/network-automation" in captured.out
 
 
+def test_cutover_automation_edit_plan_outputs_exact_replacements(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_prompt_set(tmp_path, "old")
+
+    assert (
+        main(
+            [
+                "cutover",
+                "plan-automation-edits",
+                "--root",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    plans = {item["automation_id"]: item for item in payload["plans"]}
+
+    network_plan = plans["linkedin-network"]
+    assert network_plan["current_status"] == "pre_cutover"
+    assert (
+        network_plan["state_dir"]
+        == "$HOME/Library/Application Support/linkedin-tools/network-automation"
+    )
+    network_replacements = network_plan["command_replacements"]
+    assert any("salesnav-audit.js" in item["old"] for item in network_replacements)
+    assert any("reconcile-audit --session auto" in item["new"] for item in network_replacements)
+
+    recruiter_plan = plans["recruiter-agency-outreach-daily"]
+    assert (
+        recruiter_plan["state_dir"]
+        == "$HOME/Library/Application Support/linkedin-tools/recruiter-agency-outreach"
+    )
+    assert any("go build" in item for item in recruiter_plan["remove_instructions"])
+    assert any(
+        "uv run linkedin-tools recruiter-agency" in item["new"]
+        for item in recruiter_plan["command_replacements"]
+    )
+
+
 def test_shared_defaults_match_prd() -> None:
     assert APP_NAME == "linkedin-tools"
     assert DEFAULT_BROWSER_PROFILE_NAME == "LinkedIn"

@@ -6,11 +6,10 @@ Last updated: 2026-06-24
 
 - Branch: `python-port/orchestrator-scaffold`
 - Baseline scaffold commit: `84a6fc0`
-- Latest cutover-prep commit: `23f1d02`
-- Follow-up integration: network browser adapter, recruiter/agency command
-  parity, opportunity command parity, automation prompt readiness audit,
-  remaining artifact producer replacements, and legacy state promotion are
-  included after the root routing commit.
+- Follow-up integration after the root routing commit includes network browser
+  adapters, recruiter/agency command parity, opportunity command parity,
+  automation prompt readiness audit and edit planning, remaining artifact
+  producer replacements, and legacy state promotion.
 
 ## Integrated Workstreams
 
@@ -149,6 +148,9 @@ Last updated: 2026-06-24
 - Active local Codex automation prompts have a read-only cutover audit command;
   the current verified state remains `pre-cutover` until Hanif approves prompt
   edits.
+- Active local Codex automation prompts also have a read-only
+  `plan-automation-edits` command that prints exact old-command to new-command
+  replacements for the post-approval prompt update.
 - Python Sales Navigator people capture now preserves the old JavaScript
   capture API-response enrichment from `/sales-api/salesApiLeadSearch`,
   including top-level API metadata, per-row API state, API-derived profile
@@ -178,11 +180,12 @@ After integrating Threads 1 through 7, root routing, the follow-up
 browser/command parity slices, opportunity command parity, and cutover state
 promotion:
 
-- PASS: `uv run pytest` (`118 passed`, one existing FastAPI/Starlette
+- PASS: `uv run pytest` (`119 passed`, one existing FastAPI/Starlette
   deprecation warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
+- PASS: `uv run linkedin-tools cutover plan-automation-edits --json`
 - PASS: temp-root import rehearsal for real local network and recruiter/agency
   state, followed by Python `network status --json` and
   `recruiter-agency report --json`.

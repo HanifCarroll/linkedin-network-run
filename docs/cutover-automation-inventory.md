@@ -42,6 +42,10 @@ edit the live automation prompts until Hanif approves cutover in
   Codex automation prompts without editing them. Use
   `--expect pre-cutover` before approval and `--expect post-cutover` after the
   prompt edits.
+- `linkedin-tools cutover plan-automation-edits` now prints the exact
+  old-command to new-command replacement plan for the six active prompts
+  without editing them. Use it immediately after approval and before modifying
+  live automation TOML files.
 - `tests/network_automation/test_network_automation.py` covers Python browser
   routing for `saved-searches`, `acceptance check`, accepted research inside
   `acceptance draft-followups --session`, `pending-cleanup audit`, and
@@ -65,6 +69,12 @@ call `uv run linkedin-tools ...` with explicit Python state directories under:
 
 ```text
 ~/Library/Application Support/linkedin-tools/
+```
+
+Generate the exact edit checklist first:
+
+```sh
+uv run linkedin-tools cutover plan-automation-edits
 ```
 
 Keep the same safety language in the prompts:

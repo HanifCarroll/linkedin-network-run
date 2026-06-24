@@ -58,6 +58,7 @@ uv run linkedin-network-run --help
 uv run recruiter-agency-outreach --help
 uv run linkedin-opportunity-intel --help
 uv run linkedin-tools cutover audit-automations --expect pre-cutover
+uv run linkedin-tools cutover plan-automation-edits
 uv run pytest
 uv run ruff check apps packages tests
 uv run mypy apps packages tests
@@ -187,8 +188,15 @@ matching approval flag:
    git tag python-cutover-approved-YYYYMMDD
    ```
 
-3. Update operational docs and automation references to use Python commands
-   using `docs/cutover-automation-inventory.md`.
+3. Generate the read-only prompt edit plan:
+
+   ```sh
+   uv run linkedin-tools cutover plan-automation-edits
+   ```
+
+   Apply those old-command to new-command replacements to the six active
+   automation prompts listed in `docs/cutover-automation-inventory.md`. Keep
+   the safety requirements from the plan in the prompt text.
 4. Verify the live automation prompts now point at Python commands:
 
    ```sh

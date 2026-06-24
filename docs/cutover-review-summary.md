@@ -29,30 +29,32 @@ sends or withdrawals were performed during verification.
   called standalone `salesnav-*.js` artifact producers: saved-search
   resolution, acceptance outcome checks, accepted-candidate research, pending
   cleanup audits, and pending invitation capture.
+- Read-only cutover helpers for auditing active local automation prompts and
+  generating exact post-approval prompt edit plans.
 - Legacy importers and compatibility commands for `linkedin-network-run`,
   `recruiter-agency-outreach`, and `linkedin-opportunity-intel`; network and
   recruiter/agency imports now promote usable Python app state under the new
   `linkedin-tools` state root.
 
-## Recent Closure Commits
+## Recent Closure Areas
 
-- `23f1d02 feat: add cutover automation prompt audit`
-- `bf737d6 feat: complete recruiter daily orchestration parity`
-- `3412f31 feat: replace remaining automation artifact producers`
-- `3c2fad1 docs: refresh python cutover guidance`
-- `a46869d feat: promote legacy state for cutover`
-- `f620d70 feat: close remaining network command parity`
-- `bc3b923 feat: preserve salesnav capture api enrichment`
-- `c807cf9 feat: expand opportunity command parity`
-- `e1e3ca6 feat: complete recruiter browser parity`
-- `83f4bc5 feat: add browser and command parity follow-up`
+- Cutover automation prompt audit and exact post-approval edit planning.
+- Recruiter daily orchestration parity.
+- Remaining automation artifact producer replacements.
+- Python cutover guidance and review docs.
+- Legacy state promotion for network and recruiter/agency state.
+- Remaining network command parity, including top-up reconciliation.
+- Sales Navigator capture API enrichment parity.
+- Opportunity command parity.
+- Recruiter browser parity.
 
 ## Verification
 
-- PASS: `uv run pytest` (`118 passed`, one existing FastAPI/Starlette warning)
+- PASS: `uv run pytest` (`119 passed`, one existing FastAPI/Starlette warning)
 - PASS: `uv run ruff check apps packages tests`
 - PASS: `uv run mypy apps packages tests`
 - PASS: `uv run linkedin-tools cutover audit-automations --expect pre-cutover`
+- PASS: `uv run linkedin-tools cutover plan-automation-edits --json`
 - PASS: source-faithful extraction grep. Remaining hits are intentional legacy
   migration names, explicit score fields/classifiers, UI headings/templates,
   documented grep examples, and explicit browser/menu fallback terminology.
@@ -87,9 +89,9 @@ The only unchecked item in `docs/cutover-checklist.md` is:
 
 - Hanif approves cutover.
 
-The active local automation replacement map is documented in
-`docs/cutover-automation-inventory.md`; the live prompts should be edited only
-after approval.
+The active local automation replacement map and generated edit plan are
+documented in `docs/cutover-automation-inventory.md`; the live prompts should
+be edited only after approval.
 
 After approval, the old Go/JavaScript implementation can be archived or frozen
 according to the cutover checklist.

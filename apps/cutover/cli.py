@@ -12,7 +12,9 @@ from .automation_audit import (
     Expectation,
     audit_automation_prompts,
     default_automation_root,
+    plan_automation_prompt_edits,
     render_automation_audit,
+    render_automation_edit_plan,
 )
 
 
@@ -37,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     audit_parser.add_argument("--json", action="store_true")
 
+    plan_parser = subparsers.add_parser("plan-automation-edits")
+    plan_parser.add_argument(
+        "--root",
+        default=str(default_automation_root()),
+        help="Codex automation root to inspect",
+    )
+    plan_parser.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -56,13 +66,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run_command(args: argparse.Namespace) -> None:
     if args.command == "audit-automations":
-        report = audit_automation_prompts(
+        audit_report = audit_automation_prompts(
             root=Path(args.root),
             expectation=_expectation(args.expect),
         )
-        print(report.to_json() if args.json else render_automation_audit(report))
-        if not report.passed:
+        print(audit_report.to_json() if args.json else render_automation_audit(audit_report))
+        if not audit_report.passed:
             raise RuntimeError("automation prompt cutover audit failed")
+        return
+    if args.command == "plan-automation-edits":
+        edit_report = plan_automation_prompt_edits(root=Path(args.root))
+        print(edit_report.to_json() if args.json else render_automation_edit_plan(edit_report))
         return
     raise ValueError(f"unsupported command {args.command!r}")
 
