@@ -19,6 +19,8 @@ from apps.compat import (
     linkedin_opportunity_intel,
     recruiter_agency_outreach,
 )
+from apps.recruiter_agency_outreach.storage import APP_DIR as RECRUITER_AGENCY_APP_DIR
+from apps.recruiter_agency_outreach.storage import Store as RecruiterAgencyStore
 from packages.linkedin_storage.migrations import (
     LEGACY_IMPORTS_DB_NAME,
     import_legacy_network_state,
@@ -43,6 +45,8 @@ def test_network_import_preserves_legacy_files(tmp_path: Path) -> None:
     assert _hash_tree(old_state) == before
     assert result.artifact_count == 2
     assert result.warnings == ()
+    assert (target_root / "network-automation" / "active.json").read_bytes() == active_content
+    assert (target_root / "network-automation" / "run-1.jsonl").read_bytes() == log_content
     assert (
         _artifact_content(target_root, result.import_id, "network", "active.json")
         == active_content
@@ -67,7 +71,18 @@ def test_recruiter_agency_import_preserves_json_sqlite_and_table_snapshots(
         connection.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')")
         connection.execute(
             "INSERT INTO leads (id, data) VALUES (?, ?)",
-            ("lead-1", '{"id":"lead-1","name":"Grace"}'),
+            (
+                "lead-1",
+                json.dumps(
+                    {
+                        "id": "lead-1",
+                        "source": "legacy",
+                        "name": "Grace",
+                        "first_name": "Grace",
+                        "send_attempts": None,
+                    }
+                ),
+            ),
         )
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -84,6 +99,10 @@ def test_recruiter_agency_import_preserves_json_sqlite_and_table_snapshots(
 
     assert _hash_tree(old_state) == before
     assert result.artifact_count == 4
+    promoted = RecruiterAgencyStore(target_root / RECRUITER_AGENCY_APP_DIR).load()
+    assert promoted.leads[0].id == "lead-1"
+    assert promoted.leads[0].send_attempts == []
+    assert (target_root / "recruiter-agency-outreach" / "outreach.sqlite").exists()
     assert _artifact_content(
         target_root,
         result.import_id,
@@ -98,6 +117,41 @@ def test_recruiter_agency_import_preserves_json_sqlite_and_table_snapshots(
     )
     assert b"lead-1" in lead_snapshot
     assert b"Grace" in lead_snapshot
+
+
+def test_recruiter_agency_import_promotes_json_when_sqlite_is_missing(tmp_path: Path) -> None:
+    old_state = tmp_path / "old-outreach"
+    old_state.mkdir()
+    (old_state / "outreach.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "leads": [
+                    {
+                        "id": "lead-json",
+                        "source": "legacy-json",
+                        "name": "Ada Lovelace",
+                        "first_name": "Ada",
+                        "send_attempts": None,
+                    }
+                ],
+                "agency_accounts": [],
+                "capture_cursors": {},
+                "updated_at": "2026-06-24T00:00:00Z",
+            }
+        )
+    )
+    target_root = tmp_path / "linkedin-tools"
+
+    result = import_legacy_recruiter_agency_state(
+        old_state_dir=old_state,
+        target_root=target_root,
+    )
+
+    assert result.warnings == ()
+    promoted = RecruiterAgencyStore(target_root / RECRUITER_AGENCY_APP_DIR).load()
+    assert [lead.id for lead in promoted.leads] == ["lead-json"]
+    assert promoted.leads[0].send_attempts == []
 
 
 def test_missing_opportunity_import_records_warning_without_source_mutation(

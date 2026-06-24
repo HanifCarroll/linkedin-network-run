@@ -1,5 +1,26 @@
 # Migration And Compatibility Handoff
 
+## Orchestrator Update 2026-06-24
+
+The orchestrator follow-up promoted the legacy importers beyond raw artifact
+archival:
+
+- Network import now copies legacy state files into
+  `~/Library/Application Support/linkedin-tools/network-automation/` when that
+  target has no existing files.
+- Recruiter/agency import now promotes `outreach.sqlite` into
+  `~/Library/Application Support/linkedin-tools/recruiter-agency-outreach/`, or
+  converts `outreach.json` into that SQLite store when the old SQLite file is
+  absent.
+- Compatibility command sets now delegate all known app-owned commands to the
+  Python app ports; `import-legacy-state` remains the migration shim.
+- Temp-root rehearsal against the real local legacy state regenerated network
+  status and recruiter/agency report from promoted Python state.
+
+The historical gaps below are retained as handoff context, but the raw
+artifact-only migration gap is no longer current for network and
+recruiter/agency state.
+
 ## Goal
 
 Thread 7 built read-only legacy state importers and temporary compatibility

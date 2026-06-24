@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -28,6 +29,8 @@ LEGACY_IMPORTS_DB_NAME = "legacy-imports.sqlite"
 NETWORK_LEGACY_APP_DIR = "linkedin-network-run"
 RECRUITER_AGENCY_LEGACY_APP_DIR = "recruiter-agency-outreach"
 OPPORTUNITY_LEGACY_DIR = Path("/tmp/linkedin-opportunity-signals")
+NETWORK_STATE_DIR = "network-automation"
+RECRUITER_AGENCY_STATE_DIR = "recruiter-agency-outreach"
 
 OUTREACH_SQLITE_TABLES = (
     "meta",
@@ -158,11 +161,13 @@ def import_legacy_network_state(
     target_root: Path = DEFAULT_STATE_ROOT,
 ) -> MigrationResult:
     source_dir = old_state_dir or default_legacy_network_state_dir()
+    promotion_warnings = _promote_network_state(source_dir=source_dir, target_root=target_root)
     return _import_legacy_directory(
         source_app="network",
         source_dir=source_dir,
         target_root=target_root,
         extra_artifacts=(),
+        initial_warnings=promotion_warnings,
     )
 
 
@@ -173,12 +178,16 @@ def import_legacy_recruiter_agency_state(
 ) -> MigrationResult:
     source_dir = old_state_dir or default_legacy_recruiter_agency_state_dir()
     extra_artifacts, warnings = _outreach_sqlite_snapshots(source_dir)
+    promotion_warnings = _promote_recruiter_agency_state(
+        source_dir=source_dir,
+        target_root=target_root,
+    )
     return _import_legacy_directory(
         source_app="recruiter_agency",
         source_dir=source_dir,
         target_root=target_root,
         extra_artifacts=extra_artifacts,
-        initial_warnings=warnings,
+        initial_warnings=warnings + promotion_warnings,
     )
 
 
@@ -299,6 +308,155 @@ def _import_legacy_directory(
         artifact_count=len(artifacts),
         warnings=tuple(warnings),
     )
+
+
+def _promote_network_state(*, source_dir: Path, target_root: Path) -> tuple[str, ...]:
+    if not source_dir.exists() or not source_dir.is_dir():
+        return ()
+    target_dir = target_root / NETWORK_STATE_DIR
+    if _directory_has_files(target_dir):
+        return (f"target network state already exists; skipped promotion: {target_dir}",)
+
+    for path in sorted(source_dir.rglob("*")):
+        if not path.is_file() or path.name == ".DS_Store":
+            continue
+        destination = target_dir / path.relative_to(source_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+    return ()
+
+
+def _promote_recruiter_agency_state(*, source_dir: Path, target_root: Path) -> tuple[str, ...]:
+    if not source_dir.exists() or not source_dir.is_dir():
+        return ()
+    source_database = source_dir / "outreach.sqlite"
+    source_json = source_dir / "outreach.json"
+    target_dir = target_root / RECRUITER_AGENCY_STATE_DIR
+    target_database = target_dir / "outreach.sqlite"
+    if target_database.exists():
+        return (
+            "target recruiter/agency SQLite state already exists; "
+            f"skipped promotion: {target_database}",
+        )
+    if source_database.exists():
+        try:
+            _copy_sqlite_database_readonly(source_database, target_database)
+        except sqlite3.Error as error:
+            return (f"could not promote outreach.sqlite: {error}",)
+        return ()
+    if source_json.exists():
+        try:
+            _promote_recruiter_agency_json(source_json, target_database)
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            return (f"could not promote outreach.json: {error}",)
+        return ()
+    return ("no outreach.sqlite or outreach.json found for recruiter/agency promotion",)
+
+
+def _directory_has_files(path: Path) -> bool:
+    return path.exists() and any(item.is_file() for item in path.rglob("*"))
+
+
+def _copy_sqlite_database_readonly(source_database: Path, target_database: Path) -> None:
+    target_database.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"{source_database.resolve().as_uri()}?mode=ro&immutable=1"
+    with sqlite3.connect(source_uri, uri=True) as source_connection:
+        with sqlite3.connect(target_database) as target_connection:
+            source_connection.backup(target_connection)
+
+
+def _promote_recruiter_agency_json(source_json: Path, target_database: Path) -> None:
+    payload = json.loads(source_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("outreach.json root must be an object")
+    target_database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(target_database) as connection:
+        _ensure_recruiter_agency_state_schema(connection)
+        with connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                ("schema_version", str(payload.get("schema_version") or 1)),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                ("updated_at", str(payload.get("updated_at") or "")),
+            )
+            _insert_json_rows(connection, "leads", "id", payload.get("leads"))
+            _insert_json_rows(
+                connection,
+                "agency_accounts",
+                "id",
+                payload.get("agency_accounts"),
+            )
+            _insert_json_rows(
+                connection,
+                "agency_contact_candidates",
+                "id",
+                payload.get("agency_contact_candidates"),
+            )
+            raw_cursors = payload.get("capture_cursors")
+            if isinstance(raw_cursors, Mapping):
+                cursor_rows = [
+                    dict(cursor, source=str(source))
+                    for source, cursor in raw_cursors.items()
+                    if isinstance(cursor, Mapping)
+                ]
+                _insert_json_rows(connection, "capture_cursors", "source", cursor_rows)
+            _insert_run_events(connection, payload.get("run_events"))
+
+
+def _ensure_recruiter_agency_state_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS leads (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS agency_accounts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS agency_contact_candidates (
+            id TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS capture_cursors (
+            source TEXT PRIMARY KEY,
+            data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS run_events (position INTEGER PRIMARY KEY, data TEXT NOT NULL);
+        """
+    )
+
+
+def _insert_json_rows(
+    connection: sqlite3.Connection,
+    table: str,
+    id_column: str,
+    raw_rows: object,
+) -> None:
+    if not isinstance(raw_rows, list):
+        return
+    quoted_table = _quote_identifier(table)
+    quoted_id_column = _quote_identifier(id_column)
+    for row in raw_rows:
+        if not isinstance(row, Mapping):
+            continue
+        row_id = row.get(id_column)
+        if row_id is None:
+            continue
+        connection.execute(
+            f"INSERT OR REPLACE INTO {quoted_table}({quoted_id_column}, data) VALUES (?, ?)",
+            (str(row_id), json.dumps(dict(row), sort_keys=True)),
+        )
+
+
+def _insert_run_events(connection: sqlite3.Connection, raw_events: object) -> None:
+    if not isinstance(raw_events, list):
+        return
+    for index, event in enumerate(raw_events[-500:]):
+        if not isinstance(event, Mapping):
+            continue
+        connection.execute(
+            "INSERT OR REPLACE INTO run_events(position, data) VALUES (?, ?)",
+            (index, json.dumps(dict(event), sort_keys=True)),
+        )
 
 
 def _file_artifacts(*, source_app: SourceApp, source_dir: Path) -> tuple[LegacyArtifact, ...]:

@@ -1,11 +1,15 @@
 # Python LinkedIn Tools Cutover Checklist
 
 Do not archive the current Go/JavaScript implementation until all items pass.
+Use `docs/cutover-execution-runbook.md` for the approval, import, smoke-test,
+and archive sequence.
 
 - [x] Every current CLI command has a Python equivalent.
 - [x] Every current browser script has a Python Playwright equivalent or an
       approved consolidated replacement.
 - [x] Old state importers preserve data and do not mutate old state.
+- [x] Old network and recruiter/agency state importers promote usable Python
+      app state under the new `linkedin-tools` state root.
 - [x] Compatibility commands work during migration.
 - [x] Local UI exposes all required PRD views.
 - [x] Send and withdraw safety tests pass.

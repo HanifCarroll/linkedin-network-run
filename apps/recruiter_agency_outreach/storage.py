@@ -20,7 +20,7 @@ from .models import (
 )
 from .utils import now_iso
 
-APP_DIR = "recruiter_agency_outreach"
+APP_DIR = "recruiter-agency-outreach"
 SQLITE_BUSY_TIMEOUT_MS = 5000
 
 

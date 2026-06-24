@@ -69,6 +69,12 @@ def _list_str(value: object) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
+def _mapping_list(value: object) -> list[Mapping[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
 def _optional_str(value: object) -> str | None:
     if value is None:
         return None
@@ -228,8 +234,7 @@ class Lead:
             ),
             send_attempts=[
                 SendAttempt.from_mapping(item)
-                for item in data.get("send_attempts", [])
-                if isinstance(item, Mapping)
+                for item in _mapping_list(data.get("send_attempts"))
             ],
             notes=_list_str(data.get("notes")),
         )
@@ -596,24 +601,20 @@ class OutreachState:
             schema_version=_optional_int(data.get("schema_version"), 1),
             leads=[
                 Lead.from_mapping(item)
-                for item in data.get("leads", [])
-                if isinstance(item, Mapping)
+                for item in _mapping_list(data.get("leads"))
             ],
             agency_accounts=[
                 AgencyAccount.from_mapping(item)
-                for item in data.get("agency_accounts", [])
-                if isinstance(item, Mapping)
+                for item in _mapping_list(data.get("agency_accounts"))
             ],
             agency_contact_candidates=[
                 AgencyContactCandidate.from_mapping(item)
-                for item in data.get("agency_contact_candidates", [])
-                if isinstance(item, Mapping)
+                for item in _mapping_list(data.get("agency_contact_candidates"))
             ],
             capture_cursors=cursors,
             run_events=[
                 RunEvent.from_mapping(item)
-                for item in data.get("run_events", [])
-                if isinstance(item, Mapping)
+                for item in _mapping_list(data.get("run_events"))
             ],
             updated_at=str(data.get("updated_at") or ""),
         )
