@@ -1,0 +1,77 @@
+{
+  "contract_version": "opportunity-source-registry.v1",
+  "sources": [
+    {
+      "source_id": "known_high_signal_post_engagement",
+      "source_kind": "known_post",
+      "title": "Known high-signal LinkedIn post engagement",
+      "description": "Known post URLs whose comments can be collected with explicit comment extraction.",
+      "query_ids": [
+        "known_high_signal_post_engagement",
+        "internal_tools_dashboard_pain",
+        "product_engineering_build_need"
+      ],
+      "urls": [
+        "https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/"
+      ],
+      "priority": 100,
+      "enabled": true
+    },
+    {
+      "source_id": "internal_tools_comment_search",
+      "source_kind": "linkedin_search",
+      "title": "Internal tools and dashboards comment search",
+      "description": "Searches for first-party operators asking for help with internal tools and dashboards.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "internal_tools_dashboard_pain"
+      ],
+      "search_queries": [
+        "\"we need\" \"internal tool\"",
+        "\"dashboard\" \"need help\" \"LinkedIn\"",
+        "\"we still do this manually\" automation"
+      ],
+      "priority": 90,
+      "enabled": true
+    },
+    {
+      "source_id": "finance_tax_manual_work_feed",
+      "source_kind": "provider_csv",
+      "title": "Finance and tax manual-work actual comment feed",
+      "description": "Provider or manual CSV rows for spreadsheet-heavy finance and tax operations comments.",
+      "query_ids": [
+        "finance_tax_spreadsheet_workflows"
+      ],
+      "priority": 75,
+      "enabled": true
+    },
+    {
+      "source_id": "product_engineering_operator_watchlist",
+      "source_kind": "watchlist",
+      "title": "Product engineering operator watchlist",
+      "description": "Creator/operator/company watchlist for product engineering build requests.",
+      "query_ids": [
+        "product_engineering_build_need",
+        "automation_tool_migration_pain"
+      ],
+      "priority": 80,
+      "enabled": true
+    },
+    {
+      "source_id": "manual_actual_comment_import",
+      "source_kind": "manual_csv",
+      "title": "Manual actual-comment import",
+      "description": "Human-reviewed rows copied from visible LinkedIn comments into the canonical CSV contract.",
+      "query_ids": [
+        "first_party_automation_backlog",
+        "internal_tools_dashboard_pain",
+        "finance_tax_spreadsheet_workflows",
+        "product_engineering_build_need",
+        "automation_tool_migration_pain",
+        "known_high_signal_post_engagement"
+      ],
+      "priority": 70,
+      "enabled": true
+    }
+  ]
+}

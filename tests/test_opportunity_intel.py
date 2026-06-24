@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import ast
+import csv
+import json
+from pathlib import Path
+
+from apps.comment_extractor.contracts import PostHTMLInput
+from apps.comment_extractor.linkedin_post_comments import (
+    EXPLICIT_COMMENT_SELECTORS,
+    extract_comments_from_html_file,
+    write_raw_comments_jsonl,
+)
+from apps.opportunity_intel.contracts import CANONICAL_COMMENT_COLUMNS, RankLevel
+from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
+from apps.opportunity_intel.imports import read_comment_csv
+from apps.opportunity_intel.normalization import normalize_and_dedupe
+from apps.opportunity_intel.ranking import rank_comment
+from apps.opportunity_intel.sources import (
+    DEFAULT_QUERY_PACK_PATH,
+    DEFAULT_SOURCE_REGISTRY_PATH,
+    load_query_pack,
+    load_source_registry,
+    validate_registry_against_queries,
+)
+
+FIXTURE_DIR = Path("tests/fixtures/opportunity_intel")
+
+
+def test_source_registry_and_query_pack_validate() -> None:
+    registry = load_source_registry()
+    query_pack = load_query_pack()
+
+    validate_registry_against_queries(registry, query_pack)
+
+    assert registry.contract_version == "opportunity-source-registry.v1"
+    assert query_pack.contract_version == "opportunity-comment-signal-queries.v1"
+    assert len(query_pack.queries) == 6
+
+
+def test_comment_extractor_writes_raw_comments_jsonl(tmp_path: Path) -> None:
+    html_path = FIXTURE_DIR / "linkedin_post_comments.html"
+    result = extract_comments_from_html_file(
+        PostHTMLInput(
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/",
+            html_path=html_path,
+            source_id="known_high_signal_post_engagement",
+            query_id="known_high_signal_post_engagement",
+        )
+    )
+
+    output_path = write_raw_comments_jsonl(result.comments, tmp_path)
+    rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+    assert output_path.name == "raw_comments.jsonl"
+    assert len(rows) == 2
+    assert rows[0]["contract_version"] == "raw_comments.v1"
+    assert rows[0]["commenter_name"] == "Ava Founder"
+    assert rows[0]["commenter_profile_url"] == "https://www.linkedin.com/in/ava-founder"
+    assert "internal tool spreadsheet tracker" in rows[0]["comment_text"]
+    assert EXPLICIT_COMMENT_SELECTORS == (
+        '[componentkey^="replaceableComment_urn:li:comment:"]',
+        '[data-id^="urn:li:comment:"]',
+    )
+
+
+def test_provider_csv_aliases_normalize_to_actual_comment_contract(tmp_path: Path) -> None:
+    csv_path = tmp_path / "provider.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "query",
+                "source",
+                "source_type",
+                "linkedin_post_url",
+                "name",
+                "profile_url",
+                "headline",
+                "company",
+                "text",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "query": "internal_tools_dashboard_pain",
+                "source": "manual_actual_comment_import",
+                "source_type": "manual_csv",
+                "linkedin_post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                "name": "Ava Founder",
+                "profile_url": "https://www.linkedin.com/in/ava-founder/",
+                "headline": "Founder",
+                "company": "Ava Ops",
+                "text": "We need help with an internal tool dashboard for our ops team.",
+            }
+        )
+
+    result = read_comment_csv(csv_path, load_query_pack())
+
+    assert not result.rejected_rows
+    assert result.valid_comments[0].commenter_name == "Ava Founder"
+    assert result.valid_comments[0].comment_text.startswith("We need help")
+
+
+def test_gate_enforces_100_row_batch_proof(tmp_path: Path) -> None:
+    comments_csv = tmp_path / "comments_99.csv"
+    _write_comment_fixture_csv(comments_csv, count=99, direct_buyer_count=35)
+    import_result = read_comment_csv(comments_csv, load_query_pack())
+    deduped = normalize_and_dedupe(import_result.valid_comments)
+    query = load_query_pack().require_query("internal_tools_dashboard_pain")
+    ranked = tuple(rank_comment(comment, query) for comment in deduped.comments)
+
+    gate = evaluate_gate(ranked)
+
+    assert not gate.passed
+    assert "minimum_valid_comments_not_met" in gate.failed_reasons
+
+
+def test_fixture_backed_experiment_writes_required_artifacts(tmp_path: Path) -> None:
+    comments_csv = tmp_path / "comments_100.csv"
+    _write_comment_fixture_csv(comments_csv, count=100, direct_buyer_count=35)
+
+    artifacts = run_source_experiment(
+        comments_csv_path=comments_csv,
+        output_dir=tmp_path / "runs",
+        source_registry_path=DEFAULT_SOURCE_REGISTRY_PATH,
+        query_pack_path=DEFAULT_QUERY_PACK_PATH,
+        run_id="fixture-run",
+    )
+
+    gate_payload = json.loads(artifacts.gate_path.read_text(encoding="utf-8"))
+    report = artifacts.source_report_path.read_text(encoding="utf-8")
+
+    assert gate_payload["passed"] is True
+    assert gate_payload["valid_comment_count"] == 100
+    assert gate_payload["warm_hot_count"] == 35
+    assert artifacts.calibration_template_path.exists()
+    assert artifacts.calibration_report_path.exists()
+    assert artifacts.source_decision_path.exists()
+    assert artifacts.action_plan_path.exists()
+    assert artifacts.run_history_path.exists()
+    assert artifacts.review_queue_csv_path.exists()
+    assert artifacts.review_queue_jsonl_path.exists()
+    assert "Opportunity Source Experiment Report" in report
+
+
+def test_ranker_rejects_recruiting_and_job_seeker_noise(tmp_path: Path) -> None:
+    comments_csv = tmp_path / "noise.csv"
+    _write_comment_fixture_csv(comments_csv, count=1, direct_buyer_count=0)
+    comment = read_comment_csv(comments_csv, load_query_pack()).valid_comments[0]
+
+    ranked = rank_comment(comment, load_query_pack().require_query(comment.query_id))
+
+    assert ranked.rank_level is RankLevel.REJECT
+    assert "not_direct_buyer" in ranked.reject_reasons or "job_seeker" in ranked.reject_reasons
+
+
+def test_opportunity_and_comment_modules_do_not_import_action_modules() -> None:
+    prohibited_modules = (
+        "apps.network_automation",
+        "apps.recruiter_agency_outreach",
+        "packages.linkedin_salesnav.messages",
+    )
+    prohibited_action_terms = ("send", "connect", "withdraw")
+    for package_dir in (Path("apps/opportunity_intel"), Path("apps/comment_extractor")):
+        for path in package_dir.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        assert not alias.name.startswith(prohibited_modules)
+                if isinstance(node, ast.ImportFrom) and node.module is not None:
+                    assert not node.module.startswith(prohibited_modules)
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                    lower_name = node.name.casefold()
+                    assert not any(term in lower_name for term in prohibited_action_terms)
+
+
+def _write_comment_fixture_csv(path: Path, *, count: int, direct_buyer_count: int) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CANONICAL_COMMENT_COLUMNS)
+        writer.writeheader()
+        for index in range(count):
+            direct_buyer = index < direct_buyer_count
+            writer.writerow(
+                {
+                    "query_id": "internal_tools_dashboard_pain",
+                    "source_id": "manual_actual_comment_import",
+                    "source_kind": "manual_csv",
+                    "source_url": "https://www.linkedin.com/search/results/content/",
+                    "search_query": "\"internal tool\" \"need help\"",
+                    "post_url": (
+                        "https://www.linkedin.com/feed/update/"
+                        f"urn:li:activity:735000000000000{index:04d}/"
+                    ),
+                    "post_author_name": "Post Author",
+                    "post_text": "Operators discussing dashboard work.",
+                    "comment_id": f"urn:li:comment:{index}",
+                    "comment_url": "",
+                    "commenter_name": f"Person {index}",
+                    "commenter_profile_url": f"https://www.linkedin.com/in/person-{index}/",
+                    "commenter_headline": "Founder" if direct_buyer else "Student",
+                    "commenter_company": "Acme Ops" if direct_buyer else "",
+                    "relationship": "",
+                    "comment_text": (
+                        "We need help with an internal tool dashboard "
+                        "for our ops team this quarter."
+                        if direct_buyer
+                        else "I am a student looking for a job and liked this dashboard example."
+                    ),
+                    "commented_at": "2026-06-24T12:00:00Z",
+                }
+            )

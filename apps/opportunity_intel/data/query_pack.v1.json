@@ -1,0 +1,143 @@
+{
+  "contract_version": "opportunity-comment-signal-queries.v1",
+  "queries": [
+    {
+      "query_id": "first_party_automation_backlog",
+      "title": "First-party automation backlog",
+      "search_queries": [
+        "\"we need to automate\"",
+        "\"we still do this manually\"",
+        "\"automation backlog\""
+      ],
+      "comment_text_patterns": [
+        "we need to automate",
+        "we still do this manually",
+        "automation backlog",
+        "too manual"
+      ],
+      "need_categories": [
+        "ai_workflow_automation",
+        "spreadsheet_operations"
+      ],
+      "source_ids": [
+        "internal_tools_comment_search",
+        "manual_actual_comment_import"
+      ]
+    },
+    {
+      "query_id": "internal_tools_dashboard_pain",
+      "title": "Internal tools and dashboard pain",
+      "search_queries": [
+        "\"internal tool\" \"need help\"",
+        "\"dashboard\" \"manual\"",
+        "\"ops tool\" \"spreadsheet\""
+      ],
+      "comment_text_patterns": [
+        "internal tool",
+        "dashboard",
+        "ops tool",
+        "manual tracker"
+      ],
+      "need_categories": [
+        "internal_tools",
+        "data_dashboards"
+      ],
+      "source_ids": [
+        "known_high_signal_post_engagement",
+        "internal_tools_comment_search",
+        "manual_actual_comment_import"
+      ]
+    },
+    {
+      "query_id": "finance_tax_spreadsheet_workflows",
+      "title": "Finance and tax spreadsheet workflows",
+      "search_queries": [
+        "\"spreadsheet\" \"tax\" \"manual\"",
+        "\"finance ops\" \"excel\""
+      ],
+      "comment_text_patterns": [
+        "spreadsheet",
+        "excel",
+        "finance ops",
+        "tax workflow"
+      ],
+      "need_categories": [
+        "spreadsheet_operations",
+        "data_dashboards"
+      ],
+      "source_ids": [
+        "finance_tax_manual_work_feed",
+        "manual_actual_comment_import"
+      ]
+    },
+    {
+      "query_id": "product_engineering_build_need",
+      "title": "Product engineering build need",
+      "search_queries": [
+        "\"who can build\" \"prototype\"",
+        "\"need help\" \"product engineering\""
+      ],
+      "comment_text_patterns": [
+        "who can build",
+        "prototype",
+        "product engineering",
+        "mvp"
+      ],
+      "need_categories": [
+        "product_engineering"
+      ],
+      "source_ids": [
+        "known_high_signal_post_engagement",
+        "product_engineering_operator_watchlist",
+        "manual_actual_comment_import"
+      ]
+    },
+    {
+      "query_id": "automation_tool_migration_pain",
+      "title": "Automation tool migration pain",
+      "search_queries": [
+        "\"migrating from\" \"automation\"",
+        "\"replace\" \"zapier\"",
+        "\"no-code\" \"broke\""
+      ],
+      "comment_text_patterns": [
+        "migration",
+        "migrating",
+        "replace",
+        "no-code broke",
+        "automation"
+      ],
+      "need_categories": [
+        "ai_workflow_automation",
+        "internal_tools"
+      ],
+      "source_ids": [
+        "product_engineering_operator_watchlist",
+        "manual_actual_comment_import"
+      ]
+    },
+    {
+      "query_id": "known_high_signal_post_engagement",
+      "title": "Known high-signal post engagement",
+      "search_queries": [
+        "\"recommend someone\" \"dashboard\"",
+        "\"who can help\" \"internal tool\""
+      ],
+      "comment_text_patterns": [
+        "recommend someone",
+        "who can help",
+        "need help",
+        "we need"
+      ],
+      "need_categories": [
+        "internal_tools",
+        "ai_workflow_automation",
+        "product_engineering"
+      ],
+      "source_ids": [
+        "known_high_signal_post_engagement",
+        "manual_actual_comment_import"
+      ]
+    }
+  ]
+}
