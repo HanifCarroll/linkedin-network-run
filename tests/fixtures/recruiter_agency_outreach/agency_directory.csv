@@ -1,0 +1,3 @@
+name,website,source_url,services,contact_name,contact_title,contact_profile_url,contact_sales_profile_urn,contact_evidence
+Bright Studio,https://bright.example.com,https://directory.example.com/bright,Web Development|Custom API Integrations,Jane Doe,Founder,https://www.linkedin.com/in/jane-doe/?trk=directory,,Directory lists Jane as founder
+Oktana,https://oktana.example.com,https://directory.example.com/oktana,Software Development,Lorenzo Fernandez,Sales Engineering,https://www.linkedin.com/in/lorenzo-fernandez-297017b/,"urn:li:fs_salesProfile:(ACwAA123ABC,NAME_SEARCH,abcdef)",Directory lists Lorenzo as sales engineering

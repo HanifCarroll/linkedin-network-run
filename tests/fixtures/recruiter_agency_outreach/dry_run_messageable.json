@@ -1,0 +1,15 @@
+{
+  "candidate": {
+    "id": "lead_fixture",
+    "name": "Dana Delivery",
+    "profileUrl": "https://www.linkedin.com/sales/lead/dana"
+  },
+  "dryRun": true,
+  "status": "dry-run-messageable",
+  "composerSelector": "textarea[name='message']",
+  "action": {
+    "found": true,
+    "kind": "message",
+    "text": "Message"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "candidate": {
+    "id": "lead_fixture",
+    "name": "Dana Delivery",
+    "profileUrl": "https://www.linkedin.com/sales/lead/dana"
+  },
+  "dryRun": false,
+  "status": "sent-clicked",
+  "url": "https://www.linkedin.com/sales/lead/dana",
+  "send": {
+    "clicked": true,
+    "text": "Send"
+  }
+}
