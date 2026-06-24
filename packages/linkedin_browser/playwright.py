@@ -72,7 +72,6 @@ async def launch_linkedin_chrome(
             headless=selected.headless,
             args=selected.launch_args(),
             env=chrome_launch_env(),
-            chromium_sandbox=True,
         )
     except Exception as exc:
         message = str(exc)

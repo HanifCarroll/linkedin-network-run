@@ -219,7 +219,6 @@ async def test_launch_linkedin_chrome_passes_clean_env_for_installed_chrome() ->
 
     assert playwright.chromium.kwargs is not None
     assert playwright.chromium.kwargs["channel"] == "chrome"
-    assert playwright.chromium.kwargs["chromium_sandbox"] is True
     launch_env = playwright.chromium.kwargs["env"]
     assert isinstance(launch_env, dict)
     assert launch_env["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
