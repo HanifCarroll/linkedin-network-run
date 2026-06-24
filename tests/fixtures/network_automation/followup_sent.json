@@ -1,0 +1,12 @@
+{
+  "candidate": {
+    "id": "afu_test",
+    "key": "test",
+    "name": "Duplicate Lead",
+    "profileUrl": "https://www.linkedin.com/sales/lead/dup",
+    "source": "ASAP - Agency Owners Delivery"
+  },
+  "dryRun": false,
+  "status": "sent-clicked",
+  "send": {"clicked": true}
+}

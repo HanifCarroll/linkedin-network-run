@@ -1,1 +1,5 @@
-"""Network automation app package."""
+"""Network automation port package."""
+
+from .cli import main
+
+__all__ = ["main"]

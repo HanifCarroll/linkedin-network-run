@@ -1,0 +1,46 @@
+{
+  "capturedAt": "2026-06-24T12:00:00Z",
+  "source": "ASAP - Agency Owners Delivery",
+  "url": "https://www.linkedin.com/sales/search/people?savedSearchId=1",
+  "resumeUrl": "https://www.linkedin.com/sales/search/people?page=2",
+  "page": {
+    "url": "https://www.linkedin.com/sales/search/people?page=2",
+    "pageLabel": "Page 2 of 5"
+  },
+  "stateCounts": {
+    "already-pending": 1,
+    "connectable": 3
+  },
+  "rawRowCount": 4,
+  "outputRowCount": 3,
+  "rows": [
+    {
+      "index": 0,
+      "name": "Already Pending",
+      "profileUrl": "https://www.linkedin.com/sales/lead/already,NAME_SEARCH,x?_ntb=session",
+      "menuState": "already-pending",
+      "menuLabels": [{"text": "Connect - Pending"}]
+    },
+    {
+      "index": 1,
+      "name": "Duplicate Lead",
+      "profileUrl": "https://www.linkedin.com/sales/lead/dup,NAME_SEARCH,x?_ntb=session",
+      "menuState": "connectable",
+      "menuLabels": [{"text": "Connect"}]
+    },
+    {
+      "index": 2,
+      "name": "Duplicate Lead",
+      "profileUrl": "https://www.linkedin.com/sales/lead/dup,SEARCH,y",
+      "menuState": "connectable",
+      "menuLabels": [{"text": "Connect"}]
+    },
+    {
+      "index": 3,
+      "name": "URN Lead",
+      "scrollUrn": "urn:li:fs_salesProfile:(ACwAAACZuNoBDnWZnoEzJVGp-uptyWQSfIw87UM,NAME_SEARCH,HDgt)",
+      "menuState": "connectable",
+      "menuLabels": [{"text": "Connect"}]
+    }
+  ]
+}

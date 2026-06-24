@@ -1,0 +1,18 @@
+{
+  "capturedAt": "2026-06-24T13:05:00Z",
+  "rows": [
+    {
+      "source": "ASAP - Agency Owners Delivery",
+      "name": "Duplicate Lead",
+      "profileUrl": "https://www.linkedin.com/sales/lead/dup",
+      "salesNav": {
+        "name": "Duplicate Lead",
+        "title": "AI Product Leader",
+        "company": "Acme AI",
+        "location": "New York, NY",
+        "url": "https://www.linkedin.com/sales/lead/dup"
+      },
+      "warnings": []
+    }
+  ]
+}

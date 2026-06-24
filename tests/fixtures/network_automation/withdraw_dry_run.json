@@ -1,0 +1,9 @@
+{
+  "candidate": {
+    "name": "Stale Invite",
+    "profileUrl": "https://www.linkedin.com/in/stale",
+    "ageText": "Sent 2 weeks ago"
+  },
+  "status": "dry-run-withdrawable",
+  "detail": {"wouldClick": true}
+}

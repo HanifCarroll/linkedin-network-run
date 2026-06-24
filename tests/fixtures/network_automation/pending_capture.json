@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-06-24T14:00:00Z",
+  "rows": [
+    {
+      "index": 0,
+      "name": "Fresh Invite",
+      "profileUrl": "https://www.linkedin.com/in/fresh",
+      "ageText": "Sent 1 week ago"
+    },
+    {
+      "index": 1,
+      "name": "Stale Invite",
+      "profileUrl": "https://www.linkedin.com/in/stale",
+      "ageText": "Sent 2 weeks ago"
+    }
+  ]
+}

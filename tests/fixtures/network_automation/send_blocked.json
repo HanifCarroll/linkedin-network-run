@@ -1,0 +1,9 @@
+{
+  "candidate": {
+    "source": "ASAP - Agency Owners Delivery",
+    "name": "Duplicate Lead",
+    "profileUrl": "https://www.linkedin.com/sales/lead/dup,SEARCH,y"
+  },
+  "status": "blocked",
+  "send": {"status": 429, "body": {"value": "-1"}}
+}
