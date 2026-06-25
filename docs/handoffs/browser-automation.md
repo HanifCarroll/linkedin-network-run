@@ -56,9 +56,18 @@ No user-facing CLI commands were added in this thread. The implemented public pa
 - Browser channel can be changed with `LINKEDIN_TOOLS_BROWSER_CHANNEL`; use
   `bundled` for Playwright's Chromium instead of installed Google Chrome.
 - Browser launches are headed by default.
-- Installed Google Chrome launches inherit a minimal Chrome-safe environment
-  from `chrome_launch_env()` so local dev-shell variables do not trip Chrome's
-  hardened runtime.
+- Installed Google Chrome is launched through a managed local CDP port, then
+  attached with `connect_over_cdp(no_defaults=True)`.
+- Installed Google Chrome does not use Playwright's direct persistent launch
+  path. That path can hang with stock Chrome and may add browser flags that do
+  not match the user's normal Chrome expectations.
+- Chrome 136+ does not support command-line automation of the default Chrome
+  data directory. Default `real` mode therefore requires an already-debuggable
+  Chrome endpoint through `LINKEDIN_TOOLS_CDP_URL`; otherwise the browser layer
+  fails fast with an explanation.
+- Automation/custom installed-Chrome profile names map to managed roots under
+  `managed-profiles/<profile-name>` so Chrome owns one dedicated user data
+  directory directly instead of using `--profile-directory=<profile-name>`.
 - Browser sessions should reuse an existing LinkedIn/Sales Navigator page when possible to avoid tab growth.
 - Closing extra pages is explicit, not automatic, so app threads do not unexpectedly close unrelated browser state.
 
@@ -96,7 +105,11 @@ Passed in this thread:
 
 ## Known Gaps
 
-- Live Playwright flows are not exercised here; this thread only added dry-run and fixture-backed coverage.
+- Live installed-Chrome CDP launch currently fails on Hanif's machine because
+  Chrome stays open but does not expose the requested local CDP port, even with
+  a non-default user data directory. The code now reports this directly and
+  points operators to `chrome://policy` / `RemoteDebuggingAllowed` or an
+  explicit `LINKEDIN_TOOLS_CDP_URL`.
 - Capture and audit parsers preserve current artifact contracts, but full DOM extraction ports should be completed by the app threads or a follow-up browser thread against live dry-runs.
 - Connection send, pending withdrawal, and message composition still need app-specific controller integration.
 

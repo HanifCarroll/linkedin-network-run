@@ -24,7 +24,10 @@ from apps.opportunity_intel.sources import load_query_pack
 from apps.opportunity_intel.store import OpportunityStore
 from packages.linkedin_browser.artifacts import ArtifactWriter
 from packages.linkedin_browser.config import ChromeProfileConfig, chrome_profile_from_env
-from packages.linkedin_browser.playwright import open_linkedin_browser_context
+from packages.linkedin_browser.playwright import (
+    close_browser_context_handle,
+    open_linkedin_browser_context,
+)
 
 MORE_COMMENTS_PATTERN = re.compile(
     r"^(load|show|view|see) (more|previous) comments?$",
@@ -601,10 +604,7 @@ async def _reusable_page(context: Any) -> Page:
 
 
 async def _close_context_handle(handle: Any) -> None:
-    if handle.close_context:
-        await handle.context.close()
-    if handle.browser is not None:
-        await handle.browser.close()
+    await close_browser_context_handle(handle)
 
 
 def _comment_extraction_cdp_url(cdp_url: str | None) -> str:

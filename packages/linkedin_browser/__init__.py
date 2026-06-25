@@ -13,10 +13,14 @@ from .config import (
     LINKEDIN_PROFILE_ENV,
     LINKEDIN_PROFILE_NAME_ENV,
     ChromeProfileConfig,
-    chrome_launch_env,
     chrome_profile_from_env,
+    chrome_profile_storage_dir,
 )
-from .playwright import BrowserContextHandle, open_linkedin_browser_context
+from .playwright import (
+    BrowserContextHandle,
+    close_browser_context_handle,
+    open_linkedin_browser_context,
+)
 from .safety import (
     GuardedActionResult,
     RealAction,
@@ -58,7 +62,8 @@ __all__ = [
     "RealActionApproval",
     "UnsafeRealActionError",
     "choose_reusable_page",
-    "chrome_launch_env",
+    "close_browser_context_handle",
+    "chrome_profile_storage_dir",
     "chrome_profile_from_env",
     "classify_browser_state",
     "guarded_click",

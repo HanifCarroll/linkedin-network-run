@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,7 @@ DEFAULT_CHROME_USER_DATA_DIR = Path.home() / "Library" / "Application Support" /
 DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR = (
     Path.home() / "Library" / "Application Support" / "linkedin-tools" / "chrome-automation"
 )
+MANAGED_CHROME_PROFILES_DIR = "managed-profiles"
 DEFAULT_PLAYWRITER_CDP_URL = "ws://127.0.0.1:19988/cdp"
 LINKEDIN_CDP_URL_ENV = "LINKEDIN_TOOLS_CDP_URL"
 LINKEDIN_BROWSER_PROFILE_MODE_ENV = "LINKEDIN_TOOLS_BROWSER_PROFILE_MODE"
@@ -19,8 +21,6 @@ LINKEDIN_PROFILE_ENV = "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR"
 LINKEDIN_PROFILE_NAME_ENV = "LINKEDIN_TOOLS_CHROME_PROFILE_NAME"
 LINKEDIN_BROWSER_CHANNEL_ENV = "LINKEDIN_TOOLS_BROWSER_CHANNEL"
 LINKEDIN_BROWSER_HEADLESS_ENV = "LINKEDIN_TOOLS_BROWSER_HEADLESS"
-SYSTEM_CHROME_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-ChromeLaunchEnv = dict[str, str | float | bool]
 
 
 @dataclass(frozen=True)
@@ -63,21 +63,16 @@ def chrome_profile_from_env(environ: Mapping[str, str] | None = None) -> ChromeP
     )
 
 
-def chrome_launch_env(environ: Mapping[str, str] | None = None) -> ChromeLaunchEnv:
-    """Return an environment that installed Chrome can inherit safely."""
-
-    source = environ if environ is not None else os.environ
-    candidates = {
-        "HOME": source.get("HOME", str(Path.home())),
-        "PATH": SYSTEM_CHROME_PATH,
-        "TMPDIR": source.get("TMPDIR", "/tmp"),
-        "USER": source.get("USER", ""),
-        "LOGNAME": source.get("LOGNAME", source.get("USER", "")),
-        "SHELL": source.get("SHELL", "/bin/zsh"),
-        "LANG": source.get("LANG", "en_US.UTF-8"),
-        "LC_ALL": source.get("LC_ALL", ""),
-    }
-    return {key: value for key, value in candidates.items() if value}
+def chrome_profile_storage_dir(config: ChromeProfileConfig) -> Path:
+    if _same_path(config.user_data_dir, DEFAULT_CHROME_USER_DATA_DIR):
+        return config.user_data_dir / config.profile_name
+    if config.profile_name.strip().casefold() == "default":
+        return config.user_data_dir
+    return (
+        config.user_data_dir
+        / MANAGED_CHROME_PROFILES_DIR
+        / _safe_profile_dir(config.profile_name)
+    )
 
 
 def _user_data_dir_for_mode(source: Mapping[str, str]) -> Path:
@@ -111,3 +106,12 @@ def _env_bool(value: str | None, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.fspath(left.expanduser().resolve()) == os.fspath(right.expanduser().resolve())
+
+
+def _safe_profile_dir(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip(".-")
+    return name or "Default"

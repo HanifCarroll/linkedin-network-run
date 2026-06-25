@@ -29,6 +29,7 @@ from packages.linkedin_browser import (
     PageReusePolicy,
     RealAction,
     RealActionApproval,
+    close_browser_context_handle,
     guarded_click,
     open_linkedin_browser_context,
 )
@@ -65,14 +66,9 @@ class PlaywrightMessageBrowserClient:
 
     def close(self) -> None:
         async def _close() -> None:
-            should_close_context = (
-                self._context_handle_ref is None or self._context_handle_ref.close_context
-            )
-            if (
-                should_close_context
-                and self._context is not None
-                and hasattr(self._context, "close")
-            ):
+            if self._context_handle_ref is not None:
+                await close_browser_context_handle(self._context_handle_ref)
+            elif self._context is not None and hasattr(self._context, "close"):
                 await self._context.close()
             if self._playwright is not None and hasattr(self._playwright, "stop"):
                 await self._playwright.stop()

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from apps.opportunity_intel.store import OpportunityStore
-from packages.linkedin_browser.config import chrome_profile_from_env
+from packages.linkedin_browser.config import chrome_profile_from_env, chrome_profile_storage_dir
 
 
 @dataclass(frozen=True)
@@ -576,7 +576,7 @@ class SQLiteReviewReadModelProvider:
 
     def _browser_sessions(self) -> tuple[BrowserSessionRow, ...]:
         config = chrome_profile_from_env()
-        profile_path = config.user_data_dir / config.profile_name
+        profile_path = chrome_profile_storage_dir(config)
         latest_error = self.store.fetch_all(
             """
             SELECT message
