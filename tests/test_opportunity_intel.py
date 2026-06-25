@@ -11,8 +11,11 @@ import pytest
 
 from apps.comment_extractor.browser import (
     BrowserExtractionInput,
+    BrowserSafetyLimits,
+    _capture_optional_screenshot,
     _comment_extraction_cdp_url,
     _comments_from_page_rows,
+    _expand_visible_comment_controls,
 )
 from apps.comment_extractor.cli import main as comments_main
 from apps.comment_extractor.contracts import PostHTMLInput
@@ -203,6 +206,39 @@ def test_live_page_comment_rows_map_to_actual_comment_contract() -> None:
     assert comment.commenter_profile_url == "https://www.linkedin.com/in/ava-founder"
     assert comment.commenter_headline == "Founder at Ava Ops"
     assert "real dashboard" in comment.comment_text
+
+
+@pytest.mark.asyncio
+async def test_live_comment_expansion_uses_dom_scroll_instead_of_mouse_wheel() -> None:
+    page = _DomScrollOnlyPage()
+
+    await _expand_visible_comment_controls(
+        page,  # type: ignore[arg-type]
+        BrowserSafetyLimits(
+            max_scrolls=1,
+            max_comment_control_clicks=1,
+            max_reply_control_clicks=0,
+            settle_ms=25,
+        ),
+    )
+
+    assert page.evaluate_calls == [("(pixels) => window.scrollBy(0, pixels)", 1800)]
+    assert page.waits == [25]
+
+
+@pytest.mark.asyncio
+async def test_optional_screenshot_failure_returns_warning_without_artifact() -> None:
+    store = _ArtifactRecordingStore()
+
+    warnings = await _capture_optional_screenshot(
+        page=object(),  # type: ignore[arg-type]
+        run_id="run_1",
+        writer=_FailingScreenshotWriter(),  # type: ignore[arg-type]
+        store=store,  # type: ignore[arg-type]
+    )
+
+    assert warnings == ("screenshot_capture_failed:Error",)
+    assert store.artifacts == []
 
 
 def test_comment_extraction_disables_implicit_cdp_attachment() -> None:
@@ -539,6 +575,50 @@ def _parser_command_names(parser: argparse.ArgumentParser) -> set[str]:
         if isinstance(choices, dict):
             return set(choices)
     raise AssertionError("parser has no subcommands")
+
+
+class _DomScrollOnlyPage:
+    def __init__(self) -> None:
+        self.mouse = _NoWheelMouse()
+        self.evaluate_calls: list[tuple[str, int]] = []
+        self.waits: list[int] = []
+
+    def get_by_role(self, _role: str, *, name: Any) -> _EmptyLocator:
+        return _EmptyLocator()
+
+    async def evaluate(self, expression: str, arg: int) -> None:
+        self.evaluate_calls.append((expression, arg))
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        self.waits.append(ms)
+
+
+class _NoWheelMouse:
+    async def wheel(self, _delta_x: int, _delta_y: int) -> None:
+        raise AssertionError("live comment expansion should not use mouse wheel input")
+
+
+class _EmptyLocator:
+    async def count(self) -> int:
+        return 0
+
+    def nth(self, _index: int) -> _EmptyLocator:
+        return self
+
+
+class _FailingScreenshotWriter:
+    async def screenshot(self, *_args: Any, **_kwargs: Any) -> object:
+        from playwright.async_api import Error as PlaywrightError
+
+        raise PlaywrightError("Unable to capture screenshot")
+
+
+class _ArtifactRecordingStore:
+    def __init__(self) -> None:
+        self.artifacts: list[tuple[str, str, Path]] = []
+
+    def record_artifact(self, *, run_id: str, kind: str, path: Path) -> None:
+        self.artifacts.append((run_id, kind, path))
 
 
 def _comment_fixture(*, index: int, text: str) -> CommentEvidence:

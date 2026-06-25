@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -446,9 +447,14 @@ async def _extract_post_comments_with_page(
     html = await page.content()
     html_path.write_text(html, encoding="utf-8")
     store.record_artifact(run_id=run_id, kind="html", path=html_path)
-    screenshot = await writer.screenshot(page, "post-comments", full_page=True)
-    store.record_artifact(run_id=run_id, kind="screenshot", path=screenshot.path)
+    screenshot_warnings = await _capture_optional_screenshot(
+        page=page,
+        run_id=run_id,
+        writer=writer,
+        store=store,
+    )
     extraction = await extract_comments_from_page(page=page, input_row=input_row)
+    warnings = (*screenshot_warnings, *extraction.warnings)
     raw_path = write_raw_comments_jsonl(extraction.comments, run_dir)
     store.record_artifact(
         run_id=run_id,
@@ -467,7 +473,7 @@ async def _extract_post_comments_with_page(
             "run_id": run_id,
             "post_url": input_row.post_url,
             "comments_found": len(extraction.comments),
-            "warnings": list(extraction.warnings),
+            "warnings": list(warnings),
             "safety_limits": asdict(limits),
         },
     )
@@ -477,7 +483,7 @@ async def _extract_post_comments_with_page(
         status="extracted",
         comments_found=len(extraction.comments),
         failures=0,
-        warning_count=len(extraction.warnings),
+        warning_count=len(warnings),
         retry_recommendation="No retry needed" if extraction.comments else "Review HTML artifact",
     )
     return BrowserExtractionResult(
@@ -486,8 +492,23 @@ async def _extract_post_comments_with_page(
         raw_comments_path=raw_path,
         html_artifact_path=html_path,
         comments_found=len(extraction.comments),
-        warnings=extraction.warnings,
+        warnings=warnings,
     )
+
+
+async def _capture_optional_screenshot(
+    *,
+    page: Page,
+    run_id: str,
+    writer: ArtifactWriter,
+    store: OpportunityStore,
+) -> tuple[str, ...]:
+    try:
+        screenshot = await writer.screenshot(page, "post-comments", full_page=True)
+    except PlaywrightError as exc:
+        return (f"screenshot_capture_failed:{type(exc).__name__}",)
+    store.record_artifact(run_id=run_id, kind="screenshot", path=screenshot.path)
+    return ()
 
 
 async def extract_comments_from_page(
@@ -574,8 +595,12 @@ async def _expand_visible_comment_controls(page: Page, limits: BrowserSafetyLimi
             break
         await _click_controls(page, MORE_COMMENTS_PATTERN, limits.max_comment_control_clicks)
         await _click_controls(page, MORE_REPLIES_PATTERN, limits.max_reply_control_clicks)
-        await page.mouse.wheel(0, 1800)
+        await _scroll_page_down(page, 1800)
         await page.wait_for_timeout(limits.settle_ms)
+
+
+async def _scroll_page_down(page: Page, pixels: int) -> None:
+    await page.evaluate("(pixels) => window.scrollBy(0, pixels)", pixels)
 
 
 async def _click_controls(page: Page, pattern: re.Pattern[str], limit: int) -> None:
