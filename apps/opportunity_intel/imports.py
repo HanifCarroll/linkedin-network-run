@@ -67,6 +67,7 @@ def normalize_provider_row(
     for original_name, canonical_name in headers.items():
         value = raw_row.get(original_name)
         row[canonical_name] = clean_cell(value or "")
+    row["post_author_name"] = _clean_adjacent_duplicate_author(row["post_author_name"])
     return row
 
 
@@ -122,3 +123,10 @@ def _matches_any_pattern(comment_text: str, patterns: tuple[str, ...]) -> bool:
 
 def _header_key(fieldname: str) -> str:
     return fieldname.strip().casefold().replace(" ", "_").replace("-", "_")
+
+
+def _clean_adjacent_duplicate_author(value: str) -> str:
+    midpoint = len(value) // 2
+    if value and len(value) % 2 == 0 and value[:midpoint] == value[midpoint:]:
+        return value[:midpoint]
+    return value

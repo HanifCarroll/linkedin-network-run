@@ -100,7 +100,8 @@ class PlaywrightAccountCaptureClient:
                 preferred_url_fragments=(
                     "linkedin.com/sales/search/company",
                     "linkedin.com/sales/company",
-                )
+                ),
+                foreground=False,
             ),
         )
         return await session.page(

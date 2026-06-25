@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,10 @@ class SendReadyResult:
     summary_text: str
 
 
+def _progress(message: str) -> None:
+    print(f"progress {now_iso()} {message}", file=sys.stderr, flush=True)
+
+
 def run_daily(store: Store, options: DailyOptions) -> DailyResult:
     if options.allow_send:
         raise ValueError("run-daily is sourcing-only; use send-ready --allow-send for real sends")
@@ -120,6 +125,11 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
         ),
     )
     store.save(state)
+    _progress(
+        f"run-start run_id={run_id} target_agencies={max(0, options.target_agencies)} "
+        f"target_recruiters={max(0, options.target_recruiters)} "
+        f"refresh_saved_searches={str(options.refresh_saved_searches).lower()}"
+    )
     actions: list[DailyLeadAction] = []
     try:
         for bucket, sources, target in daily_buckets(
@@ -128,13 +138,16 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
         ):
             if target <= 0:
                 continue
+            _progress(f"bucket-start bucket={bucket} target={target}")
             _draft_and_validate_bucket(store, options, run_id, bucket, target, actions)
             if _ready_count(store, bucket) >= target:
+                _progress(f"bucket-ready bucket={bucket} ready={_ready_count(store, bucket)}")
                 continue
             if bucket == "agency":
                 _run_agency_bucket(store, options, run_id, target, actions)
             else:
                 _run_people_bucket(store, options, run_id, bucket, sources, target, actions)
+            _progress(f"bucket-finish bucket={bucket} ready={_ready_count(store, bucket)}")
     except Exception as exc:
         completed_at = now_iso()
         _append_lifecycle_event(
@@ -156,6 +169,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
                 completed_at=completed_at,
             ),
         )
+        _progress(f"run-failed run_id={run_id} blocker={exc}")
         raise
     state = store.load()
     completed_at = now_iso()
@@ -195,6 +209,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
     latest = store.latest_run_dashboard_path()
     latest.parent.mkdir(parents=True, exist_ok=True)
     latest.write_text(markdown)
+    _progress(f"run-finish run_id={run_id} dashboard={dashboard_path}")
     return DailyResult(report=report, dashboard_path=dashboard_path, markdown=markdown)
 
 
@@ -344,9 +359,11 @@ def _draft_and_validate_bucket(
     target: int,
     actions: list[DailyLeadAction],
 ) -> None:
+    _progress(f"draft-start bucket={bucket}")
     state = store.load()
     draft_messages(state, 0)
     store.save(state)
+    _progress(f"validate-start bucket={bucket} ready={_ready_count(store, bucket)} target={target}")
     _validate_bucket(
         store,
         run_id=run_id,
@@ -356,6 +373,7 @@ def _draft_and_validate_bucket(
         target=target,
         actions=actions,
     )
+    _progress(f"validate-finish bucket={bucket} ready={_ready_count(store, bucket)}")
 
 
 def _run_people_bucket(
@@ -370,6 +388,7 @@ def _run_people_bucket(
     if not sources:
         raise ValueError(f"daily bucket {bucket!r} has no sources")
     for round_number in range(1, max(1, options.max_capture_rounds) + 1):
+        _progress(f"people-round-start bucket={bucket} round={round_number}")
         for source in sources:
             if _ready_count(store, bucket) >= target:
                 return
@@ -387,6 +406,7 @@ def _run_agency_bucket(
     actions: list[DailyLeadAction],
 ) -> None:
     for round_number in range(1, max(1, options.max_capture_rounds) + 1):
+        _progress(f"agency-round-start round={round_number}")
         if _ready_count(store, "agency") >= target:
             return
         if len(_agency_accounts_needing_contact_capture(store.load(), target)) < target:
@@ -409,6 +429,7 @@ def _capture_people_source(
 ) -> None:
     state = store.load()
     url = _people_capture_url(state, source)
+    _progress(f"capture-people-start source={source!r} round={round_number} url={url}")
     browser = _capture_browser(store, options, run_id, source, round_number)
     try:
         _capture, artifact_path = browser.capture_salesnav(
@@ -427,6 +448,7 @@ def _capture_people_source(
     state = store.load()
     import_salesnav_capture(state, load_json_object(artifact_path))
     store.save(state)
+    _progress(f"capture-people-finish source={source!r} artifact={artifact_path}")
 
 
 def _capture_account_source(
@@ -438,6 +460,7 @@ def _capture_account_source(
 ) -> None:
     state = store.load()
     url = _account_capture_url(state, source)
+    _progress(f"capture-account-start source={source!r} round={round_number} url={url}")
     browser = _account_browser(store, options, run_id, source, round_number)
     try:
         _capture, artifact_path = browser.capture_accounts(
@@ -453,6 +476,7 @@ def _capture_account_source(
     state = store.load()
     import_account_capture(state, load_json_object(artifact_path))
     store.save(state)
+    _progress(f"capture-account-finish source={source!r} artifact={artifact_path}")
 
 
 def _capture_agency_contacts_from_accounts(
@@ -469,6 +493,10 @@ def _capture_agency_contacts_from_accounts(
         store.load(),
         _agency_contact_account_limit(needed),
     )
+    _progress(
+        f"capture-agency-contacts-start round={round_number} needed={needed} "
+        f"accounts={len(accounts)}"
+    )
     for account in accounts:
         if _ready_count(store, "agency") >= target:
             return
@@ -477,8 +505,13 @@ def _capture_agency_contacts_from_accounts(
             continue
         url = _agency_account_contact_search_url(account, strategy)
         if not url:
+            _progress(f"capture-agency-contact-skip account={account.name!r} reason=missing_url")
             continue
         source = _agency_contact_source(account, strategy)
+        _progress(
+            f"capture-agency-contact-start account={account.name!r} "
+            f"strategy={strategy.name} round={round_number} url={url}"
+        )
         browser = _capture_browser(store, options, run_id, source, round_number)
         try:
             _capture, artifact_path = browser.capture_salesnav(
@@ -491,6 +524,10 @@ def _capture_agency_contacts_from_accounts(
                 row_scroll_delay_ms=max(1, options.row_scroll_delay_ms),
             )
         except Exception as exc:
+            _progress(
+                f"capture-agency-contact-failed account={account.name!r} "
+                f"strategy={strategy.name} error={exc}"
+            )
             _record_agency_contact_capture_error(store, account.id, strategy.name, exc)
             raise
         finally:
@@ -521,6 +558,10 @@ def _capture_agency_contacts_from_accounts(
         ):
             updated_account.status = AgencyAccountStatus.EXHAUSTED
         store.save(state)
+        _progress(
+            f"capture-agency-contact-finish account={account.name!r} strategy={strategy.name} "
+            f"open_before={open_before} open_after={open_after} artifact={artifact_path}"
+        )
 
 
 def _capture_browser(
@@ -579,6 +620,7 @@ def _validate_bucket(
             return
         lead = candidates[0]
         processed.add(lead.id)
+        _progress(f"validate-lead-start bucket={bucket} lead_id={lead.id} name={lead.name!r}")
         send_message(
             store,
             SendMessageOptions(
@@ -604,6 +646,10 @@ def _validate_bucket(
                 result=latest_attempt.status if latest_attempt else updated.message_status.value,
                 note=latest_attempt.note if latest_attempt else None,
             )
+        )
+        _progress(
+            f"validate-lead-finish bucket={bucket} lead_id={updated.id} "
+            f"status={latest_attempt.status if latest_attempt else updated.message_status.value}"
         )
 
 
@@ -698,6 +744,17 @@ class _AgencyContactStrategy:
     include_recent_activity: bool = False
 
 
+EXECUTIVE_DELIVERY_KEYWORDS = (
+    '("CEO" OR "President" OR "Managing Director" OR "Head of Engineering" OR '
+    '"VP Engineering" OR "Technical Director" OR "Head of Delivery" OR '
+    '"Client Services" OR Partnerships)'
+)
+RESOURCE_DELIVERY_KEYWORDS = (
+    '("Resource Manager" OR Resourcing OR "Talent Manager" OR "Head of Talent" OR '
+    '"Client Services" OR Partnerships OR Delivery)'
+)
+
+
 def _agency_contact_search_strategies(account: AgencyAccount) -> list[_AgencyContactStrategy]:
     leader_filter = _agency_leader_title_filter()
     strategies = [
@@ -708,20 +765,14 @@ def _agency_contact_search_strategies(account: AgencyAccount) -> list[_AgencyCon
         ),
         _AgencyContactStrategy(
             name="executive_delivery_broad",
-            keywords=(
-                "CEO President Managing Director Head of Engineering VP Engineering "
-                "Technical Director Head of Delivery Client Services Partnerships"
-            ),
+            keywords=EXECUTIVE_DELIVERY_KEYWORDS,
         ),
     ]
     if account.fit_score >= 75:
         strategies.append(
             _AgencyContactStrategy(
                 name="resource_delivery_broad",
-                keywords=(
-                    "Resource Manager Resourcing Talent Manager Head of Talent "
-                    "Client Services Partnerships Delivery"
-                ),
+                keywords=RESOURCE_DELIVERY_KEYWORDS,
             )
         )
     return strategies

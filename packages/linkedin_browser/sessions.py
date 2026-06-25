@@ -32,6 +32,7 @@ class PageReusePolicy:
         "linkedin.com",
     )
     keep_pages: int = 1
+    foreground: bool = True
 
 
 @dataclass
@@ -49,7 +50,8 @@ class BrowserSession:
         selected = choose_reusable_page(self.context.pages, fragments)
         if selected is None:
             selected = await self.context.new_page()
-        await selected.bring_to_front()
+        if self.policy.foreground:
+            await selected.bring_to_front()
         if close_surplus:
             await self.close_surplus_pages(selected)
         return selected

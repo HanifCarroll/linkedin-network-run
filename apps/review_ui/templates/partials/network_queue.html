@@ -11,7 +11,14 @@
     <tbody>
       {% for candidate in snapshot.network_candidates %}
         <tr>
-          <td>{{ candidate.name }}<br><span class="muted">{{ candidate.candidate_id }}</span></td>
+          <td>
+            {{ candidate.name }}<br>
+            {% if candidate.candidate_id.startswith("http") %}
+              <a class="muted" href="{{ candidate.candidate_id }}" target="_blank" rel="noreferrer">Profile</a>
+            {% else %}
+              <span class="muted">{{ candidate.candidate_id }}</span>
+            {% endif %}
+          </td>
           <td>{{ candidate.source }}</td>
           <td>{{ candidate.status }}</td>
           <td>{{ candidate.next_step }}</td>
@@ -34,7 +41,15 @@
     <tbody>
       {% for draft in snapshot.acceptance_drafts %}
         <tr>
-          <td>{{ draft.person }}<br><span class="muted">{{ draft.draft_id }}</span></td>
+          <td>
+            {{ draft.person }}<br>
+            {% if draft.profile_url %}
+              <a class="muted" href="{{ draft.profile_url }}" target="_blank" rel="noreferrer">Profile</a>
+            {% else %}
+              <span class="muted">{{ draft.draft_id }}</span>
+            {% endif %}
+            <p class="muted">{{ draft.draft_body }}</p>
+          </td>
           <td>{{ draft.draft_status }}</td>
           <td>{{ draft.dry_run_status }}</td>
           <td>{{ draft.send_history }}</td>

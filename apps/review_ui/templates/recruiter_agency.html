@@ -8,7 +8,7 @@
   <section class="panel">
     <div class="toolbar">
       <h2>Latest Run Summary</h2>
-      <span class="badge badge--warning">Thread 5 read model pending</span>
+      <span class="badge badge--good">Live recruiter/agency state</span>
     </div>
     <p><strong>Run:</strong> {{ snapshot.recruiter_summary.run_id }}</p>
     <p><strong>Started:</strong> {{ snapshot.recruiter_summary.started_at }}</p>
@@ -46,8 +46,8 @@
 
     <article class="panel">
       <h2>Source Quality And Blockers</h2>
-      <p>Website contacts remain review context until Sales Navigator identity resolution exists.</p>
-      <p class="muted">Send-ready rows must come from the recruiter/agency guarded message service.</p>
+      <p>Agency accounts, website contacts, lead drafts, and guarded-send readiness are read from the recruiter/agency state store.</p>
+      <p class="muted">Send-ready rows are still executed only through the guarded action service.</p>
     </article>
   </section>
 

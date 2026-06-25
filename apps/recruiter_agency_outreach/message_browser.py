@@ -118,7 +118,8 @@ class PlaywrightMessageBrowserClient:
                 preferred_url_fragments=(
                     "linkedin.com/sales/lead/",
                     "linkedin.com/sales/search/people",
-                )
+                ),
+                foreground=False,
             ),
         )
         return await session.page(

@@ -11,8 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import FormData
 
+from apps.network_automation.store import Store as NetworkStore
 from apps.opportunity_intel.contracts import RejectReason, ReviewLabel
 from apps.opportunity_intel.store import OpportunityStore
+from apps.recruiter_agency_outreach.storage import Store as RecruiterStore
 from packages.linkedin_ui import (
     AUTH_FORM_FIELD,
     AUTH_HEADER,
@@ -41,9 +43,19 @@ def create_app(
     action_service: ActionService | None = None,
     access_token: str | None = None,
     opportunity_store: OpportunityStore | None = None,
+    network_store: NetworkStore | None = None,
+    network_state_dir: str | Path | None = None,
+    recruiter_store: RecruiterStore | None = None,
+    recruiter_state_dir: str | Path | None = None,
 ) -> FastAPI:
     store = opportunity_store or OpportunityStore()
-    read_models = provider or SQLiteReviewReadModelProvider(store=store)
+    read_models = provider or SQLiteReviewReadModelProvider(
+        store=store,
+        network_store=network_store,
+        network_state_dir=network_state_dir,
+        recruiter_store=recruiter_store,
+        recruiter_state_dir=recruiter_state_dir,
+    )
     actions = list_review_actions()
     service = action_service or GuardedCommandActionService()
     gate = (
@@ -95,6 +107,14 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            await page_context(request, section="dashboard"),
+        )
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard_alias(request: Request) -> Response:
         return templates.TemplateResponse(
             request,
             "dashboard.html",

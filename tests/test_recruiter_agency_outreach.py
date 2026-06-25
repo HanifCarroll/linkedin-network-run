@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from argparse import Namespace
 from pathlib import Path
 
@@ -204,6 +205,36 @@ def test_missing_linkedin_company_url_blocks_account_scoped_search_first() -> No
     assert next_action.action == "missing_linkedin_company_url"
 
 
+def test_agency_contact_broad_searches_use_salesnav_boolean_keywords() -> None:
+    account = AgencyAccount(
+        id="acct_bright",
+        source="manual",
+        name="Bright Product Studio",
+        status=AgencyAccountStatus.QUALIFIED,
+        fit_score=90,
+        account_url="https://www.linkedin.com/sales/company/12345",
+    )
+
+    strategies = daily_module._agency_contact_search_strategies(account)
+    by_name = {strategy.name: strategy for strategy in strategies}
+
+    assert (
+        by_name["executive_delivery_broad"].keywords
+        == '("CEO" OR "President" OR "Managing Director" OR "Head of Engineering" OR '
+        '"VP Engineering" OR "Technical Director" OR "Head of Delivery" OR '
+        '"Client Services" OR Partnerships)'
+    )
+    assert (
+        by_name["resource_delivery_broad"].keywords
+        == '("Resource Manager" OR Resourcing OR "Talent Manager" OR "Head of Talent" OR '
+        '"Client Services" OR Partnerships OR Delivery)'
+    )
+    url = daily_module._agency_account_contact_search_url(
+        account, by_name["resource_delivery_broad"]
+    )
+    assert "keywords%3A%2528%2522Resource%2520Manager%2522%2520OR" in url
+
+
 def test_guarded_send_flow_requires_dry_run_ready_and_updates_dashboard(tmp_path: Path) -> None:
     store = Store(tmp_path)
     state = OutreachState(
@@ -283,6 +314,83 @@ def test_guarded_send_flow_requires_dry_run_ready_and_updates_dashboard(tmp_path
     sent = store.load()
     assert sent.leads[0].message_status == MessageStatus.SENT
     assert len(sent.leads[0].send_attempts) == 2
+
+
+def test_store_load_hydrates_draft_and_send_side_tables(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    state = OutreachState(
+        leads=[
+            Lead(
+                id="lead_fixture",
+                source="manual",
+                name="Dana Delivery",
+                first_name="Dana",
+                lead_type=LeadType.AGENCY_DELIVERY,
+                status=LeadStatus.ELIGIBLE,
+                message_status=MessageStatus.DRAFTED,
+                fit_score=95,
+                profile_url="https://www.linkedin.com/sales/lead/dana",
+            )
+        ]
+    )
+    store.save(state)
+    with sqlite3.connect(store.database_path) as db:
+        db.execute(
+            """
+            CREATE TABLE drafts (
+              lead_id TEXT PRIMARY KEY,
+              body TEXT NOT NULL,
+              angle TEXT NOT NULL,
+              evidence_json TEXT NOT NULL,
+              generated_at TEXT NOT NULL,
+              subject TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE send_attempts (
+              lead_id TEXT NOT NULL,
+              position INTEGER NOT NULL,
+              data TEXT NOT NULL,
+              PRIMARY KEY (lead_id, position)
+            )
+            """
+        )
+        db.execute(
+            "INSERT INTO drafts VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "lead_fixture",
+                "Hi Dana - can help with senior product delivery.",
+                "agency",
+                json.dumps(["fit evidence"]),
+                "2026-06-24T12:00:00Z",
+                "Product delivery support",
+            ),
+        )
+        db.execute(
+            "INSERT INTO send_attempts VALUES (?, ?, ?)",
+            (
+                "lead_fixture",
+                0,
+                json.dumps(
+                    {
+                        "at": "2026-06-24T12:01:00Z",
+                        "run_id": "message-run",
+                        "dry_run": True,
+                        "status": "dry-run-messageable",
+                        "out_path": "/tmp/message-result.json",
+                    }
+                ),
+            ),
+        )
+
+    loaded = store.load()
+
+    assert loaded.leads[0].draft is not None
+    assert loaded.leads[0].draft.subject == "Product delivery support"
+    assert "Hi Dana" in loaded.leads[0].draft.body
+    assert loaded.leads[0].send_attempts[0].status == "dry-run-messageable"
 
 
 def test_send_message_uses_browser_when_result_path_is_missing(tmp_path: Path) -> None:

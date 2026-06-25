@@ -92,6 +92,20 @@ uv run linkedin-tools comments extract-url-queue \
 
 `opportunity run-batch` is wired to the same URL queue runner.
 
+After a measured URL queue pass, narrow the next queue to posts that actually
+produced enough comments. The prefilter reads `extract_url_queue_manifest.jsonl`,
+writes a same-shape post queue for the selected posts, and writes an audit CSV
+with the measured `comments_found` and keep/reject reason for every candidate:
+
+```sh
+uv run linkedin-tools opportunity prefilter-post-queue \
+  --post-queue /tmp/linkedin-opportunity-v0/post-queue.csv \
+  --manifest /tmp/linkedin-opportunity-v0/live-capture/extract_url_queue_manifest.jsonl \
+  --min-comments 10 \
+  --out /tmp/linkedin-opportunity-v0/post-queue.filtered.csv \
+  --metrics-out /tmp/linkedin-opportunity-v0/post-queue.prefilter-metrics.csv
+```
+
 Configurable safety limits:
 
 ```sh

@@ -228,6 +228,19 @@ Useful browser safety limits are configurable on `extract-url`:
 --max-runtime-seconds 90
 ```
 
+Post queues can be narrowed after a measured extraction pass. The prefilter
+reads the URL queue manifest, keeps only posts whose measured `comments_found`
+meets the threshold, and writes a metrics CSV with every keep/reject reason:
+
+```sh
+uv run linkedin-tools opportunity prefilter-post-queue \
+  --post-queue /tmp/linkedin-opportunity-posts.csv \
+  --manifest /tmp/linkedin-opportunity-live/extract_url_queue_manifest.jsonl \
+  --min-comments 10 \
+  --out /tmp/linkedin-opportunity-posts.filtered.csv \
+  --metrics-out /tmp/linkedin-opportunity-posts.prefilter-metrics.csv
+```
+
 Saved HTML extraction remains available and can also persist to SQLite:
 
 ```sh

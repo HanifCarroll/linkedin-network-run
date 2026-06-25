@@ -21,6 +21,7 @@ from apps.opportunity_intel.experiments import evaluate_gate, run_source_experim
 from apps.opportunity_intel.imports import read_comment_csv
 from apps.opportunity_intel.normalization import normalize_and_dedupe
 from apps.opportunity_intel.post_discovery import PostCandidate, discover_posts_from_registry
+from apps.opportunity_intel.post_prefilter import prefilter_post_queue_from_manifest
 from apps.opportunity_intel.ranking import rank_comment
 from apps.opportunity_intel.sources import (
     DEFAULT_QUERY_PACK_PATH,
@@ -117,14 +118,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_batch_parser.add_argument("--cdp-url", default=None)
 
+    prefilter_queue_parser = _add_command(
+        subparsers,
+        "prefilter-post-queue",
+        _handle_prefilter_post_queue,
+    )
+    prefilter_queue_parser.add_argument("--post-queue", type=Path, required=True)
+    prefilter_queue_parser.add_argument("--manifest", type=Path, required=True)
+    prefilter_queue_parser.add_argument("--out", type=Path, required=True)
+    prefilter_queue_parser.add_argument("--metrics-out", type=Path, default=None)
+    prefilter_queue_parser.add_argument("--min-comments", type=int, default=10)
+    prefilter_queue_parser.add_argument("--json", action="store_true")
+
     batch_status_parser = _add_command(subparsers, "batch-status", _handle_batch_status)
     batch_status_parser.add_argument("--out-dir", type=Path, default=DEFAULT_BATCH_DIR)
     batch_status_parser.add_argument("--json", action="store_true")
 
-    for name in ("validate-batch", "process-batch", "import-signals", "evaluate"):
+    for name in ("validate-batch", "process-batch", "evaluate"):
         comments_parser = _add_command(subparsers, name, _handle_comments_summary)
         _add_comments_args(comments_parser, comments_required=True)
         comments_parser.add_argument("--json", action="store_true")
+
+    import_parser = _add_command(subparsers, "import-signals", _handle_import_signals)
+    _add_contract_args(import_parser)
+    import_parser.add_argument("--comments-csv", type=Path, required=True, action="append")
+    import_parser.add_argument("--state-dir", type=Path, default=None)
+    import_parser.add_argument("--run-id", default=None)
+    import_parser.add_argument("--json", action="store_true")
 
     merge_parser = _add_command(subparsers, "merge-comments-csv", _handle_merge_comments_csv)
     _add_contract_args(merge_parser)
@@ -451,6 +471,26 @@ def _handle_run_batch(args: argparse.Namespace) -> int:
     return comment_extractor_main(command)
 
 
+def _handle_prefilter_post_queue(args: argparse.Namespace) -> int:
+    result = prefilter_post_queue_from_manifest(
+        post_queue_path=args.post_queue,
+        manifest_path=args.manifest,
+        output_path=args.out,
+        metrics_path=args.metrics_out,
+        min_comments=args.min_comments,
+    )
+    payload = result.to_json_object()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"kept_candidates={result.kept_candidates}")
+        print(f"rejected_candidates={result.rejected_candidates}")
+        print(f"missing_metric_candidates={result.missing_metric_candidates}")
+        print(f"filtered_post_queue={result.output_path}")
+        print(f"metrics={result.metrics_path}")
+    return 0
+
+
 def _handle_batch_status(args: argparse.Namespace) -> int:
     files = sorted(args.out_dir.rglob("*")) if args.out_dir.exists() else []
     payload = {
@@ -495,6 +535,49 @@ def _handle_comments_summary(args: argparse.Namespace) -> int:
             f"duplicates_removed={payload['duplicates_removed']} "
             f"gate_passed={str(gate.passed).lower()}"
         )
+    return 0
+
+
+def _handle_import_signals(args: argparse.Namespace) -> int:
+    query_pack = load_query_pack(args.query_pack)
+    comments: list[CommentEvidence] = []
+    rejected_rows = 0
+    for path in args.comments_csv:
+        import_result = read_comment_csv(path, query_pack)
+        comments.extend(import_result.valid_comments)
+        rejected_rows += len(import_result.rejected_rows)
+
+    deduped = normalize_and_dedupe(tuple(comments))
+    store = OpportunityStore(args.state_dir)
+    store.sync_source_registry(load_source_registry(args.source_registry))
+    run_id = args.run_id or "import_" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    ranked = store.persist_comments(
+        run_id=run_id,
+        comments=deduped.comments,
+        query_pack=query_pack,
+    )
+    gate = evaluate_gate(ranked)
+    payload = {
+        "valid_comments": len(comments),
+        "rejected_rows": rejected_rows,
+        "duplicates_removed": deduped.duplicate_count,
+        "imported_comments": len(deduped.comments),
+        "run_id": run_id,
+        "state_dir": str(store.dir),
+        "database_path": str(store.database_path),
+        "gate": gate.to_json_object(),
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(
+            f"imported_comments={payload['imported_comments']} "
+            f"valid_comments={payload['valid_comments']} "
+            f"rejected_rows={payload['rejected_rows']} "
+            f"duplicates_removed={payload['duplicates_removed']} "
+            f"gate_passed={str(gate.passed).lower()}"
+        )
+        print(f"state_dir={store.dir}")
     return 0
 
 

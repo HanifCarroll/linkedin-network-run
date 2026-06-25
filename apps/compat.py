@@ -89,6 +89,7 @@ OPPORTUNITY_COMMANDS = (
     "prepare-batch",
     "company-post-capture",
     "run-batch",
+    "prefilter-post-queue",
     "batch-status",
     "provider-readiness",
     "process-batch",

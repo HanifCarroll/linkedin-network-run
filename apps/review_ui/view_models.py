@@ -7,7 +7,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from apps.opportunity_intel.store import OpportunityStore
+from apps.network_automation.models import (
+    AcceptanceFollowupLedger,
+    AcceptanceFollowupRecord,
+    CandidateObservation,
+    CandidateReservoir,
+    PendingCandidateObservation,
+    PendingCleanupRun,
+    Run,
+)
+from apps.network_automation.reports import (
+    format_delta,
+    format_option,
+    format_pending_threshold,
+)
+from apps.network_automation.store import Store as NetworkStore
+from apps.opportunity_intel.post_discovery import discover_posts_from_registry
+from apps.opportunity_intel.sources import load_source_registry
+from apps.opportunity_intel.store import OpportunityStore, post_candidate_key
+from apps.recruiter_agency_outreach.dashboard import (
+    AgencyPoolLeadCounts,
+    agency_pool_lead_counts_by_account,
+    bucket_for_lead,
+    build_agency_pool_account_diagnosis,
+    build_agency_pool_next_action,
+    build_dashboard_report,
+)
+from apps.recruiter_agency_outreach.models import (
+    Lead,
+    LeadStatus,
+    MessageStatus,
+    OutreachState,
+)
+from apps.recruiter_agency_outreach.storage import Store as RecruiterStore
 from packages.linkedin_browser.config import chrome_profile_from_env, chrome_profile_storage_dir
 
 
@@ -125,6 +157,8 @@ class AcceptanceDraftRow:
     draft_status: str
     dry_run_status: str
     send_history: str
+    profile_url: str
+    draft_body: str
 
 
 @dataclass(frozen=True)
@@ -164,6 +198,9 @@ class RecruiterLeadRow:
     messageability_status: str
     send_readiness: str
     blocker: str
+    profile_url: str
+    draft_subject: str
+    draft_body: str
 
 
 @dataclass(frozen=True)
@@ -211,107 +248,30 @@ class ReviewReadModelProvider(Protocol):
         """Return the current cross-system review snapshot."""
 
 
-class StubReviewReadModelProvider:
-    """Pre-integration provider used until app read models are available."""
-
-    def snapshot(self) -> ReviewSnapshot:
-        return build_stub_snapshot()
-
-
-def build_stub_snapshot() -> ReviewSnapshot:
-    notices = (
-        IntegrationNotice(
-            area="Opportunity Intel",
-            owner="Thread 3",
-            dependency=(
-                "Replace stub rows with source, post, comment, experiment, "
-                "and calibration read models."
-            ),
-        ),
-        IntegrationNotice(
-            area="Network Automation",
-            owner="Thread 4",
-            dependency=(
-                "Connect run, reservoir, acceptance, audit, and pending-cleanup "
-                "read models."
-            ),
-        ),
-        IntegrationNotice(
-            area="Recruiter/Agency Outreach",
-            owner="Thread 5",
-            dependency=(
-                "Connect latest run, account pool, lead queue, draft, and "
-                "send-readiness read models."
-            ),
-        ),
-        IntegrationNotice(
-            area="Browser/Artifacts",
-            owner="Thread 2",
-            dependency=(
-                "Connect Playwright session state, artifact manifests, "
-                "screenshots, and rate-limit warnings."
-            ),
-        ),
-    )
-    return ReviewSnapshot(
-        notices=notices,
-        system_metrics=(
-            Metric("Opportunity review", "SQLite", "Read model owned by opportunity store."),
-            Metric("Network review", "Stubbed", "Read model dependency pending.", "warning"),
-            Metric(
-                "Recruiter/agency review",
-                "Stubbed",
-                "Read model dependency pending.",
-                "warning",
-            ),
-            Metric("Browser artifacts", "SQLite", "Read model owned by opportunity store."),
-        ),
-        opportunity_metrics=(),
-        opportunity_sources=(),
-        post_queue=(),
-        extraction_runs=(),
-        ranked_comments=(),
-        experiments=(),
-        calibration_queue=(),
-        network_status=NetworkRunStatus(
-            run_id="network-run-stub",
-            phase="planning",
-            plan_next_action="Network read model not part of this opportunity scope",
-            audit_status="not connected",
-            reconciliation_status="not connected",
-            safety_state="real sends require guarded service integration",
-        ),
-        network_candidates=(),
-        acceptance_drafts=(),
-        pending_cleanup=(),
-        recruiter_summary=RecruiterRunSummary(
-            run_id="recruiter-run-stub",
-            started_at="pending",
-            result="Recruiter/agency read model not part of this opportunity scope",
-            next_recommendation="Use recruiter/agency dashboard commands for live state.",
-            blockers="",
-        ),
-        agency_accounts=(),
-        recruiter_leads=(),
-        browser_sessions=(),
-        browser_artifacts=(),
-    )
-
-
 class SQLiteReviewReadModelProvider:
-    """SQLite-backed opportunity and browser read model provider."""
+    """Read model provider for the local review UI."""
 
     def __init__(
         self,
         *,
         store: OpportunityStore | None = None,
         state_dir: str | Path | None = None,
+        network_store: NetworkStore | None = None,
+        network_state_dir: str | Path | None = None,
+        recruiter_store: RecruiterStore | None = None,
+        recruiter_state_dir: str | Path | None = None,
     ) -> None:
         self.store = store or OpportunityStore(state_dir)
+        self.network_store = network_store or NetworkStore(network_state_dir)
+        self.recruiter_store = recruiter_store or RecruiterStore(recruiter_state_dir)
 
     def snapshot(self) -> ReviewSnapshot:
-        fallback = build_stub_snapshot()
         opportunity_metrics = self._opportunity_metrics()
+        network_run = self._load_network_run()
+        network_reservoir = self._load_network_reservoir()
+        acceptance_followups = self._load_acceptance_followups()
+        pending_cleanup = self._load_pending_cleanup()
+        recruiter_state = self._load_recruiter_state()
         return ReviewSnapshot(
             notices=(
                 IntegrationNotice(
@@ -320,14 +280,19 @@ class SQLiteReviewReadModelProvider:
                     dependency="Live source, post, extraction, ranking, and review state.",
                 ),
                 IntegrationNotice(
+                    area="Network Automation",
+                    owner="JSON state",
+                    dependency="Live run, reservoir, acceptance, and pending-cleanup state.",
+                ),
+                IntegrationNotice(
+                    area="Recruiter/Agency Outreach",
+                    owner="SQLite state",
+                    dependency="Live account pool, lead queue, drafts, and send readiness.",
+                ),
+                IntegrationNotice(
                     area="Browser/Artifacts",
                     owner="SQLite",
                     dependency="Live extraction artifacts and browser setup state.",
-                ),
-                *tuple(
-                    notice
-                    for notice in fallback.notices
-                    if notice.area not in {"Opportunity Intel", "Browser/Artifacts"}
                 ),
             ),
             system_metrics=(
@@ -337,8 +302,8 @@ class SQLiteReviewReadModelProvider:
                     f"{opportunity_metrics[0].value} persisted comments",
                     "good",
                 ),
-                fallback.system_metrics[1],
-                fallback.system_metrics[2],
+                self._network_metric(network_run, acceptance_followups, pending_cleanup),
+                self._recruiter_metric(recruiter_state),
                 Metric(
                     "Browser artifacts",
                     "SQLite",
@@ -353,13 +318,13 @@ class SQLiteReviewReadModelProvider:
             ranked_comments=self._ranked_comments(),
             experiments=self._experiments(),
             calibration_queue=self._calibration_queue(),
-            network_status=fallback.network_status,
-            network_candidates=fallback.network_candidates,
-            acceptance_drafts=fallback.acceptance_drafts,
-            pending_cleanup=fallback.pending_cleanup,
-            recruiter_summary=fallback.recruiter_summary,
-            agency_accounts=fallback.agency_accounts,
-            recruiter_leads=fallback.recruiter_leads,
+            network_status=self._network_status(network_run, network_reservoir),
+            network_candidates=self._network_candidates(network_run, network_reservoir),
+            acceptance_drafts=self._acceptance_drafts(acceptance_followups),
+            pending_cleanup=self._pending_cleanup_rows(pending_cleanup),
+            recruiter_summary=self._recruiter_summary(recruiter_state),
+            agency_accounts=self._agency_accounts(recruiter_state),
+            recruiter_leads=self._recruiter_leads(recruiter_state),
             browser_sessions=self._browser_sessions(),
             browser_artifacts=self._browser_artifacts(),
         )
@@ -406,9 +371,10 @@ class SQLiteReviewReadModelProvider:
             LEFT JOIN rankings r ON r.comment_key = c.comment_key
             GROUP BY s.source_id
             ORDER BY s.priority DESC, s.source_id ASC
-            LIMIT 200
             """
         )
+        if not rows:
+            return _registry_source_rows()
         return tuple(
             OpportunitySourceRow(
                 source_id=str(row["source_id"]),
@@ -434,21 +400,32 @@ class SQLiteReviewReadModelProvider:
                    extraction_status, artifact_path
             FROM posts
             ORDER BY updated_at DESC, priority DESC
-            LIMIT 200
             """
         )
-        return tuple(
-            PostQueueRow(
+        merged: list[PostQueueRow] = []
+        seen_ids: set[str] = set()
+        persisted_urls: set[str] = set()
+        for row in rows:
+            post_url = str(row["post_url"] or row["source_url"])
+            item = PostQueueRow(
                 post_id=str(row["post_id"]),
-                post_url=str(row["post_url"] or row["source_url"]),
+                post_url=post_url,
                 source_id=str(row["source_id"]),
                 author=str(row["post_author_name"]),
                 priority_reasons=str(row["reason"]),
                 extraction_status=str(row["extraction_status"]),
                 artifact_path=str(row["artifact_path"]),
             )
-            for row in rows
-        )
+            merged.append(item)
+            seen_ids.add(item.post_id)
+            if item.post_url:
+                persisted_urls.add(item.post_url)
+        for item in _registry_post_rows():
+            if item.post_id in seen_ids or (item.post_url and item.post_url in persisted_urls):
+                continue
+            merged.append(item)
+            seen_ids.add(item.post_id)
+        return tuple(merged)
 
     def _extraction_runs(self) -> tuple[ExtractionRunRow, ...]:
         rows = self.store.fetch_all(
@@ -456,7 +433,6 @@ class SQLiteReviewReadModelProvider:
             SELECT run_id, post_url, comments_found, failures, retry_recommendation
             FROM extraction_runs
             ORDER BY started_at DESC
-            LIMIT 100
             """
         )
         return tuple(
@@ -485,7 +461,6 @@ class SQLiteReviewReadModelProvider:
             JOIN rankings r ON r.comment_key = c.comment_key
             LEFT JOIN review_labels l ON l.comment_key = c.comment_key
             ORDER BY r.rank_points DESC, c.updated_at DESC
-            LIMIT 200
             """
         )
         return tuple(
@@ -557,7 +532,6 @@ class SQLiteReviewReadModelProvider:
             ORDER BY
               CASE WHEN l.label IS NULL THEN 0 ELSE 1 END ASC,
               r.rank_points DESC
-            LIMIT 100
             """
         )
         return tuple(
@@ -573,6 +547,278 @@ class SQLiteReviewReadModelProvider:
             )
             for row in rows
         )
+
+    def _load_network_run(self) -> Run | None:
+        try:
+            return self.network_store.load_run()
+        except (OSError, ValueError):
+            return None
+
+    def _load_network_reservoir(self) -> CandidateReservoir:
+        try:
+            return self.network_store.load_reservoir()
+        except (OSError, ValueError):
+            return CandidateReservoir()
+
+    def _load_acceptance_followups(self) -> AcceptanceFollowupLedger:
+        try:
+            return self.network_store.load_acceptance_followup_ledger()
+        except (OSError, ValueError):
+            return AcceptanceFollowupLedger()
+
+    def _load_pending_cleanup(self) -> PendingCleanupRun | None:
+        try:
+            return self.network_store.load_pending()
+        except (OSError, ValueError):
+            return None
+
+    def _load_recruiter_state(self) -> OutreachState:
+        try:
+            return self.recruiter_store.load()
+        except (OSError, ValueError):
+            return OutreachState()
+
+    def _network_metric(
+        self,
+        run: Run | None,
+        followups: AcceptanceFollowupLedger,
+        pending_cleanup: PendingCleanupRun | None,
+    ) -> Metric:
+        if run is None:
+            return Metric(
+                "Network review",
+                "Not started",
+                "No active network run state file found.",
+                "warning",
+            )
+        pending_count = pending_cleanup.withdrawn_count() if pending_cleanup else 0
+        return Metric(
+            "Network review",
+            "JSON",
+            (
+                f"{run.verified_count()}/{run.target} sent, "
+                f"{len(run.observations)} candidates, "
+                f"{len(followups.drafts)} follow-up drafts, "
+                f"{pending_count} cleanup withdrawals"
+            ),
+            "good",
+        )
+
+    def _recruiter_metric(self, state: OutreachState) -> Metric:
+        if not self.recruiter_store.database_path.exists():
+            return Metric(
+                "Recruiter/agency review",
+                "Not started",
+                "No recruiter/agency SQLite state file found.",
+                "warning",
+            )
+        drafted = sum(1 for lead in state.leads if lead.draft is not None)
+        return Metric(
+            "Recruiter/agency review",
+            "SQLite",
+            f"{len(state.leads)} leads, {drafted} drafted, {len(state.agency_accounts)} accounts",
+            "good",
+        )
+
+    def _network_status(
+        self,
+        run: Run | None,
+        reservoir: CandidateReservoir,
+    ) -> NetworkRunStatus:
+        if run is None:
+            return NetworkRunStatus(
+                run_id="not-started",
+                phase="not started",
+                plan_next_action="Start or import a network automation run.",
+                audit_status="no active run",
+                reconciliation_status="no active run",
+                safety_state="real sends still require guarded action flags",
+            )
+        plan = run.operator_plan_with_reservoir(reservoir)
+        return NetworkRunStatus(
+            run_id=str(run.id),
+            phase=run.state.value,
+            plan_next_action=_network_plan_text(plan),
+            audit_status=(
+                f"start {format_option(run.start_audit)}, "
+                f"latest {format_option(run.latest_audit)}, "
+                f"delta {format_delta(run.audited_delta())}"
+            ),
+            reconciliation_status=(
+                f"{run.verified_count()}/{run.target} row-level verified; "
+                f"{len(run.observations)} imported observations"
+            ),
+            safety_state=(
+                f"real-send capacity {run.real_send_capacity_remaining()}/"
+                f"{run.max_real_sends}"
+            ),
+        )
+
+    def _network_candidates(
+        self,
+        run: Run | None,
+        reservoir: CandidateReservoir,
+    ) -> tuple[NetworkCandidateRow, ...]:
+        if run is None:
+            return tuple(
+                _network_observation_row(observation, "reservoir")
+                for observation in reservoir.observations
+            )
+        rows: list[NetworkCandidateRow] = []
+        seen: set[str] = set()
+        for index, event in enumerate(reversed(run.candidates)):
+            row_id = event.profile_url or f"event:{event.source}:{event.name}:{index}"
+            seen.add(row_id)
+            rows.append(
+                NetworkCandidateRow(
+                    candidate_id=row_id,
+                    name=event.name,
+                    source=event.source,
+                    status=event.status.value,
+                    next_step=event.note or _network_event_next_step(event.status.value),
+                )
+            )
+        for observation in run.observations:
+            row_id = _observation_row_id(observation)
+            if row_id in seen or run.has_candidate_event_for_observation(observation):
+                continue
+            seen.add(row_id)
+            rows.append(_network_observation_row(observation, "active run"))
+        for observation in reservoir.observations:
+            row_id = _observation_row_id(observation)
+            if row_id in seen:
+                continue
+            seen.add(row_id)
+            rows.append(_network_observation_row(observation, "reservoir"))
+        return tuple(rows)
+
+    def _acceptance_drafts(
+        self,
+        followups: AcceptanceFollowupLedger,
+    ) -> tuple[AcceptanceDraftRow, ...]:
+        return tuple(
+            AcceptanceDraftRow(
+                draft_id=record.id,
+                person=record.name,
+                draft_status=record.status.value,
+                dry_run_status=_acceptance_dry_run_status(record),
+                send_history=_acceptance_send_history(record),
+                profile_url=record.profile_url or "",
+                draft_body=record.draft,
+            )
+            for record in sorted(
+                followups.drafts,
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )
+        )
+
+    def _pending_cleanup_rows(
+        self,
+        run: PendingCleanupRun | None,
+    ) -> tuple[PendingCleanupRow, ...]:
+        if run is None:
+            return ()
+        threshold = format_pending_threshold(run)
+        rows: list[PendingCleanupRow] = []
+        matched_withdrawals: set[int] = set()
+        for observation in run.observations:
+            event_index = _matching_withdrawal_index(run, observation)
+            event = run.withdrawals[event_index] if event_index is not None else None
+            if event_index is not None:
+                matched_withdrawals.add(event_index)
+            rows.append(
+                PendingCleanupRow(
+                    invite_id=observation.profile_url or f"pending:{observation.index}",
+                    name=observation.name,
+                    age=observation.age_text,
+                    threshold=threshold,
+                    dry_run_status="eligible" if observation.eligible else "below threshold",
+                    withdraw_history=event.status.value if event else "not attempted",
+                )
+            )
+        for index, event in enumerate(run.withdrawals):
+            if index in matched_withdrawals:
+                continue
+            rows.append(
+                PendingCleanupRow(
+                    invite_id=event.profile_url or f"withdrawal:{index}",
+                    name=event.name,
+                    age=event.age_text,
+                    threshold=threshold,
+                    dry_run_status="recorded",
+                    withdraw_history=event.status.value,
+                )
+            )
+        return tuple(rows)
+
+    def _recruiter_summary(self, state: OutreachState) -> RecruiterRunSummary:
+        report = build_dashboard_report(state, str(self.recruiter_store.state_path))
+        latest = state.run_events[-1] if state.run_events else None
+        next_action = build_agency_pool_next_action(state, str(self.recruiter_store.state_path))
+        drafted = sum(1 for lead in state.leads if lead.draft is not None)
+        ready = report.ready_counts.agencies + report.ready_counts.recruiters
+        sent = report.lifetime_counts.agencies + report.lifetime_counts.recruiters
+        backlog = report.backlog_counts.agencies + report.backlog_counts.recruiters
+        blocker = ""
+        if latest and latest.blocker:
+            blocker = latest.blocker
+        elif report.limiting_reason:
+            blocker = report.limiting_reason
+        return RecruiterRunSummary(
+            run_id=(latest.run_id if latest and latest.run_id else "state"),
+            started_at=(latest.started_at or latest.at if latest else state.updated_at),
+            result=(
+                f"{len(state.leads)} leads; {drafted} drafted; {backlog} needs validation; "
+                f"{ready} dry_run_ready; {sent} sent; {len(state.agency_accounts)} accounts"
+            ),
+            next_recommendation=_recruiter_next_action_text(next_action.action, next_action.reason),
+            blockers=blocker,
+        )
+
+    def _agency_accounts(self, state: OutreachState) -> tuple[AgencyAccountRow, ...]:
+        lead_counts_by_account = agency_pool_lead_counts_by_account(state)
+        accounts = sorted(
+            state.agency_accounts,
+            key=lambda item: (item.status.value, -item.fit_score, item.name),
+        )
+        rows: list[AgencyAccountRow] = []
+        for account in accounts:
+            lead_counts = lead_counts_by_account.get(account.id, AgencyPoolLeadCounts())
+            diagnosis = build_agency_pool_account_diagnosis(account, lead_counts)
+            blocker = (
+                diagnosis.next_step
+                if diagnosis.next_step != "no_action"
+                else "; ".join(account.reject_reasons)
+            )
+            if not blocker and account.last_contact_error:
+                blocker = account.last_contact_error
+            rows.append(
+                AgencyAccountRow(
+                    account_id=account.id,
+                    agency=account.name,
+                    status=account.status.value,
+                    contactability=(
+                        f"{lead_counts.contacts} contacts; "
+                        f"{lead_counts.open_leads} open; "
+                        f"{lead_counts.messageable_or_sent} messageable/sent"
+                    ),
+                    blocker=blocker,
+                )
+            )
+        return tuple(rows)
+
+    def _recruiter_leads(self, state: OutreachState) -> tuple[RecruiterLeadRow, ...]:
+        leads = sorted(
+            state.leads,
+            key=lambda item: (
+                bucket_for_lead(item),
+                item.message_status.value,
+                -item.fit_score,
+                item.name,
+            ),
+        )
+        return tuple(_recruiter_lead_row(state, lead) for lead in leads)
 
     def _browser_sessions(self) -> tuple[BrowserSessionRow, ...]:
         config = chrome_profile_from_env()
@@ -602,7 +848,6 @@ class SQLiteReviewReadModelProvider:
             SELECT artifact_id, app, kind, path, status, retryable_error
             FROM extraction_artifacts
             ORDER BY created_at DESC
-            LIMIT 200
             """
         )
         return tuple(
@@ -639,3 +884,183 @@ def _json_strings(raw: str) -> tuple[str, ...]:
     if not isinstance(parsed, list):
         return ()
     return tuple(item for item in parsed if isinstance(item, str))
+
+
+def _registry_source_rows() -> tuple[OpportunitySourceRow, ...]:
+    registry = load_source_registry()
+    return tuple(
+        OpportunitySourceRow(
+            source_id=source.source_id,
+            source_type=source.source_kind.value,
+            label=source.title,
+            enabled=source.enabled,
+            priority=str(source.priority),
+            hypothesis=source.description,
+            target_needs=", ".join(source.query_ids),
+            latest_yield="not extracted yet",
+            notes="Source registry",
+        )
+        for source in sorted(
+            registry.sources,
+            key=lambda item: (-item.priority, item.source_id),
+        )
+    )
+
+
+def _registry_post_rows() -> tuple[PostQueueRow, ...]:
+    registry = load_source_registry()
+    candidates = discover_posts_from_registry(registry)
+    return tuple(
+        PostQueueRow(
+            post_id=post_candidate_key(candidate),
+            post_url=candidate.post_url or candidate.source_url or candidate.search_query,
+            source_id=candidate.source_id,
+            author="",
+            priority_reasons=candidate.reason,
+            extraction_status="registry",
+            artifact_path="",
+        )
+        for candidate in candidates
+    )
+
+
+def _network_plan_text(plan: object) -> str:
+    parts = [str(getattr(plan, "action", ""))]
+    source = getattr(plan, "source", None)
+    name = getattr(plan, "name", None)
+    reason = getattr(plan, "reason", None)
+    if source:
+        parts.append(f"source={source}")
+    if name:
+        parts.append(f"name={name}")
+    if reason:
+        parts.append(str(reason))
+    return "; ".join(part for part in parts if part)
+
+
+def _network_event_next_step(status: str) -> str:
+    if status in {"pending", "audit-top-up"}:
+        return "connection request recorded"
+    if status == "already-pending":
+        return "already pending on LinkedIn"
+    if status == "skipped":
+        return "skipped"
+    if status == "failed":
+        return "needs review"
+    return ""
+
+
+def _observation_row_id(observation: CandidateObservation) -> str:
+    return (
+        observation.profile_url
+        or observation.sales_profile_urn
+        or f"observation:{observation.source}:{observation.index}:{observation.name}"
+    )
+
+
+def _network_observation_row(
+    observation: CandidateObservation,
+    location: str,
+) -> NetworkCandidateRow:
+    next_step = "queued for send" if observation.menu_state == "connectable" else "review capture"
+    return NetworkCandidateRow(
+        candidate_id=_observation_row_id(observation),
+        name=observation.name,
+        source=f"{observation.source} ({location})",
+        status=f"captured:{observation.menu_state}",
+        next_step=next_step,
+    )
+
+
+def _acceptance_dry_run_status(record: AcceptanceFollowupRecord) -> str:
+    for attempt in reversed(record.attempts):
+        if attempt.dry_run:
+            return attempt.status
+    if record.status.value == "dry_run_ready":
+        return record.status.value
+    return "not run"
+
+
+def _acceptance_send_history(record: AcceptanceFollowupRecord) -> str:
+    if record.sent_at is not None:
+        return f"sent at {record.sent_at.isoformat()}"
+    if not record.attempts:
+        return "no attempts"
+    latest = record.attempts[-1]
+    mode = "dry-run" if latest.dry_run else "send"
+    return (
+        f"{len(record.attempts)} attempts; latest {mode} "
+        f"{latest.status} at {latest.at.isoformat()}"
+    )
+
+
+def _matching_withdrawal_index(
+    run: PendingCleanupRun,
+    observation: PendingCandidateObservation,
+) -> int | None:
+    for index, event in enumerate(run.withdrawals):
+        if event.profile_url and observation.profile_url:
+            if event.profile_url == observation.profile_url:
+                return index
+            continue
+        if event.name == observation.name and event.age_text == observation.age_text:
+            return index
+    return None
+
+
+def _recruiter_next_action_text(action: str, reason: str) -> str:
+    return f"{action}: {reason}" if reason else action
+
+
+def _recruiter_lead_row(state: OutreachState, lead: Lead) -> RecruiterLeadRow:
+    draft_subject = lead.draft.subject if lead.draft else ""
+    draft_body = lead.draft.body if lead.draft else ""
+    return RecruiterLeadRow(
+        lead_id=lead.id,
+        name=lead.name,
+        lead_type=lead.lead_type.value,
+        draft_status="drafted" if lead.draft else "no draft",
+        messageability_status=lead.message_status.value,
+        send_readiness=_lead_send_readiness(lead),
+        blocker=_lead_blocker(state, lead),
+        profile_url=lead.profile_url or "",
+        draft_subject=draft_subject,
+        draft_body=draft_body,
+    )
+
+
+def _lead_send_readiness(lead: Lead) -> str:
+    if lead.message_status in {MessageStatus.SENT, MessageStatus.MANUALLY_SENT}:
+        return "sent"
+    if lead.message_status == MessageStatus.DRY_RUN_READY:
+        return "ready to send"
+    if lead.message_status == MessageStatus.APPROVED:
+        return "approved"
+    if lead.draft and lead.profile_url and lead.status == LeadStatus.ELIGIBLE:
+        return "needs dry-run"
+    if lead.draft:
+        return "drafted"
+    if lead.status != LeadStatus.ELIGIBLE:
+        return lead.status.value
+    return "needs draft"
+
+
+def _lead_blocker(state: OutreachState, lead: Lead) -> str:
+    if lead.reject_reasons:
+        return "; ".join(lead.reject_reasons)
+    if lead.status != LeadStatus.ELIGIBLE:
+        return lead.status.value
+    if not lead.profile_url:
+        return "missing profile URL"
+    if bucket_for_lead(lead) == "agency" and lead.agency_account_id:
+        account = next(
+            (item for item in state.agency_accounts if item.id == lead.agency_account_id),
+            None,
+        )
+        if account is not None and account.status.value != "qualified":
+            return f"agency account {account.status.value}"
+    if lead.send_attempts:
+        latest = lead.send_attempts[-1]
+        if latest.status in {"not-messageable", "blocked", "send-failed"}:
+            return latest.note or latest.status
+    return ""

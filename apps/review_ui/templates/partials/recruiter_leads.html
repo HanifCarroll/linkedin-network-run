@@ -13,9 +13,24 @@
     <tbody>
       {% for lead in snapshot.recruiter_leads %}
         <tr>
-          <td>{{ lead.name }}<br><span class="muted">{{ lead.lead_id }}</span></td>
+          <td>
+            {{ lead.name }}<br>
+            {% if lead.profile_url %}
+              <a class="muted" href="{{ lead.profile_url }}" target="_blank" rel="noreferrer">Profile</a>
+            {% else %}
+              <span class="muted">{{ lead.lead_id }}</span>
+            {% endif %}
+          </td>
           <td>{{ lead.lead_type }}</td>
-          <td>{{ lead.draft_status }}</td>
+          <td>
+            {{ lead.draft_status }}
+            {% if lead.draft_subject %}
+              <br><strong>{{ lead.draft_subject }}</strong>
+            {% endif %}
+            {% if lead.draft_body %}
+              <p class="muted">{{ lead.draft_body }}</p>
+            {% endif %}
+          </td>
           <td>{{ lead.messageability_status }}</td>
           <td>{{ lead.send_readiness }}</td>
           <td>{{ lead.blocker }}</td>

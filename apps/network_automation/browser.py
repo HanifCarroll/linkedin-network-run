@@ -558,7 +558,7 @@ class PlaywrightBrowserClient:
     async def _page(self, fragments: tuple[str, ...]) -> Any:
         session = BrowserSession(
             await self._context_handle(),
-            PageReusePolicy(preferred_url_fragments=fragments),
+            PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
         )
         return await session.page(preferred_url_fragments=fragments)
 

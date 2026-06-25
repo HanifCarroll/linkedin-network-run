@@ -392,6 +392,39 @@ def test_provider_csv_aliases_normalize_to_actual_comment_contract(tmp_path: Pat
     assert result.valid_comments[0].comment_text.startswith("We need help")
 
 
+def test_provider_csv_cleans_exact_adjacent_duplicate_post_author(tmp_path: Path) -> None:
+    csv_path = tmp_path / "provider.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CANONICAL_COMMENT_COLUMNS)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "query_id": "internal_tools_dashboard_pain",
+                "source_id": "manual_actual_comment_import",
+                "source_kind": "manual_csv",
+                "source_url": "",
+                "search_query": "",
+                "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                "post_author_name": "Ava FounderAva Founder",
+                "post_text": "",
+                "comment_id": "urn:li:comment:1",
+                "comment_url": "",
+                "commenter_name": "Buyer One",
+                "commenter_profile_url": "https://www.linkedin.com/in/buyer-one/",
+                "commenter_headline": "Founder",
+                "commenter_company": "Buyer Co",
+                "relationship": "",
+                "comment_text": "We need help with an internal tool dashboard for our ops team.",
+                "commented_at": "2026-06-24T12:00:00Z",
+            }
+        )
+
+    result = read_comment_csv(csv_path, load_query_pack())
+
+    assert not result.rejected_rows
+    assert result.valid_comments[0].post_author_name == "Ava Founder"
+
+
 def test_gate_enforces_100_row_batch_proof(tmp_path: Path) -> None:
     comments_csv = tmp_path / "comments_99.csv"
     _write_comment_fixture_csv(comments_csv, count=99, direct_buyer_count=35)
@@ -496,6 +529,140 @@ def test_opportunity_cli_spike_and_artifact_commands(
 
     assert opportunity_main(["action-plan", "--run-dir", str(runs_dir / "spike")]) == 0
     assert "# Action Plan" in capsys.readouterr().out
+
+
+def test_import_signals_persists_comments_to_state(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    comments_csv = tmp_path / "comments.csv"
+    state_dir = tmp_path / "opportunity-state"
+    _write_comment_fixture_csv(comments_csv, count=3, direct_buyer_count=1)
+
+    assert (
+        opportunity_main(
+            [
+                "import-signals",
+                "--comments-csv",
+                str(comments_csv),
+                "--state-dir",
+                str(state_dir),
+                "--run-id",
+                "import_test",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["imported_comments"] == 3
+
+    store = OpportunityStore(state_dir)
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM comments")[0]["count"] == 3
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM rankings")[0]["count"] == 3
+    assert store.fetch_all("SELECT COUNT(*) AS count FROM sources")[0]["count"] > 0
+
+
+def test_prefilter_post_queue_keeps_only_measured_comment_rich_posts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    post_queue = tmp_path / "post-queue.csv"
+    manifest = tmp_path / "extract_url_queue_manifest.jsonl"
+    filtered_queue = tmp_path / "filtered-post-queue.csv"
+    metrics = tmp_path / "prefilter-metrics.csv"
+    fieldnames = (
+        "source_id",
+        "source_kind",
+        "query_id",
+        "post_url",
+        "source_url",
+        "search_query",
+        "priority",
+        "reason",
+    )
+    with post_queue.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for label in ("keep", "low", "missing", "failed"):
+            writer.writerow(
+                {
+                    "source_id": "linkedin_search_dashboard",
+                    "source_kind": "linkedin_search",
+                    "query_id": "internal_tools_dashboard_pain",
+                    "post_url": f"https://www.linkedin.com/posts/{label}",
+                    "source_url": "https://www.linkedin.com/search/results/content/",
+                    "search_query": '"I need a dashboard"',
+                    "priority": "100",
+                    "reason": "search_query",
+                }
+            )
+    manifest.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "post_url": "https://www.linkedin.com/posts/keep",
+                    "run_id": "run_keep",
+                    "status": "extracted",
+                    "comments_found": 12,
+                },
+                {
+                    "post_url": "https://www.linkedin.com/posts/low",
+                    "run_id": "run_low",
+                    "status": "extracted",
+                    "comments_found": 2,
+                },
+                {
+                    "post_url": "https://www.linkedin.com/posts/failed",
+                    "run_id": "run_failed",
+                    "status": "failed",
+                    "comments_found": 0,
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        opportunity_main(
+            [
+                "prefilter-post-queue",
+                "--post-queue",
+                str(post_queue),
+                "--manifest",
+                str(manifest),
+                "--out",
+                str(filtered_queue),
+                "--metrics-out",
+                str(metrics),
+                "--min-comments",
+                "10",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_candidates"] == 4
+    assert payload["measured_candidates"] == 3
+    assert payload["kept_candidates"] == 1
+    assert payload["missing_metric_candidates"] == 1
+
+    with filtered_queue.open(newline="", encoding="utf-8") as handle:
+        filtered_rows = list(csv.DictReader(handle))
+    assert [row["post_url"] for row in filtered_rows] == [
+        "https://www.linkedin.com/posts/keep"
+    ]
+
+    with metrics.open(newline="", encoding="utf-8") as handle:
+        metric_rows = list(csv.DictReader(handle))
+    reasons = {row["post_url"]: row["prefilter_reason"] for row in metric_rows}
+    assert reasons["https://www.linkedin.com/posts/keep"] == "comments_found_met_threshold"
+    assert reasons["https://www.linkedin.com/posts/low"] == "comments_found_below_10"
+    assert reasons["https://www.linkedin.com/posts/missing"] == "missing_extraction_metric"
+    assert reasons["https://www.linkedin.com/posts/failed"] == "extraction_failed"
 
 
 def test_ranker_rejects_recruiting_and_job_seeker_noise(tmp_path: Path) -> None:

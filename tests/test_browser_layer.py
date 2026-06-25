@@ -286,6 +286,19 @@ async def test_browser_session_reuses_page_and_can_close_surplus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_browser_session_can_reuse_page_without_foregrounding() -> None:
+    selected = FakePage("https://www.linkedin.com/sales/search/people")
+    context = FakeContext([selected])
+    session = BrowserSession(context, PageReusePolicy(foreground=False))
+
+    page = await session.page()
+
+    assert page is selected
+    assert selected.fronted is False
+    assert context.created_pages == 0
+
+
+@pytest.mark.asyncio
 async def test_guarded_click_dry_run_does_not_click() -> None:
     clicked = False
 

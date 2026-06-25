@@ -15,8 +15,10 @@ from .models import (
     AgencyContactCandidate,
     CaptureCursor,
     Lead,
+    MessageDraft,
     OutreachState,
     RunEvent,
+    SendAttempt,
 )
 from .utils import now_iso
 
@@ -61,8 +63,10 @@ class Store:
             return OutreachState(updated_at=now_iso())
         with self._connect() as db:
             self._ensure_schema(db)
+            leads = [Lead.from_mapping(row) for row in self._load_table(db, "leads")]
+            self._hydrate_lead_side_tables(db, leads)
             state = OutreachState(
-                leads=[Lead.from_mapping(row) for row in self._load_table(db, "leads")],
+                leads=leads,
                 agency_accounts=[
                     AgencyAccount.from_mapping(row)
                     for row in self._load_table(db, "agency_accounts")
@@ -175,6 +179,61 @@ class Store:
                 values.append(parsed)
         return values
 
+    def _hydrate_lead_side_tables(self, db: sqlite3.Connection, leads: list[Lead]) -> None:
+        drafts_by_lead = self._load_drafts(db)
+        attempts_by_lead = self._load_send_attempts(db)
+        for lead in leads:
+            if lead.id in drafts_by_lead:
+                lead.draft = drafts_by_lead[lead.id]
+            if lead.id in attempts_by_lead:
+                lead.send_attempts = attempts_by_lead[lead.id]
+
+    def _load_drafts(self, db: sqlite3.Connection) -> dict[str, MessageDraft]:
+        if not self._table_exists(db, "drafts"):
+            return {}
+        columns = self._table_columns(db, "drafts")
+        subject_select = "subject" if "subject" in columns else "'' AS subject"
+        rows = db.execute(
+            "SELECT lead_id, body, angle, evidence_json, generated_at, "
+            f"{subject_select} FROM drafts"
+        ).fetchall()
+        drafts: dict[str, MessageDraft] = {}
+        for lead_id, body, angle, evidence_json, generated_at, subject in rows:
+            evidence = _parse_json_list(
+                evidence_json,
+                f"drafts.evidence_json for lead {lead_id}",
+            )
+            drafts[str(lead_id)] = MessageDraft(
+                subject=str(subject or ""),
+                body=str(body or ""),
+                angle=str(angle or ""),
+                evidence=evidence,
+                generated_at=str(generated_at or ""),
+            )
+        return drafts
+
+    def _load_send_attempts(self, db: sqlite3.Connection) -> dict[str, list[SendAttempt]]:
+        if not self._table_exists(db, "send_attempts"):
+            return {}
+        rows = db.execute(
+            "SELECT lead_id, data FROM send_attempts ORDER BY lead_id, position"
+        ).fetchall()
+        attempts: dict[str, list[SendAttempt]] = {}
+        for lead_id, raw_data in rows:
+            data = _parse_json_mapping(raw_data, f"send_attempts.data for lead {lead_id}")
+            attempts.setdefault(str(lead_id), []).append(SendAttempt.from_mapping(data))
+        return attempts
+
+    def _table_exists(self, db: sqlite3.Connection, table: str) -> bool:
+        row = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return row is not None
+
+    def _table_columns(self, db: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+
     def _replace_table(
         self,
         db: sqlite3.Connection,
@@ -194,3 +253,23 @@ def append_run_event(state: OutreachState, event: RunEvent) -> None:
     state.run_events.append(event)
     if len(state.run_events) > 500:
         state.run_events = state.run_events[-500:]
+
+
+def _parse_json_list(raw: object, context: str) -> list[str]:
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"parsing {context}: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"parsing {context}: expected JSON array")
+    return [str(item) for item in parsed if str(item).strip()]
+
+
+def _parse_json_mapping(raw: object, context: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"parsing {context}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"parsing {context}: expected JSON object")
+    return {str(key): value for key, value in parsed.items()}
