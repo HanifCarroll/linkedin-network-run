@@ -770,7 +770,10 @@ class PlaywrightBrowserClient:
         await _wait_for_load(page)
         button = page.get_by_role("button", name=re.compile(r"Saved searches", re.I)).first
         if not await _locator_count(button):
-            raise RuntimeError("saved-searches button missing")
+            raise RuntimeError(
+                "saved-searches button missing; verify the automation browser is logged "
+                "into Sales Navigator with the expected LinkedIn profile"
+            )
         await button.click(timeout=10000)
         await _medium_wait(page)
         searches = await page.locator("a[href*='savedSearchId=']").evaluate_all(
