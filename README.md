@@ -3,20 +3,14 @@
 Python monorepo for Hanif's LinkedIn networking, recruiter/agency outreach,
 opportunity intelligence, comment extraction, and local review UI tools.
 
-The Python implementation is the active implementation after the approved
-2026-06-24 cutover. The old Go/JavaScript implementation is archived under
-`archive/legacy-go-js/` for reference.
-
 ## Current Status
 
-- Current branch: `python-port/orchestrator-scaffold`
+- Active CLI: `uv run linkedin-tools`
 - Python package: `linkedin-tools`
 - Runtime: Python, `uv`, SQLite, FastAPI/Jinja, and Python Playwright
-- New state root: `~/Library/Application Support/linkedin-tools/`
-- Cutover status: approved and executed on 2026-06-24
-- Cutover gate: [docs/cutover-checklist.md](docs/cutover-checklist.md)
-- Cutover runbook: [docs/cutover-execution-runbook.md](docs/cutover-execution-runbook.md)
-- Acceptance audit: [docs/cutover-acceptance-audit.md](docs/cutover-acceptance-audit.md)
+- State root: `~/Library/Application Support/linkedin-tools/`
+- Primary namespaces: network automation, recruiter/agency outreach,
+  opportunity intelligence, comment extraction, and review UI
 
 ## Install And Verify
 
@@ -34,26 +28,19 @@ running tests, lint, or type checks.
 
 ## CLI Namespaces
 
+The primary runtime namespaces are:
+
 ```sh
 uv run linkedin-tools network --help
 uv run linkedin-tools recruiter-agency --help
 uv run linkedin-tools opportunity --help
 uv run linkedin-tools comments --help
 uv run linkedin-tools ui --help
-uv run linkedin-tools cutover --help
-```
-
-Compatibility commands are kept during migration:
-
-```sh
-uv run linkedin-network-run --help
-uv run recruiter-agency-outreach --help
-uv run linkedin-opportunity-intel --help
 ```
 
 ## State Layout
 
-New Python state lives under:
+Runtime state lives under:
 
 ```text
 ~/Library/Application Support/linkedin-tools/
@@ -67,38 +54,6 @@ recruiter-agency-outreach/
 opportunity-intel/
 comment-extractor/
 review-ui/
-legacy-imports.sqlite
-```
-
-Legacy state import commands preserve raw old artifacts and promote usable
-Python app state:
-
-```sh
-uv run linkedin-network-run import-legacy-state \
-  --old-state-dir "$HOME/Library/Application Support/linkedin-network-run" \
-  --target-root "$HOME/Library/Application Support/linkedin-tools" \
-  --json
-
-uv run recruiter-agency-outreach import-legacy-state \
-  --old-state-dir "$HOME/Library/Application Support/recruiter-agency-outreach" \
-  --target-root "$HOME/Library/Application Support/linkedin-tools" \
-  --json
-
-uv run linkedin-opportunity-intel import-legacy-state \
-  --old-state-dir /tmp/linkedin-opportunity-signals \
-  --target-root "$HOME/Library/Application Support/linkedin-tools" \
-  --json
-```
-
-Run the rehearsal commands in
-[docs/cutover-execution-runbook.md](docs/cutover-execution-runbook.md)
-before importing into the live Python state root.
-
-After cutover, verify the active local Codex automation prompts point at the
-Python commands:
-
-```sh
-uv run linkedin-tools cutover audit-automations --expect post-cutover
 ```
 
 Most runtime examples below use this shell variable:
@@ -193,6 +148,17 @@ uv run linkedin-tools opportunity sources --json
 uv run linkedin-tools opportunity post-queue --out /tmp/linkedin-opportunity-posts.csv
 ```
 
+Search/watchlist rows become concrete post URLs through the browser-backed
+search capture command. It uses the normal Chrome/Playwriter CDP path, writes
+post URLs incrementally, and prints progress lines to stderr while it runs:
+
+```sh
+uv run linkedin-tools opportunity capture-search-posts \
+  --post-queue /tmp/linkedin-opportunity-posts.csv \
+  --out /tmp/linkedin-opportunity-search-posts.csv \
+  --max-results-per-search 50
+```
+
 Run preflight before collection. This validates the configured source batch,
 syncs sources and post candidates into SQLite, checks the configured Chrome
 profile path, and writes a browser preflight artifact without collecting
@@ -217,6 +183,10 @@ uv run linkedin-tools comments extract-url \
   --out-dir "$state_root/opportunity-intel/artifacts"
 ```
 
+Live extraction prints progress lines to stderr for each expansion pass and
+records why the post stopped expanding. Queue extraction also writes its
+checkpoint after each processed URL.
+
 Useful browser safety limits are configurable on `extract-url`:
 
 ```sh
@@ -225,8 +195,13 @@ Useful browser safety limits are configurable on `extract-url`:
 --max-reply-control-clicks 8 \
 --navigation-timeout-ms 30000 \
 --action-timeout-ms 5000 \
---max-runtime-seconds 90
+--max-runtime-seconds 90 \
+--max-no-progress-passes 2
 ```
+
+The scroll and click limits are ceilings. Extraction stops earlier when recent
+passes produce no new comment nodes, no usable expansion controls, and no
+meaningful scroll-height or scroll-position change.
 
 Post queues can be narrowed after a measured extraction pass. The prefilter
 reads the URL queue manifest, keeps only posts whose measured `comments_found`
@@ -296,15 +271,12 @@ and `duplicate`.
 - No real pending-invitation withdrawals without `--allow-withdraw`.
 - Opportunity intelligence is recommend-only.
 - Browser flows should start with dry-runs.
-- Keep archived Go/JavaScript code read-only unless restoring or auditing
-  legacy behavior.
 
 ## Project Layout
 
 ```text
 apps/
   cli.py
-  compat.py
   network_automation/
   recruiter_agency_outreach/
   opportunity_intel/
@@ -320,14 +292,4 @@ packages/
   linkedin_experiments/
 tests/
 docs/
-```
-
-Archived legacy Go/JavaScript paths:
-
-```text
-archive/legacy-go-js/cmd/
-archive/legacy-go-js/internal/
-archive/legacy-go-js/scripts/
-archive/legacy-go-js/go.mod
-archive/legacy-go-js/go.sum
 ```

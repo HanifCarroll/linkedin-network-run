@@ -23,6 +23,10 @@ from apps.opportunity_intel.normalization import normalize_and_dedupe
 from apps.opportunity_intel.post_discovery import PostCandidate, discover_posts_from_registry
 from apps.opportunity_intel.post_prefilter import prefilter_post_queue_from_manifest
 from apps.opportunity_intel.ranking import rank_comment
+from apps.opportunity_intel.search_capture import (
+    SearchCaptureLimits,
+    capture_search_posts_from_queue,
+)
 from apps.opportunity_intel.sources import (
     DEFAULT_QUERY_PACK_PATH,
     DEFAULT_SOURCE_REGISTRY_PATH,
@@ -31,6 +35,7 @@ from apps.opportunity_intel.sources import (
     validate_registry_against_queries,
 )
 from apps.opportunity_intel.store import OpportunityStore
+from packages.linkedin_common.progress import ProgressReporter
 
 DEFAULT_BATCH_DIR = Path("/tmp/linkedin-opportunity-intel")
 
@@ -117,6 +122,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_BATCH_DIR / "provider-comments.csv",
     )
     run_batch_parser.add_argument("--cdp-url", default=None)
+
+    search_capture_parser = _add_command(
+        subparsers,
+        "capture-search-posts",
+        _handle_capture_search_posts,
+    )
+    search_capture_parser.add_argument("--post-queue", type=Path, required=True)
+    search_capture_parser.add_argument("--out", type=Path, required=True)
+    search_capture_parser.add_argument("--metrics-jsonl", type=Path, default=None)
+    search_capture_parser.add_argument("--checkpoint", type=Path, default=None)
+    search_capture_parser.add_argument("--cdp-url", default=None)
+    search_capture_parser.add_argument("--max-results-per-search", type=int, default=50)
+    search_capture_parser.add_argument("--max-scrolls", type=int, default=20)
+    search_capture_parser.add_argument("--scroll-pixels", type=int, default=1800)
+    search_capture_parser.add_argument("--navigation-timeout-ms", type=int, default=30000)
+    search_capture_parser.add_argument("--action-timeout-ms", type=int, default=5000)
+    search_capture_parser.add_argument("--settle-ms", type=int, default=1000)
+    search_capture_parser.add_argument("--json", action="store_true")
 
     prefilter_queue_parser = _add_command(
         subparsers,
@@ -471,13 +494,59 @@ def _handle_run_batch(args: argparse.Namespace) -> int:
     return comment_extractor_main(command)
 
 
+def _handle_capture_search_posts(args: argparse.Namespace) -> int:
+    metrics_path = args.metrics_jsonl or args.out.with_suffix(args.out.suffix + ".metrics.jsonl")
+    checkpoint_path = args.checkpoint or args.out.with_suffix(args.out.suffix + ".checkpoint.json")
+    result = capture_search_posts_from_queue(
+        post_queue_path=args.post_queue,
+        output_path=args.out,
+        metrics_path=metrics_path,
+        checkpoint_path=checkpoint_path,
+        limits=SearchCaptureLimits(
+            max_results_per_search=args.max_results_per_search,
+            max_scrolls=args.max_scrolls,
+            scroll_pixels=args.scroll_pixels,
+            navigation_timeout_ms=args.navigation_timeout_ms,
+            action_timeout_ms=args.action_timeout_ms,
+            settle_ms=args.settle_ms,
+        ),
+        cdp_url=args.cdp_url,
+        progress=ProgressReporter(),
+    )
+    if args.json:
+        print(json.dumps(result.to_json_object(), indent=2, sort_keys=True))
+    else:
+        print(f"processed_searches={result.processed_searches}")
+        print(f"known_posts={result.known_posts}")
+        print(f"captured_posts={result.captured_posts}")
+        print(f"duplicate_posts={result.duplicate_posts}")
+        print(f"failed_searches={result.failed_searches}")
+        print(f"post_queue={result.output_path}")
+        print(f"metrics={result.metrics_path}")
+        print(f"checkpoint={result.checkpoint_path}")
+    return 0
+
+
 def _handle_prefilter_post_queue(args: argparse.Namespace) -> int:
+    reporter = ProgressReporter()
+    reporter.emit(
+        "prefilter_start",
+        post_queue=args.post_queue,
+        manifest=args.manifest,
+        min_comments=args.min_comments,
+    )
     result = prefilter_post_queue_from_manifest(
         post_queue_path=args.post_queue,
         manifest_path=args.manifest,
         output_path=args.out,
         metrics_path=args.metrics_out,
         min_comments=args.min_comments,
+    )
+    reporter.emit(
+        "prefilter_done",
+        kept_candidates=result.kept_candidates,
+        rejected_candidates=result.rejected_candidates,
+        missing_metric_candidates=result.missing_metric_candidates,
     )
     payload = result.to_json_object()
     if args.json:

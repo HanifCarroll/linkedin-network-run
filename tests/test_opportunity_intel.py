@@ -3,19 +3,24 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import io
 import json
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from apps.comment_extractor.browser import (
+    SCROLL_BY_SCRIPT,
     BrowserExtractionInput,
     BrowserSafetyLimits,
+    PostMetadata,
     _capture_optional_screenshot,
     _comment_extraction_cdp_url,
     _comments_from_page_rows,
     _expand_visible_comment_controls,
+    _read_manifest_post_urls,
 )
 from apps.comment_extractor.cli import main as comments_main
 from apps.comment_extractor.contracts import PostHTMLInput
@@ -36,8 +41,18 @@ from apps.opportunity_intel.contracts import (
 from apps.opportunity_intel.experiments import evaluate_gate, run_source_experiment
 from apps.opportunity_intel.imports import read_comment_csv, write_comment_csv
 from apps.opportunity_intel.normalization import normalize_and_dedupe
-from apps.opportunity_intel.post_discovery import discover_posts_from_registry
+from apps.opportunity_intel.post_discovery import PostCandidate, discover_posts_from_registry
 from apps.opportunity_intel.ranking import rank_comment
+from apps.opportunity_intel.search_capture import (
+    COPY_CAPTURE_INSTALL_SCRIPT,
+    COPY_CAPTURE_READ_SCRIPT,
+    COPY_CAPTURE_RESTORE_SCRIPT,
+    COPY_CAPTURE_TIMEOUT_MS,
+    PostCopyCaptureError,
+    _copy_post_url_from_menu,
+    plan_search_capture,
+    search_capture_url,
+)
 from apps.opportunity_intel.sources import (
     DEFAULT_QUERY_PACK_PATH,
     DEFAULT_SOURCE_REGISTRY_PATH,
@@ -46,6 +61,7 @@ from apps.opportunity_intel.sources import (
     validate_registry_against_queries,
 )
 from apps.opportunity_intel.store import OpportunityStore, stable_comment_key
+from packages.linkedin_common.progress import ProgressReporter
 
 FIXTURE_DIR = Path("tests/fixtures/opportunity_intel")
 
@@ -149,6 +165,129 @@ def test_company_page_capture_exports_post_queue_from_saved_html(
     }
 
 
+def test_search_capture_plans_search_rows_without_guessing_post_urls() -> None:
+    known = PostCandidate(
+        source_id="known_high_signal_post_engagement",
+        source_kind="known_post",
+        query_id="internal_tools_dashboard_pain",
+        post_url="https://www.linkedin.com/posts/valiotti_i-need-a-dashboard-activity-1-abcd",
+        source_url="https://www.linkedin.com/posts/valiotti_i-need-a-dashboard-activity-1-abcd",
+        search_query="",
+        priority=100,
+        reason="known_post_url",
+    )
+    search = PostCandidate(
+        source_id="pain_dashboard_requests",
+        source_kind="linkedin_search",
+        query_id="internal_tools_dashboard_pain",
+        post_url="",
+        source_url="https://www.linkedin.com/search/results/content/?keywords=dashboard",
+        search_query='"I need a dashboard"',
+        priority=90,
+        reason="search_query",
+    )
+    watchlist = PostCandidate(
+        source_id="creator_bill_yost",
+        source_kind="watchlist",
+        query_id="internal_tools_dashboard_pain",
+        post_url="",
+        source_url="https://www.linkedin.com/in/billyost",
+        search_query='"Bill Yost" dashboard spreadsheet',
+        priority=96,
+        reason="watchlist_search",
+    )
+
+    plan = plan_search_capture((known, search, watchlist))
+
+    assert plan.known_posts == (known,)
+    assert [item.candidate.source_id for item in plan.search_inputs] == [
+        "pain_dashboard_requests",
+        "creator_bill_yost",
+    ]
+    assert plan.search_inputs[0].capture_url == search.source_url
+    assert plan.search_inputs[1].capture_url == (
+        "https://www.linkedin.com/search/results/content/?keywords="
+        "%22Bill+Yost%22+dashboard+spreadsheet"
+    )
+    assert not plan.skipped_rows
+
+
+def test_search_capture_url_requires_explicit_search_input() -> None:
+    candidate = PostCandidate(
+        source_id="empty",
+        source_kind="watchlist",
+        query_id="internal_tools_dashboard_pain",
+        post_url="",
+        source_url="https://www.linkedin.com/in/someone",
+        search_query="",
+        priority=1,
+        reason="watchlist_search",
+    )
+
+    assert search_capture_url(candidate) == ""
+
+
+@pytest.mark.asyncio
+async def test_search_capture_copy_link_uses_page_clipboard_intercept() -> None:
+    copied_url = (
+        "https://www.linkedin.com/posts/dataflip-co_hranalytics-powerbi-"
+        "datadrivenhr-activity-7327939484082159616---Bv"
+        "?utm_source=share&utm_medium=member_desktop"
+    )
+    page = _CopyInterceptPage(copied_url=copied_url)
+    menu_button = _CopyInterceptButton()
+
+    result = await _copy_post_url_from_menu(
+        page=page,  # type: ignore[arg-type]
+        menu_button=menu_button,
+    )
+
+    assert result == copied_url
+    assert menu_button.clicked
+    assert page.menu_item.clicked
+    assert page.role_requests == [("menuitem", "^Copy link to post$")]
+    assert page.wait_for_function_calls == [
+        (
+            "() => window.__linkedinPostCopyCapture?.writes?.length > 0",
+            COPY_CAPTURE_TIMEOUT_MS,
+        )
+    ]
+    assert page.evaluate_calls == [
+        COPY_CAPTURE_INSTALL_SCRIPT,
+        COPY_CAPTURE_READ_SCRIPT,
+        COPY_CAPTURE_RESTORE_SCRIPT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_capture_copy_link_fails_when_no_page_clipboard_write() -> None:
+    page = _CopyInterceptPage(copied_url="", wait_times_out=True)
+
+    with pytest.raises(PostCopyCaptureError, match="did not call navigator\\.clipboard"):
+        await _copy_post_url_from_menu(
+            page=page,  # type: ignore[arg-type]
+            menu_button=_CopyInterceptButton(),
+        )
+
+    assert page.evaluate_calls == [
+        COPY_CAPTURE_INSTALL_SCRIPT,
+        COPY_CAPTURE_RESTORE_SCRIPT,
+    ]
+
+
+def test_progress_reporter_writes_status_lines() -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(stream=stream)
+
+    reporter.emit("search_start", index=1, total=3, query="dashboard work")
+
+    output = stream.getvalue()
+    assert output.startswith("progress ")
+    assert "search_start" in output
+    assert "index=1" in output
+    assert "query=dashboard work" in output
+
+
 def test_comment_extractor_writes_raw_comments_jsonl(tmp_path: Path) -> None:
     html_path = FIXTURE_DIR / "linkedin_post_comments.html"
     result = extract_comments_from_html_file(
@@ -197,6 +336,10 @@ def test_live_page_comment_rows_map_to_actual_comment_contract() -> None:
             source_id="known_high_signal_post_engagement",
             query_id="known_high_signal_post_engagement",
         ),
+        post_metadata=PostMetadata(
+            author_name="Ava Author",
+            text="Operators discussing internal tools and dashboards.",
+        ),
     )
 
     assert not result.warnings
@@ -206,13 +349,47 @@ def test_live_page_comment_rows_map_to_actual_comment_contract() -> None:
     assert comment.commenter_profile_url == "https://www.linkedin.com/in/ava-founder"
     assert comment.commenter_headline == "Founder at Ava Ops"
     assert "real dashboard" in comment.comment_text
+    assert comment.post_author_name == "Ava Author"
+    assert comment.post_text == "Operators discussing internal tools and dashboards."
+
+
+def test_live_page_comment_rows_preserve_company_commenter_urls() -> None:
+    result = _comments_from_page_rows(
+        [
+            {
+                "comment_id": "urn:li:comment:(activity:1,comment:202)",
+                "commenter_name": "Ava Ops",
+                "commenter_profile_url": (
+                    "https://www.linkedin.com/company/ava-ops/?miniCompanyUrn=abc"
+                ),
+                "commenter_headline": "1,204 followers",
+                "comment_text": "We see this dashboard problem constantly.",
+                "commented_at": "2026-06-24T12:00:00Z",
+            }
+        ],
+        input_row=BrowserExtractionInput(
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1/",
+            source_id="known_high_signal_post_engagement",
+            query_id="known_high_signal_post_engagement",
+        ),
+        post_metadata=PostMetadata(
+            author_name="Ava Author",
+            text="Operators discussing internal tools and dashboards.",
+        ),
+    )
+
+    assert not result.warnings
+    assert len(result.comments) == 1
+    assert result.comments[0].commenter_profile_url == (
+        "https://www.linkedin.com/company/ava-ops"
+    )
 
 
 @pytest.mark.asyncio
 async def test_live_comment_expansion_uses_dom_scroll_instead_of_mouse_wheel() -> None:
     page = _DomScrollOnlyPage()
 
-    await _expand_visible_comment_controls(
+    stats = await _expand_visible_comment_controls(
         page,  # type: ignore[arg-type]
         BrowserSafetyLimits(
             max_scrolls=1,
@@ -222,8 +399,74 @@ async def test_live_comment_expansion_uses_dom_scroll_instead_of_mouse_wheel() -
         ),
     )
 
-    assert page.evaluate_calls == [("(pixels) => window.scrollBy(0, pixels)", 1800)]
+    assert stats.scrolls_performed == 1
+    assert (SCROLL_BY_SCRIPT, 1800) in page.evaluate_calls
     assert page.waits == [25]
+
+
+@pytest.mark.asyncio
+async def test_live_comment_expansion_stops_after_no_progress() -> None:
+    stream = io.StringIO()
+    page = _AdaptiveExpansionPage(
+        comment_counts=(0, 3, 3),
+        scroll_states=(
+            {"scrollY": 0, "scrollHeight": 2000, "innerHeight": 900},
+            {"scrollY": 900, "scrollHeight": 3000, "innerHeight": 900},
+            {"scrollY": 900, "scrollHeight": 3000, "innerHeight": 900},
+        ),
+    )
+
+    stats = await _expand_visible_comment_controls(
+        page,  # type: ignore[arg-type]
+        BrowserSafetyLimits(
+            max_scrolls=6,
+            max_comment_control_clicks=12,
+            max_reply_control_clicks=8,
+            settle_ms=1,
+            max_no_progress_passes=1,
+        ),
+        progress=ProgressReporter(stream=stream),
+    )
+
+    assert stats.stop_reason == "no_more_content"
+    assert stats.scrolls_performed == 2
+    assert stats.visible_comment_nodes == 3
+    output = stream.getvalue()
+    assert "comment_expand_pass" in output
+    assert "new_comments=3" in output
+    assert "stop_reason=no_more_content" in output
+
+
+@pytest.mark.asyncio
+async def test_live_comment_expansion_uses_global_click_budgets() -> None:
+    page = _AdaptiveExpansionPage(
+        comment_counts=(0, 0, 0, 0),
+        scroll_states=(
+            {"scrollY": 0, "scrollHeight": 2000, "innerHeight": 900},
+            {"scrollY": 900, "scrollHeight": 3000, "innerHeight": 900},
+            {"scrollY": 1800, "scrollHeight": 4000, "innerHeight": 900},
+            {"scrollY": 2700, "scrollHeight": 5000, "innerHeight": 900},
+        ),
+        comment_button_count=10,
+        reply_button_count=10,
+    )
+
+    stats = await _expand_visible_comment_controls(
+        page,  # type: ignore[arg-type]
+        BrowserSafetyLimits(
+            max_scrolls=3,
+            max_comment_control_clicks=3,
+            max_reply_control_clicks=2,
+            settle_ms=1,
+            max_no_progress_passes=10,
+        ),
+    )
+
+    assert stats.stop_reason == "max_scrolls_reached"
+    assert stats.comment_control_clicks == 3
+    assert stats.reply_control_clicks == 2
+    assert page.comment_clicks == 3
+    assert page.reply_clicks == 2
 
 
 @pytest.mark.asyncio
@@ -665,6 +908,39 @@ def test_prefilter_post_queue_keeps_only_measured_comment_rich_posts(
     assert reasons["https://www.linkedin.com/posts/failed"] == "extraction_failed"
 
 
+def test_extract_url_queue_resume_reads_processed_manifest_urls(tmp_path: Path) -> None:
+    manifest = tmp_path / "extract_url_queue_manifest.jsonl"
+    manifest.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "post_url": "https://www.linkedin.com/posts/done",
+                    "run_id": "run_done",
+                    "status": "extracted",
+                    "comments_found": 12,
+                },
+                {
+                    "post_url": "https://www.linkedin.com/posts/failed",
+                    "run_id": "run_failed",
+                    "status": "failed",
+                    "comments_found": 0,
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert _read_manifest_post_urls(manifest) == frozenset(
+        {
+            "https://www.linkedin.com/posts/done",
+            "https://www.linkedin.com/posts/failed",
+        }
+    )
+    assert _read_manifest_post_urls(tmp_path / "missing.jsonl") == frozenset()
+
+
 def test_ranker_rejects_recruiting_and_job_seeker_noise(tmp_path: Path) -> None:
     comments_csv = tmp_path / "noise.csv"
     _write_comment_fixture_csv(comments_csv, count=1, direct_buyer_count=0)
@@ -714,6 +990,236 @@ def test_ranker_uses_requested_buyer_signal_dimensions() -> None:
     assert stable_comment_key(comment).startswith("comment_")
 
 
+def test_ranker_caps_commentary_without_buyer_need() -> None:
+    comment = CommentEvidence(
+        query_id="internal_tools_dashboard_pain",
+        source_id="known_high_signal_post_engagement",
+        source_kind="known_post",
+        source_url="https://www.linkedin.com/posts/example",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Author",
+        post_text="Dashboard requests often hide business problems.",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Ava Founder",
+        commenter_profile_url="https://www.linkedin.com/in/ava-founder/",
+        commenter_headline="Founder at Ava Ops",
+        commenter_company="Ava Ops",
+        relationship="",
+        comment_text=(
+            "There is an underlying business problem behind every "
+            "\"I need a dashboard\" request."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    ranked = rank_comment(comment, load_query_pack().require_query(comment.query_id))
+
+    assert ranked.rank_level is RankLevel.IRRELEVANT
+    assert ranked.buying_signal == 0
+
+
+def test_ranker_rejects_service_provider_pitch_comments() -> None:
+    query = load_query_pack().require_query("internal_tools_dashboard_pain")
+    seller_pitch = CommentEvidence(
+        query_id=query.query_id,
+        source_id="product_n8n",
+        source_kind="linkedin_search",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Buyer",
+        post_text="Looking for AI automation collaborators.",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Nitin Builder",
+        commenter_profile_url="https://www.linkedin.com/in/nitin-builder/",
+        commenter_headline=(
+            "Senior Full Stack Developer | AI Developer | "
+            "n8n Workflow automation | Available Immediately"
+        ),
+        commenter_company="",
+        relationship="",
+        comment_text=(
+            "Your search for an AI Automation Expert caught my eye. "
+            "I specialize in designing robust automation solutions. "
+            "I’d love to discuss how my expertise can support your upcoming projects. "
+            "Portfolio: https://example.com GitHub: https://github.com/example"
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+    buyer_need = CommentEvidence(
+        query_id=query.query_id,
+        source_id="product_n8n",
+        source_kind="linkedin_search",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Buyer",
+        post_text="AI automation lessons.",
+        comment_id="urn:li:comment:2",
+        comment_url="",
+        commenter_name="Riley Ops",
+        commenter_profile_url="https://www.linkedin.com/in/riley-ops/",
+        commenter_headline="Head of Operations",
+        commenter_company="Riley Health",
+        relationship="",
+        comment_text=(
+            "We need help replacing our spreadsheet workflow with an internal "
+            "tool this quarter. Who can help build this?"
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    seller_ranked = rank_comment(seller_pitch, query)
+    buyer_ranked = rank_comment(buyer_need, query)
+
+    assert seller_ranked.rank_level is RankLevel.IRRELEVANT
+    assert "vendor" in seller_ranked.reject_reasons
+    assert buyer_ranked.rank_level is RankLevel.STRONG
+
+
+def test_ranker_does_not_treat_generic_replace_or_budgets_as_buying_signal() -> None:
+    query = load_query_pack().require_query("internal_tools_dashboard_pain")
+    replace_people = CommentEvidence(
+        query_id=query.query_id,
+        source_id="product_make",
+        source_kind="linkedin_search",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Author",
+        post_text="Automation tradeoffs.",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Morgan Ops",
+        commenter_profile_url="https://www.linkedin.com/in/morgan-ops/",
+        commenter_headline="Senior Operations Leader",
+        commenter_company="Morgan Health",
+        relationship="",
+        comment_text=(
+            "Automation is not here to replace people. It frees people up "
+            "to focus on work that requires judgment."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+    budgets_commentary = CommentEvidence(
+        query_id=query.query_id,
+        source_id="pain_spreadsheet_operations",
+        source_kind="linkedin_search",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Author",
+        post_text="Spreadsheet governance.",
+        comment_id="urn:li:comment:2",
+        comment_url="",
+        commenter_name="Jordan Tech",
+        commenter_profile_url="https://www.linkedin.com/in/jordan-tech/",
+        commenter_headline="Technology Leader",
+        commenter_company="Jordan IT",
+        relationship="",
+        comment_text=(
+            "Most organizations focus on managing projects, budgets, and delivery. "
+            "Reducing spreadsheet dependency can be a game changer."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    replace_ranked = rank_comment(replace_people, query)
+    budgets_ranked = rank_comment(budgets_commentary, query)
+
+    assert replace_ranked.rank_level is RankLevel.IRRELEVANT
+    assert replace_ranked.positive_signals == ()
+    assert budgets_ranked.rank_level is RankLevel.IRRELEVANT
+    assert budgets_ranked.positive_signals == ()
+
+
+def test_ranker_does_not_treat_generic_pain_commentary_as_buying_signal() -> None:
+    query = load_query_pack().require_query("internal_tools_dashboard_pain")
+    commentary = CommentEvidence(
+        query_id=query.query_id,
+        source_id="competitor_automation_agencies",
+        source_kind="linkedin_search",
+        source_url="https://www.linkedin.com/search/results/content/",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Ava Author",
+        post_text="Finance workflow automation.",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Aditya CEO",
+        commenter_profile_url="https://www.linkedin.com/in/aditya-ceo/",
+        commenter_headline="CEO",
+        commenter_company="Qilin Lab",
+        relationship="",
+        comment_text=(
+            "This hits a real pain point. Most automation projects fail in "
+            "the handoff between business context and technical implementation."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    ranked = rank_comment(commentary, query)
+
+    assert ranked.rank_level is RankLevel.IRRELEVANT
+    assert ranked.buying_signal == 0
+
+
+def test_ranker_rejects_post_author_replies_and_dashboard_music_noise() -> None:
+    query = load_query_pack().require_query("internal_tools_dashboard_pain")
+    author_reply = CommentEvidence(
+        query_id=query.query_id,
+        source_id="creator_bill_yost",
+        source_kind="watchlist",
+        source_url="https://www.linkedin.com/in/billyost",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="🏴‍☠️ Bill Yost",
+        post_text="Dashboard advice.",
+        comment_id="urn:li:comment:1",
+        comment_url="",
+        commenter_name="Bill Yost",
+        commenter_profile_url="https://www.linkedin.com/in/billyost/",
+        commenter_headline="People Analytics",
+        commenter_company="",
+        relationship="",
+        comment_text=(
+            "Yes, this is a great add. I need to include it. "
+            "My dashboards now have links to our metrics glossary."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+    music_joke = CommentEvidence(
+        query_id=query.query_id,
+        source_id="creator_bill_yost",
+        source_kind="watchlist",
+        source_url="https://www.linkedin.com/in/billyost",
+        search_query="",
+        post_url="https://www.linkedin.com/posts/example",
+        post_author_name="Bill Yost",
+        post_text="Dashboard Confessionals.",
+        comment_id="urn:li:comment:2",
+        comment_url="",
+        commenter_name="Taylor Smith",
+        commenter_profile_url="https://www.linkedin.com/in/taylor-smith/",
+        commenter_headline="Technical Product Support",
+        commenter_company="",
+        relationship="",
+        comment_text=(
+            "Wait but will Dashboard Confessional be there? "
+            "I need to know if anyone else is still listening to the soundtrack."
+        ),
+        commented_at="2026-06-24T12:00:00Z",
+    )
+
+    assert rank_comment(author_reply, query).rank_level is RankLevel.IRRELEVANT
+    assert "post author" in rank_comment(author_reply, query).reject_reasons
+    assert rank_comment(music_joke, query).rank_level is RankLevel.IRRELEVANT
+    assert "entertainment_noise" in rank_comment(music_joke, query).reject_reasons
+
+
 def test_opportunity_and_comment_modules_do_not_import_action_modules() -> None:
     prohibited_modules = (
         "apps.network_automation",
@@ -750,11 +1256,17 @@ class _DomScrollOnlyPage:
         self.evaluate_calls: list[tuple[str, int]] = []
         self.waits: list[int] = []
 
-    def get_by_role(self, _role: str, *, name: Any) -> _EmptyLocator:
-        return _EmptyLocator()
+    def get_by_role(self, _role: str, *, name: Any) -> _ButtonLocator:
+        return _ButtonLocator(page=None, kind="comment", count=0)
 
-    async def evaluate(self, expression: str, arg: int) -> None:
+    def locator(self, _selector: str) -> _EmptyCountLocator:
+        return _EmptyCountLocator()
+
+    async def evaluate(self, expression: str, arg: int | None = None) -> dict[str, int] | None:
+        if arg is None:
+            return {"scrollY": 0, "scrollHeight": 0, "innerHeight": 0}
         self.evaluate_calls.append((expression, arg))
+        return None
 
     async def wait_for_timeout(self, ms: int) -> None:
         self.waits.append(ms)
@@ -765,12 +1277,144 @@ class _NoWheelMouse:
         raise AssertionError("live comment expansion should not use mouse wheel input")
 
 
-class _EmptyLocator:
+class _AdaptiveExpansionPage:
+    def __init__(
+        self,
+        *,
+        comment_counts: tuple[int, ...],
+        scroll_states: tuple[dict[str, int], ...],
+        comment_button_count: int = 0,
+        reply_button_count: int = 0,
+    ) -> None:
+        self.comment_counts = comment_counts
+        self.scroll_states = scroll_states
+        self.comment_count_index = 0
+        self.scroll_state_index = 0
+        self.comment_button_count = comment_button_count
+        self.reply_button_count = reply_button_count
+        self.comment_clicks = 0
+        self.reply_clicks = 0
+        self.scroll_calls: list[int] = []
+        self.waits: list[int] = []
+
+    def locator(self, _selector: str) -> _CommentCountLocator:
+        return _CommentCountLocator(self)
+
+    def get_by_role(self, _role: str, *, name: Any) -> _ButtonLocator:
+        pattern = getattr(name, "pattern", "")
+        kind = "comment" if "comments?" in pattern else "reply"
+        count = self.comment_button_count if kind == "comment" else self.reply_button_count
+        return _ButtonLocator(page=self, kind=kind, count=count)
+
+    async def evaluate(self, _expression: str, arg: int | None = None) -> dict[str, int] | None:
+        if arg is not None:
+            self.scroll_calls.append(arg)
+            return None
+        index = min(self.scroll_state_index, len(self.scroll_states) - 1)
+        self.scroll_state_index += 1
+        return self.scroll_states[index]
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        self.waits.append(ms)
+
+    def next_comment_count(self) -> int:
+        index = min(self.comment_count_index, len(self.comment_counts) - 1)
+        self.comment_count_index += 1
+        return self.comment_counts[index]
+
+    def record_click(self, kind: str) -> None:
+        if kind == "comment":
+            self.comment_clicks += 1
+        else:
+            self.reply_clicks += 1
+
+
+class _EmptyCountLocator:
     async def count(self) -> int:
         return 0
 
-    def nth(self, _index: int) -> _EmptyLocator:
+
+class _CommentCountLocator:
+    def __init__(self, page: _AdaptiveExpansionPage) -> None:
+        self.page = page
+
+    async def count(self) -> int:
+        return self.page.next_comment_count()
+
+
+class _ButtonLocator:
+    def __init__(
+        self,
+        *,
+        page: _AdaptiveExpansionPage | None,
+        kind: str,
+        count: int,
+    ) -> None:
+        self.page = page
+        self.kind = kind
+        self._count = count
+
+    async def count(self) -> int:
+        return self._count
+
+    def nth(self, _index: int) -> _ButtonLocator:
         return self
+
+    async def is_visible(self) -> bool:
+        return True
+
+    async def is_enabled(self) -> bool:
+        return True
+
+    async def click(self) -> None:
+        if self.page is not None:
+            self.page.record_click(self.kind)
+
+
+class _CopyInterceptPage:
+    def __init__(self, *, copied_url: str, wait_times_out: bool = False) -> None:
+        self.copied_url = copied_url
+        self.wait_times_out = wait_times_out
+        self.evaluate_calls: list[str] = []
+        self.wait_for_function_calls: list[tuple[str, int]] = []
+        self.role_requests: list[tuple[str, str]] = []
+        self.menu_item = _CopyInterceptMenuItem()
+
+    async def evaluate(self, expression: str) -> str | None:
+        self.evaluate_calls.append(expression)
+        if expression == COPY_CAPTURE_READ_SCRIPT:
+            return self.copied_url
+        return None
+
+    async def wait_for_function(self, expression: str, *, timeout: int) -> None:
+        self.wait_for_function_calls.append((expression, timeout))
+        if self.wait_times_out:
+            raise PlaywrightTimeoutError("timed out")
+
+    def get_by_role(self, role: str, *, name: Any) -> _CopyInterceptMenuItem:
+        pattern = getattr(name, "pattern", str(name))
+        self.role_requests.append((role, pattern))
+        return self.menu_item
+
+
+class _CopyInterceptButton:
+    def __init__(self) -> None:
+        self.clicked = False
+        self.dispatched_events: list[str] = []
+
+    async def click(self, *, timeout: int | None = None) -> None:
+        self.clicked = True
+
+    async def dispatch_event(self, event: str) -> None:
+        self.dispatched_events.append(event)
+
+
+class _CopyInterceptMenuItem:
+    def __init__(self) -> None:
+        self.clicked = False
+
+    async def click(self) -> None:
+        self.clicked = True
 
 
 class _FailingScreenshotWriter:

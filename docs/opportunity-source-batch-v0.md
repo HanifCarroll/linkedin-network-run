@@ -51,6 +51,19 @@ state directory.
   `search_query` are filled. Use these rows to find candidate LinkedIn posts,
   then collect comments from selected post URLs.
 
+Convert search/watchlist rows into concrete post URLs with the browser-backed
+search capture command. It writes captured post URLs, metrics, and a checkpoint
+incrementally, and prints `progress ...` lines to stderr while it works:
+
+```sh
+uv run linkedin-tools opportunity capture-search-posts \
+  --post-queue /tmp/linkedin-opportunity-v0/post-queue.csv \
+  --out /tmp/linkedin-opportunity-v0/search-post-queue.csv \
+  --metrics-jsonl /tmp/linkedin-opportunity-v0/search-post-capture.metrics.jsonl \
+  --checkpoint /tmp/linkedin-opportunity-v0/search-post-capture.checkpoint.json \
+  --max-results-per-search 50
+```
+
 Example company-page conversion:
 
 ```sh
@@ -115,7 +128,15 @@ Configurable safety limits:
 --navigation-timeout-ms 30000
 --action-timeout-ms 5000
 --max-runtime-seconds 90
+--max-no-progress-passes 2
 ```
+
+The scroll and click limits are hard ceilings, not fixed work amounts. Live
+extraction stops earlier when recent passes produce no new comment nodes, no
+usable expansion controls, and no meaningful scroll-height or scroll-position
+change. Each run summary records `stop_reason`, `scrolls_performed`,
+`comment_control_clicks`, `reply_control_clicks`, `comments_found`, and
+`runtime_seconds`.
 
 The extractor uses your real Google Chrome root and the Chrome profile named
 `LinkedIn` by default. It does not attach to the Playwriter CDP endpoint unless
@@ -134,10 +155,6 @@ export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
 
 Use `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=custom` plus
 `LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` for another explicit root.
-
-Chrome runs headed by default. Do not set
-`LINKEDIN_TOOLS_BROWSER_HEADLESS=true` for the opportunity source experiment;
-the browser should behave like a normal visible Google Chrome window.
 
 The isolated root needs its own LinkedIn login once. Chrome's newer remote
 debugging protections require a non-default data dir for automation debugging,

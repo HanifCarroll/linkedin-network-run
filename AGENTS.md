@@ -13,8 +13,7 @@ Act like a high-performing senior engineer. Be concise, direct, and execution-fo
 
 ## Project Overview
 
-This is the active Python `linkedin-tools` monorepo after the approved
-2026-06-24 cutover:
+This is the active Python `linkedin-tools` monorepo:
 
 - `apps/network_automation`: deterministic controller for LinkedIn Sales
   Navigator connection-request runs, acceptance tracking, reservoir capture,
@@ -27,16 +26,12 @@ This is the active Python `linkedin-tools` monorepo after the approved
   recruiter/agency state, browser artifacts, and guarded action paths.
 - `packages/`: shared browser, Sales Navigator, storage, report, UI, schema,
   and experiment helpers.
-- `archive/legacy-go-js`: read-only archive of the old Go/JavaScript
-  implementation.
 
 Default local state:
 
-- Active Python root: `~/Library/Application Support/linkedin-tools/`
+- State root: `~/Library/Application Support/linkedin-tools/`
 - Network state: `~/Library/Application Support/linkedin-tools/network-automation/`
 - Recruiter/agency state: `~/Library/Application Support/linkedin-tools/recruiter-agency-outreach/`
-- Legacy import sources remain `~/Library/Application Support/linkedin-network-run/`
-  and `~/Library/Application Support/recruiter-agency-outreach/`.
 
 The current stable workspace is `/Users/hanifcarroll/projects/linkedin-network-automation`. Older logs or comments may still mention `/Users/hanifcarroll/projects/tool`; do not reintroduce that path.
 
@@ -56,15 +51,6 @@ The main CLI is:
 
 ```sh
 uv run linkedin-tools --help
-```
-
-Compatibility commands remain available through Python shims for legacy
-operator workflows and import commands:
-
-```sh
-uv run linkedin-network-run --help
-uv run recruiter-agency-outreach --help
-uv run linkedin-opportunity-intel --help
 ```
 
 ## Workflow Boundaries
@@ -101,7 +87,7 @@ For capture, scraping, parsing, prompt context, and model-selection changes:
 - Do not infer from generic DOM text, page titles, broad substring matches, keyword scoring, or heading fallbacks.
 - If required data is missing, write an empty field plus a clear warning instead of guessing.
 - Do not truncate, slice, cap, or filter extracted source data unless the product requirement explicitly says so. Do prompt-size control later in a named context-selection step.
-- Remove stale compatibility paths, hidden fallbacks, and unused heuristic implementations when replacing behavior.
+- Remove hidden fallbacks and unused heuristic implementations when replacing behavior.
 - Recovery layers should fail loudly when contracts are violated. Do not salvage malformed JSON or silently coerce invalid output unless that behavior is explicitly part of the contract.
 
 Before finishing extraction or context-selection changes, run and address the results:

@@ -1,21 +1,62 @@
-# Python LinkedIn Tools Architecture
+# linkedin-tools Architecture
 
-This repo now has an integrated Python `linkedin-tools` monorepo beside the
-existing Go and Playwriter implementation. The Go/JavaScript code remains
-parity evidence until Hanif approves cutover.
+`linkedin-tools` is a Python monorepo for LinkedIn networking, recruiter/agency
+outreach, opportunity intelligence, comment extraction, and local review tools.
+The top-level CLI is `uv run linkedin-tools`.
 
-Source-of-truth planning docs:
+## Apps
 
-- `docs/python-linkedin-tools-monorepo-prd.md`
-- `docs/python-linkedin-tools-multi-thread-execution.md`
-- `docs/python-linkedin-tools-pre-port-salvage.md`
+- `apps/network_automation`: Sales Navigator connection-request controller,
+  source reservoirs, sent-page audit reconciliation, acceptance tracking,
+  accepted follow-ups, and pending-invitation cleanup.
+- `apps/recruiter_agency_outreach`: recruiter and agency account sourcing,
+  lead capture, drafting, dashboards, guarded message dry-runs, and guarded
+  message sends.
+- `apps/opportunity_intel`: recommend-only source registry, query packs,
+  post queues, provider imports, capture batches, scoring, and review exports.
+- `apps/comment_extractor`: browser-backed and saved-HTML extraction for
+  LinkedIn post comments.
+- `apps/review_ui`: local FastAPI/Jinja review surfaces for opportunities,
+  networking, recruiter/agency state, browser artifacts, and guarded actions.
 
-The current implementation branch is organized around:
+## Shared Packages
 
-- `apps/`: user-facing app namespaces and CLI surfaces.
-- `packages/`: shared browser, storage, reporting, UI, and experiment packages.
-- `tests/`: unit and integration tests for the Python port.
-- `docs/handoffs/`: required subthread handoff notes.
+- `packages/linkedin_browser`: Playwright/Chrome session management, browser
+  artifacts, and guarded browser action primitives.
+- `packages/linkedin_salesnav`: Sales Navigator capture, audit, saved-search,
+  and profile primitives.
+- `packages/linkedin_storage`: SQLite, JSONL, and CSV helpers.
+- `packages/linkedin_reports`: report rendering helpers.
+- `packages/linkedin_ui`: shared review UI support.
+- `packages/linkedin_experiments`: experiment metrics and gate helpers.
+- `packages/linkedin_common`: config, progress, URL, schema, and utility code.
 
-Subthreads must keep to their owned paths unless the orchestrator explicitly
-changes the assignment.
+## State
+
+Runtime state lives under `~/Library/Application Support/linkedin-tools/`.
+Each app owns its namespace:
+
+```text
+network-automation/
+recruiter-agency-outreach/
+opportunity-intel/
+comment-extractor/
+review-ui/
+```
+
+## Browser Execution
+
+Browser-backed commands use Python Playwright through the configured local
+Chrome/Playwriter CDP path. Browser artifacts are written back to app-owned
+state or explicit output directories so controller state can be audited after
+uncertain browser behavior.
+
+## Safety Boundaries
+
+- Connection requests are owned by `linkedin-tools network`.
+- Acceptance follow-ups are owned by `linkedin-tools network acceptance`.
+- Recruiter/agency outreach sends drafted messages only; it must not click
+  `Connect`.
+- Opportunity intelligence is recommend-only.
+- Real sends and withdrawals require explicit flags close to the browser action:
+  `--allow-send` or `--allow-withdraw`.

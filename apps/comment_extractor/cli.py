@@ -24,6 +24,7 @@ from apps.comment_extractor.linkedin_post_comments import (
 from apps.opportunity_intel.contracts import CommentEvidence
 from apps.opportunity_intel.sources import load_query_pack
 from apps.opportunity_intel.store import OpportunityStore
+from packages.linkedin_common.progress import ProgressReporter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,10 +156,12 @@ def _handle_extract_url(args: argparse.Namespace) -> int:
         store=OpportunityStore(args.state_dir),
         limits=_safety_limits_from_args(args),
         cdp_url=args.cdp_url,
+        progress=ProgressReporter(),
     )
     print(f"run: {result.run_id}")
     print(f"raw comments: {result.raw_comments_path}")
     print(f"comments_found={result.comments_found}")
+    print(f"stop_reason={result.stop_reason}")
     return 0
 
 
@@ -171,10 +174,12 @@ def _handle_extract_url_queue(args: argparse.Namespace) -> int:
         limits=_safety_limits_from_args(args),
         provider_csv_path=provider_csv,
         cdp_url=args.cdp_url,
+        progress=ProgressReporter(),
     )
     print(f"processed={result.processed}")
     print(f"succeeded={result.succeeded}")
     print(f"failed={result.failed}")
+    print(f"skipped={result.skipped}")
     print(f"manifest={result.manifest_path}")
     print(f"checkpoint={result.checkpoint_path}")
     if result.provider_csv_path is not None:
@@ -281,6 +286,11 @@ def _add_safety_limit_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=BrowserSafetyLimits.max_runtime_seconds,
     )
+    parser.add_argument(
+        "--max-no-progress-passes",
+        type=int,
+        default=BrowserSafetyLimits.max_no_progress_passes,
+    )
 
 
 def _safety_limits_from_args(args: argparse.Namespace) -> BrowserSafetyLimits:
@@ -292,6 +302,7 @@ def _safety_limits_from_args(args: argparse.Namespace) -> BrowserSafetyLimits:
         action_timeout_ms=args.action_timeout_ms,
         settle_ms=args.settle_ms,
         max_runtime_seconds=args.max_runtime_seconds,
+        max_no_progress_passes=args.max_no_progress_passes,
     )
 
 

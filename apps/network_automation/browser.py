@@ -571,7 +571,15 @@ class PlaywrightBrowserClient:
     ) -> tuple[SalesNavSendResult, str]:
         if not candidate.profile_url:
             raise RuntimeError("candidate profile_url is required for browser send")
-        page = await self._page(("linkedin.com/sales/lead/", "linkedin.com/sales/search/people"))
+        page = await self._page(("linkedin.com/sales/search/people", "linkedin.com/sales/lead/"))
+        search_result = await self._send_connection_from_search_row(
+            page,
+            candidate,
+            dry_run=dry_run,
+            allow_send=allow_send,
+        )
+        if search_result is not None:
+            return search_result
         response = await page.goto(
             candidate.profile_url,
             wait_until="domcontentloaded",
@@ -606,12 +614,20 @@ class PlaywrightBrowserClient:
             async def click_connect() -> None:
                 await _click_menu_label(page, menu.get("menu_id"), "Connect")
 
-            guard = await guarded_connection_request(
-                identity,
-                click_connect,
-                dry_run=False,
-                approval=RealActionApproval(RealAction.SEND_CONNECTION, allow=allow_send),
-            )
+            try:
+                guard = await guarded_connection_request(
+                    identity,
+                    click_connect,
+                    dry_run=False,
+                    approval=RealActionApproval(RealAction.SEND_CONNECTION, allow=allow_send),
+                )
+            except RuntimeError as error:
+                if str(error) != "Connect menu item missing":
+                    raise
+                result_payload["status"] = "not-connectable:missing-connect-menu"
+                result_payload["after"] = {"state": "missing-connect-menu"}
+                await _escape(page)
+                return self._write_result("send-result", result_payload, SalesNavSendResult)
             await _short_wait(page)
             send = await _click_send_invitation(page, allow_send=allow_send)
             result_payload["send"] = {"guard": guard.__dict__, **send}
@@ -627,6 +643,75 @@ class PlaywrightBrowserClient:
                     if _classify_menu_labels(after.get("labels", [])) == "already-pending"
                     else "unverified:clicked-send"
                 )
+        await _escape(page)
+        return self._write_result("send-result", result_payload, SalesNavSendResult)
+
+    async def _send_connection_from_search_row(
+        self,
+        page: Any,
+        candidate: CandidateObservation,
+        *,
+        dry_run: bool,
+        allow_send: bool,
+    ) -> tuple[SalesNavSendResult, str] | None:
+        if "linkedin.com/sales/search/people" not in page.url:
+            return None
+        await _wait_for_salesnav_results(page)
+        row = await _salesnav_result_row_for_candidate(page, candidate)
+        if row is None:
+            return None
+        result_payload: dict[str, Any] = _send_result_base(candidate, dry_run=dry_run, url=page.url)
+        block = await _classify_page(page)
+        if block.is_blocking:
+            result_payload.update({"status": "blocked", "reason": block.reason})
+            return self._write_result("send-result", result_payload, SalesNavSendResult)
+        menu = await _open_row_menu(page, row, close=False)
+        result_payload["before"] = {"scope": "search-row", **menu}
+        state = _classify_menu_labels(menu.get("labels", []))
+        if state == "already-pending":
+            result_payload["status"] = "already-pending"
+            await _escape(page)
+            return self._write_result("send-result", result_payload, SalesNavSendResult)
+        if state != "connectable":
+            result_payload["status"] = f"not-connectable:{state}"
+            await _escape(page)
+            return self._write_result("send-result", result_payload, SalesNavSendResult)
+        if dry_run:
+            result_payload["status"] = "dry-run-connectable"
+            await _escape(page)
+            return self._write_result("send-result", result_payload, SalesNavSendResult)
+
+        identity = CandidateIdentity(
+            name=candidate.name,
+            profile_url=candidate.profile_url,
+            candidate_id=candidate.sales_profile_urn,
+            sales_profile_urn=candidate.sales_profile_urn,
+        )
+
+        async def click_connect() -> None:
+            await _click_menu_label(page, menu.get("menu_id"), "Connect")
+
+        guard = await guarded_connection_request(
+            identity,
+            click_connect,
+            dry_run=False,
+            approval=RealActionApproval(RealAction.SEND_CONNECTION, allow=allow_send),
+        )
+        await _short_wait(page)
+        send = await _click_send_invitation(page, allow_send=allow_send)
+        result_payload["send"] = {"guard": guard.__dict__, **send, "scope": "search-row"}
+        if send["status"] != "clicked-send":
+            result_payload["status"] = _send_status_from_send(send["status"])
+            result_payload["after"] = {"state": send["status"], "scope": "search-row"}
+        else:
+            await _medium_wait(page)
+            after = await _open_row_menu(page, row)
+            result_payload["after"] = {"scope": "search-row", **after}
+            result_payload["status"] = (
+                "pending-verified"
+                if _classify_menu_labels(after.get("labels", [])) == "already-pending"
+                else "unverified:clicked-send"
+            )
         await _escape(page)
         return self._write_result("send-result", result_payload, SalesNavSendResult)
 
@@ -663,6 +748,7 @@ class PlaywrightBrowserClient:
         if url:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             await _wait_for_load(page)
+            await _wait_for_salesnav_results(page)
         try:
             all_rows: list[dict[str, Any]] = []
             page_summaries: list[dict[str, Any]] = []
@@ -701,6 +787,8 @@ class PlaywrightBrowserClient:
                     break
                 if page_number < pages and not await _click_next_results_page(page):
                     break
+                if page_number < pages:
+                    await _wait_for_salesnav_results(page)
             await _drain_api_response_tasks(api_response_tasks)
             output_rows = (
                 [row for row in all_rows if row["menuState"] == "connectable"]
@@ -774,7 +862,10 @@ class PlaywrightBrowserClient:
                 "saved-searches button missing; verify the automation browser is logged "
                 "into Sales Navigator with the expected LinkedIn profile"
             )
-        await button.click(timeout=10000)
+        try:
+            await button.click(timeout=10000)
+        except Exception:
+            await button.evaluate("(element) => element.click()")
         await _medium_wait(page)
         searches = await page.locator("a[href*='savedSearchId=']").evaluate_all(
             """(anchors) => {
@@ -1309,6 +1400,16 @@ async def _wait_for_load(page: Any) -> None:
     await _medium_wait(page)
 
 
+async def _wait_for_salesnav_results(page: Any) -> None:
+    await _ignore_errors(
+        page.wait_for_function(
+            """(selector) => document.querySelectorAll(selector).length > 5""",
+            arg=SALES_NAV_PEOPLE_RESULT_ROW,
+            timeout=10000,
+        )
+    )
+
+
 async def _short_wait(page: Any) -> None:
     await page.wait_for_timeout(500)
 
@@ -1343,7 +1444,7 @@ async def _open_profile_actions_menu(page: Any) -> dict[str, Any]:
     return {"state": _classify_menu_labels(labels), "labels": labels, "menu_id": menu_id}
 
 
-async def _open_row_menu(page: Any, row: Any) -> dict[str, Any]:
+async def _open_row_menu(page: Any, row: Any, *, close: bool = True) -> dict[str, Any]:
     trigger = row.locator(SALES_NAV_MORE_ACTIONS_BUTTON).first
     if not await _locator_count(trigger):
         return {"state": "missing-trigger", "labels": []}
@@ -1358,8 +1459,30 @@ async def _open_row_menu(page: Any, row: Any) -> dict[str, Any]:
     if not await _locator_count(menu):
         return {"state": "missing-menu", "labels": [], "menu_id": menu_id}
     labels = await _menu_labels(menu)
-    await _escape(page)
+    if close:
+        await _escape(page)
     return {"state": _classify_menu_labels(labels), "labels": labels, "menu_id": menu_id}
+
+
+async def _salesnav_result_row_for_candidate(
+    page: Any, candidate: CandidateObservation
+) -> Any | None:
+    if candidate.sales_profile_urn:
+        row = page.locator(SALES_NAV_PEOPLE_RESULT_ROW).filter(
+            has=page.locator(
+                f"[data-scroll-into-view={json.dumps(candidate.sales_profile_urn)}]"
+            )
+        ).first
+        if await _locator_count(row):
+            return row
+    profile_id = sales_profile_id_from_url(candidate.profile_url)
+    if profile_id:
+        row = page.locator(SALES_NAV_PEOPLE_RESULT_ROW).filter(
+            has=page.locator(f'a[href*="/sales/lead/{profile_id},"]')
+        ).first
+        if await _locator_count(row):
+            return row
+    return None
 
 
 async def _menu_labels(menu: Any) -> list[dict[str, Any]]:
@@ -1398,10 +1521,16 @@ async def _click_menu_label(page: Any, menu_id: Any, label: str) -> None:
         if menu_id
         else page.locator("[data-popper-placement]").last
     )
-    button = menu.get_by_text(re.compile(f"^{re.escape(label)}$", re.I)).first
-    if not await _locator_count(button):
-        raise RuntimeError(f"{label} menu item missing")
-    await button.click(timeout=8000)
+    items = await menu.locator("button,a,[role=menuitem]").all()
+    for item in items:
+        text = _clean(await item.text_content())
+        aria = _clean(str(await item.get_attribute("aria-label") or ""))
+        if re.fullmatch(re.escape(label), text, re.I) or re.fullmatch(
+            re.escape(label), aria, re.I
+        ):
+            await item.click(timeout=8000)
+            return
+    raise RuntimeError(f"{label} menu item missing")
 
 
 async def _click_send_invitation(page: Any, *, allow_send: bool) -> dict[str, Any]:
@@ -1542,6 +1671,9 @@ def _apply_salesnav_api_state(
             }
         ]
         return True
+    visible_state = row.get("visibleState")
+    if isinstance(visible_state, dict) and visible_state.get("hasMessage") is True:
+        return False
     if pending_invitation is False and (degree is None or degree == 2):
         row["menuState"] = "connectable"
         row["menuLabels"] = [

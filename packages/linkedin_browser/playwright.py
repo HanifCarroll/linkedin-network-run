@@ -23,7 +23,6 @@ from .config import (
     chrome_profile_storage_dir,
 )
 
-CHROME_LAUNCH_TIMEOUT_MS = 30_000
 MANAGED_CHROME_CDP_STARTUP_TIMEOUT_SECONDS = 20.0
 MANAGED_CHROME_CDP_CONNECT_TIMEOUT_MS = 10_000
 MACOS_CHROME_EXECUTABLE = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -33,10 +32,6 @@ CHROME_DEFAULT_PROFILE_ERROR = (
     "LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=automation for a dedicated installed-Chrome "
     "profile, or set LINKEDIN_TOOLS_CDP_URL to attach to an already-debuggable Chrome "
     "session."
-)
-CHROME_MANAGED_CDP_REQUIRED_ERROR = (
-    "Installed Chrome automation must use open_linkedin_browser_context so the "
-    "browser can be launched through the managed CDP path."
 )
 
 
@@ -78,12 +73,7 @@ async def open_linkedin_browser_context(
                 browser=browser,
             )
     selected = config or chrome_profile_from_env()
-    if selected.channel == "chrome":
-        return await launch_managed_chrome_cdp_context(playwright, selected)
-    return BrowserContextHandle(
-        context=await launch_linkedin_chrome(playwright, selected),
-        close_context=True,
-    )
+    return await launch_managed_chrome_cdp_context(playwright, selected)
 
 
 async def close_browser_context_handle(handle: BrowserContextHandle) -> None:
@@ -127,37 +117,6 @@ async def launch_managed_chrome_cdp_context(
         )
     except Exception:
         await asyncio.to_thread(_terminate_process, process)
-        raise
-
-
-async def launch_linkedin_chrome(
-    playwright: Playwright,
-    config: ChromeProfileConfig | None = None,
-) -> BrowserContext:
-    selected = config or chrome_profile_from_env()
-    try:
-        if selected.channel is None:
-            return await playwright.chromium.launch_persistent_context(
-                user_data_dir=str(selected.user_data_dir),
-                headless=selected.headless,
-                args=selected.launch_args(),
-                timeout=CHROME_LAUNCH_TIMEOUT_MS,
-            )
-        if _is_default_chrome_user_data_dir(selected.user_data_dir):
-            raise RuntimeError(CHROME_DEFAULT_PROFILE_ERROR)
-        raise RuntimeError(CHROME_MANAGED_CDP_REQUIRED_ERROR)
-    except Exception as exc:
-        message = str(exc)
-        if (
-            "Opening in existing browser session" in message
-            or "profile is already in use" in message
-        ):
-            raise RuntimeError(
-                "Chrome profile is already open, so Python Playwright cannot launch "
-                "the persistent LinkedIn profile. Close Chrome windows using the "
-                f"{selected.profile_name!r} profile before running live dry-runs, or "
-                "launch an attachable browser session before using the Python browser client."
-            ) from exc
         raise
 
 
