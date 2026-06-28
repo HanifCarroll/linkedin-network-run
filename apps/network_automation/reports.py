@@ -27,6 +27,10 @@ def percentage_suffix(numerator: int, denominator: int) -> str:
 
 
 def render_report(run: Run) -> str:
+    audited_delta = run.audited_delta()
+    audit_top_up_count = sum(
+        1 for candidate in run.candidates if candidate.status == CandidateStatus.AUDIT_TOP_UP
+    )
     lines = [
         f"# LinkedIn Network Run {run.date.isoformat()}",
         "",
@@ -35,8 +39,9 @@ def render_report(run: Run) -> str:
         f"- Target: {run.target}",
         f"- Start audit: {format_option(run.start_audit)}",
         f"- Final/latest audit: {format_option(run.latest_audit)}",
-        f"- Audited delta: {format_delta(run.audited_delta())}",
+        f"- Audited delta: {format_delta(audited_delta)}",
         f"- Row-level verified pending: {run.verified_count()}",
+        f"- Audit top-ups recorded: {audit_top_up_count}",
         f"- Imported candidate observations: {len(run.observations)}",
         "",
         "## Source Counts",
@@ -56,6 +61,27 @@ def render_report(run: Run) -> str:
             f"rows ({yield_text}); already pending {stats.already_pending_count}; "
             f"email-required skips {stats.email_required_skips}; {stats.recommendation}"
         )
+    if audited_delta != run.target:
+        lines.extend(["", "## Reconciliation"])
+        if run.start_audit is not None:
+            lines.append(f"- Expected final audit: People ({run.start_audit + run.target})")
+        if audited_delta is None:
+            lines.append("- Sent-page audit shortfall: unknown; no final audit delta recorded")
+        elif audited_delta < run.target:
+            lines.append(f"- Sent-page audit shortfall: {run.target - audited_delta}")
+        else:
+            lines.append(f"- Sent-page audit surplus: {audited_delta - run.target}")
+        recorded_invite_events = run.verified_count() + audit_top_up_count
+        if audited_delta is not None and recorded_invite_events != audited_delta:
+            gap = recorded_invite_events - audited_delta
+            lines.append(f"- Recorded invite events minus audited delta: {gap}")
+        if audited_delta is None or audited_delta < run.target:
+            lines.append(
+                "- Finish guidance: do not force-finish unless Hanif explicitly accepts the "
+                "audit shortfall; rerun `reconcile-audit --session auto --finish`, inspect "
+                "the sent invitations page, or run bounded top-up only after deciding more "
+                "fallback invites are acceptable."
+            )
     if run.timings:
         lines.extend(["", "## Phase Timing"])
         total = sum(event.duration_ms for event in run.timings)

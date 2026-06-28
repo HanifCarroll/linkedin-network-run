@@ -44,6 +44,7 @@ from apps.network_automation.models import (
     default_sources,
 )
 from apps.network_automation.old_state import inspect_old_state
+from apps.network_automation.reports import render_report
 from apps.network_automation.service import (
     acceptance_draft_followups,
     acceptance_import,
@@ -483,6 +484,48 @@ def test_cli_top_up_reconcile_records_audit_top_up_with_fixtures(
         event.name == "Top Up Candidate" and event.status == CandidateStatus.AUDIT_TOP_UP
         for event in run.candidates
     )
+
+
+def test_report_surfaces_reconciliation_shortfall_after_top_ups(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 6, 28), force=True)
+    record_audit(store, 100, "starting count")
+    for index in range(3):
+        record_candidate(
+            store,
+            source="ASAP - Agency Owners Delivery",
+            name=f"Verified {index}",
+            status=CandidateStatus.PENDING,
+        )
+    run = store.load_run()
+    run.candidates.append(
+        CandidateEvent(
+            at=datetime(2026, 6, 28, tzinfo=UTC),
+            source="FO - Founders - Urgent",
+            name="Top Up Candidate",
+            status=CandidateStatus.AUDIT_TOP_UP,
+        )
+    )
+    store.save_run(run)
+    record_audit(store, 102, "short final audit")
+
+    report = render_report(store.load_run())
+
+    assert "- Expected final audit: People (103)" in report
+    assert "- Sent-page audit shortfall: 1" in report
+    assert "- Audit top-ups recorded: 1" in report
+    assert "- Recorded invite events minus audited delta: 2" in report
+    assert "do not force-finish unless Hanif explicitly accepts the audit shortfall" in report
+
+
+def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 6, 28), force=True)
+    record_audit(store, 100, "starting count")
+
+    with pytest.raises(RuntimeError, match="reconcile-audit --session auto --finish"):
+        finish_run(store)
+
 
 
 def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> None:

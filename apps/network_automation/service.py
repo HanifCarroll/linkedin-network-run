@@ -335,8 +335,10 @@ def network_run_session(
                 if delta == run.target:
                     messages.append(finish_run(store))
                 elif delta is not None and delta < run.target:
+                    shortfall = run.target - delta
                     messages.append(
-                        f"final audit short: delta {format_delta(delta)}; running top-up"
+                        f"final audit short: delta {format_delta(delta)}; "
+                        f"running up to {shortfall} top-up attempts"
                     )
                     messages.append(
                         top_up_reconcile(
@@ -344,6 +346,7 @@ def network_run_session(
                             browser,
                             allow_send=allow_send,
                             finish=True,
+                            max_attempts=shortfall,
                             saved_searches=saved_searches_out,
                         )
                     )
@@ -722,9 +725,18 @@ def top_up_reconcile(
             break
     run = store.load_run()
     if finish and run.state != RunState.DONE:
+        audit_top_up_count = sum(
+            1 for candidate in run.candidates if candidate.status == CandidateStatus.AUDIT_TOP_UP
+        )
+        skipped_count = sum(
+            1 for candidate in run.candidates if candidate.status == CandidateStatus.SKIPPED
+        )
         raise RuntimeError(
             f"final audit delta is {format_delta(run.audited_delta())}, expected "
-            f"{run.target}; top-up reconciliation did not finish"
+            f"{run.target}; top-up reconciliation did not finish after "
+            f"{audit_top_up_count} audit top-up records and {skipped_count} skipped "
+            "candidate records. Stop and inspect sent invitations or rerun "
+            "`reconcile-audit --session auto --finish` before sending more top-ups."
         )
     return "\n".join(messages + [render_report(run)])
 
@@ -841,7 +853,8 @@ def finish_run(store: Store, *, force: bool = False) -> str:
     if not force and delta != run.target:
         raise RuntimeError(
             f"final audit delta is {format_delta(delta)}, expected {run.target}; "
-            "run audit <people-count> or use --force"
+            "run `reconcile-audit --session auto --finish`, inspect sent invitations, "
+            "or use --force only if Hanif explicitly accepts the audit shortfall"
         )
     run.state = RunState.DONE
     run.mark_updated()
