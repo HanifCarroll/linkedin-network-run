@@ -16,8 +16,10 @@ from .config import (
 )
 from .playwright import (
     BrowserContextHandle,
+    ManagedChromeSession,
     close_browser_context_handle,
     open_linkedin_browser_context,
+    start_managed_chrome_cdp_session,
 )
 from .safety import (
     GuardedActionResult,
@@ -53,6 +55,7 @@ __all__ = [
     "LINKEDIN_CDP_URL_ENV",
     "LINKEDIN_PROFILE_ENV",
     "LINKEDIN_PROFILE_NAME_ENV",
+    "ManagedChromeSession",
     "PageReusePolicy",
     "RealAction",
     "RealActionApproval",
@@ -65,4 +68,5 @@ __all__ = [
     "guarded_click",
     "open_linkedin_browser_context",
     "require_real_action_approval",
+    "start_managed_chrome_cdp_session",
 ]

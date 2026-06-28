@@ -79,6 +79,31 @@ uv run linkedin-tools network --state-dir "$state_root/network-automation" pendi
 uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto
 ```
 
+Use the session commands for scheduled browser automations that should keep one
+managed Chrome instance open across the whole run:
+
+```sh
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  browser-session start --force --url https://www.linkedin.com/sales/search/people
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  run-session --session auto --target 30 --max-real-sends 30 --force --allow-send --finish
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance run-daily-session --session auto --min-age-days 1 --max-age-days 45
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  browser-session stop
+```
+
+When `browser-session start` is running, later browser-backed network commands
+auto-attach to the saved CDP URL in `browser-session.json`. The window stays
+open between commands until `browser-session stop`.
+
 Browser-backed commands default to guarded dry-run behavior unless the explicit
 real-action flag is provided:
 
@@ -102,6 +127,10 @@ uv run linkedin-tools network \
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
   pending-cleanup withdraw-next --session auto --allow-withdraw
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  pending-cleanup run-session --session auto --withdraw-limit 1 --allow-withdraw
 ```
 
 ## Recruiter And Agency Outreach

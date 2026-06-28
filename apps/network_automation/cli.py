@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel
+
+from packages.linkedin_browser import LINKEDIN_CDP_URL_ENV, chrome_profile_from_env
 
 from .browser import (
     DEFAULT_AUDIT_OUT_DIR,
@@ -32,10 +35,15 @@ from .service import (
     acceptance_import,
     acceptance_report,
     acceptance_research,
+    acceptance_run_daily_session,
     acceptance_seed,
     acceptance_seed_history,
     acceptance_send_followup,
     acceptance_send_ready_followups,
+    browser_session_cdp_url,
+    browser_session_start,
+    browser_session_status,
+    browser_session_stop,
     capture_saved_searches,
     capture_source,
     drain_stale_candidates,
@@ -43,12 +51,14 @@ from .service import (
     import_audit,
     import_capture_path,
     needs_reaudit,
+    network_run_session,
     pending_cleanup_audit,
     pending_cleanup_capture,
     pending_cleanup_finish,
     pending_cleanup_import_audit,
     pending_cleanup_import_capture,
     pending_cleanup_record_withdraw_result,
+    pending_cleanup_run_session,
     pending_cleanup_start,
     pending_cleanup_withdraw_next,
     reconcile_audit,
@@ -73,10 +83,16 @@ from .store import Store
 DEFAULT_RESERVOIR_CAPTURE_OUT_DIR = Path("/tmp/linkedin-network-run-reservoir-capture")
 DEFAULT_SAVED_SEARCHES = Path("/tmp/linkedin-network-run-saved-searches.json")
 DEFAULT_SAVED_SEARCHES_URL = "https://www.linkedin.com/sales/search/people"
+DEFAULT_NETWORK_SESSION_OUT_DIR = Path("/tmp/linkedin-network-session")
+DEFAULT_ACCEPTANCE_CANDIDATES = Path("/tmp/linkedin-acceptance-candidates.json")
 DEFAULT_ACCEPTANCE_OUTCOMES = Path("/tmp/linkedin-acceptance-outcomes.json")
+DEFAULT_ACCEPTANCE_CHUNK_DIR = Path("/tmp/linkedin-acceptance-chunks")
+DEFAULT_ACCEPTANCE_SESSION_OUT_DIR = Path("/tmp/linkedin-acceptance-daily-session")
 DEFAULT_ACCEPTED_RESEARCH = Path("/tmp/linkedin-accepted-followups/accepted-research.json")
 DEFAULT_ACCEPTED_CANDIDATES = Path("/tmp/linkedin-accepted-followups/accepted-candidates.json")
+DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR = Path("/tmp/linkedin-accepted-followups")
 DEFAULT_PENDING_CAPTURE = Path("/tmp/linkedin-pending-cleanup-capture.json")
+DEFAULT_PENDING_SESSION_OUT_DIR = Path("/tmp/linkedin-pending-cleanup-session")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -93,6 +109,21 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--force", action="store_true")
     start.add_argument("--max-real-sends", type=int, default=None)
 
+    run_session = subparsers.add_parser("run-session")
+    run_session.add_argument("--session", default="auto")
+    run_session.add_argument("--target", type=int, default=30)
+    run_session.add_argument("--max-real-sends", type=int, default=30)
+    run_session.add_argument("--force", action="store_true")
+    run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
+    run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
+    run_session.add_argument("--out-dir", default=str(DEFAULT_NETWORK_SESSION_OUT_DIR))
+    run_session.add_argument("--allow-send", action="store_true")
+    run_session.add_argument("--audit-attempts", type=int, default=3)
+    run_session.add_argument("--audit-delay-ms", type=int, default=5000)
+    run_session.add_argument("--max-steps", type=int, default=100)
+    run_session.add_argument("--finish", action="store_true")
+    run_session.add_argument("--fixture-result", default=None)
+
     audit = subparsers.add_parser("audit")
     audit.add_argument("people_count", type=int)
     audit.add_argument("--note", default=None)
@@ -105,6 +136,17 @@ def build_parser() -> argparse.ArgumentParser:
     saved_searches.add_argument("--url", default=DEFAULT_SAVED_SEARCHES_URL)
     saved_searches.add_argument("--out", default=str(DEFAULT_SAVED_SEARCHES))
     saved_searches.add_argument("--fixture-result", default=None)
+
+    browser_session = subparsers.add_parser("browser-session")
+    browser_session_sub = browser_session.add_subparsers(
+        dest="browser_session_command", required=True
+    )
+    browser_session_start_parser = browser_session_sub.add_parser("start")
+    browser_session_start_parser.add_argument("--url", default=DEFAULT_SAVED_SEARCHES_URL)
+    browser_session_start_parser.add_argument("--force", action="store_true")
+    browser_session_status_parser = browser_session_sub.add_parser("status")
+    browser_session_status_parser.add_argument("--json", action="store_true")
+    browser_session_sub.add_parser("stop")
 
     reconcile = subparsers.add_parser("reconcile-audit")
     reconcile.add_argument("--session", default="auto")
@@ -222,6 +264,25 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_seed_parser = acceptance_sub.add_parser("seed")
     acceptance_seed_parser.add_argument("--include-unfinished", action="store_true")
     acceptance_sub.add_parser("seed-history")
+    acceptance_daily = acceptance_sub.add_parser("run-daily-session")
+    acceptance_daily.add_argument("--session", default="auto")
+    acceptance_daily.add_argument("--min-age-days", type=int, default=1)
+    acceptance_daily.add_argument("--max-age-days", type=int, default=45)
+    acceptance_daily.add_argument("--candidates-out", default=str(DEFAULT_ACCEPTANCE_CANDIDATES))
+    acceptance_daily.add_argument("--outcomes-out", default=str(DEFAULT_ACCEPTANCE_OUTCOMES))
+    acceptance_daily.add_argument("--chunk-dir", default=str(DEFAULT_ACCEPTANCE_CHUNK_DIR))
+    acceptance_daily.add_argument("--chunk-size", type=int, default=25)
+    acceptance_daily.add_argument("--check-delay-ms", type=int, default=750)
+    acceptance_daily.add_argument("--no-draft-followups", action="store_true")
+    acceptance_daily.add_argument("--draft-report", default=None)
+    acceptance_daily.add_argument("--draft-out-dir", default=str(DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR))
+    acceptance_daily.add_argument("--include-drafted", action="store_true")
+    acceptance_daily.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
+    acceptance_daily.add_argument("--no-public-web", action="store_true")
+    acceptance_daily.add_argument("--max-web-results", type=int, default=5)
+    acceptance_daily.add_argument("--research-delay-ms", type=int, default=500)
+    acceptance_daily.add_argument("--out-dir", default=str(DEFAULT_ACCEPTANCE_SESSION_OUT_DIR))
+    acceptance_daily.add_argument("--fixture-result", default=None)
     acceptance_export_parser = acceptance_sub.add_parser("export")
     acceptance_export_parser.add_argument("--min-age-days", type=int, default=7)
     acceptance_export_parser.add_argument("--max-age-days", type=int, default=None)
@@ -357,6 +418,22 @@ def build_parser() -> argparse.ArgumentParser:
     pending_withdraw.add_argument("--out-dir", default=str(DEFAULT_WITHDRAW_OUT_DIR))
     pending_withdraw.add_argument("--max-load-more", type=int, default=260)
     pending_withdraw.add_argument("--withdraw-timeout-seconds", type=float, default=90.0)
+    pending_session = pending_sub.add_parser("run-session")
+    pending_session.add_argument("--session", default="auto")
+    pending_session.add_argument("--audit-load-more", type=int, default=0)
+    pending_session.add_argument("--capture-load-more", type=int, default=10)
+    pending_session.add_argument("--threshold-days", type=int, default=0)
+    pending_session.add_argument("--threshold-weeks", type=int, default=2)
+    pending_session.add_argument("--threshold-months", type=int, default=0)
+    pending_session.add_argument("--out", default=str(DEFAULT_PENDING_CAPTURE))
+    pending_session.add_argument("--out-dir", default=str(DEFAULT_PENDING_SESSION_OUT_DIR))
+    pending_session.add_argument("--withdraw-limit", type=int, default=1)
+    pending_session.add_argument("--allow-withdraw", action="store_true")
+    pending_session.add_argument("--skip-dry-run", action="store_true")
+    pending_session.add_argument("--finish", action="store_true")
+    pending_session.add_argument("--fixture-result", default=None)
+    pending_session.add_argument("--max-load-more", type=int, default=260)
+    pending_session.add_argument("--withdraw-timeout-seconds", type=float, default=90.0)
     pending_status = pending_sub.add_parser("status")
     pending_status.add_argument("--json", action="store_true")
     pending_sub.add_parser("report")
@@ -399,6 +476,27 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             force=args.force,
             max_real_sends=args.max_real_sends,
         )
+    if command == "run-session":
+        browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
+        try:
+            return network_run_session(
+                store,
+                browser,
+                target=args.target,
+                max_real_sends=args.max_real_sends,
+                force=args.force,
+                saved_searches_url=args.saved_searches_url,
+                saved_searches_out=Path(args.saved_searches),
+                audit_attempts=args.audit_attempts,
+                audit_delay_ms=args.audit_delay_ms,
+                allow_send=args.allow_send,
+                max_steps=args.max_steps,
+                finish=args.finish,
+            )
+        finally:
+            close = getattr(browser, "close", None)
+            if callable(close):
+                close()
     if command == "audit":
         return record_audit(store, args.people_count, args.note)
     if command == "import-audit":
@@ -409,6 +507,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             url=args.url,
             out=Path(args.out),
         )
+    if command == "browser-session":
+        return dispatch_browser_session(args, store)
     if command == "reconcile-audit":
         return reconcile_audit(
             store,
@@ -537,6 +637,26 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
         return acceptance_seed(store, include_unfinished=args.include_unfinished)
     if command == "seed-history":
         return acceptance_seed_history(store)
+    if command == "run-daily-session":
+        return acceptance_run_daily_session(
+            store,
+            lambda: browser_from_args(args, acceptance_outcomes=True, accepted_research=True),
+            min_age_days=args.min_age_days,
+            max_age_days=args.max_age_days,
+            candidates_out=Path(args.candidates_out),
+            outcomes_out=Path(args.outcomes_out),
+            chunk_dir=Path(args.chunk_dir),
+            chunk_size=args.chunk_size,
+            check_delay_ms=args.check_delay_ms,
+            draft_followups=not args.no_draft_followups,
+            followup_out=Path(args.draft_report) if args.draft_report else None,
+            followup_research_out_dir=Path(args.draft_out_dir) if args.draft_out_dir else None,
+            include_drafted=args.include_drafted,
+            strategy=DraftStrategy(args.strategy),
+            public_web=not args.no_public_web,
+            max_web_results=args.max_web_results,
+            research_delay_ms=args.research_delay_ms,
+        )
     if command == "export":
         return acceptance_export(
             store,
@@ -619,6 +739,22 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
     raise RuntimeError(f"unhandled acceptance command {command}")
 
 
+def dispatch_browser_session(args: argparse.Namespace, store: Store) -> str:
+    command = str(args.browser_session_command)
+    if command == "start":
+        return browser_session_start(
+            store,
+            config=chrome_profile_from_env(),
+            start_url=args.url,
+            force=args.force,
+        )
+    if command == "status":
+        return browser_session_status(store, as_json=args.json)
+    if command == "stop":
+        return browser_session_stop(store)
+    raise RuntimeError(f"unhandled browser-session command {command}")
+
+
 def dispatch_reservoir(args: argparse.Namespace, store: Store) -> str:
     command = str(args.reservoir_command)
     if command == "capture":
@@ -685,11 +821,7 @@ def dispatch_pending(args: argparse.Namespace, store: Store) -> str:
     if command == "import-capture":
         return pending_cleanup_import_capture(store, Path(args.path))
     if command == "capture":
-        threshold_days = args.threshold_days
-        if threshold_days == 0:
-            threshold_days = (
-                args.threshold_months * 30 if args.threshold_months else args.threshold_weeks * 7
-            )
+        threshold_days = pending_threshold_days(args)
         return pending_cleanup_capture(
             store,
             browser_from_args(args, pending_capture=True),
@@ -713,6 +845,26 @@ def dispatch_pending(args: argparse.Namespace, store: Store) -> str:
             allow_withdraw=args.allow_withdraw,
             no_record=args.no_record,
         )
+    if command == "run-session":
+        threshold_days = pending_threshold_days(args)
+        browser = browser_from_args(args, audit=True, pending_capture=True, withdraw=True)
+        try:
+            return pending_cleanup_run_session(
+                store,
+                browser,
+                audit_load_more=args.audit_load_more,
+                capture_load_more=args.capture_load_more,
+                threshold_days=threshold_days,
+                capture_out=Path(args.out),
+                withdraw_limit=args.withdraw_limit,
+                allow_withdraw=args.allow_withdraw,
+                dry_run_first=not args.skip_dry_run,
+                finish=args.finish,
+            )
+        finally:
+            close = getattr(browser, "close", None)
+            if callable(close):
+                close()
     if command == "status":
         return json_model_or_text(store.load_pending(), as_json=args.json)
     if command == "report":
@@ -720,6 +872,15 @@ def dispatch_pending(args: argparse.Namespace, store: Store) -> str:
     if command == "finish":
         return pending_cleanup_finish(store, force=args.force)
     raise RuntimeError(f"unhandled pending-cleanup command {command}")
+
+
+def pending_threshold_days(args: argparse.Namespace) -> int:
+    threshold_days = int(args.threshold_days)
+    if threshold_days == 0:
+        threshold_months = int(args.threshold_months)
+        threshold_weeks = int(args.threshold_weeks)
+        return threshold_months * 30 if threshold_months else threshold_weeks * 7
+    return threshold_days
 
 
 def dispatch_old_state(args: argparse.Namespace) -> str:
@@ -777,8 +938,12 @@ def browser_from_args(
             capture=Path(capture_fixture) if capture_fixture and capture else None,
             audit=Path(audit_fixture) if audit_fixture and audit else None,
         )
+    cdp_url = None
+    if not os.environ.get(LINKEDIN_CDP_URL_ENV):
+        cdp_url = browser_session_cdp_url(Store(getattr(args, "state_dir", None)))
     return PlaywrightBrowserClient(
         out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
+        cdp_url=cdp_url,
         max_load_more=int(getattr(args, "max_load_more", 260)),
         withdraw_timeout_seconds=float(getattr(args, "withdraw_timeout_seconds", 90.0)),
     )

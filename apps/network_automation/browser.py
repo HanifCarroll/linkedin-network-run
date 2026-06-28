@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
@@ -73,6 +74,7 @@ SEND_MESSAGE_BUTTON = re.compile(r"^(Send|Send message)$", re.I)
 PEOPLE_COUNT = re.compile(r"People \(([\d,]+)\)")
 SALES_NAV_LEAD_SEARCH_API = re.compile(r"/sales-api/salesApiLeadSearch", re.I)
 SALES_NAV_PROFILE_API = re.compile(r"/sales-api/salesApiProfiles", re.I)
+DISABLE_SALESNAV_API_CAPTURE_ENV = "LINKEDIN_TOOLS_DISABLE_SALESNAV_API_CAPTURE"
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -374,12 +376,14 @@ class PlaywrightBrowserClient:
         out_dir: Path = DEFAULT_SEND_OUT_DIR,
         context: Any | None = None,
         context_factory: Callable[[], Awaitable[Any]] | None = None,
+        cdp_url: str | None = None,
         max_load_more: int = 260,
         withdraw_timeout_seconds: float = 90.0,
     ) -> None:
         self.out_dir = out_dir
         self._context = context
         self._context_factory = context_factory
+        self._cdp_url = cdp_url
         self._context_handle_ref: BrowserContextHandle | None = None
         self._playwright_manager: Any | None = None
         self._playwright: Any | None = None
@@ -551,7 +555,10 @@ class PlaywrightBrowserClient:
 
         self._playwright_manager = async_playwright()
         self._playwright = await self._playwright_manager.start()
-        self._context_handle_ref = await open_linkedin_browser_context(self._playwright)
+        self._context_handle_ref = await open_linkedin_browser_context(
+            self._playwright,
+            cdp_url=self._cdp_url,
+        )
         self._context = self._context_handle_ref.context
         return self._context
 
@@ -654,6 +661,9 @@ class PlaywrightBrowserClient:
         dry_run: bool,
         allow_send: bool,
     ) -> tuple[SalesNavSendResult, str] | None:
+        if not candidate.profile_url:
+            raise RuntimeError("candidate profile_url is required for browser send")
+        profile_url = candidate.profile_url
         if "linkedin.com/sales/search/people" not in page.url:
             return None
         await _wait_for_salesnav_results(page)
@@ -683,7 +693,7 @@ class PlaywrightBrowserClient:
 
         identity = CandidateIdentity(
             name=candidate.name,
-            profile_url=candidate.profile_url,
+            profile_url=profile_url,
             candidate_id=candidate.sales_profile_urn,
             sales_profile_urn=candidate.sales_profile_urn,
         )
@@ -726,7 +736,9 @@ class PlaywrightBrowserClient:
         only_connectable: bool,
         row_scroll_delay_ms: int,
     ) -> tuple[SalesNavCapture, str]:
-        page = await self._page(("linkedin.com/sales/search/people", "linkedin.com/sales/lead/"))
+        context = await self._context_handle()
+        page = await context.new_page()
+        await _ignore_errors(page.bring_to_front())
         api_rows_by_urn: dict[str, dict[str, Any]] = {}
         api_state: dict[str, Any] = {"enabled": True, "responses": 0, "rows": 0, "errors": []}
         api_response_tasks: list[asyncio.Task[None]] = []
@@ -744,7 +756,14 @@ class PlaywrightBrowserClient:
                 )
             )
 
-        page.on("response", queue_api_response)
+        api_capture_enabled = os.environ.get(DISABLE_SALESNAV_API_CAPTURE_ENV, "").strip() not in {
+            "1",
+            "true",
+            "yes",
+        }
+        api_state["enabled"] = api_capture_enabled
+        if api_capture_enabled:
+            page.on("response", queue_api_response)
         if url:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             await _wait_for_load(page)
@@ -823,11 +842,13 @@ class PlaywrightBrowserClient:
         finally:
             await _drain_api_response_tasks(api_response_tasks)
             remove_listener = getattr(page, "remove_listener", None)
-            if callable(remove_listener):
+            if api_capture_enabled and callable(remove_listener):
                 remove_listener("response", queue_api_response)
 
     async def _audit_sent_invitations(self, *, load_more: int) -> tuple[SalesNavAudit, str]:
-        page = await self._page(("linkedin.com/mynetwork/invitation-manager/sent", "linkedin.com"))
+        context = await self._context_handle()
+        page = await context.new_page()
+        await _ignore_errors(page.bring_to_front())
         await page.goto(SENT_INVITATIONS_URL, wait_until="domcontentloaded", timeout=45000)
         await _wait_for_load(page)
         for _ in range(max(0, load_more)):
@@ -1431,7 +1452,7 @@ async def _open_profile_actions_menu(page: Any) -> dict[str, Any]:
     if not await _locator_count(trigger):
         return {"state": "missing-trigger", "labels": []}
     menu_id = await trigger.get_attribute("aria-controls")
-    await trigger.click(timeout=8000)
+    await _click_readonly_menu_trigger(trigger, timeout=8000)
     await _short_wait(page)
     menu = (
         page.locator(f"#{menu_id}").first
@@ -1449,7 +1470,7 @@ async def _open_row_menu(page: Any, row: Any, *, close: bool = True) -> dict[str
     if not await _locator_count(trigger):
         return {"state": "missing-trigger", "labels": []}
     menu_id = await trigger.get_attribute("aria-controls")
-    await trigger.click(timeout=5000)
+    await _click_readonly_menu_trigger(trigger, timeout=5000)
     await _short_wait(page)
     menu = (
         page.locator(f"#{menu_id}").first
@@ -1462,6 +1483,13 @@ async def _open_row_menu(page: Any, row: Any, *, close: bool = True) -> dict[str
     if close:
         await _escape(page)
     return {"state": _classify_menu_labels(labels), "labels": labels, "menu_id": menu_id}
+
+
+async def _click_readonly_menu_trigger(trigger: Any, *, timeout: int) -> None:
+    try:
+        await trigger.click(timeout=timeout)
+    except Exception:
+        await trigger.evaluate("(element) => element.click()")
 
 
 async def _salesnav_result_row_for_candidate(
@@ -1528,9 +1556,21 @@ async def _click_menu_label(page: Any, menu_id: Any, label: str) -> None:
         if re.fullmatch(re.escape(label), text, re.I) or re.fullmatch(
             re.escape(label), aria, re.I
         ):
-            await item.click(timeout=8000)
+            await _click_action_locator(page, item, timeout=8000)
             return
     raise RuntimeError(f"{label} menu item missing")
+
+
+async def _click_action_locator(page: Any, locator: Any, *, timeout: int) -> None:
+    try:
+        await locator.click(timeout=timeout)
+        return
+    except Exception:
+        await _ignore_errors(locator.scroll_into_view_if_needed(timeout=2000))
+        box = await locator.bounding_box(timeout=2000)
+        if not box:
+            raise
+        await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
 
 
 async def _click_send_invitation(page: Any, *, allow_send: bool) -> dict[str, Any]:
@@ -1778,31 +1818,19 @@ async def _pending_row_payload(link: Any) -> dict[str, Any]:
     value = await link.evaluate(
         """(node) => {
           const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-          let cursor = node;
-          while (cursor && cursor !== document.body) {
-            const text = clean(cursor.textContent || '');
-            const withdrawCount = (text.match(/\\bWithdraw\\b/g) || []).length;
-            if (withdrawCount === 1 && /\\bSent\\b/i.test(text)) {
-              const profileSelector = "a[href*='/in/'], a[href*='/sales/lead/']";
-              const profile = Array.from(cursor.querySelectorAll(profileSelector))
-                .find((anchor) => (
-                  anchor.href && !/^Withdraw\\b/i.test(clean(anchor.textContent || ''))
-                ));
-              const lines = String(cursor.textContent || '')
-                .split('\\n')
-                .map(clean)
-                .filter(Boolean);
-              const ageIndex = lines.findIndex((line) => /^Sent\\b/i.test(line));
-              const name = lines.find((line, lineIndex) => (
-                lineIndex < ageIndex && line !== 'Withdraw' && !/^Sent\\b/i.test(line)
-              )) || lines[0] || null;
-              return {
-                rowText: text,
-                name,
-                profileUrl: profile ? profile.href : null,
-              };
-            }
-            cursor = cursor.parentElement;
+          const label = node.getAttribute('aria-label') || '';
+          const prefix = 'Withdraw invitation sent to ';
+          const row = node.closest('[role="listitem"]');
+          if (label.startsWith(prefix) && row) {
+            const text = clean(row.textContent || '');
+            const profileSelector = "a[href*='/in/'], a[href*='/sales/lead/']";
+            const profile = Array.from(row.querySelectorAll(profileSelector))
+              .find((anchor) => anchor.href && anchor !== node);
+            return {
+              rowText: text,
+              name: label.replace(prefix, '').trim() || null,
+              profileUrl: profile ? profile.href : null,
+            };
           }
           return { rowText: clean(node.textContent || ''), name: null, profileUrl: null };
         }"""

@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import socket
+import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from packages.linkedin_browser import ChromeProfileConfig, start_managed_chrome_cdp_session
 
 from .browser import BrowserClient
 from .models import (
@@ -13,6 +20,7 @@ from .models import (
     AcceptanceOutcomeArtifact,
     AcceptedDraftCandidate,
     AcceptedResearchArtifact,
+    BrowserSessionState,
     CandidateEvent,
     CandidateStatus,
     DraftStrategy,
@@ -98,6 +106,258 @@ def import_audit(store: Store, path: Path) -> str:
 def capture_saved_searches(browser: BrowserClient, *, url: str, out: Path) -> str:
     artifact, path = browser.resolve_saved_searches(url=url, out=out)
     return f"captured {len(artifact.searches)} saved searches to {path}"
+
+
+def browser_session_start(
+    store: Store,
+    *,
+    config: ChromeProfileConfig,
+    start_url: str,
+    force: bool,
+) -> str:
+    existing = _load_browser_session_state(store)
+    if existing is not None and _browser_session_is_usable(existing):
+        if not force:
+            return (
+                f"browser session already running: pid={existing.pid} "
+                f"cdp_url={existing.cdp_url}"
+            )
+        browser_session_stop(store)
+    launched = start_managed_chrome_cdp_session(config, start_url=start_url)
+    state = BrowserSessionState(
+        pid=launched.pid,
+        port=launched.port,
+        cdp_url=launched.cdp_url,
+        user_data_dir=str(launched.user_data_dir),
+        profile_name=launched.profile_name,
+        start_url=start_url,
+    )
+    write_json_atomic(store.browser_session_path, state.model_dump(mode="json", by_alias=False))
+    return f"browser session started: pid={state.pid} cdp_url={state.cdp_url}"
+
+
+def browser_session_status(store: Store, *, as_json: bool = False) -> str:
+    state = _load_browser_session_state(store)
+    payload: dict[str, object]
+    if state is None:
+        payload = {"configured": False, "alive": False, "reachable": False}
+    else:
+        command = _process_command(state.pid)
+        payload = {
+            "configured": True,
+            "alive": _browser_session_pid_matches(state, command),
+            "reachable": _is_local_port_reachable(state.port),
+            "pid": state.pid,
+            "port": state.port,
+            "cdp_url": state.cdp_url,
+            "user_data_dir": state.user_data_dir,
+            "profile_name": state.profile_name,
+            "start_url": state.start_url,
+            "started_at": state.started_at.isoformat(),
+        }
+    if as_json:
+        return json.dumps(payload, indent=2)
+    if not payload["configured"]:
+        return "browser session: not started"
+    state_text = "usable" if payload["alive"] and payload["reachable"] else "not usable"
+    return (
+        f"browser session: {state_text}; pid={payload['pid']} "
+        f"cdp_url={payload['cdp_url']}"
+    )
+
+
+def browser_session_stop(store: Store) -> str:
+    state = _load_browser_session_state(store)
+    if state is None:
+        return "browser session: not started"
+    command = _process_command(state.pid)
+    stopped = False
+    if _browser_session_pid_matches(state, command):
+        os.kill(state.pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not _pid_alive(state.pid):
+                stopped = True
+                break
+            time.sleep(0.25)
+        if not stopped and _pid_alive(state.pid):
+            os.kill(state.pid, signal.SIGKILL)
+            stopped = True
+    store.browser_session_path.unlink(missing_ok=True)
+    if stopped:
+        return f"browser session stopped: pid={state.pid}"
+    return "browser session record removed; process was not running or did not match"
+
+
+def browser_session_cdp_url(store: Store) -> str | None:
+    state = _load_browser_session_state(store)
+    if state is None:
+        return None
+    if _browser_session_is_usable(state):
+        return state.cdp_url
+    return None
+
+
+def _load_browser_session_state(store: Store) -> BrowserSessionState | None:
+    if not store.browser_session_path.exists():
+        return None
+    return read_model(store.browser_session_path, BrowserSessionState)
+
+
+def _browser_session_is_usable(state: BrowserSessionState) -> bool:
+    return _browser_session_pid_matches(state, _process_command(state.pid)) and (
+        _is_local_port_reachable(state.port)
+    )
+
+
+def _browser_session_pid_matches(state: BrowserSessionState, command: str) -> bool:
+    if not command:
+        return False
+    return (
+        "Google Chrome" in command
+        and f"--remote-debugging-port={state.port}" in command
+        and state.user_data_dir in command
+    )
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _is_local_port_reachable(port: int) -> bool:
+    with socket.socket() as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def network_run_session(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    target: int,
+    max_real_sends: int | None,
+    force: bool,
+    saved_searches_url: str,
+    saved_searches_out: Path,
+    audit_attempts: int,
+    audit_delay_ms: int,
+    allow_send: bool,
+    max_steps: int,
+    finish: bool,
+) -> str:
+    messages = [
+        start_run(store, target=target, force=force, max_real_sends=max_real_sends),
+        reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False),
+        capture_saved_searches(
+            browser,
+            url=saved_searches_url,
+            out=saved_searches_out,
+        ),
+    ]
+    for _ in range(max_steps):
+        plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
+        messages.append(f"plan: {plan.action}")
+        if plan.action == "use-reservoir":
+            if not plan.source:
+                raise RuntimeError("use-reservoir plan did not include source")
+            messages.append(reservoir_fill_run(store, source=plan.source, limit=None))
+            continue
+        if plan.action == "capture-source":
+            if plan.source is None or plan.capture is None:
+                raise RuntimeError("capture-source plan did not include source/capture details")
+            source_url = plan.resume_url or resolve_saved_search_url(
+                saved_searches_out, plan.source
+            )
+            if source_url is None:
+                raise RuntimeError(f"saved search URL missing for source {plan.source}")
+            messages.append(
+                capture_source(
+                    store,
+                    browser,
+                    source=plan.source,
+                    url=source_url,
+                    saved_searches=None,
+                    pages=plan.capture.pages,
+                    limit=18,
+                    stop_after_connectable=plan.capture.stop_after_connectable,
+                    only_connectable=True,
+                    row_scroll_delay_ms=250,
+                )
+            )
+            continue
+        if plan.action == "send-candidate":
+            if not allow_send:
+                messages.append("stopped: pass --allow-send for real network sends")
+                break
+            messages.append(
+                send_guarded(
+                    store,
+                    browser,
+                    dry_run=False,
+                    allow_send=True,
+                    max_attempts=30,
+                    single_pass=True,
+                    no_record=False,
+                )
+            )
+            continue
+        if plan.action in {"reaudit", "final-audit"}:
+            messages.append(
+                reconcile_audit(
+                    store,
+                    browser,
+                    attempts=audit_attempts,
+                    delay_ms=audit_delay_ms,
+                    finish=False,
+                )
+            )
+            if finish:
+                run = store.load_run()
+                delta = run.audited_delta()
+                if delta == run.target:
+                    messages.append(finish_run(store))
+                elif delta is not None and delta < run.target:
+                    messages.append(
+                        f"final audit short: delta {format_delta(delta)}; running top-up"
+                    )
+                    messages.append(
+                        top_up_reconcile(
+                            store,
+                            browser,
+                            allow_send=allow_send,
+                            finish=True,
+                            saved_searches=saved_searches_out,
+                        )
+                    )
+                else:
+                    raise RuntimeError(
+                        f"final audit delta is {format_delta(delta)}, expected {run.target}; "
+                        "stopping"
+                    )
+            break
+        messages.append(f"stopped: {plan.reason or plan.action}")
+        break
+    else:
+        messages.append(f"stopped: max steps {max_steps} reached")
+    return "\n".join(messages)
 
 
 def reconcile_audit(
@@ -861,6 +1121,190 @@ def acceptance_report(
     return render_acceptance_report(report)
 
 
+def acceptance_run_daily_session(
+    store: Store,
+    browser_factory: Callable[[], BrowserClient],
+    *,
+    min_age_days: int,
+    max_age_days: int | None,
+    candidates_out: Path,
+    outcomes_out: Path,
+    chunk_dir: Path,
+    chunk_size: int,
+    check_delay_ms: int,
+    draft_followups: bool,
+    followup_out: Path | None,
+    followup_research_out_dir: Path | None,
+    include_drafted: bool,
+    strategy: DraftStrategy,
+    public_web: bool,
+    max_web_results: int,
+    research_delay_ms: int,
+) -> str:
+    messages = [
+        acceptance_seed_history(store),
+        acceptance_export(
+            store,
+            min_age_days=min_age_days,
+            max_age_days=max_age_days,
+            out=candidates_out,
+        ),
+    ]
+    candidates = load_acceptance_check_candidates(candidates_out)
+    if not candidates:
+        messages.append("no acceptance-check candidates; browser not opened")
+        messages.append(
+            acceptance_report(
+                store,
+                min_age_days=min_age_days,
+                max_age_days=max_age_days,
+                as_json=False,
+            )
+        )
+        return "\n".join(messages)
+
+    browser = browser_factory()
+    try:
+        check_messages = _acceptance_check_and_import_chunks(
+            store,
+            browser,
+            candidates=candidates,
+            candidates_out=candidates_out,
+            outcomes_out=outcomes_out,
+            chunk_dir=chunk_dir,
+            chunk_size=chunk_size,
+            delay_ms=check_delay_ms,
+        )
+        messages.extend(check_messages)
+        if any(message.startswith("stopped:") for message in check_messages):
+            messages.append(
+                acceptance_report(
+                    store,
+                    min_age_days=min_age_days,
+                    max_age_days=max_age_days,
+                    as_json=False,
+                )
+            )
+            return "\n".join(messages)
+        if draft_followups:
+            messages.append(
+                acceptance_draft_followups(
+                    store,
+                    research=None,
+                    out=followup_out,
+                    include_drafted=include_drafted,
+                    strategy=strategy,
+                    browser=browser,
+                    research_out_dir=followup_research_out_dir,
+                    public_web=public_web,
+                    max_web_results=max_web_results,
+                    delay_ms=research_delay_ms,
+                )
+            )
+    finally:
+        close = getattr(browser, "close", None)
+        if callable(close):
+            close()
+    messages.append(
+        acceptance_report(
+            store,
+            min_age_days=min_age_days,
+            max_age_days=max_age_days,
+            as_json=False,
+        )
+    )
+    return "\n".join(messages)
+
+
+def _acceptance_check_and_import_chunks(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    candidates: list[AcceptanceCheckCandidate],
+    candidates_out: Path,
+    outcomes_out: Path,
+    chunk_dir: Path,
+    chunk_size: int,
+    delay_ms: int,
+) -> list[str]:
+    chunk_size = max(1, chunk_size)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    messages: list[str] = []
+    chunk_paths: list[Path] = []
+    blockers: list[str] = []
+    for offset in range(0, len(candidates), chunk_size):
+        limit = min(chunk_size, len(candidates) - offset)
+        chunk_path = chunk_dir / f"chunk-{offset}.json"
+        messages.append(
+            acceptance_check(
+                store,
+                browser,
+                input_path=candidates_out,
+                out=chunk_path,
+                offset=offset,
+                limit=limit,
+                delay_ms=delay_ms,
+            )
+        )
+        artifact = read_model(chunk_path, AcceptanceOutcomeArtifact)
+        chunk_paths.append(chunk_path)
+        if artifact.complete is not True:
+            blockers.append(f"{chunk_path} is incomplete")
+        if len(artifact.rows) != limit:
+            blockers.append(f"{chunk_path} has {len(artifact.rows)}/{limit} rows")
+    if blockers:
+        store.append_acceptance_event(
+            "run-daily-session-blocked",
+            {"reason": "incomplete chunks", "blockers": blockers},
+        )
+        messages.append("stopped: " + "; ".join(blockers))
+        return messages
+
+    rows = [
+        row
+        for chunk_path in chunk_paths
+        for row in read_model(chunk_path, AcceptanceOutcomeArtifact).rows
+    ]
+    if len(rows) != len(candidates):
+        store.append_acceptance_event(
+            "run-daily-session-blocked",
+            {
+                "reason": "merged row count mismatch",
+                "rows": len(rows),
+                "candidates": len(candidates),
+            },
+        )
+        messages.append(
+            f"stopped: merged acceptance row count {len(rows)} "
+            f"does not equal candidate count {len(candidates)}"
+        )
+        return messages
+
+    merged = AcceptanceOutcomeArtifact(
+        captured_at=now_utc().isoformat(),
+        input=str(candidates_out),
+        count=len(rows),
+        offset=0,
+        limit=0,
+        total_candidates=len(candidates),
+        complete=True,
+        rows=rows,
+    )
+    write_json_atomic(outcomes_out, merged.model_dump(mode="json", by_alias=False))
+    store.append_acceptance_event(
+        "run-daily-session-merge",
+        {
+            "candidates": len(candidates),
+            "rows": len(rows),
+            "chunks": [str(path) for path in chunk_paths],
+            "out": str(outcomes_out),
+        },
+    )
+    messages.append(f"merged acceptance outcomes: {len(rows)} rows to {outcomes_out}")
+    messages.append(acceptance_import(store, outcomes_out))
+    return messages
+
+
 def acceptance_draft_followups(
     store: Store,
     *,
@@ -1206,6 +1650,99 @@ def pending_cleanup_withdraw_next(
         store.append_pending_event(run, "record-withdraw-result", {"path": path, "event": event})
         return f"withdraw result: {path}; recorded {event.status.value}"
     return f"withdraw result: {path}; dry_run={dry_run or not allow_withdraw}"
+
+
+def pending_cleanup_run_session(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    audit_load_more: int,
+    capture_load_more: int,
+    threshold_days: int,
+    capture_out: Path,
+    withdraw_limit: int,
+    allow_withdraw: bool,
+    dry_run_first: bool = True,
+    finish: bool = False,
+) -> str:
+    messages: list[str] = [
+        pending_cleanup_audit(store, browser, load_more=audit_load_more)
+    ]
+    captured = False
+    starting_withdrawn_count = store.load_pending().withdrawn_count()
+    real_withdraw_attempts = 0
+    while True:
+        run = store.load_pending()
+        plan = run.operator_plan()
+        messages.append(f"plan: {plan.action}")
+        if plan.action == "capture-more":
+            if captured:
+                if store.load_pending().withdrawn_count() > starting_withdrawn_count:
+                    messages.append(
+                        pending_cleanup_audit(store, browser, load_more=audit_load_more)
+                    )
+                    if finish:
+                        messages.append(pending_cleanup_finish(store))
+                messages.append("stopped: capture imported no eligible stale invitation")
+                break
+            messages.append(
+                pending_cleanup_capture(
+                    store,
+                    browser,
+                    load_more=capture_load_more,
+                    threshold_days=threshold_days,
+                    out=capture_out,
+                )
+            )
+            captured = True
+            continue
+        if plan.action == "withdraw-candidate":
+            if real_withdraw_attempts >= withdraw_limit:
+                if store.load_pending().withdrawn_count() > starting_withdrawn_count:
+                    messages.append(
+                        pending_cleanup_audit(store, browser, load_more=audit_load_more)
+                    )
+                    if finish:
+                        messages.append(pending_cleanup_finish(store))
+                messages.append(f"stopped: withdraw limit {withdraw_limit} reached")
+                break
+            if dry_run_first:
+                messages.append(
+                    pending_cleanup_withdraw_next(
+                        store,
+                        browser,
+                        dry_run=True,
+                        allow_withdraw=False,
+                    )
+                )
+            if not allow_withdraw:
+                messages.append("stopped: pass --allow-withdraw for real withdrawals")
+                break
+            before_count = store.load_pending().withdrawn_count()
+            messages.append(
+                pending_cleanup_withdraw_next(
+                    store,
+                    browser,
+                    dry_run=False,
+                    allow_withdraw=True,
+                )
+            )
+            real_withdraw_attempts += 1
+            after_run = store.load_pending()
+            latest = after_run.withdrawals[-1] if after_run.withdrawals else None
+            if after_run.withdrawn_count() == before_count:
+                status = latest.status.value if latest is not None else "missing-result"
+                messages.append(f"stopped: withdrawal did not verify as withdrawn ({status})")
+                break
+            continue
+        if plan.action in {"final-audit", "reaudit"}:
+            messages.append(pending_cleanup_audit(store, browser, load_more=audit_load_more))
+            if finish:
+                messages.append(pending_cleanup_finish(store))
+            break
+        messages.append(f"stopped: unhandled plan action {plan.action}")
+        break
+    return "\n".join(messages)
 
 
 def pending_cleanup_finish(store: Store, *, force: bool = False) -> str:

@@ -51,6 +51,10 @@ class Store:
         return self.dir / "pending-cleanup-active.json"
 
     @property
+    def browser_session_path(self) -> Path:
+        return self.dir / "browser-session.json"
+
+    @property
     def acceptance_ledger_path(self) -> Path:
         return self.dir / "acceptance-ledger.json"
 

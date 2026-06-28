@@ -40,7 +40,17 @@ class BrowserContextHandle:
     context: BrowserContext
     close_context: bool
     browser: Browser | None = None
+    close_browser: bool = True
     managed_process: subprocess.Popen[str] | None = None
+
+
+@dataclass(frozen=True)
+class ManagedChromeSession:
+    pid: int
+    port: int
+    cdp_url: str
+    user_data_dir: Path
+    profile_name: str
 
 
 async def open_linkedin_browser_context(
@@ -71,6 +81,7 @@ async def open_linkedin_browser_context(
                 context=browser.contexts[0],
                 close_context=False,
                 browser=browser,
+                close_browser=False,
             )
     selected = config or chrome_profile_from_env()
     return await launch_managed_chrome_cdp_context(playwright, selected)
@@ -80,7 +91,7 @@ async def close_browser_context_handle(handle: BrowserContextHandle) -> None:
     try:
         if handle.close_context:
             await handle.context.close()
-        if handle.browser is not None:
+        if handle.browser is not None and handle.close_browser:
             await handle.browser.close()
     finally:
         if handle.managed_process is not None:
@@ -120,13 +131,49 @@ async def launch_managed_chrome_cdp_context(
         raise
 
 
+def start_managed_chrome_cdp_session(
+    config: ChromeProfileConfig,
+    *,
+    start_url: str = "about:blank",
+) -> ManagedChromeSession:
+    if _is_default_chrome_user_data_dir(config.user_data_dir):
+        raise RuntimeError(CHROME_DEFAULT_PROFILE_ERROR)
+    port = _free_local_port()
+    process = _launch_chrome_process(
+        _managed_chrome_command(config, port, start_url=start_url),
+        capture_stderr=False,
+        detach=True,
+    )
+    try:
+        _wait_for_local_port(
+            port,
+            process,
+            MANAGED_CHROME_CDP_STARTUP_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        _terminate_process(process)
+        raise
+    return ManagedChromeSession(
+        pid=process.pid,
+        port=port,
+        cdp_url=f"http://127.0.0.1:{port}",
+        user_data_dir=chrome_profile_storage_dir(config),
+        profile_name=config.profile_name,
+    )
+
+
 def _is_default_chrome_user_data_dir(path: os.PathLike[str] | str) -> bool:
     return os.fspath(Path(path).expanduser().resolve()) == os.fspath(
         DEFAULT_CHROME_USER_DATA_DIR.expanduser().resolve()
     )
 
 
-def _managed_chrome_command(config: ChromeProfileConfig, port: int) -> list[str]:
+def _managed_chrome_command(
+    config: ChromeProfileConfig,
+    port: int,
+    *,
+    start_url: str = "about:blank",
+) -> list[str]:
     executable = _chrome_executable()
     user_data_dir = chrome_profile_storage_dir(config)
     return [
@@ -136,7 +183,7 @@ def _managed_chrome_command(config: ChromeProfileConfig, port: int) -> list[str]
         "--remote-debugging-address=127.0.0.1",
         "--no-first-run",
         "--no-default-browser-check",
-        "about:blank",
+        start_url,
     ]
 
 
@@ -149,12 +196,18 @@ def _chrome_executable() -> Path:
     raise RuntimeError("Google Chrome executable was not found")
 
 
-def _launch_chrome_process(command: Sequence[str]) -> subprocess.Popen[str]:
+def _launch_chrome_process(
+    command: Sequence[str],
+    *,
+    capture_stderr: bool = True,
+    detach: bool = False,
+) -> subprocess.Popen[str]:
     return subprocess.Popen(
         list(command),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
         text=True,
+        start_new_session=detach,
     )
 
 

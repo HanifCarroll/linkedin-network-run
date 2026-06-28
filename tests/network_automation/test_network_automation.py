@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import pytest
 
 import apps.network_automation.cli as network_cli
+import apps.network_automation.service as network_service
 from apps.network_automation.browser import (
     FixtureBrowserClient,
     PlaywrightBrowserClient,
@@ -27,6 +28,7 @@ from apps.network_automation.models import (
     AcceptanceStatus,
     AcceptedDraftCandidate,
     AcceptedResearchArtifact,
+    BrowserSessionState,
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
@@ -62,6 +64,7 @@ from apps.network_automation.service import (
     start_run,
 )
 from apps.network_automation.store import Store, read_model
+from packages.linkedin_browser import ManagedChromeSession
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automation"
 
@@ -73,10 +76,12 @@ class FakeLiveBrowserClient:
         self,
         *,
         out_dir: Path,
+        cdp_url: str | None = None,
         max_load_more: int = 260,
         withdraw_timeout_seconds: float = 90.0,
     ) -> None:
         self.out_dir = Path(out_dir)
+        self.cdp_url = cdp_url
         self.max_load_more = max_load_more
         self.withdraw_timeout_seconds = withdraw_timeout_seconds
         self.calls: list[str] = []
@@ -821,6 +826,60 @@ def test_cli_saved_searches_uses_live_browser(
     assert payload["searches"][0]["name"] == "ASAP - Agency Owners Delivery"
 
 
+def test_cli_browser_session_start_records_persistent_cdp_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_start_session(config: object, *, start_url: str) -> ManagedChromeSession:
+        _ = config, start_url
+        return ManagedChromeSession(
+            pid=12345,
+            port=45678,
+            cdp_url="http://127.0.0.1:45678",
+            user_data_dir=tmp_path / "profile",
+            profile_name="LinkedIn",
+        )
+
+    monkeypatch.setattr(network_service, "start_managed_chrome_cdp_session", fake_start_session)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "browser-session",
+            "start",
+            "--url",
+            "https://www.linkedin.com/sales/search/people",
+            "--force",
+        ]
+    )
+
+    assert exit_code == 0
+    state = read_model(Store(tmp_path).browser_session_path, BrowserSessionState)
+    assert state.pid == 12345
+    assert state.cdp_url == "http://127.0.0.1:45678"
+    assert state.start_url == "https://www.linkedin.com/sales/search/people"
+
+
+def test_cli_saved_searches_attaches_to_persistent_browser_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    monkeypatch.setattr(
+        network_cli,
+        "browser_session_cdp_url",
+        lambda store: "http://127.0.0.1:45678",
+    )
+    out = tmp_path / "saved-searches.json"
+
+    exit_code = network_main(["--state-dir", str(tmp_path), "saved-searches", "--out", str(out)])
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].cdp_url == "http://127.0.0.1:45678"
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "saved-searches:https://www.linkedin.com/sales/search/people"
+    ]
+
+
 def test_cli_acceptance_check_uses_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -955,6 +1014,179 @@ def test_cli_pending_capture_uses_live_browser_and_imports(
     observation = store.load_pending().next_eligible_observation()
     assert observation is not None
     assert observation.name == "Stale Invite"
+
+
+def test_cli_pending_run_session_reuses_one_live_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    pending_cleanup_start(store, max_withdrawals=2, threshold_days=14, force=True)
+    out = tmp_path / "pending-capture.json"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "run-session",
+            "--capture-load-more",
+            "3",
+            "--threshold-weeks",
+            "2",
+            "--out",
+            str(out),
+            "--withdraw-limit",
+            "1",
+            "--allow-withdraw",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(FakeLiveBrowserClient.instances) == 1
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        "pending-capture:load_more=3:threshold=14",
+        "withdraw:Stale Invite:dry=True:allow=False",
+        "withdraw:Stale Invite:dry=False:allow=True",
+        "audit:load_more=0",
+    ]
+    run = store.load_pending()
+    assert run.start_audit == 101
+    assert run.latest_audit == 101
+    assert run.withdrawn_count() == 1
+
+
+def test_cli_network_run_session_reuses_one_live_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    saved_searches = tmp_path / "saved-searches.json"
+    out_dir = tmp_path / "network-session"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--target",
+            "1",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(saved_searches),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(FakeLiveBrowserClient.instances) == 1
+    assert FakeLiveBrowserClient.instances[0].out_dir == out_dir
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        "saved-searches:https://www.linkedin.com/sales/search/people",
+        (
+            "capture:ASAP - Agency Owners Delivery:pages=3:limit=18:only=True:"
+            "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
+        ),
+        "send:Duplicate Lead:dry=False:allow=True",
+        "audit:load_more=0",
+    ]
+    store = Store(tmp_path)
+    assert store.load_run().verified_count() == 1
+
+
+def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name="Duplicate Lead",
+            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_acceptance_ledger(ledger)
+    candidates = tmp_path / "acceptance-candidates.json"
+    outcomes = tmp_path / "acceptance-outcomes.json"
+    chunks = tmp_path / "chunks"
+    draft_report = tmp_path / "followups.md"
+    draft_out_dir = tmp_path / "accepted-followups"
+    browser_out_dir = tmp_path / "acceptance-session"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(candidates),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(chunks),
+            "--chunk-size",
+            "1",
+            "--draft-report",
+            str(draft_report),
+            "--draft-out-dir",
+            str(draft_out_dir),
+            "--no-public-web",
+            "--out-dir",
+            str(browser_out_dir),
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(FakeLiveBrowserClient.instances) == 1
+    assert FakeLiveBrowserClient.instances[0].out_dir == browser_out_dir
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "acceptance-check:1:offset=0:limit=1:delay=750",
+        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500",
+    ]
+    assert json.loads(outcomes.read_text())["rows"][0]["status"] == "accepted"
+    assert draft_report.exists()
+    assert (draft_out_dir / "accepted-candidates.json").exists()
+    assert (draft_out_dir / "accepted-research.json").exists()
+    assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"
+
+
+def test_cli_acceptance_run_daily_session_skips_browser_without_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(tmp_path / "acceptance-candidates.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances == []
+    assert "no acceptance-check candidates; browser not opened" in capsys.readouterr().out
 
 
 def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
