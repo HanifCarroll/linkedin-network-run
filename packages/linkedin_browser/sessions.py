@@ -32,7 +32,7 @@ class PageReusePolicy:
         "linkedin.com",
     )
     keep_pages: int = 1
-    foreground: bool = True
+    foreground: bool = False
 
 
 @dataclass

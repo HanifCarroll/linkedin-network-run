@@ -29,6 +29,7 @@ from packages.linkedin_browser.playwright import (
     close_browser_context_handle,
     open_linkedin_browser_context,
 )
+from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
 SCROLL_BY_SCRIPT = "(pixels) => window.scrollBy(0, pixels)"
@@ -1001,12 +1002,16 @@ def _emit_progress(
 
 
 async def _reusable_page(context: Any) -> Page:
-    for page in context.pages:
-        is_closed = getattr(page, "is_closed", None)
-        if callable(is_closed) and is_closed():
-            continue
-        return cast(Page, page)
-    return cast(Page, await context.new_page())
+    fragments = (
+        "linkedin.com/posts/",
+        "linkedin.com/feed/update/",
+        "linkedin.com",
+    )
+    session = BrowserSession(
+        context,
+        PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
+    )
+    return cast(Page, await session.page(preferred_url_fragments=fragments))
 
 
 async def _close_context_handle(handle: Any) -> None:

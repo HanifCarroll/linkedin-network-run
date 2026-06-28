@@ -224,7 +224,7 @@ async def test_browser_session_reuses_page_and_can_close_surplus() -> None:
     selected = FakePage("https://www.linkedin.com/sales/search/people")
     stale = FakePage("https://www.linkedin.com/feed/")
     context = FakeContext([selected, stale])
-    session = BrowserSession(context, PageReusePolicy(keep_pages=1))
+    session = BrowserSession(context, PageReusePolicy(keep_pages=1, foreground=True))
 
     page = await session.page(close_surplus=True)
 
@@ -235,10 +235,10 @@ async def test_browser_session_reuses_page_and_can_close_surplus() -> None:
 
 
 @pytest.mark.asyncio
-async def test_browser_session_can_reuse_page_without_foregrounding() -> None:
+async def test_browser_session_reuses_page_without_foregrounding_by_default() -> None:
     selected = FakePage("https://www.linkedin.com/sales/search/people")
     context = FakeContext([selected])
-    session = BrowserSession(context, PageReusePolicy(foreground=False))
+    session = BrowserSession(context)
 
     page = await session.page()
 

@@ -102,7 +102,9 @@ uv run linkedin-tools network \
 
 When `browser-session start` is running, later browser-backed network commands
 auto-attach to the saved CDP URL in `browser-session.json`. The window stays
-open between commands until `browser-session stop`.
+open between commands until `browser-session stop`. Browser actions reuse an
+existing tab in the attached context by default and do not bring Chrome to the
+foreground; a new tab is created only when the context has no open pages.
 
 Browser-backed commands default to guarded dry-run behavior unless the explicit
 real-action flag is provided:

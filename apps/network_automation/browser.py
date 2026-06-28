@@ -736,9 +736,13 @@ class PlaywrightBrowserClient:
         only_connectable: bool,
         row_scroll_delay_ms: int,
     ) -> tuple[SalesNavCapture, str]:
-        context = await self._context_handle()
-        page = await context.new_page()
-        await _ignore_errors(page.bring_to_front())
+        page = await self._page(
+            (
+                "linkedin.com/sales/search/people",
+                "linkedin.com/sales/lead/",
+                "linkedin.com",
+            )
+        )
         api_rows_by_urn: dict[str, dict[str, Any]] = {}
         api_state: dict[str, Any] = {"enabled": True, "responses": 0, "rows": 0, "errors": []}
         api_response_tasks: list[asyncio.Task[None]] = []
@@ -846,9 +850,13 @@ class PlaywrightBrowserClient:
                 remove_listener("response", queue_api_response)
 
     async def _audit_sent_invitations(self, *, load_more: int) -> tuple[SalesNavAudit, str]:
-        context = await self._context_handle()
-        page = await context.new_page()
-        await _ignore_errors(page.bring_to_front())
+        page = await self._page(
+            (
+                "linkedin.com/mynetwork/invitation-manager/sent",
+                "linkedin.com/sales/search/people",
+                "linkedin.com",
+            )
+        )
         await page.goto(SENT_INVITATIONS_URL, wait_until="domcontentloaded", timeout=45000)
         await _wait_for_load(page)
         for _ in range(max(0, load_more)):

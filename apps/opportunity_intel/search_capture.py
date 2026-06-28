@@ -24,6 +24,7 @@ from packages.linkedin_browser.playwright import (
     close_browser_context_handle,
     open_linkedin_browser_context,
 )
+from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
 POST_MENU_PATTERN = re.compile(r"open control menu for post by", re.IGNORECASE)
@@ -469,18 +470,16 @@ async def _copy_post_url_from_menu(
 
 
 async def _reusable_page(context: Any) -> Page:
-    for page in context.pages:
-        is_closed = getattr(page, "is_closed", None)
-        if callable(is_closed) and is_closed():
-            continue
-        if "linkedin.com" in getattr(page, "url", ""):
-            return cast(Page, page)
-    for page in context.pages:
-        is_closed = getattr(page, "is_closed", None)
-        if callable(is_closed) and is_closed():
-            continue
-        return cast(Page, page)
-    return cast(Page, await context.new_page())
+    fragments = (
+        "linkedin.com/search/results/content",
+        "linkedin.com/feed/",
+        "linkedin.com",
+    )
+    session = BrowserSession(
+        context,
+        PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
+    )
+    return cast(Page, await session.page(preferred_url_fragments=fragments))
 
 
 def _write_known_posts(
