@@ -27,6 +27,7 @@ from apps.network_automation.models import (
     AcceptanceOutcomeArtifact,
     AcceptanceStatus,
     AcceptedDraftCandidate,
+    AcceptedFollowupTemplateKey,
     AcceptedResearchArtifact,
     BrowserSessionState,
     CandidateEvent,
@@ -41,7 +42,9 @@ from apps.network_automation.models import (
     SalesNavCapture,
     SalesNavSendResult,
     SavedSearchArtifact,
+    choose_angle,
     default_sources,
+    general_accepted_followup_draft,
 )
 from apps.network_automation.old_state import inspect_old_state
 from apps.network_automation.reports import render_report
@@ -621,8 +624,11 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     rendered = report_path.read_text()
     assert "Hey, Duplicate. Thanks for connecting." in rendered
     assert "project overflow, prototypes, and AI-enabled product builds" in rendered
+    assert "Are you the right person to ask about this kind of project support?" in rendered
+    assert "- Template: `agency`" in rendered
     followups = store.load_acceptance_followup_ledger()
     record = followups.drafts[0]
+    assert record.template_key == AcceptedFollowupTemplateKey.AGENCY
     with pytest.raises(ValueError, match="real sends require dry_run_ready"):
         acceptance_send_followup(
             store,
@@ -661,6 +667,29 @@ def test_acceptance_draft_followups_explains_zero_new_drafts(tmp_path: Path) -> 
     assert "accepted follow-up drafts: 0" in output
     assert "no newly accepted connections need first-message drafts" in output
     assert "No newly accepted connections need first-message drafts." in report_path.read_text()
+
+
+def test_acceptance_followup_template_routing_is_source_first() -> None:
+    assert choose_angle(
+        "ASAP - Agency Owners Delivery", "AI Product Leader", "Acme AI"
+    ) == (AcceptedFollowupTemplateKey.AGENCY, "project or overflow support ask for Acme AI")
+    assert choose_angle(
+        "ASAP - Contract Recruiters Staffing", "Founder", "Hiring Co"
+    ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Hiring Co")
+    assert choose_angle(
+        "ASAP - Vertical Proof Buyers", "Founder", "Proof Co"
+    ) == (AcceptedFollowupTemplateKey.GENERAL, "product-engineering support ask for Proof Co")
+    assert choose_angle(
+        "Unknown List", "Talent Acquisition Partner", "Search Co"
+    ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Search Co")
+
+
+def test_general_accepted_followup_uses_low_friction_relevant_cta() -> None:
+    draft = general_accepted_followup_draft("Sam", "Acme AI")
+
+    assert "Are you the right person to ask" in draft
+    assert "would be useful at Acme AI?" in draft
+    assert "resume" not in draft.lower()
 
 
 def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path) -> None:

@@ -86,6 +86,12 @@ class DraftStrategy(StrEnum):
     ASAP_CONTRACT_V1 = "asap-contract-v1"
 
 
+class AcceptedFollowupTemplateKey(StrEnum):
+    GENERAL = "general"
+    AGENCY = "agency"
+    RECRUITER = "recruiter"
+
+
 class AcceptanceFollowupStatus(StrEnum):
     DRAFTED = "drafted"
     DRY_RUN_READY = "dry_run_ready"
@@ -1471,6 +1477,7 @@ class AcceptedResearchArtifact(AppModel):
 
 class DraftItem(AppModel):
     candidate: AcceptedDraftCandidate
+    template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
     angle: str
     draft: str
     evidence: list[str] = Field(default_factory=list)
@@ -1506,6 +1513,7 @@ class AcceptanceFollowupRecord(AppModel):
     updated_at: datetime = Field(default_factory=now_utc)
     accepted_at: datetime
     strategy: DraftStrategy = DraftStrategy.ASAP_CONTRACT_V1
+    template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
     angle: str
     draft: str
     evidence: list[str] = Field(default_factory=list)
@@ -1578,6 +1586,7 @@ class AcceptanceFollowupLedger(AppModel):
                             "drafted_at": report.generated_at,
                             "updated_at": report.generated_at,
                             "strategy": report.strategy,
+                            "template_key": item.template_key,
                             "angle": item.angle,
                             "draft": item.draft,
                             "evidence": list(item.evidence),
@@ -1598,6 +1607,7 @@ class AcceptanceFollowupLedger(AppModel):
                     updated_at=report.generated_at,
                     accepted_at=item.candidate.accepted_at,
                     strategy=report.strategy,
+                    template_key=item.template_key,
                     angle=item.angle,
                     draft=item.draft,
                     evidence=list(item.evidence),
@@ -1658,17 +1668,13 @@ def build_draft_item(
         research.web.results[0] if research and research.web and research.web.results else None
     )
     first = first_name(candidate.name)
-    angle_kind, angle_label = choose_angle(candidate.source, title, company, web_result)
-    if angle_kind == "recruiter":
+    template_key, angle_label = choose_angle(candidate.source, title, company)
+    if template_key == AcceptedFollowupTemplateKey.RECRUITER:
         draft = recruiter_accepted_followup_draft(first)
-    elif angle_kind == "agency":
-        draft = agency_accepted_followup_draft(first)
-    elif angle_kind == "investor-advisor":
-        draft = investor_advisor_accepted_followup_draft(first)
-    elif angle_kind == "technical-leader":
-        draft = technical_accepted_followup_draft(first)
+    elif template_key == AcceptedFollowupTemplateKey.AGENCY:
+        draft = agency_accepted_followup_draft(first, company)
     else:
-        draft = general_accepted_followup_draft(first)
+        draft = general_accepted_followup_draft(first, company)
     evidence: list[str] = []
     if title:
         evidence.append(f"Sales Nav title/headline: {title}")
@@ -1710,6 +1716,7 @@ def build_draft_item(
         warnings.append("Sales Nav title/company were not extracted; review before sending.")
     return DraftItem(
         candidate=candidate,
+        template_key=template_key,
         angle=angle_label,
         draft=draft,
         evidence=evidence,
@@ -1717,153 +1724,83 @@ def build_draft_item(
     )
 
 
-def general_accepted_followup_draft(first: str) -> str:
+def general_accepted_followup_draft(first: str, company: str | None) -> str:
+    target = f" at {clean_inline(company)}" if company else ""
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm available for contract product engineering work through HC Studio LLC, mostly around "
-        "full-stack product builds and AI workflows.\n\n"
-        "If it would be helpful, I'm happy to send over my resume and a couple of "
-        "project examples.\n\n"
-        "Best,\nHanif Carroll"
+        "I'm a full-stack product engineer working through HC Studio LLC, focused on "
+        "shipping AI-powered web and mobile products.\n\n"
+        "Are you the right person to ask about whether that kind of product-engineering "
+        f"support would be useful{target}?"
     )
 
 
-def technical_accepted_followup_draft(first: str) -> str:
+def agency_accepted_followup_draft(first: str, company: str | None) -> str:
+    company_intro = ""
+    if company:
+        company_intro = f" I came across {clean_inline(company)}, and"
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm available for contract product engineering work through HC Studio LLC, mostly around "
-        "full-stack product builds, AI workflows, and prototype-to-production work.\n\n"
-        "If it would be helpful, I'm happy to send over my resume and a couple of "
-        "project examples.\n\n"
-        "Best,\nHanif Carroll"
-    )
-
-
-def investor_advisor_accepted_followup_draft(first: str) -> str:
-    return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm available for contract product engineering work through HC Studio LLC, "
-        "mostly helping teams "
-        "ship full-stack products and AI workflows.\n\n"
-        "If someone in your network ever needs that kind of help, I'm happy to send "
-        "over my resume and "
-        "a couple of project examples.\n\n"
-        "Best,\nHanif Carroll"
-    )
-
-
-def agency_accepted_followup_draft(first: str) -> str:
-    return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm available for contract product engineering work through HC Studio LLC, "
-        "mostly helping with "
-        "project overflow, prototypes, and AI-enabled product builds.\n\n"
-        "If it would be helpful, I'm happy to send over my resume and a couple of "
-        "project examples.\n\n"
-        "Best,\nHanif Carroll"
+        "I'm a full-stack product engineer working through HC Studio LLC."
+        f"{company_intro} I'm reaching out about project overflow, prototypes, and "
+        "AI-enabled product builds.\n\n"
+        "Are you the right person to ask about this kind of project support?"
     )
 
 
 def recruiter_accepted_followup_draft(first: str) -> str:
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm available for contract product engineering work through HC Studio LLC, "
-        "focused on full-stack "
-        "product builds and AI workflows.\n\n"
-        "If useful, I'm happy to send over my resume and a couple of project examples "
-        "for your files.\n\n"
-        "Best,\nHanif Carroll"
+        "I'm a full-stack product engineer working through HC Studio LLC, focused on "
+        "full-stack product builds and AI workflows.\n\n"
+        "Are you the right person to ask about contract roles that fit this background?"
     )
+
+
+ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES: dict[str, AcceptedFollowupTemplateKey] = {
+    "ASAP - Agency Owners Delivery": AcceptedFollowupTemplateKey.AGENCY,
+    "ASAP - Contract Recruiters Staffing": AcceptedFollowupTemplateKey.RECRUITER,
+    "ASAP - Startup CTO Eng Leaders": AcceptedFollowupTemplateKey.GENERAL,
+    "ASAP - High-Intent SaaS AI Founders": AcceptedFollowupTemplateKey.GENERAL,
+    "ASAP - Vertical Proof Buyers": AcceptedFollowupTemplateKey.GENERAL,
+    "FO - Founders - Urgent": AcceptedFollowupTemplateKey.GENERAL,
+    "Network - AI-Curious Founders": AcceptedFollowupTemplateKey.GENERAL,
+    "Network - Early Founders": AcceptedFollowupTemplateKey.GENERAL,
+    "Network - Founder Operators": AcceptedFollowupTemplateKey.GENERAL,
+    "Network - Product Leaders": AcceptedFollowupTemplateKey.GENERAL,
+    "Ops-overwhelmed small team operator": AcceptedFollowupTemplateKey.GENERAL,
+}
 
 
 def choose_angle(
-    source: str, title: str | None, company: str | None, web_result: WebResult | None
-) -> tuple[str, str]:
+    source: str, title: str | None, company: str | None
+) -> tuple[AcceptedFollowupTemplateKey, str]:
+    template_key = ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES.get(source)
+    if template_key is None:
+        template_key = accepted_followup_structured_override(source, title, company)
+    company_suffix = f" for {clean_inline(company)}" if company else ""
+    if template_key == AcceptedFollowupTemplateKey.RECRUITER:
+        return template_key, "contract-role availability ask" + company_suffix
+    if template_key == AcceptedFollowupTemplateKey.AGENCY:
+        return template_key, "project or overflow support ask" + company_suffix
+    return template_key, "product-engineering support ask" + company_suffix
+
+
+def accepted_followup_structured_override(
+    source: str, title: str | None, company: str | None
+) -> AcceptedFollowupTemplateKey:
     source_lower = source.lower()
     title_lower = title.lower() if title else ""
-    company_suffix = f" for {clean_inline(company)}" if company else ""
-    web_suffix = (
-        f"; public result: {clean_inline(web_result.title)}"
-        if web_result and web_result.title
-        else ""
-    )
-    combined = " ".join([source_lower, title_lower, company_suffix, web_suffix]).lower()
-    if contains_any(
-        combined, "recruit", "staffing", "talent acquisition", "headhunter", "hire recruiters"
+    company_lower = company.lower() if company else ""
+    if contains_any(source_lower, "recruiter", "staffing") or contains_any(
+        title_lower, "recruiter", "talent acquisition", "headhunter"
     ):
-        return "recruiter", "contract-role availability ask" + company_suffix + web_suffix
-    if contains_any(
-        combined,
-        "agency",
-        "studio",
-        "digital transformation",
-        "custom ai solutions",
-        "web design",
-        "ux/ui",
-        "cro",
-        "seo",
-        "implementation partner",
-        "technology services",
-        "software agency",
-        "development agency",
-        "consulting partners",
-        "consulting services",
+        return AcceptedFollowupTemplateKey.RECRUITER
+    if contains_any(source_lower, "agency") or contains_any(
+        company_lower, "agency", "studio", "consulting"
     ):
-        return (
-            "agency",
-            "agency overflow or specialist contractor capacity" + company_suffix + web_suffix,
-        )
-    if (
-        contains_any(
-            combined,
-            "cto",
-            "cpo",
-            "chief product",
-            "product lead",
-            "product manager",
-            "ai product",
-            "platform",
-            "llm",
-            "agentic",
-            "software engineer",
-            "developer",
-            "technical",
-            "data",
-            "automation",
-            "workflow",
-            "internal tools",
-            "voice agents",
-            "enterprise ai",
-            "ai-native",
-            "product leader",
-        )
-        or "product leaders" in source_lower
-    ):
-        return (
-            "technical-leader",
-            "senior product-engineering contractor help" + company_suffix + web_suffix,
-        )
-    if contains_any(
-        combined,
-        "investor",
-        "investment",
-        "m&a",
-        "broker",
-        "fundraising",
-        "private equity",
-        "advisor",
-        "coach",
-        "mentor",
-        "board",
-        "career coach",
-    ):
-        return (
-            "investor-advisor",
-            "network referral for contract product-engineering help" + company_suffix + web_suffix,
-        )
-    if "vertical" in source_lower or "proof" in source_lower:
-        return "proof-matched", "proof-matched product/workflow help" + company_suffix + web_suffix
-    return "general-founder", "fast contract product-engineering help" + company_suffix + web_suffix
+        return AcceptedFollowupTemplateKey.AGENCY
+    return AcceptedFollowupTemplateKey.GENERAL
 
 
 def contains_any(value: str, *needles: str) -> bool:
@@ -1915,6 +1852,7 @@ def render_draft_markdown(report: DraftReport) -> str:
         if item.candidate.profile_url:
             lines.append("- Profile: " + clean_inline(item.candidate.profile_url))
         lines.append(f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`")
+        lines.append(f"- Template: `{item.template_key.value}`")
         lines.append("- Best angle: " + clean_inline(item.angle))
         if item.evidence:
             lines.append("- Evidence used:")
