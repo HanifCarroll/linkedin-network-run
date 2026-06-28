@@ -1383,6 +1383,11 @@ def acceptance_draft_followups(
         },
     )
     suffix = f"; research artifact: {research}" if research else ""
+    if not report.items:
+        return (
+            f"accepted follow-up drafts: 0 written to {report_path}; "
+            "no newly accepted connections need first-message drafts"
+        )
     return f"accepted follow-up drafts: {len(report.items)} written to {report_path}{suffix}"
 
 

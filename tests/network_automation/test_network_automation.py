@@ -646,6 +646,23 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     assert store.load_acceptance_followup_ledger().drafts[0].status.value == "dry_run_ready"
 
 
+def test_acceptance_draft_followups_explains_zero_new_drafts(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    report_path = tmp_path / "followups.md"
+
+    output = acceptance_draft_followups(
+        store,
+        research=None,
+        out=report_path,
+        include_drafted=False,
+        strategy=DraftStrategy.ASAP_CONTRACT_V1,
+    )
+
+    assert "accepted follow-up drafts: 0" in output
+    assert "no newly accepted connections need first-message drafts" in output
+    assert "No newly accepted connections need first-message drafts." in report_path.read_text()
+
+
 def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path) -> None:
     store = Store(tmp_path)
     pending_cleanup_start(store, max_withdrawals=1, threshold_days=14, force=True)
