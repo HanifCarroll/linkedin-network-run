@@ -1085,6 +1085,9 @@ def _send_ready_bucket(
                 note=latest_attempt.note if latest_attempt else None,
             )
         )
+        if latest_attempt and latest_attempt.status == MessageStatus.BLOCKED.value:
+            reason = latest_attempt.note or "blocked"
+            raise RuntimeError(f"browser blocked while sending {updated.id}: {reason}")
 
 
 def _append_lifecycle_event(store: Store, event: RunEvent) -> None:

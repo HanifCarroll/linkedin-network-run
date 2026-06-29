@@ -1235,6 +1235,98 @@ def test_send_ready_uses_live_browser_when_result_dir_is_missing(
     assert sent.leads[0].send_attempts[0].out_path.endswith("lead_fixture.json")
 
 
+def test_send_ready_stops_after_browser_blocked_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeMessageBrowser:
+        calls: list[str] = []
+
+        def __init__(self, _out_dir: Path) -> None:
+            pass
+
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            assert dry_run is False
+            assert allow_send is True
+            candidate = config["candidate"]
+            assert isinstance(candidate, dict)
+            FakeMessageBrowser.calls.append(str(candidate["id"]))
+            out = tmp_path / f"{candidate['id']}.json"
+            out.write_text(
+                json.dumps(
+                    {
+                        "status": "blocked",
+                        "dryRun": False,
+                        "url": candidate["profileUrl"],
+                        "reason": "security-verification-present",
+                    }
+                )
+            )
+            return MessageSendResult.from_mapping(json.loads(out.read_text())), str(out)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        send_module,
+        "_default_message_browser",
+        lambda options, store: FakeMessageBrowser(store.dir / "message-results"),
+    )
+    store = Store(tmp_path)
+    state = _sendable_state(message_status=MessageStatus.DRY_RUN_READY)
+    second = Lead(
+        id="lead_second",
+        source="Agency website contact - Bright Product Studio",
+        name="Elliot Engineer",
+        first_name="Elliot",
+        lead_type=LeadType.AGENCY_DELIVERY,
+        status=LeadStatus.ELIGIBLE,
+        message_status=MessageStatus.DRY_RUN_READY,
+        fit_score=94,
+        profile_url="https://www.linkedin.com/sales/lead/elliot",
+        agency_account_id="acct_bright",
+        agency_account_name="Bright Product Studio",
+        draft=MessageDraft(subject="Subject", body="Body", angle="agency"),
+    )
+    state.leads.append(second)
+    store.save(state)
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "send-ready",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "2",
+                "--target-recruiters",
+                "0",
+                "--allow-send",
+            ]
+        )
+        == 1
+    )
+
+    assert FakeMessageBrowser.calls == ["lead_fixture"]
+    assert "browser blocked while sending lead_fixture" in capsys.readouterr().err
+    loaded = store.load()
+    assert loaded.leads[0].message_status == MessageStatus.BLOCKED
+    assert loaded.leads[1].message_status == MessageStatus.DRY_RUN_READY
+    assert loaded.run_events[-1].result == "failed"
+    assert loaded.run_events[-1].blocker == (
+        "browser blocked while sending lead_fixture: security-verification-present"
+    )
+
+
 def test_send_ready_requires_real_send_result_artifacts(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
