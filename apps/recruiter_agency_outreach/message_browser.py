@@ -15,6 +15,9 @@ from apps.network_automation.browser import (
     _find_composer,
     _find_message_action,
     _find_send_message_button,
+    _locator_count,
+    _locator_disabled,
+    _locator_visible,
     _medium_wait,
     _noop_async,
     _profile_name,
@@ -42,6 +45,9 @@ from packages.linkedin_salesnav import (
 from .send import MessageSendResult
 
 DEFAULT_MESSAGE_OUT_DIR = Path("/tmp/recruiter-agency-outreach-message")
+SALES_NAV_INMAIL_ACTION = "button[data-anchor-send-inmail]"
+COMPOSER_WAIT_ATTEMPTS = 20
+COMPOSER_WAIT_MS = 500
 ResultT = TypeVar("ResultT")
 
 
@@ -190,17 +196,23 @@ class PlaywrightMessageBrowserClient:
             )
             return self._write_result(str(candidate["id"]), payload)
 
-        await action["locator"].click(timeout=8000)
-        await _medium_wait(page)
-        composer = await _find_composer(page)
+        action_click = await _click_message_action(page, action)
+        composer = await _wait_for_message_composer(page)
         if composer is None:
-            payload.update({"status": "composer-missing", "action": safety_action.__dict__})
+            payload.update(
+                {
+                    "status": "composer-missing",
+                    "action": safety_action.__dict__,
+                    "actionClick": action_click,
+                }
+            )
             return self._write_result(str(candidate["id"]), payload)
         subject_fill = await _fill_subject_if_present(page, subject)
         body_fill = await _fill_composer(composer, message)
         payload.update(
             {
                 "action": safety_action.__dict__,
+                "actionClick": action_click,
                 "composerSelector": composer["selector"],
                 "subjectFill": subject_fill,
                 "bodyFill": body_fill,
@@ -236,6 +248,46 @@ class PlaywrightMessageBrowserClient:
         path = self.out_dir / f"{self._counter:03d}-{_safe_stem(stem)}.json"
         write_json_atomic(path, payload)
         return MessageSendResult.from_mapping(payload), str(path)
+
+
+async def _click_message_action(page: Any, action: Mapping[str, Any]) -> dict[str, Any]:
+    inmail = page.locator(SALES_NAV_INMAIL_ACTION).first
+    if (
+        await _locator_count(inmail)
+        and await _locator_visible(inmail)
+        and not await _locator_disabled(inmail)
+    ):
+        box = await inmail.bounding_box()
+        if box and box.get("width") and box.get("height"):
+            x = max(1.0, min(8.0, float(box["width"]) - 1.0))
+            y = max(1.0, min(float(box["height"]) / 2.0, float(box["height"]) - 1.0))
+            await inmail.click(position={"x": x, "y": y}, timeout=8000)
+            return {
+                "method": "salesnav-inmail-padding-click",
+                "selector": SALES_NAV_INMAIL_ACTION,
+                "position": {"x": x, "y": y},
+            }
+        await inmail.click(timeout=8000)
+        return {
+            "method": "salesnav-inmail-default-click",
+            "selector": SALES_NAV_INMAIL_ACTION,
+        }
+
+    locator = action["locator"]
+    await locator.click(timeout=8000)
+    return {
+        "method": "generic-message-action-click",
+        "label": str(action.get("label") or ""),
+    }
+
+
+async def _wait_for_message_composer(page: Any) -> dict[str, Any] | None:
+    for _ in range(COMPOSER_WAIT_ATTEMPTS):
+        composer = await _find_composer(page)
+        if composer is not None:
+            return composer
+        await page.wait_for_timeout(COMPOSER_WAIT_MS)
+    return await _find_composer(page)
 
 
 def _candidate(config: Mapping[str, Any]) -> dict[str, Any]:
