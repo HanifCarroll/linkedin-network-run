@@ -111,8 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_session = subparsers.add_parser("run-session")
     run_session.add_argument("--session", default="auto")
-    run_session.add_argument("--target", type=int, default=30)
-    run_session.add_argument("--max-real-sends", type=int, default=30)
+    run_session.add_argument("--target", type=int, default=10)
+    run_session.add_argument("--max-real-sends", type=int, default=10)
     run_session.add_argument("--force", action="store_true")
     run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
     run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
@@ -120,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--allow-send", action="store_true")
     run_session.add_argument("--audit-attempts", type=int, default=3)
     run_session.add_argument("--audit-delay-ms", type=int, default=5000)
+    run_session.add_argument("--confirm-delay-ms", type=int, default=5000)
+    run_session.add_argument(
+        "--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send"
+    )
     run_session.add_argument("--max-steps", type=int, default=100)
     run_session.add_argument("--finish", action="store_true")
     run_session.add_argument("--fixture-result", default=None)
@@ -181,6 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
         send.add_argument("--dry-run", action="store_true")
         send.add_argument("--allow-send", action="store_true")
         send.add_argument("--no-record", action="store_true")
+        send.add_argument("--confirm-delay-ms", type=int, default=5000)
+        send.add_argument(
+            "--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send"
+        )
         send.add_argument("--fixture-result", default=None)
         send.add_argument(
             "--out-dir",
@@ -492,6 +500,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                 allow_send=args.allow_send,
                 max_steps=args.max_steps,
                 finish=args.finish,
+                confirm_delay_ms=args.confirm_delay_ms,
+                confirm_out_dir=Path(args.confirm_out_dir),
             )
         finally:
             close = getattr(browser, "close", None)
@@ -539,6 +549,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             dry_run=args.dry_run,
             allow_send=args.allow_send,
             no_record=args.no_record,
+            confirm_delay_ms=args.confirm_delay_ms,
+            confirm_out_dir=Path(args.confirm_out_dir),
         )
     if command == "send-guarded":
         return send_guarded(
@@ -549,6 +561,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             max_attempts=args.max_attempts,
             single_pass=args.single_pass,
             no_record=args.no_record,
+            confirm_delay_ms=args.confirm_delay_ms,
+            confirm_out_dir=Path(args.confirm_out_dir),
         )
     if command == "top-up-reconcile":
         return top_up_reconcile(

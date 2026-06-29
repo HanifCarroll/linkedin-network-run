@@ -47,11 +47,26 @@ class BrowserSessionState(AppModel):
 
 
 class CandidateStatus(StrEnum):
+    PENDING_PROVISIONAL = "pending-provisional"
     PENDING = "pending"
+    ACCEPTED = "accepted"
+    REVERTED_CONNECT = "reverted-connect"
     ALREADY_PENDING = "already-pending"
     AUDIT_TOP_UP = "audit-top-up"
     SKIPPED = "skipped"
     FAILED = "failed"
+
+
+TARGET_COUNTED_SEND_STATUSES = frozenset({CandidateStatus.PENDING, CandidateStatus.ACCEPTED})
+REAL_SEND_ATTEMPT_STATUSES = frozenset(
+    {
+        CandidateStatus.PENDING_PROVISIONAL,
+        CandidateStatus.PENDING,
+        CandidateStatus.ACCEPTED,
+        CandidateStatus.REVERTED_CONNECT,
+        CandidateStatus.AUDIT_TOP_UP,
+    }
+)
 
 
 class AcceptanceStatus(StrEnum):
@@ -252,8 +267,27 @@ class Run(AppModel):
 
     def verified_count(self) -> int:
         return sum(
-            1 for candidate in self.candidates if candidate.status == CandidateStatus.PENDING
+            1
+            for candidate in self.candidates
+            if candidate.status in TARGET_COUNTED_SEND_STATUSES
         )
+
+    def provisional_count(self) -> int:
+        return sum(
+            1
+            for candidate in self.candidates
+            if candidate.status == CandidateStatus.PENDING_PROVISIONAL
+        )
+
+    def reverted_connect_count(self) -> int:
+        return sum(
+            1
+            for candidate in self.candidates
+            if candidate.status == CandidateStatus.REVERTED_CONNECT
+        )
+
+    def real_send_attempt_count(self) -> int:
+        return sum(1 for candidate in self.candidates if candidate_counts_as_real_send(candidate))
 
     def audited_delta(self) -> int | None:
         if self.start_audit is None or self.latest_audit is None:
@@ -264,7 +298,7 @@ class Run(AppModel):
         return sum(
             1
             for candidate in self.candidates
-            if candidate.source == source and candidate.status == CandidateStatus.PENDING
+            if candidate.source == source and candidate.status in TARGET_COUNTED_SEND_STATUSES
         )
 
     def source_index(self, source: str) -> int | None:
@@ -357,10 +391,10 @@ class Run(AppModel):
         return any(plan.name == source and plan.fallback for plan in self.sources)
 
     def real_send_capacity_remaining(self) -> int:
-        verified = self.verified_count()
-        if verified >= self.max_real_sends:
+        attempts = self.real_send_attempt_count()
+        if attempts >= self.max_real_sends:
             return 0
-        return self.max_real_sends - verified
+        return self.max_real_sends - attempts
 
     def final_audit_is_short(self) -> bool:
         if self.verified_count() < self.target or self.state in {RunState.DONE, RunState.BLOCKED}:
@@ -439,8 +473,8 @@ class Run(AppModel):
                 return OperatorPlan(
                     action="blocked",
                     reason=(
-                        f"real-send cap reached: {self.verified_count()}/{self.max_real_sends} "
-                        "verified sends"
+                        f"real-send cap reached: {self.real_send_attempt_count()}/"
+                        f"{self.max_real_sends} real send attempts"
                     ),
                 )
             return OperatorPlan(
@@ -483,7 +517,12 @@ class Run(AppModel):
         return [
             candidate
             for candidate in self.candidates
-            if candidate.status in {CandidateStatus.PENDING, CandidateStatus.AUDIT_TOP_UP}
+            if candidate.status
+            in {
+                CandidateStatus.PENDING,
+                CandidateStatus.ACCEPTED,
+                CandidateStatus.AUDIT_TOP_UP,
+            }
         ]
 
 
@@ -762,8 +801,16 @@ class SalesNavSendResult(AppModel):
     send: Any = None
 
     def to_candidate_status(self) -> tuple[CandidateStatus, str]:
+        if self.status == "pending-provisional":
+            return (
+                CandidateStatus.PENDING_PROVISIONAL,
+                "salesnav-send-one saw immediate Connect - Pending; durable check required",
+            )
         if self.status == "pending-verified":
-            return CandidateStatus.PENDING, "salesnav-send-one verified Connect - Pending"
+            return (
+                CandidateStatus.PENDING_PROVISIONAL,
+                "salesnav-send-one saw legacy immediate Connect - Pending; durable check required",
+            )
         if self.status == "already-pending":
             return CandidateStatus.ALREADY_PENDING, "salesnav-send-one found already pending"
         if self.status == "email-required":
@@ -960,6 +1007,10 @@ def is_uncertain_send_status(status: str) -> bool:
     return status.startswith("unverified:") or status == "blocked"
 
 
+def is_provisional_send_status(status: str) -> bool:
+    return status in {"pending-provisional", "pending-verified"}
+
+
 def is_send_noop_status(status: str) -> bool:
     return status in {
         "unverified:clicked-send",
@@ -975,7 +1026,10 @@ def source_repeated_send_noop(run: Run, source: str, threshold: int) -> bool:
     for event in reversed(run.candidates):
         if event.source != source:
             continue
-        if event.status in {CandidateStatus.PENDING, CandidateStatus.AUDIT_TOP_UP}:
+        if (
+            event.status in TARGET_COUNTED_SEND_STATUSES
+            or event.status == CandidateStatus.AUDIT_TOP_UP
+        ):
             return False
         if (
             event.status == CandidateStatus.FAILED
@@ -997,6 +1051,21 @@ def source_repeated_send_noop(run: Run, source: str, threshold: int) -> bool:
     return False
 
 
+def candidate_counts_as_real_send(candidate: CandidateEvent) -> bool:
+    if candidate.status in REAL_SEND_ATTEMPT_STATUSES:
+        return True
+    return (
+        candidate.status == CandidateStatus.FAILED
+        and candidate.note is not None
+        and (
+            "clicked-send" in candidate.note
+            or "send-connection-clicked" in candidate.note
+            or "pending-provisional" in candidate.note
+            or "pending-verified" in candidate.note
+        )
+    )
+
+
 def record_send_result(run: Run, result: SalesNavSendResult, path: str) -> CandidateEvent:
     status, status_note = result.to_candidate_status()
     note = f"{status_note}; result={path}"
@@ -1009,14 +1078,14 @@ def record_send_result(run: Run, result: SalesNavSendResult, path: str) -> Candi
         note=note,
     )
     ensure_known_source(run, event.source)
-    if status == CandidateStatus.PENDING:
+    if status in TARGET_COUNTED_SEND_STATUSES:
         for candidate in run.candidates:
             if (
-                candidate.status == CandidateStatus.PENDING
+                candidate.status in TARGET_COUNTED_SEND_STATUSES
                 and candidate.name == event.name
                 and candidate.profile_url == event.profile_url
             ):
-                raise ValueError(f"candidate already recorded as pending: {event.name}")
+                raise ValueError(f"candidate already recorded as delivered: {event.name}")
     run.candidates.append(event)
     if run.state not in {RunState.DONE, RunState.BLOCKED}:
         run.state = (
@@ -1030,7 +1099,7 @@ def record_top_up_send_result(
     run: Run, result: SalesNavSendResult, path: str, note: str | None = None
 ) -> CandidateEvent:
     status, status_note = result.to_candidate_status()
-    if status == CandidateStatus.PENDING:
+    if status in TARGET_COUNTED_SEND_STATUSES:
         status = CandidateStatus.AUDIT_TOP_UP
     parts = [status_note]
     if note:
@@ -1263,7 +1332,11 @@ class AcceptanceLedger(AppModel):
     ) -> int:
         inserted = 0
         for event in events:
-            if event.status not in {CandidateStatus.PENDING, CandidateStatus.AUDIT_TOP_UP}:
+            if event.status not in {
+                CandidateStatus.PENDING,
+                CandidateStatus.ACCEPTED,
+                CandidateStatus.AUDIT_TOP_UP,
+            }:
                 continue
             if self.upsert_invitation(run_id, run_date, event):
                 inserted += 1
@@ -1286,6 +1359,25 @@ class AcceptanceLedger(AppModel):
                 name=event.name,
                 profile_url=event.profile_url,
                 sent_at=event.at,
+                latest_status=(
+                    AcceptanceStatus.ACCEPTED
+                    if event.status == CandidateStatus.ACCEPTED
+                    else AcceptanceStatus.SENT
+                ),
+                latest_checked_at=(
+                    event.at if event.status == CandidateStatus.ACCEPTED else None
+                ),
+                history=(
+                    [
+                        AcceptanceOutcomeEvent(
+                            at=event.at,
+                            status=AcceptanceStatus.ACCEPTED,
+                            note="durably confirmed accepted during send",
+                        )
+                    ]
+                    if event.status == CandidateStatus.ACCEPTED
+                    else []
+                ),
             )
         )
         return True

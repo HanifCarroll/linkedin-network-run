@@ -18,6 +18,7 @@ from .browser import BrowserClient
 from .models import (
     AcceptanceCheckCandidate,
     AcceptanceOutcomeArtifact,
+    AcceptanceStatus,
     AcceptedDraftCandidate,
     AcceptedResearchArtifact,
     BrowserSessionState,
@@ -62,6 +63,8 @@ from .reports import (
     render_report,
 )
 from .store import Store, read_model, write_json_atomic
+
+DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
 
 
 def start_run(
@@ -262,6 +265,8 @@ def network_run_session(
     allow_send: bool,
     max_steps: int,
     finish: bool,
+    confirm_delay_ms: int = 5000,
+    confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
 ) -> str:
     messages = [
         start_run(store, target=target, force=force, max_real_sends=max_real_sends),
@@ -316,6 +321,8 @@ def network_run_session(
                     max_attempts=30,
                     single_pass=True,
                     no_record=False,
+                    confirm_delay_ms=confirm_delay_ms,
+                    confirm_out_dir=confirm_out_dir,
                 )
             )
             continue
@@ -331,29 +338,12 @@ def network_run_session(
             )
             if finish:
                 run = store.load_run()
-                delta = run.audited_delta()
-                if delta == run.target:
+                if run.verified_count() >= run.target:
                     messages.append(finish_run(store))
-                elif delta is not None and delta < run.target:
-                    shortfall = run.target - delta
-                    messages.append(
-                        f"final audit short: delta {format_delta(delta)}; "
-                        f"running up to {shortfall} top-up attempts"
-                    )
-                    messages.append(
-                        top_up_reconcile(
-                            store,
-                            browser,
-                            allow_send=allow_send,
-                            finish=True,
-                            max_attempts=shortfall,
-                            saved_searches=saved_searches_out,
-                        )
-                    )
                 else:
                     raise RuntimeError(
-                        f"final audit delta is {format_delta(delta)}, expected {run.target}; "
-                        "stopping"
+                        f"durable confirmed sends are {run.verified_count()}/{run.target}; "
+                        "continue normal guarded sends before finishing"
                     )
             break
         messages.append(f"stopped: {plan.reason or plan.action}")
@@ -379,9 +369,6 @@ def reconcile_audit(
         run = store.load_run()
         apply_audit(run, audit.people_count, f"reconcile audit attempt {attempt}/{attempts}")
         latest_delta = run.audited_delta()
-        should_finish = finish and latest_delta == run.target
-        if should_finish:
-            run.state = RunState.DONE
         store.save_run(run)
         store.append_event(
             run,
@@ -391,17 +378,9 @@ def reconcile_audit(
                 "path": path,
                 "people_count": audit.people_count,
                 "delta": latest_delta,
-                "finished": should_finish,
+                "finished": False,
             },
         )
-        if should_finish:
-            ledger = store.load_acceptance_ledger()
-            seeded = ledger.upsert_from_run(run)
-            store.save_acceptance_ledger(ledger)
-            store.append_event(run, "finish", {"audited_delta": latest_delta})
-            store.append_acceptance_event(
-                "seed-from-finish", {"run_id": str(run.id), "seeded": seeded}
-            )
         messages.append(
             f"reconcile audit {attempt}/{attempts}: People ({audit.people_count}), "
             f"delta {format_delta(latest_delta)}; out={path}"
@@ -410,13 +389,8 @@ def reconcile_audit(
             break
         if attempt < attempts and delay_ms > 0:
             time.sleep(delay_ms / 1000)
-    if finish and latest_delta is not None:
-        run = store.load_run()
-        if run.state != RunState.DONE and latest_delta != run.target:
-            raise RuntimeError(
-                f"final audit delta is {format_delta(latest_delta)}, expected {run.target}; "
-                "top up or re-run reconcile-audit"
-            )
+    if finish:
+        messages.append(finish_run(store))
     return "\n".join(messages + [render_report(store.load_run())])
 
 
@@ -432,14 +406,14 @@ def record_candidate(
     run = store.load_run()
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit first")
-    if status == CandidateStatus.PENDING:
+    if status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
         for candidate in run.candidates:
             if (
-                candidate.status == CandidateStatus.PENDING
+                candidate.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}
                 and candidate.name == name
                 and candidate.profile_url == profile_url
             ):
-                raise RuntimeError(f"candidate already recorded as pending: {name}")
+                raise RuntimeError(f"candidate already recorded as delivered: {name}")
     event = CandidateEvent(
         source=source,
         name=name,
@@ -475,6 +449,120 @@ def record_send_result_from_path(store: Store, path: Path) -> str:
     )
 
 
+def confirm_provisional_send(
+    store: Store,
+    browser: BrowserClient,
+    event: CandidateEvent,
+    *,
+    delay_ms: int = 5000,
+    out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
+) -> str:
+    if event.status != CandidateStatus.PENDING_PROVISIONAL:
+        return f"confirmation skipped: {event.status.value}"
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000)
+    run = store.load_run()
+    candidate = _find_matching_provisional_event(run.candidates, event)
+    if candidate is None:
+        raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{len(run.candidates):03d}-{_safe_artifact_stem(event.name)}"
+    input_path = out_dir / f"{stem}-candidate.json"
+    outcome_path = out_dir / f"{stem}-outcome.json"
+    check_candidate = AcceptanceCheckCandidate(
+        run_id=str(run.id),
+        run_date=run.date,
+        source=event.source,
+        name=event.name,
+        profile_url=event.profile_url,
+        sent_at=event.at,
+        latest_status=AcceptanceStatus.SENT,
+        latest_checked_at=None,
+    )
+    write_json_atomic(input_path, [check_candidate.model_dump(mode="json")])
+    artifact, path = browser.check_acceptance_outcomes(
+        candidates=[check_candidate],
+        input_path=input_path,
+        out=outcome_path,
+        offset=0,
+        limit=1,
+        delay_ms=0,
+    )
+    row = artifact.rows[0] if artifact.rows else None
+    final_status, status_note, blocked = _candidate_status_from_confirmation(row)
+    candidate.status = final_status
+    candidate.note = "; ".join(
+        part
+        for part in (
+            candidate.note,
+            f"durable confirmation {status_note}",
+            f"outcome={path}",
+        )
+        if part
+    )
+    if blocked:
+        run.state = RunState.BLOCKED
+        run.notes.append(f"durable confirmation blocked for {event.name}: {status_note}")
+    elif run.state not in {RunState.DONE, RunState.BLOCKED}:
+        run.state = (
+            RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
+        )
+    run.mark_updated()
+    store.save_run(run)
+    store.append_event(
+        run,
+        "confirm-send-result",
+        {
+            "input": str(input_path),
+            "out": path,
+            "event": candidate,
+            "status": final_status.value,
+            "confirmation": status_note,
+        },
+    )
+    return (
+        f"confirmation status: {final_status.value}; "
+        f"verified {run.verified_count()}/{run.target}"
+    )
+
+
+def _find_matching_provisional_event(
+    candidates: list[CandidateEvent], event: CandidateEvent
+) -> CandidateEvent | None:
+    for candidate in reversed(candidates):
+        if (
+            candidate.status == CandidateStatus.PENDING_PROVISIONAL
+            and candidate.source == event.source
+            and candidate.name == event.name
+            and candidate.profile_url == event.profile_url
+        ):
+            return candidate
+    return None
+
+
+def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateStatus, str, bool]:
+    if row is None:
+        return CandidateStatus.FAILED, "missing confirmation row", False
+    status = getattr(row, "status", None)
+    note = getattr(row, "note", None) or ""
+    if status == AcceptanceStatus.PENDING:
+        return CandidateStatus.PENDING, "pending", False
+    if status == AcceptanceStatus.ACCEPTED:
+        return CandidateStatus.ACCEPTED, "accepted", False
+    if status == AcceptanceStatus.CONNECTABLE:
+        return CandidateStatus.REVERTED_CONNECT, "connectable again; invite not durable", False
+    if status == AcceptanceStatus.BLOCKED:
+        return CandidateStatus.FAILED, f"blocked: {note or 'blocked'}", True
+    value = getattr(status, "value", str(status))
+    return CandidateStatus.FAILED, f"{value}: {note}".strip(), False
+
+
+def _safe_artifact_stem(value: str) -> str:
+    stem = "".join(char.lower() if char.isalnum() else "-" for char in value)
+    stem = "-".join(part for part in stem.split("-") if part)
+    return stem[:80] or "candidate"
+
+
 def drain_stale_candidates(store: Store, source: str | None = None) -> str:
     run = store.load_run()
     drained = drain_stale_connectable_candidates(run, source)
@@ -494,13 +582,16 @@ def send_next(
     dry_run: bool,
     allow_send: bool,
     no_record: bool = False,
+    confirm_delay_ms: int = 5000,
+    confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
 ) -> str:
     run = store.load_run()
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit before sending")
     if allow_send and run.real_send_capacity_remaining() == 0:
         raise RuntimeError(
-            f"real-send cap reached: {run.verified_count()}/{run.max_real_sends} verified sends"
+            f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
+            "real send attempts"
         )
     candidate = run.next_connectable_observation()
     if candidate is None:
@@ -516,7 +607,18 @@ def send_next(
         store.append_event(run, "record-send-result", {"path": path, "event": event})
         if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
-        return f"send result: {path}; recorded {event.status.value}"
+        messages = [f"send result: {path}; recorded {event.status.value}"]
+        if event.status == CandidateStatus.PENDING_PROVISIONAL:
+            messages.append(
+                confirm_provisional_send(
+                    store,
+                    browser,
+                    event,
+                    delay_ms=confirm_delay_ms,
+                    out_dir=confirm_out_dir,
+                )
+            )
+        return "\n".join(messages)
     return f"send result: {path}; dry_run={dry_run or not allow_send}"
 
 
@@ -529,6 +631,8 @@ def send_guarded(
     max_attempts: int = 30,
     single_pass: bool = False,
     no_record: bool = False,
+    confirm_delay_ms: int = 5000,
+    confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
 ) -> str:
     if not dry_run and not allow_send:
         raise RuntimeError("real guarded sends require --allow-send")
@@ -554,7 +658,8 @@ def send_guarded(
             break
         if run.real_send_capacity_remaining() == 0:
             raise RuntimeError(
-                f"real-send cap reached: {run.verified_count()}/{run.max_real_sends} verified sends"
+                f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
+                "real send attempts"
             )
         candidate = run.next_connectable_observation_for_source(source)
         if candidate is None:
@@ -605,6 +710,17 @@ def send_guarded(
                 )
         store.save_run(run)
         store.append_event(run, "record-send-result", {"path": path, "event": event})
+        if event.status == CandidateStatus.PENDING_PROVISIONAL:
+            messages.append(
+                confirm_provisional_send(
+                    store,
+                    browser,
+                    event,
+                    delay_ms=confirm_delay_ms,
+                    out_dir=confirm_out_dir,
+                )
+            )
+            run = store.load_run()
         if is_uncertain_send_status(result.status):
             raise RuntimeError(
                 f"guarded send stopped on uncertain status {result.status}; "
@@ -636,21 +752,15 @@ def top_up_reconcile(
     messages: list[str] = []
     for attempt in range(1, attempts + 1):
         run = store.load_run()
-        delta = run.audited_delta()
-        if delta == run.target:
-            messages.append("audited delta already matches target; no top-up needed")
+        if run.verified_count() >= run.target:
+            messages.append("durable confirmed target already met; no top-up needed")
             if finish and run.state != RunState.DONE:
                 messages.append(finish_run(store))
             break
-        if delta is not None and delta > run.target:
+        if run.real_send_capacity_remaining() == 0:
             raise RuntimeError(
-                f"audited delta {format_delta(delta)} already exceeds target {run.target}; "
-                "stopping"
-            )
-        if run.verified_count() < run.target:
-            raise RuntimeError(
-                f"row-level verified sends are {run.verified_count()}/{run.target}; "
-                "continue normal guarded sends before audit top-up"
+                f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
+                "real send attempts"
             )
         candidate = run.next_top_up_observation()
         if candidate is None and not no_fallback_capture:
@@ -680,63 +790,35 @@ def top_up_reconcile(
             allow_send=True,
         )
         run = store.load_run()
-        event = record_top_up_send_result(
-            run,
-            result,
-            result_path,
-            "controller top-up reconciliation",
-        )
+        event = record_send_result(run, result, result_path)
         store.save_run(run)
         store.append_event(
             run,
-            "record-top-up-result",
+            "record-send-result",
             {"path": result_path, "event": event, "via": "top-up-reconcile"},
         )
         messages.append(f"top-up send status: {result.status}")
-        if event.status != CandidateStatus.AUDIT_TOP_UP:
-            messages.append("top-up did not send a verified invite; trying next distinct candidate")
-            continue
-        if delay_ms > 0:
-            time.sleep(delay_ms / 1000)
-        audit, audit_path = browser.audit_sent_invitations(load_more=0)
-        run = store.load_run()
-        apply_audit(run, audit.people_count, f"top-up reconcile audit attempt {attempt}/{attempts}")
-        latest_delta = run.audited_delta()
-        should_finish = finish and latest_delta == run.target
-        store.save_run(run)
-        store.append_event(
-            run,
-            "top-up-reconcile-audit",
-            {
-                "attempt": attempt,
-                "path": audit_path,
-                "people_count": audit.people_count,
-                "delta": latest_delta,
-                "finished": should_finish,
-            },
-        )
-        messages.append(
-            f"top-up audit {attempt}/{attempts}: People ({audit.people_count}), "
-            f"delta {format_delta(latest_delta)}"
-        )
-        if should_finish:
-            messages.append(finish_run(store))
-        if latest_delta == run.target:
+        if event.status == CandidateStatus.PENDING_PROVISIONAL:
+            messages.append(
+                confirm_provisional_send(
+                    store,
+                    browser,
+                    event,
+                    delay_ms=delay_ms,
+                    out_dir=Path("/tmp/linkedin-network-run-top-up-confirm-send"),
+                )
+            )
+            run = store.load_run()
+        if run.verified_count() >= run.target:
+            if finish:
+                messages.append(finish_run(store))
             break
+        messages.append("top-up has not reached durable target yet; trying next candidate")
     run = store.load_run()
     if finish and run.state != RunState.DONE:
-        audit_top_up_count = sum(
-            1 for candidate in run.candidates if candidate.status == CandidateStatus.AUDIT_TOP_UP
-        )
-        skipped_count = sum(
-            1 for candidate in run.candidates if candidate.status == CandidateStatus.SKIPPED
-        )
         raise RuntimeError(
-            f"final audit delta is {format_delta(run.audited_delta())}, expected "
-            f"{run.target}; top-up reconciliation did not finish after "
-            f"{audit_top_up_count} audit top-up records and {skipped_count} skipped "
-            "candidate records. Stop and inspect sent invitations or rerun "
-            "`reconcile-audit --session auto --finish` before sending more top-ups."
+            f"durable confirmed sends are {run.verified_count()}/{run.target}; "
+            "top-up did not finish within the requested attempt limit"
         )
     return "\n".join(messages + [render_report(run)])
 
@@ -850,11 +932,10 @@ def resume_blocked(store: Store, reason: str) -> str:
 def finish_run(store: Store, *, force: bool = False) -> str:
     run = store.load_run()
     delta = run.audited_delta()
-    if not force and delta != run.target:
+    if not force and run.verified_count() < run.target:
         raise RuntimeError(
-            f"final audit delta is {format_delta(delta)}, expected {run.target}; "
-            "run `reconcile-audit --session auto --finish`, inspect sent invitations, "
-            "or use --force only if Hanif explicitly accepts the audit shortfall"
+            f"durable confirmed sends are {run.verified_count()}/{run.target}; "
+            "continue normal guarded sends before finishing"
         )
     run.state = RunState.DONE
     run.mark_updated()
@@ -862,7 +943,15 @@ def finish_run(store: Store, *, force: bool = False) -> str:
     ledger = store.load_acceptance_ledger()
     seeded = ledger.upsert_from_run(run)
     store.save_acceptance_ledger(ledger)
-    store.append_event(run, "finish", {"audited_delta": delta, "acceptance_seeded": seeded})
+    store.append_event(
+        run,
+        "finish",
+        {
+            "audited_delta": delta,
+            "durable_confirmed": run.verified_count(),
+            "acceptance_seeded": seeded,
+        },
+    )
     store.append_acceptance_event("seed-from-finish", {"run_id": str(run.id), "seeded": seeded})
     return render_report(run) + f"\nacceptance ledger seeded: {seeded} new invitations"
 

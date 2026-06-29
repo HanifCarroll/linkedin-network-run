@@ -305,9 +305,33 @@ class FixtureBrowserClient:
         limit: int = 0,
         delay_ms: int = 500,
     ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        _ = candidates, input_path, out, offset, limit, delay_ms
+        _ = input_path, delay_ms
         if self.acceptance_outcomes is None:
-            raise RuntimeError("acceptance-outcomes fixture was not provided")
+            selected = candidates[offset : offset + limit] if limit else candidates[offset:]
+            payload = {
+                "capturedAt": _now_iso(),
+                "input": str(input_path),
+                "count": len(selected),
+                "offset": offset,
+                "limit": limit,
+                "totalCandidates": len(candidates),
+                "complete": True,
+                "rows": [
+                    {
+                        "source": candidate.source,
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "status": "pending",
+                        "checkedAt": _now_iso(),
+                        "relationship": None,
+                        "evidence": "fixture synthesized pending confirmation",
+                        "note": "fixture synthesized pending confirmation",
+                    }
+                    for candidate in selected
+                ],
+            }
+            write_json_atomic(out, payload)
+            return read_model(out, AcceptanceOutcomeArtifact), str(out)
         return read_model(self.acceptance_outcomes, AcceptanceOutcomeArtifact), str(
             self.acceptance_outcomes
         )
@@ -646,7 +670,7 @@ class PlaywrightBrowserClient:
                 after = await _open_profile_actions_menu(page)
                 result_payload["after"] = after
                 result_payload["status"] = (
-                    "pending-verified"
+                    "pending-provisional"
                     if _classify_menu_labels(after.get("labels", [])) == "already-pending"
                     else "unverified:clicked-send"
                 )
@@ -718,7 +742,7 @@ class PlaywrightBrowserClient:
             after = await _open_row_menu(page, row)
             result_payload["after"] = {"scope": "search-row", **after}
             result_payload["status"] = (
-                "pending-verified"
+                "pending-provisional"
                 if _classify_menu_labels(after.get("labels", [])) == "already-pending"
                 else "unverified:clicked-send"
             )

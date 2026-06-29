@@ -4,6 +4,6 @@
     "name": "Duplicate Lead",
     "profileUrl": "https://www.linkedin.com/sales/lead/dup,SEARCH,y"
   },
-  "status": "pending-verified",
+  "status": "pending-provisional",
   "send": {"clicked": true}
 }

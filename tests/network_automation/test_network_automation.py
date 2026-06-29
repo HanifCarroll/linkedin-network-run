@@ -75,6 +75,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automatio
 
 class FakeLiveBrowserClient:
     instances: ClassVar[list[FakeLiveBrowserClient]] = []
+    acceptance_status: ClassVar[str] = "accepted"
 
     def __init__(
         self,
@@ -173,11 +174,19 @@ class FakeLiveBrowserClient:
                         "source": candidate.source,
                         "name": candidate.name,
                         "profileUrl": candidate.profile_url,
-                        "status": "accepted",
+                        "status": FakeLiveBrowserClient.acceptance_status,
                         "checkedAt": "2026-06-24T12:00:00Z",
-                        "relationship": "1st",
+                        "relationship": (
+                            "1st"
+                            if FakeLiveBrowserClient.acceptance_status == "accepted"
+                            else None
+                        ),
                         "evidence": candidate.name,
-                        "note": "fixture",
+                        "note": (
+                            "fixture"
+                            if FakeLiveBrowserClient.acceptance_status == "accepted"
+                            else "security-verification-present"
+                        ),
                     }
                     for candidate in selected
                 ],
@@ -413,12 +422,12 @@ def test_cli_drain_stale_candidates_delegates_to_python_app(
     assert len(drained) == 1
 
 
-def test_cli_top_up_reconcile_records_audit_top_up_with_fixtures(
+def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     store = Store(tmp_path)
-    start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    start_run(store, target=2, run_date=date(2026, 6, 24), force=True)
     record_audit(store, 100, "starting count")
     record_candidate(
         store,
@@ -447,15 +456,10 @@ def test_cli_top_up_reconcile_records_audit_top_up_with_fixtures(
                     "name": "Top Up Candidate",
                     "profileUrl": "https://www.linkedin.com/sales/lead/topup,NAME_SEARCH,x",
                 },
-                "status": "pending-verified",
+                "status": "pending-provisional",
                 "send": {"clicked": True},
             }
         ),
-        encoding="utf-8",
-    )
-    audit_result = tmp_path / "top-up-audit.json"
-    audit_result.write_text(
-        json.dumps({"peopleCount": 101, "recentNames": ["Top Up Candidate"]}),
         encoding="utf-8",
     )
 
@@ -472,19 +476,16 @@ def test_cli_top_up_reconcile_records_audit_top_up_with_fixtures(
             "--no-fallback-capture",
             "--fixture-send-result",
             str(send_result),
-            "--fixture-audit-result",
-            str(audit_result),
         ]
     )
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "top-up send status: pending-verified" in output
-    assert "top-up audit 1/1: People (101), delta Some(1)" in output
+    assert "top-up send status: pending-provisional" in output
+    assert "confirmation status: pending; verified 2/2" in output
     run = store.load_run()
-    assert run.audited_delta() == 1
     assert any(
-        event.name == "Top Up Candidate" and event.status == CandidateStatus.AUDIT_TOP_UP
+        event.name == "Top Up Candidate" and event.status == CandidateStatus.PENDING
         for event in run.candidates
     )
 
@@ -518,7 +519,32 @@ def test_report_surfaces_reconciliation_shortfall_after_top_ups(tmp_path: Path) 
     assert "- Sent-page audit shortfall: 1" in report
     assert "- Audit top-ups recorded: 1" in report
     assert "- Recorded invite events minus audited delta: 2" in report
-    assert "do not force-finish unless Hanif explicitly accepts the audit shortfall" in report
+    assert "Sent-page delta is now a pending-queue sanity check" in report
+
+
+def test_report_names_uncertain_send_recovery_for_active_audit_gap(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 6, 29), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.candidates.append(
+        CandidateEvent(
+            at=datetime(2026, 6, 29, tzinfo=UTC),
+            source="ASAP - Agency Owners Delivery",
+            name="Verified Lead",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_run(run)
+    record_audit(store, 100, "fresh audit after uncertain clicked-send")
+    run = store.load_run()
+    run.state = RunState.SENDING
+    store.save_run(run)
+
+    report = render_report(store.load_run())
+
+    assert "- Recorded invite events minus audited delta: 1" in report
+    assert "Uncertain send recovery: pause further sends" in report
 
 
 def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
@@ -526,7 +552,7 @@ def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
     start_run(store, target=1, run_date=date(2026, 6, 28), force=True)
     record_audit(store, 100, "starting count")
 
-    with pytest.raises(RuntimeError, match="reconcile-audit --session auto --finish"):
+    with pytest.raises(RuntimeError, match="durable confirmed sends are 0/1"):
         finish_run(store)
 
 
@@ -548,7 +574,31 @@ def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> Non
     assert run.state == RunState.FINAL_RECONCILE
 
 
-def test_finish_requires_matching_audit_delta_and_seeds_acceptance(tmp_path: Path) -> None:
+def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) -> None:
+    FakeLiveBrowserClient.instances.clear()
+    FakeLiveBrowserClient.acceptance_status = "connectable"
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 6, 29), force=True)
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
+
+    output = send_next(
+        store,
+        browser,
+        dry_run=False,
+        allow_send=True,
+        confirm_delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "recorded pending-provisional" in output
+    assert "confirmation status: reverted-connect; verified 0/1" in output
+    assert run.verified_count() == 0
+    assert run.real_send_attempt_count() == 1
+    assert run.candidates[-1].status == CandidateStatus.REVERTED_CONNECT
+
+
+def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
@@ -559,9 +609,6 @@ def test_finish_requires_matching_audit_delta_and_seeds_acceptance(tmp_path: Pat
         allow_send=True,
     )
     import_audit(store, FIXTURES / "audit_100.json")
-    with pytest.raises(RuntimeError, match="final audit delta"):
-        finish_run(store)
-    import_audit(store, FIXTURES / "audit_101.json")
 
     report = finish_run(store)
 
@@ -812,7 +859,10 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
-    assert FakeLiveBrowserClient.instances[-1].calls == ["send:Duplicate Lead:dry=False:allow=True"]
+    assert FakeLiveBrowserClient.instances[-1].calls == [
+        "send:Duplicate Lead:dry=False:allow=True",
+        "acceptance-check:1:offset=0:limit=1:delay=0",
+    ]
     assert store.load_run().verified_count() == 1
 
 
@@ -1186,6 +1236,7 @@ def test_cli_network_run_session_reuses_one_live_browser(
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
         ),
         "send:Duplicate Lead:dry=False:allow=True",
+        "acceptance-check:1:offset=0:limit=1:delay=0",
         "audit:load_more=0",
     ]
     store = Store(tmp_path)
@@ -1325,14 +1376,13 @@ def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
             "1",
             "--delay-ms",
             "0",
-            "--finish",
             "--out-dir",
             str(audit_out),
         ]
     )
     assert reconcile_exit == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == audit_out
-    assert store.load_run().state == RunState.DONE
+    assert store.load_run().state != RunState.DONE
 
     reservoir_out = tmp_path / "reservoir-browser"
     reservoir_exit = network_main(
@@ -1385,4 +1435,5 @@ def _run_id() -> uuid.UUID:
 
 def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.instances.clear()
+    FakeLiveBrowserClient.acceptance_status = "accepted"
     monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", FakeLiveBrowserClient)

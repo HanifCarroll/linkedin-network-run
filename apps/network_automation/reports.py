@@ -8,6 +8,7 @@ from .models import (
     PendingCleanupRun,
     PendingWithdrawStatus,
     Run,
+    RunState,
     source_yield_report,
 )
 
@@ -31,6 +32,18 @@ def render_report(run: Run) -> str:
     audit_top_up_count = sum(
         1 for candidate in run.candidates if candidate.status == CandidateStatus.AUDIT_TOP_UP
     )
+    accepted_count = sum(
+        1 for candidate in run.candidates if candidate.status == CandidateStatus.ACCEPTED
+    )
+    pending_count = sum(
+        1 for candidate in run.candidates if candidate.status == CandidateStatus.PENDING
+    )
+    skipped_count = sum(
+        1 for candidate in run.candidates if candidate.status == CandidateStatus.SKIPPED
+    )
+    failed_count = sum(
+        1 for candidate in run.candidates if candidate.status == CandidateStatus.FAILED
+    )
     lines = [
         f"# LinkedIn Network Run {run.date.isoformat()}",
         "",
@@ -40,8 +53,15 @@ def render_report(run: Run) -> str:
         f"- Start audit: {format_option(run.start_audit)}",
         f"- Final/latest audit: {format_option(run.latest_audit)}",
         f"- Audited delta: {format_delta(audited_delta)}",
-        f"- Row-level verified pending: {run.verified_count()}",
+        f"- Durable confirmed sends: {run.verified_count()}",
+        f"- Confirmed pending: {pending_count}",
+        f"- Confirmed accepted: {accepted_count}",
+        f"- Provisional sends awaiting confirmation: {run.provisional_count()}",
+        f"- Reverted to Connect / not durable: {run.reverted_connect_count()}",
+        f"- Real send attempts recorded: {run.real_send_attempt_count()}",
         f"- Audit top-ups recorded: {audit_top_up_count}",
+        f"- Skipped candidates: {skipped_count}",
+        f"- Failed candidates: {failed_count}",
         f"- Imported candidate observations: {len(run.observations)}",
         "",
         "## Source Counts",
@@ -50,7 +70,7 @@ def render_report(run: Run) -> str:
         verified = run.source_verified_count(source.name)
         target_text = f" / target {source.target}" if source.target > 0 else ""
         exhausted_text = " (exhausted)" if source.exhausted else ""
-        lines.append(f"- {source.name}: {verified} verified{target_text}{exhausted_text}")
+        lines.append(f"- {source.name}: {verified} durable{target_text}{exhausted_text}")
     lines.extend(["", "## Source Yield"])
     for stats in source_yield_report(run):
         yield_text = (
@@ -75,12 +95,17 @@ def render_report(run: Run) -> str:
         if audited_delta is not None and recorded_invite_events != audited_delta:
             gap = recorded_invite_events - audited_delta
             lines.append(f"- Recorded invite events minus audited delta: {gap}")
+            if gap > 0 and run.state in {RunState.SENDING, RunState.NEEDS_REAUDIT}:
+                lines.append(
+                    "- Uncertain send recovery: pause further sends until the latest "
+                    "clicked-send artifact and a fresh sent-page audit prove whether the "
+                    "clicked invitation landed."
+                )
         if audited_delta is None or audited_delta < run.target:
             lines.append(
-                "- Finish guidance: do not force-finish unless Hanif explicitly accepts the "
-                "audit shortfall; rerun `reconcile-audit --session auto --finish`, inspect "
-                "the sent invitations page, or run bounded top-up only after deciding more "
-                "fallback invites are acceptable."
+                "- Finish guidance: Sent-page delta is now a pending-queue sanity check, not "
+                "the completion source of truth. Finish only after durable confirmed sends "
+                "reach the target."
             )
     if run.timings:
         lines.extend(["", "## Phase Timing"])
@@ -99,10 +124,20 @@ def render_report(run: Run) -> str:
         {
             candidate.name
             for candidate in run.candidates
-            if candidate.status == CandidateStatus.PENDING
+            if candidate.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}
         }
     )
     lines.extend(("- None recorded",) if not names else ("- " + name for name in names))
+    reverted_names = sorted(
+        {
+            candidate.name
+            for candidate in run.candidates
+            if candidate.status == CandidateStatus.REVERTED_CONNECT
+        }
+    )
+    if reverted_names:
+        lines.extend(["", "## Reverted To Connect Names"])
+        lines.extend("- " + name for name in reverted_names)
     top_up_names = sorted(
         {
             candidate.name

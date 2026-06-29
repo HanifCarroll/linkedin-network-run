@@ -89,7 +89,7 @@ uv run linkedin-tools network \
 
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  run-session --session auto --target 30 --max-real-sends 30 --force --allow-send --finish
+  run-session --session auto --target 10 --max-real-sends 10 --force --allow-send --finish
 
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
