@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from packages.linkedin_browser import ChromeProfileConfig, start_managed_chrome_cdp_session
 
@@ -66,6 +67,88 @@ from .store import Store, read_model, write_json_atomic
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
 ZERO_CAPTURE_EXHAUSTION_STREAK = 3
+
+
+def _sales_nav_filter(filter_type: str, values: list[tuple[str, str]]) -> dict[str, object]:
+    return {"type": filter_type, "values": [{"id": item[0], "text": item[1]} for item in values]}
+
+
+def _sales_nav_value_escape(value: str) -> str:
+    return quote(value, safe="")
+
+
+def _sales_nav_filter_expression(item: dict[str, object]) -> str:
+    raw_values = item.get("values")
+    values = raw_values if isinstance(raw_values, list) else []
+    expressions = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        expressions.append(
+            "("
+            f"id:{_sales_nav_value_escape(str(value.get('id') or ''))},"
+            f"text:{_sales_nav_value_escape(str(value.get('text') or ''))},"
+            "selectionType:INCLUDED"
+            ")"
+        )
+    escaped_type = _sales_nav_value_escape(str(item.get("type") or ""))
+    joined = ",".join(expressions)
+    return f"(type:{escaped_type},values:List({joined}))"
+
+
+def _sales_nav_people_search_url(filters: list[dict[str, object]], keywords: str) -> str:
+    expressions = [_sales_nav_filter_expression(item) for item in filters]
+    body = f"filters:List({','.join(expressions)})"
+    if keywords.strip():
+        body += ",keywords:" + _sales_nav_value_escape(keywords)
+    return "https://www.linkedin.com/sales/search/people?query=" + quote(f"({body})", safe="")
+
+
+def _base_asap_people_filters() -> list[dict[str, object]]:
+    return [
+        _sales_nav_filter("REGION", [("103644278", "United States")]),
+        _sales_nav_filter("RELATIONSHIP", [("S", "2nd degree connections")]),
+        _sales_nav_filter("POSTED_ON_LINKEDIN", [("RPOL", "Posted on LinkedIn")]),
+    ]
+
+
+NETWORK_SOURCE_URL_OVERRIDES: dict[str, str] = {
+    "ASAP - Agency Owners Delivery": _sales_nav_people_search_url(
+        [
+            *_base_asap_people_filters(),
+            _sales_nav_filter(
+                "COMPANY_HEADCOUNT",
+                [("B", "1-10"), ("C", "11-50"), ("D", "51-200")],
+            ),
+            _sales_nav_filter(
+                "CURRENT_TITLE",
+                [
+                    ("35", "Founder"),
+                    ("103", "Co-Founder"),
+                    ("1", "Owner"),
+                    ("18", "Partner"),
+                    ("154", "Managing Partner"),
+                    ("182", "Principal Consultant"),
+                    ("200", "Technical Director"),
+                ],
+            ),
+        ],
+        (
+            "software agency OR development agency OR AI agency OR automation agency OR "
+            "product studio OR product development OR custom software OR app development OR "
+            "web development OR fractional CTO"
+        ),
+    ),
+    "ASAP - AI Advisors Implementation Partners": _sales_nav_people_search_url(
+        _base_asap_people_filters(),
+        (
+            "AI consultant OR AI advisor OR business consultant OR operations consultant OR "
+            "fractional COO OR fractional CTO OR growth consultant OR automation consultant OR "
+            "AI strategy OR workflow automation OR AI implementation OR AI diagnostic OR "
+            "back office automation OR decision support"
+        ),
+    ),
+}
 
 
 def start_run(
@@ -290,11 +373,11 @@ def network_run_session(
         if plan.action == "capture-source":
             if plan.source is None or plan.capture is None:
                 raise RuntimeError("capture-source plan did not include source/capture details")
-            source_url = plan.resume_url or resolve_saved_search_url(
+            source_url = plan.resume_url or resolve_network_source_url(
                 saved_searches_out, plan.source
             )
             if source_url is None:
-                raise RuntimeError(f"saved search URL missing for source {plan.source}")
+                raise RuntimeError(f"network source URL missing for source {plan.source}")
             before_imported = len(store.load_run().observations)
             capture_message = capture_source(
                 store,
@@ -1091,6 +1174,9 @@ def resolve_capture_url(
         return explicit_url
     if cursor_url:
         return cursor_url
+    source_url = network_source_url_override(source)
+    if source_url:
+        return source_url
     if saved_searches is None:
         return None
     resolved = resolve_saved_search_url(saved_searches, source)
@@ -1099,6 +1185,19 @@ def resolve_capture_url(
     raise RuntimeError(
         f"no URL for source {source}; pass --url or provide a saved-searches artifact"
     )
+
+
+def network_source_url_override(source: str) -> str | None:
+    return NETWORK_SOURCE_URL_OVERRIDES.get(source)
+
+
+def resolve_network_source_url(path: Path | None, source: str) -> str | None:
+    source_url = network_source_url_override(source)
+    if source_url:
+        return source_url
+    if path is None:
+        return None
+    return resolve_saved_search_url(path, source)
 
 
 def resolve_saved_search_url(path: Path, source: str) -> str | None:

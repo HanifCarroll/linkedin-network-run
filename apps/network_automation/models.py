@@ -528,11 +528,9 @@ class Run(AppModel):
 
 
 DEFAULT_SOURCE_MIX: list[tuple[str, int]] = [
-    ("ASAP - Agency Owners Delivery", 9),
-    ("ASAP - Contract Recruiters Staffing", 7),
-    ("ASAP - Startup CTO Eng Leaders", 6),
-    ("ASAP - High-Intent SaaS AI Founders", 5),
-    ("ASAP - Vertical Proof Buyers", 3),
+    ("ASAP - Contract Recruiters Staffing", 10),
+    ("ASAP - Agency Owners Delivery", 10),
+    ("ASAP - AI Advisors Implementation Partners", 10),
 ]
 
 
@@ -1864,6 +1862,7 @@ def recruiter_accepted_followup_draft(first: str) -> str:
 ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES: dict[str, AcceptedFollowupTemplateKey] = {
     "ASAP - Agency Owners Delivery": AcceptedFollowupTemplateKey.AGENCY,
     "ASAP - Contract Recruiters Staffing": AcceptedFollowupTemplateKey.RECRUITER,
+    "ASAP - AI Advisors Implementation Partners": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - Startup CTO Eng Leaders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - High-Intent SaaS AI Founders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - Vertical Proof Buyers": AcceptedFollowupTemplateKey.GENERAL,

@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import unquote
 
 import pytest
 
@@ -67,6 +68,7 @@ from apps.network_automation.service import (
     pending_cleanup_withdraw_next,
     record_audit,
     record_candidate,
+    resolve_network_source_url,
     send_guarded,
     send_next,
     start_run,
@@ -130,10 +132,10 @@ class FakeLiveBrowserClient:
             f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
         )
         _ = stop_after_connectable, row_scroll_delay_ms
-        return (
-            read_model(FIXTURES / "capture.json", SalesNavCapture),
-            str(self.out_dir / "capture-page.json"),
+        capture = read_model(FIXTURES / "capture.json", SalesNavCapture).model_copy(
+            update={"source": source}
         )
+        return capture, str(self.out_dir / "capture-page.json")
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         self.calls.append(f"audit:load_more={load_more}")
@@ -149,6 +151,11 @@ class FakeLiveBrowserClient:
                 "capturedAt": "2026-06-24T12:00:00Z",
                 "url": url,
                 "searches": [
+                    {
+                        "savedSearchId": "def",
+                        "name": "ASAP - Contract Recruiters Staffing",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
+                    },
                     {
                         "savedSearchId": "abc",
                         "name": "ASAP - Agency Owners Delivery",
@@ -342,7 +349,7 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
             f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
         )
         _ = stop_after_connectable, row_scroll_delay_ms
-        if source == "ASAP - Agency Owners Delivery":
+        if source == "ASAP - Contract Recruiters Staffing":
             artifact = SalesNavCapture.model_validate(
                 {
                     "capturedAt": "2026-06-24T12:00:00Z",
@@ -427,17 +434,67 @@ class FakeSalesNavApiResponse:
         return self.payload
 
 
+def _make_source_current(store: Store, source: str) -> None:
+    run = store.load_run()
+    for source_plan in run.sources:
+        if source_plan.name == source:
+            source_plan.exhausted = False
+            store.save_run(run)
+            return
+        source_plan.exhausted = True
+    raise AssertionError(f"unknown source: {source}")
+
+
 def test_default_source_mix_matches_current_contract() -> None:
     sources = default_sources(30)
-    assert [(source.name, source.target) for source in sources[:5]] == [
-        ("ASAP - Agency Owners Delivery", 9),
-        ("ASAP - Contract Recruiters Staffing", 7),
-        ("ASAP - Startup CTO Eng Leaders", 6),
-        ("ASAP - High-Intent SaaS AI Founders", 5),
-        ("ASAP - Vertical Proof Buyers", 3),
+    assert [(source.name, source.target) for source in sources[:3]] == [
+        ("ASAP - Contract Recruiters Staffing", 10),
+        ("ASAP - Agency Owners Delivery", 10),
+        ("ASAP - AI Advisors Implementation Partners", 10),
     ]
-    assert sources[5].name == "FO - Founders - Urgent"
-    assert sources[5].fallback is True
+    assert sources[3].name == "FO - Founders - Urgent"
+    assert sources[3].fallback is True
+
+
+def test_network_source_url_overrides_tightened_lanes(tmp_path: Path) -> None:
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "name": "ASAP - Contract Recruiters Staffing",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
+                    },
+                    {
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://stale.example/agency",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    contract_url = resolve_network_source_url(saved_searches, "ASAP - Contract Recruiters Staffing")
+    agency_url = resolve_network_source_url(saved_searches, "ASAP - Agency Owners Delivery")
+    advisor_url = resolve_network_source_url(
+        saved_searches, "ASAP - AI Advisors Implementation Partners"
+    )
+
+    assert contract_url == "https://www.linkedin.com/sales/search/people?savedSearchId=def"
+    assert agency_url is not None
+    assert "stale.example" not in agency_url
+    agency_query = unquote(unquote(agency_url))
+    assert "COMPANY_HEADCOUNT" in agency_query
+    assert "CURRENT_TITLE" in agency_query
+    assert "RPOL" in agency_query
+    assert "software agency OR development agency" in agency_query
+    assert advisor_url is not None
+    advisor_query = unquote(unquote(advisor_url))
+    assert "RPOL" in advisor_query
+    assert "AI consultant OR AI advisor" in advisor_query
+    assert "workflow automation" in advisor_query
 
 
 def test_menu_classifier_handles_linkedin_pending_dash() -> None:
@@ -523,6 +580,7 @@ async def test_salesnav_api_response_enriches_capture_rows() -> None:
 def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=22, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
 
     message = import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
 
@@ -720,6 +778,7 @@ def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
 def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
     browser = FixtureBrowserClient(send_result=FIXTURES / "send_pending.json")
 
@@ -739,6 +798,7 @@ def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) 
     FakeLiveBrowserClient.acceptance_status = "connectable"
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 29), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
     browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
 
@@ -807,6 +867,7 @@ def test_source_yield_report_prioritizes_non_durable_send_attempts(tmp_path: Pat
 def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
     send_next(
         store,
@@ -1300,6 +1361,7 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
     _install_fake_live_browser(monkeypatch)
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
     out_dir = tmp_path / "send-browser"
 
@@ -1429,7 +1491,7 @@ def test_cli_saved_searches_uses_live_browser(
         "saved-searches:https://www.linkedin.com/sales/search/people"
     ]
     payload = json.loads(out.read_text())
-    assert payload["searches"][0]["name"] == "ASAP - Agency Owners Delivery"
+    assert payload["searches"][0]["name"] == "ASAP - Contract Recruiters Staffing"
 
 
 def test_cli_browser_session_start_records_persistent_cdp_url(
@@ -1700,8 +1762,8 @@ def test_cli_network_run_session_reuses_one_live_browser(
         "audit:load_more=0",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
-            "capture:ASAP - Agency Owners Delivery:pages=3:limit=18:only=True:"
-            "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
+            "capture:ASAP - Contract Recruiters Staffing:pages=3:limit=18:only=True:"
+            "url=https://www.linkedin.com/sales/search/people?savedSearchId=def"
         ),
         "send:Duplicate Lead:dry=False:allow=True",
         "acceptance-check:1:offset=0:limit=1:delay=0",
@@ -1745,7 +1807,7 @@ def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
 
     assert exit_code == 0
     run = Store(tmp_path).load_run()
-    assert run.sources[0].name == "ASAP - Agency Owners Delivery"
+    assert run.sources[0].name == "ASAP - Contract Recruiters Staffing"
     assert run.sources[0].exhausted is True
     assert any(
         "3 consecutive captures imported 0 usable candidates" in note for note in run.notes
@@ -1753,10 +1815,10 @@ def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
     assert run.verified_count() == 1
     calls = ZeroThenNextSourceBrowserClient.instances[0].calls
     assert sum(
-        call.startswith("capture:ASAP - Agency Owners Delivery") for call in calls
+        call.startswith("capture:ASAP - Contract Recruiters Staffing") for call in calls
     ) == 3
-    assert any(call.startswith("capture:ASAP - Contract Recruiters Staffing") for call in calls)
-    assert any(call.startswith("send:ASAP - Contract Recruiters Staffing Lead") for call in calls)
+    assert any(call.startswith("capture:ASAP - Agency Owners Delivery") for call in calls)
+    assert any(call.startswith("send:ASAP - Agency Owners Delivery Lead") for call in calls)
 
 
 def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
@@ -2017,7 +2079,7 @@ def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
     assert capture_exit == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == capture_out
     assert (
-        "capture:ASAP - Agency Owners Delivery:pages=2:limit=4:only=True"
+        "capture:ASAP - Contract Recruiters Staffing:pages=2:limit=4:only=True"
         in (FakeLiveBrowserClient.instances[-1].calls[0])
     )
     assert [observation.name for observation in store.load_run().observations] == [
