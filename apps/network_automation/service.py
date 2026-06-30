@@ -65,6 +65,7 @@ from .reports import (
 from .store import Store, read_model, write_json_atomic
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
+ZERO_CAPTURE_EXHAUSTION_STREAK = 3
 
 
 def start_run(
@@ -277,6 +278,7 @@ def network_run_session(
             out=saved_searches_out,
         ),
     ]
+    zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):
         plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
         messages.append(f"plan: {plan.action}")
@@ -293,20 +295,33 @@ def network_run_session(
             )
             if source_url is None:
                 raise RuntimeError(f"saved search URL missing for source {plan.source}")
-            messages.append(
-                capture_source(
-                    store,
-                    browser,
-                    source=plan.source,
-                    url=source_url,
-                    saved_searches=None,
-                    pages=plan.capture.pages,
-                    limit=18,
-                    stop_after_connectable=plan.capture.stop_after_connectable,
-                    only_connectable=True,
-                    row_scroll_delay_ms=250,
-                )
+            before_imported = len(store.load_run().observations)
+            capture_message = capture_source(
+                store,
+                browser,
+                source=plan.source,
+                url=source_url,
+                saved_searches=None,
+                pages=plan.capture.pages,
+                limit=18,
+                stop_after_connectable=plan.capture.stop_after_connectable,
+                only_connectable=True,
+                row_scroll_delay_ms=250,
             )
+            messages.append(capture_message)
+            after_run = store.load_run()
+            imported = len(after_run.observations) - before_imported
+            if imported > 0:
+                zero_capture_streaks[plan.source] = 0
+            else:
+                streak = zero_capture_streaks.get(plan.source, 0) + 1
+                zero_capture_streaks[plan.source] = streak
+                if streak >= ZERO_CAPTURE_EXHAUSTION_STREAK:
+                    note = (
+                        f"{streak} consecutive captures imported 0 usable candidates; "
+                        "carrying remaining quota forward"
+                    )
+                    messages.append(source_exhausted(store, plan.source, note=note))
             continue
         if plan.action == "send-candidate":
             if not allow_send:

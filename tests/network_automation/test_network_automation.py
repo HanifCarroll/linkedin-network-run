@@ -303,6 +303,86 @@ class FakeLiveBrowserClient:
         )
 
 
+class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
+        self.calls.append(f"saved-searches:{url}")
+        artifact = SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "url": url,
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    },
+                    {
+                        "savedSearchId": "def",
+                        "name": "ASAP - Contract Recruiters Staffing",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
+                    },
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    def capture_salesnav(
+        self,
+        *,
+        source: str,
+        url: str | None = None,
+        pages: int = 1,
+        limit: int = 25,
+        stop_after_connectable: int = 0,
+        only_connectable: bool = False,
+        row_scroll_delay_ms: int = 250,
+    ) -> tuple[SalesNavCapture, str]:
+        self.calls.append(
+            f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
+        )
+        _ = stop_after_connectable, row_scroll_delay_ms
+        if source == "ASAP - Agency Owners Delivery":
+            artifact = SalesNavCapture.model_validate(
+                {
+                    "capturedAt": "2026-06-24T12:00:00Z",
+                    "source": source,
+                    "url": url or "",
+                    "resumeUrl": url or "",
+                    "rawRowCount": 5,
+                    "outputRowCount": 0,
+                    "stateCounts": {"unknown": 5},
+                    "rows": [],
+                }
+            )
+            return artifact, str(self.out_dir / f"{_safe_file_stem(source)}-empty.json")
+        artifact = SalesNavCapture.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "source": source,
+                "url": url or "",
+                "resumeUrl": url or "",
+                "rawRowCount": 1,
+                "outputRowCount": 1,
+                "stateCounts": {"connectable": 1},
+                "rows": [
+                    {
+                        "index": 1,
+                        "name": f"{source} Lead",
+                        "profileUrl": f"https://www.linkedin.com/sales/lead/{_safe_file_stem(source)}",
+                        "menuState": "connectable",
+                        "menuLabels": [{"text": "Connect"}],
+                    }
+                ],
+            }
+        )
+        return artifact, str(self.out_dir / f"{_safe_file_stem(source)}-capture.json")
+
+
+def _safe_file_stem(value: str) -> str:
+    return value.lower().replace(" ", "-").replace("/", "-")
+
+
 class _ClassifyLocator:
     def __init__(
         self,
@@ -1629,6 +1709,54 @@ def test_cli_network_run_session_reuses_one_live_browser(
     ]
     store = Store(tmp_path)
     assert store.load_run().verified_count() == 1
+
+
+def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    FakeLiveBrowserClient.instances.clear()
+    monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", ZeroThenNextSourceBrowserClient)
+    monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", ZeroThenNextSourceBrowserClient)
+    saved_searches = tmp_path / "saved-searches.json"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--target",
+            "1",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(saved_searches),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--max-steps",
+            "8",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    run = Store(tmp_path).load_run()
+    assert run.sources[0].name == "ASAP - Agency Owners Delivery"
+    assert run.sources[0].exhausted is True
+    assert any(
+        "3 consecutive captures imported 0 usable candidates" in note for note in run.notes
+    )
+    assert run.verified_count() == 1
+    calls = ZeroThenNextSourceBrowserClient.instances[0].calls
+    assert sum(
+        call.startswith("capture:ASAP - Agency Owners Delivery") for call in calls
+    ) == 3
+    assert any(call.startswith("capture:ASAP - Contract Recruiters Staffing") for call in calls)
+    assert any(call.startswith("send:ASAP - Contract Recruiters Staffing Lead") for call in calls)
 
 
 def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
