@@ -64,6 +64,7 @@ from .reports import (
     render_report,
 )
 from .store import Store, read_model, write_json_atomic
+from .suppression import skip_outreach_suppressed_observations
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
 ZERO_CAPTURE_EXHAUSTION_STREAK = 3
@@ -691,6 +692,10 @@ def send_next(
             f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
             "real send attempts"
         )
+    suppressed = skip_outreach_suppressed_observations(run)
+    if suppressed:
+        store.save_run(run)
+        store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
     candidate = run.next_connectable_observation()
     if candidate is None:
         raise RuntimeError("no unrecorded connectable candidate available")
@@ -748,9 +753,13 @@ def send_guarded(
         if run.state == RunState.NEEDS_REAUDIT:
             raise RuntimeError("run entered NEEDS_REAUDIT; import a fresh audit before continuing")
         drained = drain_stale_connectable_candidates(run)
-        if drained:
+        suppressed = skip_outreach_suppressed_observations(run)
+        if drained or suppressed:
             store.save_run(run)
+        if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
+        if suppressed:
+            store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
         next_source = run.next_source()
         if next_source is None or next_source.name != source:
             break
@@ -860,6 +869,10 @@ def top_up_reconcile(
                 f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
                 "real send attempts"
             )
+        suppressed = skip_outreach_suppressed_observations(run)
+        if suppressed:
+            store.save_run(run)
+            store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
         candidate = run.next_top_up_observation()
         if candidate is None and not no_fallback_capture:
             messages.append(
@@ -925,6 +938,7 @@ def import_capture_path(store: Store, path: Path, only_connectable: bool = False
     run = store.load_run()
     capture = read_model(path, SalesNavCapture)
     imported = import_capture(run, capture, only_connectable)
+    suppressed = skip_outreach_suppressed_observations(run)
     drained = drain_stale_connectable_candidates(run)
     store.save_run(run)
     store.append_event(
@@ -932,9 +946,12 @@ def import_capture_path(store: Store, path: Path, only_connectable: bool = False
         "import-capture",
         {"path": str(path), "imported": imported, "only_connectable": only_connectable},
     )
+    if suppressed:
+        store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
-    return f"imported {imported} candidate observations"
+    suffix = f"; suppressed {len(suppressed)}" if suppressed else ""
+    return f"imported {imported} candidate observations{suffix}"
 
 
 def capture_source(
@@ -973,6 +990,7 @@ def capture_source(
     )
     run = store.load_run()
     imported = import_capture(run, capture, only_connectable)
+    suppressed = skip_outreach_suppressed_observations(run)
     drained = drain_stale_connectable_candidates(run)
     store.save_run(run)
     store.append_event(
@@ -985,9 +1003,14 @@ def capture_source(
             "only_connectable": only_connectable,
         },
     )
+    if suppressed:
+        store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
-    return f"captured {imported} candidate observations from {capture_source_name}; out={path}"
+    return (
+        f"captured {imported} candidate observations from {capture_source_name}"
+        f"{f'; suppressed {len(suppressed)}' if suppressed else ''}; out={path}"
+    )
 
 
 def source_exhausted(store: Store, source: str, note: str | None = None) -> str:
@@ -1143,10 +1166,18 @@ def reservoir_fill_run(store: Store, *, source: str | None = None, limit: int | 
         else quota - min(quota, run.source_verified_count(fill_source)) + 3
     )
     imported = fill_run_from_reservoir(run, reservoir, fill_source, fill_limit)
+    suppressed = skip_outreach_suppressed_observations(run)
     store.save_run(run)
     store.save_reservoir(reservoir)
-    store.append_event(run, "reservoir-fill-run", {"source": fill_source, "imported": imported})
-    return f"filled active run with {imported} reservoir candidates"
+    store.append_event(
+        run,
+        "reservoir-fill-run",
+        {"source": fill_source, "imported": imported, "suppressed": len(suppressed)},
+    )
+    if suppressed:
+        store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
+    suffix = f"; suppressed {len(suppressed)}" if suppressed else ""
+    return f"filled active run with {imported} reservoir candidates{suffix}"
 
 
 def reservoir_clear(store: Store, source: str | None = None) -> str:

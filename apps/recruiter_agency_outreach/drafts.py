@@ -75,6 +75,7 @@ def is_terminal_message_status(status: MessageStatus) -> bool:
         MessageStatus.NOT_MESSAGEABLE,
         MessageStatus.CONVERSATION_EXISTS,
         MessageStatus.BLOCKED,
+        MessageStatus.SUPPRESSED,
         MessageStatus.REPLIED,
         MessageStatus.REPLIED_NOT_FIT,
         MessageStatus.REPLIED_FUTURE,

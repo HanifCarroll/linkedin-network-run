@@ -39,6 +39,8 @@ review workflows. Runtime state lives under
   workflows.
 - Recruiter/agency outreach sends drafted messages only and must not send
   connection requests.
+- The network and recruiter/agency/advisor controllers suppress exact-profile
+  overlap across their state dirs before guarded browser actions.
 - Opportunity intelligence is recommend-only.
 - Real sends require `--allow-send`.
 - Real pending-invitation withdrawals require `--allow-withdraw`.

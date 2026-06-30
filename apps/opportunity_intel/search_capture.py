@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -371,7 +371,7 @@ class _SearchCapturePlaywriterClient:
             raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
         return match.group(1)
 
-    def _run_script(self, script: Path, config: dict[str, object]) -> None:
+    def _run_script(self, script: Path, config: Mapping[str, object]) -> None:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         config_path, staged_out, final_out = _stage_playwriter_config(config)
         script_config = dict(config)
@@ -730,7 +730,7 @@ def _playwriter_search_capture_script() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts" / "search_capture.js"
 
 
-def _stage_playwriter_config(config: dict[str, object]) -> tuple[Path, Path | None, Path | None]:
+def _stage_playwriter_config(config: Mapping[str, object]) -> tuple[Path, Path | None, Path | None]:
     staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
     staging_dir.mkdir(parents=True, exist_ok=True)
     final_out = Path(str(config["out"])) if config.get("out") else None

@@ -13,6 +13,11 @@ from .drafts import draft_subject
 from .models import Lead, MessageStatus, OutreachState, RunEvent, SendAttempt
 from .sourcing import find_lead_by_id
 from .storage import Store, append_run_event
+from .suppression import (
+    OUTREACH_STATUSES_TO_PRESERVE,
+    apply_network_suppression_to_lead,
+    network_suppression_hit_for_lead,
+)
 from .utils import clean_text, now_iso, truncate_evidence
 
 
@@ -96,11 +101,37 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
         raise ValueError(f"lead {lead.id} has no draft; run draft first")
     if not lead.profile_url:
         raise ValueError(f"lead {lead.id} has no profile URL")
+    bucket = bucket_for_lead(lead)
+    suppression_hit = network_suppression_hit_for_lead(lead)
+    if suppression_hit is not None:
+        if lead.message_status not in OUTREACH_STATUSES_TO_PRESERVE:
+            apply_network_suppression_to_lead(lead, suppression_hit)
+        if lead.message_status == MessageStatus.SUPPRESSED:
+            note = lead.notes[-1] if lead.notes else ""
+            append_run_event(
+                state,
+                RunEvent(
+                    at=now_iso(),
+                    run_id=run_id,
+                    phase="send-message",
+                    command="send-message",
+                    bucket=bucket,
+                    lead_id=lead.id,
+                    name=lead.name,
+                    result=MessageStatus.SUPPRESSED.value,
+                    note=note,
+                    state_path=str(store.state_path),
+                ),
+            )
+            store.save(state)
+            return (
+                f"lead={lead.id} status={MessageStatus.SUPPRESSED.value} "
+                f"dry_run={str(dry_run).lower()} out="
+            )
     if not dry_run and lead.message_status != MessageStatus.DRY_RUN_READY:
         raise ValueError(
             f"lead {lead.id} is {lead.message_status.value}; real sends require dry_run_ready"
         )
-    bucket = bucket_for_lead(lead)
     if not dry_run and not lead_matches_sendable_bucket(state, lead, bucket):
         raise ValueError(
             f"lead {lead.id} is not sendable for {bucket}; "

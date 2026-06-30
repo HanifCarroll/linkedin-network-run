@@ -218,6 +218,9 @@ def render_run_summary_text(summary: RunSummary) -> str:
             f"blocked {summary.counts.blocked.agencies} agencies,"
             f"{summary.counts.blocked.recruiters} recruiters,"
             f"{summary.counts.blocked.advisors} advisors; "
+            f"suppressed {summary.counts.suppressed.agencies} agencies,"
+            f"{summary.counts.suppressed.recruiters} recruiters,"
+            f"{summary.counts.suppressed.advisors} advisors; "
             f"send_failed {summary.counts.send_failed.agencies} agencies,"
             f"{summary.counts.send_failed.recruiters} recruiters,"
             f"{summary.counts.send_failed.advisors} advisors"
@@ -377,5 +380,6 @@ def empty_run_counts() -> RunCounts:
         conversation_exists=BucketCounts(),
         not_messageable=BucketCounts(),
         blocked=BucketCounts(),
+        suppressed=BucketCounts(),
         send_failed=BucketCounts(),
     )

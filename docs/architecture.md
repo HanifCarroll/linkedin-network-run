@@ -64,6 +64,8 @@ audited after uncertain browser behavior.
 - Acceptance follow-ups are owned by `linkedin-tools network acceptance`.
 - Recruiter/agency outreach sends drafted messages only; it must not click
   `Connect`.
+- The network and recruiter/agency/advisor controllers suppress exact-profile
+  overlap across their state dirs before guarded browser actions.
 - Opportunity intelligence is recommend-only.
 - Real sends and withdrawals require explicit flags close to the browser action:
   `--allow-send` or `--allow-withdraw`.

@@ -35,6 +35,7 @@ class RunCounts:
     conversation_exists: BucketCounts = field(default_factory=BucketCounts)
     not_messageable: BucketCounts = field(default_factory=BucketCounts)
     blocked: BucketCounts = field(default_factory=BucketCounts)
+    suppressed: BucketCounts = field(default_factory=BucketCounts)
     send_failed: BucketCounts = field(default_factory=BucketCounts)
 
 
@@ -448,6 +449,7 @@ def dashboard_skipped_leads(state: OutreachState, bucket: str) -> list[Lead]:
         MessageStatus.NOT_MESSAGEABLE,
         MessageStatus.CONVERSATION_EXISTS,
         MessageStatus.BLOCKED,
+        MessageStatus.SUPPRESSED,
         MessageStatus.SEND_FAILED,
     }
     leads = [
@@ -483,6 +485,7 @@ def _run_count_field(result: str) -> str:
         "conversation-exists": "conversation_exists",
         "not-messageable": "not_messageable",
         "blocked": "blocked",
+        "suppressed": "suppressed",
     }.get(result, "send_failed")
 
 

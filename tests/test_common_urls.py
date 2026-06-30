@@ -4,6 +4,7 @@ import pytest
 
 from packages.linkedin_common import (
     URLCanonicalizationError,
+    canonical_linkedin_profile_identity,
     canonicalize_linkedin_post_url,
     canonicalize_linkedin_profile_url,
     canonicalize_sales_nav_lead_url,
@@ -61,6 +62,21 @@ def test_profile_url_dispatches_public_and_sales_nav_urls() -> None:
     assert (
         canonicalize_sales_profile_url("https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token")
         == "https://www.linkedin.com/sales/lead/abc"
+    )
+
+
+def test_profile_identity_matches_sales_nav_url_and_urn() -> None:
+    urn = "urn:li:fs_salesProfile:(abc123,NAME_SEARCH,token-two)"
+
+    assert (
+        canonical_linkedin_profile_identity(
+            "https://www.linkedin.com/sales/lead/abc123,SEARCH,token-one",
+            urn,
+        )
+        == "https://www.linkedin.com/sales/lead/abc123"
+    )
+    assert canonical_linkedin_profile_identity(None, urn) == (
+        "https://www.linkedin.com/sales/lead/abc123"
     )
 
 

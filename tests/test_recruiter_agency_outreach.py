@@ -11,6 +11,14 @@ import apps.recruiter_agency_outreach.cli as recruiter_cli
 import apps.recruiter_agency_outreach.daily as daily_module
 import apps.recruiter_agency_outreach.message_browser as message_browser_module
 import apps.recruiter_agency_outreach.send as send_module
+from apps.network_automation.models import CandidateStatus
+from apps.network_automation.service import (
+    record_candidate as record_network_candidate,
+)
+from apps.network_automation.service import (
+    start_run as start_network_run,
+)
+from apps.network_automation.store import Store as NetworkStore
 from apps.recruiter_agency_outreach.cli import build_parser, main
 from apps.recruiter_agency_outreach.daily import DailyOptions, daily_buckets, run_daily
 from apps.recruiter_agency_outreach.dashboard import (
@@ -51,6 +59,7 @@ from apps.recruiter_agency_outreach.sourcing import (
     validate_agency_source_capture,
 )
 from apps.recruiter_agency_outreach.storage import Store
+from apps.recruiter_agency_outreach.suppression import apply_network_suppression_to_outreach_state
 
 FIXTURES = Path(__file__).parent / "fixtures" / "recruiter_agency_outreach"
 
@@ -487,6 +496,56 @@ def test_send_message_uses_browser_when_result_path_is_missing(tmp_path: Path) -
     loaded = store.load()
     assert loaded.leads[0].message_status == MessageStatus.DRY_RUN_READY
     assert loaded.leads[0].send_attempts[0].out_path == str(tmp_path / "message-result.json")
+
+
+def test_send_message_suppresses_network_touched_lead_before_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeMessageBrowser:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            self.calls.append({"config": config, "dry_run": dry_run, "allow_send": allow_send})
+            raise AssertionError("suppressed lead should not call the browser")
+
+    network_store = NetworkStore(tmp_path / "network")
+    start_network_run(network_store, target=1, run_date=None, force=True)
+    record_network_candidate(
+        network_store,
+        source="Network Source",
+        name="Dana Delivery",
+        profile_url="https://www.linkedin.com/sales/lead/dana,NAME_SEARCH,token",
+        status=CandidateStatus.PENDING,
+    )
+    monkeypatch.setenv("LINKEDIN_TOOLS_NETWORK_STATE_DIR", str(network_store.dir))
+
+    store = Store(tmp_path / "outreach")
+    store.save(_sendable_state(message_status=MessageStatus.DRAFTED))
+    browser = FakeMessageBrowser()
+
+    result = send_message(
+        store,
+        SendMessageOptions(
+            lead_id="lead_fixture",
+            session="auto",
+            browser=browser,
+        ),
+    )
+
+    loaded = store.load()
+    assert "status=suppressed" in result
+    assert browser.calls == []
+    assert loaded.leads[0].message_status == MessageStatus.SUPPRESSED
+    assert loaded.leads[0].send_attempts == []
+    assert "cross-workflow suppression" in loaded.leads[0].notes[-1]
+    assert apply_network_suppression_to_outreach_state(loaded) == 0
 
 
 def test_default_message_browser_uses_playwriter_backend(

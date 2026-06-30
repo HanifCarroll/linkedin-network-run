@@ -314,6 +314,8 @@ and `duplicate`.
 
 - No real LinkedIn sends without `--allow-send`.
 - No real pending-invitation withdrawals without `--allow-withdraw`.
+- Networking and recruiter/agency/advisor outreach suppress exact-profile
+  overlap across their default state dirs before Connect or message actions.
 - Opportunity intelligence is recommend-only.
 - Browser flows should start with dry-runs.
 

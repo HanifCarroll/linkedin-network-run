@@ -7,6 +7,10 @@ from .config import (
     state_root_for_namespace,
 )
 from .paths import APP_NAME, DEFAULT_STATE_ROOT
+from .profile_identity import (
+    canonical_linkedin_profile_identity,
+    linkedin_profile_identity_keys,
+)
 from .schemas import (
     CaptureArtifact,
     CaptureRecord,
@@ -42,6 +46,8 @@ __all__ = [
     "canonicalize_linkedin_profile_url",
     "canonicalize_sales_nav_lead_url",
     "canonicalize_sales_profile_url",
+    "canonical_linkedin_profile_identity",
+    "linkedin_profile_identity_keys",
     "old_state_root",
     "sales_profile_urn_to_lead_url",
     "state_root_for_namespace",

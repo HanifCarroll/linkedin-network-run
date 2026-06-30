@@ -74,6 +74,22 @@ from apps.network_automation.service import (
     start_run,
 )
 from apps.network_automation.store import Store, read_model
+from apps.recruiter_agency_outreach.models import (
+    Lead as OutreachLead,
+)
+from apps.recruiter_agency_outreach.models import (
+    LeadStatus as OutreachLeadStatus,
+)
+from apps.recruiter_agency_outreach.models import (
+    LeadType as OutreachLeadType,
+)
+from apps.recruiter_agency_outreach.models import (
+    MessageStatus as OutreachMessageStatus,
+)
+from apps.recruiter_agency_outreach.models import (
+    OutreachState,
+)
+from apps.recruiter_agency_outreach.storage import Store as OutreachStore
 from packages.linkedin_browser import BrowserBlockKind, ManagedChromeSession
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automation"
@@ -598,6 +614,46 @@ def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path)
     resume_url = run.capture_cursors["ASAP - Agency Owners Delivery"].resume_url
     assert resume_url is not None
     assert resume_url.endswith("page=2")
+
+
+def test_capture_import_skips_outreach_messaged_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outreach_store = OutreachStore(tmp_path / "outreach")
+    outreach_store.save(
+        OutreachState(
+            leads=[
+                OutreachLead(
+                    id="outreach_dup",
+                    source="outreach",
+                    name="Duplicate Lead",
+                    first_name="Duplicate",
+                    lead_type=OutreachLeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER,
+                    status=OutreachLeadStatus.ELIGIBLE,
+                    message_status=OutreachMessageStatus.SENT,
+                    fit_score=80,
+                    profile_url="https://www.linkedin.com/sales/lead/dup,NAME_SEARCH,token",
+                )
+            ]
+        )
+    )
+    monkeypatch.setenv("LINKEDIN_TOOLS_RECRUITER_AGENCY_STATE_DIR", str(outreach_store.dir))
+
+    store = Store(tmp_path / "network")
+    start_run(store, target=22, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+
+    message = import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+
+    run = store.load_run()
+    skipped = [event for event in run.candidates if event.status == CandidateStatus.SKIPPED]
+    assert "suppressed 1" in message
+    assert len(skipped) == 1
+    assert skipped[0].name == "Duplicate Lead"
+    assert "cross-workflow suppression" in (skipped[0].note or "")
+    next_candidate = run.next_connectable_observation()
+    assert next_candidate is not None
+    assert next_candidate.name == "URN Lead"
 
 
 def test_cli_drain_stale_candidates_delegates_to_python_app(
@@ -1270,6 +1326,7 @@ def test_playwriter_network_methods_parse_script_artifacts(
     def fake_run_script(script: Path, config: dict[str, Any]) -> None:
         scripts.append(script.name)
         out = Path(config["out"])
+        payload: dict[str, Any]
         if script.name == "salesnav_send.js":
             payload = {
                 "candidate": {

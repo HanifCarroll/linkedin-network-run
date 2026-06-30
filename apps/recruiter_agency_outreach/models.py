@@ -58,6 +58,7 @@ class MessageStatus(StrEnum):
     CONVERSATION_EXISTS = "conversation_exists"
     SEND_FAILED = "send_failed"
     BLOCKED = "blocked"
+    SUPPRESSED = "suppressed"
     REPLIED = "replied"
     REPLIED_NOT_FIT = "replied_not_fit"
     REPLIED_FUTURE = "replied_future"

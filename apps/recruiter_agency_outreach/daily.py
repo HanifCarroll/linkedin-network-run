@@ -41,6 +41,7 @@ from .sourcing import (
     load_json_object,
 )
 from .storage import Store, append_run_event
+from .suppression import apply_network_suppression_to_outreach_state
 from .utils import now_iso
 
 RECRUITER_SOURCE = "ASAP - Contract Recruiter Titles"
@@ -438,7 +439,10 @@ def _draft_and_validate_bucket(
     _progress(f"draft-start bucket={bucket}")
     state = store.load()
     draft_messages(state, 0)
+    suppressed = apply_network_suppression_to_outreach_state(state)
     store.save(state)
+    if suppressed:
+        _progress(f"cross-workflow-suppressed bucket={bucket} count={suppressed}")
     _progress(f"validate-start bucket={bucket} ready={_ready_count(store, bucket)} target={target}")
     _validate_bucket(
         store,
@@ -530,8 +534,12 @@ def _capture_people_source(
             close()
     state = store.load()
     import_salesnav_capture(state, load_json_object(artifact_path))
+    suppressed = apply_network_suppression_to_outreach_state(state)
     store.save(state)
-    _progress(f"capture-people-finish source={source!r} artifact={artifact_path}")
+    _progress(
+        f"capture-people-finish source={source!r} suppressed={suppressed} "
+        f"artifact={artifact_path}"
+    )
 
 
 def _capture_account_source(
@@ -625,6 +633,7 @@ def _capture_agency_contacts_from_accounts(
         open_before = _agency_account_open_lead_count(state, account.id)
         capture = load_json_object(artifact_path)
         import_salesnav_capture(state, capture, agency_account=account_for_import)
+        suppressed = apply_network_suppression_to_outreach_state(state)
         open_after = _agency_account_open_lead_count(state, account.id)
         now = now_iso()
         updated_account = state.agency_accounts[index]
@@ -643,7 +652,8 @@ def _capture_agency_contacts_from_accounts(
         store.save(state)
         _progress(
             f"capture-agency-contact-finish account={account.name!r} strategy={strategy.name} "
-            f"open_before={open_before} open_after={open_after} artifact={artifact_path}"
+            f"open_before={open_before} open_after={open_after} suppressed={suppressed} "
+            f"artifact={artifact_path}"
         )
 
 
@@ -980,6 +990,7 @@ def _is_terminal_message_status(status: MessageStatus) -> bool:
         MessageStatus.NOT_MESSAGEABLE,
         MessageStatus.CONVERSATION_EXISTS,
         MessageStatus.BLOCKED,
+        MessageStatus.SUPPRESSED,
         MessageStatus.REPLIED,
         MessageStatus.REPLIED_NOT_FIT,
         MessageStatus.REPLIED_FUTURE,
