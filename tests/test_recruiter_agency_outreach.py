@@ -14,6 +14,8 @@ import apps.recruiter_agency_outreach.send as send_module
 from apps.recruiter_agency_outreach.cli import build_parser, main
 from apps.recruiter_agency_outreach.daily import DailyOptions, daily_buckets, run_daily
 from apps.recruiter_agency_outreach.dashboard import (
+    BucketCounts,
+    RunCounts,
     build_agency_pool_diagnosis,
     build_agency_pool_next_action,
     build_dashboard_report,
@@ -33,6 +35,7 @@ from apps.recruiter_agency_outreach.models import (
     MessageStatus,
     OutreachState,
 )
+from apps.recruiter_agency_outreach.run_summary import RunSummary, recommend_next_run_summary
 from apps.recruiter_agency_outreach.send import (
     MessageSendResult,
     SendMessageOptions,
@@ -447,6 +450,23 @@ def test_send_message_uses_browser_when_result_path_is_missing(tmp_path: Path) -
     loaded = store.load()
     assert loaded.leads[0].message_status == MessageStatus.DRY_RUN_READY
     assert loaded.leads[0].send_attempts[0].out_path == str(tmp_path / "message-result.json")
+
+
+def test_default_message_browser_uses_playwriter_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LINKEDIN_TOOLS_PLAYWRITER_BIN", "/bin/echo")
+    monkeypatch.setenv("LINKEDIN_TOOLS_PLAYWRITER_SESSION", "session-fixture")
+
+    browser = send_module._default_message_browser(
+        SendMessageOptions(lead_id="lead_fixture", session="auto"),
+        Store(tmp_path),
+    )
+
+    assert browser.__class__.__name__ == "PlaywriterMessageBrowserClient"
+    assert browser.session == "session-fixture"
+    assert browser.out_dir == tmp_path / "message-results"
 
 
 @pytest.mark.asyncio
@@ -950,6 +970,267 @@ def test_run_daily_captures_agency_accounts_contacts_and_validates_messages(
     assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
 
 
+def test_run_daily_continues_after_one_agency_contact_capture_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePeopleBrowser:
+        def __init__(self, source: str, out_dir: Path) -> None:
+            self.source = source
+            self.out_dir = out_dir
+            self.closed = False
+            people_instances.append(self)
+
+        def capture_salesnav(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+            stop_after_connectable: int = 0,
+            only_connectable: bool = False,
+            row_scroll_delay_ms: int = 250,
+        ) -> tuple[object, str]:
+            _ = url, pages, limit, stop_after_connectable, only_connectable, row_scroll_delay_ms
+            if "Broken Studio" in source:
+                raise RuntimeError("LinkedIn page closed during agency capture")
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "people.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-06-24T12:00:00Z",
+                        "rows": [
+                            {
+                                "index": 0,
+                                "name": "Dana Delivery",
+                                "text": (
+                                    "Dana Delivery\nFounder\nBright Product Studio\n"
+                                    "AI MVP product studio custom software"
+                                ),
+                                "profileUrl": "https://www.linkedin.com/sales/lead/dana",
+                                "menuState": "connectable",
+                            }
+                        ],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeMessageBrowser:
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            assert dry_run is True
+            assert allow_send is False
+            candidate = config["candidate"]
+            assert isinstance(candidate, dict)
+            out = tmp_path / "message-results" / f"{candidate['id']}.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"status": "dry-run-messageable", "dryRun": True}))
+            return MessageSendResult.from_mapping(json.loads(out.read_text())), str(out)
+
+        def close(self) -> None:
+            pass
+
+    store = Store(tmp_path)
+    store.save(
+        OutreachState(
+            agency_accounts=[
+                AgencyAccount(
+                    id="acct_broken",
+                    source="manual",
+                    name="Broken Studio",
+                    status=AgencyAccountStatus.QUALIFIED,
+                    fit_score=90,
+                    account_url="https://www.linkedin.com/sales/company/111",
+                ),
+                AgencyAccount(
+                    id="acct_bright",
+                    source="manual",
+                    name="Bright Product Studio",
+                    status=AgencyAccountStatus.QUALIFIED,
+                    fit_score=90,
+                    account_url="https://www.linkedin.com/sales/company/222",
+                ),
+            ]
+        )
+    )
+
+    people_instances: list[FakePeopleBrowser] = []
+    monkeypatch.setattr(
+        daily_module,
+        "_capture_browser",
+        lambda store, options, run_id, source, round_number: FakePeopleBrowser(
+            source,
+            store.dir / "captures" / run_id / source / str(round_number),
+        ),
+    )
+    monkeypatch.setattr(
+        send_module,
+        "_default_message_browser",
+        lambda options, store: FakeMessageBrowser(),
+    )
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "run-daily",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "1",
+                "--target-recruiters",
+                "0",
+                "--max-capture-rounds",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    assert len(people_instances) == 2
+    assert all(instance.closed for instance in people_instances)
+    state = Store(tmp_path).load()
+    broken = next(account for account in state.agency_accounts if account.id == "acct_broken")
+    assert broken.last_contact_error == "LinkedIn page closed during agency capture"
+    assert state.leads[0].name == "Dana Delivery"
+    assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
+    assert state.run_events[-1].result == "completed"
+
+
+def test_run_daily_continues_after_one_account_capture_source_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAccountBrowser:
+        def __init__(self, source: str, out_dir: Path) -> None:
+            self.source = source
+            self.out_dir = out_dir
+            self.closed = False
+            account_instances.append(self)
+
+        def capture_accounts(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+        ) -> tuple[object, str]:
+            _ = url, pages, limit
+            if len(account_instances) == 1:
+                raise RuntimeError("Next button never became stable")
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "accounts.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-06-24T12:00:00Z",
+                        "rows": [
+                            {
+                                "index": 0,
+                                "name": "Bright Product Studio",
+                                "text": (
+                                    "Software Development custom software AI MVP "
+                                    "product launches"
+                                ),
+                                "accountUrl": "https://www.linkedin.com/sales/company/12345",
+                                "website": "https://bright.example.com",
+                                "industry": "Software Development",
+                            }
+                        ],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakePeopleBrowser:
+        def __init__(self, source: str, out_dir: Path) -> None:
+            self.source = source
+            self.out_dir = out_dir
+
+        def capture_salesnav(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+            stop_after_connectable: int = 0,
+            only_connectable: bool = False,
+            row_scroll_delay_ms: int = 250,
+        ) -> tuple[object, str]:
+            _ = url, pages, limit, stop_after_connectable, only_connectable, row_scroll_delay_ms
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "people.json"
+            artifact.write_text(
+                json.dumps({"source": source, "capturedAt": "2026-06-24T12:00:00Z", "rows": []})
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            pass
+
+    account_instances: list[FakeAccountBrowser] = []
+    monkeypatch.setattr(
+        daily_module,
+        "_account_browser",
+        lambda store, options, run_id, source, round_number: FakeAccountBrowser(
+            source,
+            store.dir / "account-captures" / run_id / source / str(round_number),
+        ),
+    )
+    monkeypatch.setattr(
+        daily_module,
+        "_capture_browser",
+        lambda store, options, run_id, source, round_number: FakePeopleBrowser(
+            source,
+            store.dir / "captures" / run_id / source / str(round_number),
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "run-daily",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "1",
+                "--target-recruiters",
+                "0",
+                "--max-capture-rounds",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    assert len(account_instances) == 2
+    assert all(instance.closed for instance in account_instances)
+    state = Store(tmp_path).load()
+    assert state.agency_accounts[0].name == "Bright Product Studio"
+    assert state.run_events[-1].result == "completed"
+
+
 def test_run_daily_records_failed_lifecycle_when_validation_browser_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -999,6 +1280,8 @@ def test_run_daily_records_failed_lifecycle_when_validation_browser_fails(
     assert [event.phase for event in loaded.run_events] == ["run-start", "run-finish"]
     assert loaded.run_events[-1].result == "failed"
     assert loaded.run_events[-1].blocker == "browser blocked"
+    assert Path(loaded.run_events[-1].dashboard_path).exists()
+    assert store.latest_run_dashboard_path().exists()
 
 
 def test_cli_namespace_is_wired(tmp_path: Path) -> None:
@@ -1159,6 +1442,25 @@ def test_send_ready_applies_structured_results_and_records_last_run(
         == 0
     )
     assert "no retry is needed" in capsys.readouterr().out
+
+
+def test_send_recommendation_keeps_recruiters_when_both_targets_are_short() -> None:
+    recommendation = recommend_next_run_summary(
+        RunSummary(
+            run_id="send-ready-test",
+            status="completed",
+            target_agencies=5,
+            target_recruiters=5,
+            allow_send=True,
+            counts=RunCounts(sent=BucketCounts(agencies=0, recruiters=0)),
+        )
+    )
+
+    assert recommendation.should_retry is True
+    assert "--target-agencies 5" in recommendation.command
+    assert "--target-recruiters 5" in recommendation.command
+    assert "Agency target is still short by 5" in recommendation.reason
+    assert "recruiter target is still short by 5" in recommendation.reason
 
 
 def test_send_ready_uses_live_browser_when_result_dir_is_missing(
@@ -1327,6 +1629,68 @@ def test_send_ready_stops_after_browser_blocked_result(
     )
 
 
+def test_send_ready_records_browser_exception_as_send_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeMessageBrowser:
+        def __init__(self, out_dir: Path) -> None:
+            self.out_dir = out_dir
+
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            assert dry_run is False
+            assert allow_send is True
+            raise TimeoutError("send button did not become stable")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        send_module,
+        "_default_message_browser",
+        lambda options, store: FakeMessageBrowser(store.dir / "message-results"),
+    )
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.DRY_RUN_READY))
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "send-ready",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "1",
+                "--target-recruiters",
+                "0",
+                "--allow-send",
+                "--print-markdown",
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "send_failed 1 agencies,0 recruiters" in output
+    assert "dashboard=" in output
+    loaded = store.load()
+    assert loaded.leads[0].message_status == MessageStatus.SEND_FAILED
+    assert loaded.leads[0].send_attempts[0].status == "send-failed"
+    assert "TimeoutError: send button did not become stable" in (
+        loaded.leads[0].send_attempts[0].note or ""
+    )
+    assert Path(loaded.leads[0].send_attempts[0].out_path).exists()
+
+
 def test_send_ready_requires_real_send_result_artifacts(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1359,7 +1723,12 @@ def test_send_ready_requires_real_send_result_artifacts(
         == 1
     )
     assert "dry_run=true" in capsys.readouterr().err
-    assert store.load().run_events[-1].result == "failed"
+    failed = store.load()
+    assert failed.run_events[-1].result == "failed"
+    dashboard_path = Path(failed.run_events[-1].dashboard_path)
+    assert dashboard_path.exists()
+    assert store.latest_run_dashboard_path().exists()
+    assert "- Mode: `sending`" in dashboard_path.read_text()
 
 
 def test_serve_runs_review_ui_without_placeholder(

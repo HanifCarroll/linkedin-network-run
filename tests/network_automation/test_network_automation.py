@@ -12,11 +12,14 @@ import pytest
 import apps.network_automation.cli as network_cli
 import apps.network_automation.service as network_service
 from apps.network_automation.browser import (
+    SECURITY_VERIFICATION_SELECTOR,
     FixtureBrowserClient,
     PlaywrightBrowserClient,
+    PlaywriterBrowserClient,
     _apply_salesnav_api_state,
     _capture_salesnav_api_response,
     _classify_menu_labels,
+    _classify_page,
 )
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
@@ -45,6 +48,7 @@ from apps.network_automation.models import (
     choose_angle,
     default_sources,
     general_accepted_followup_draft,
+    source_yield_report,
 )
 from apps.network_automation.old_state import inspect_old_state
 from apps.network_automation.reports import render_report
@@ -68,9 +72,19 @@ from apps.network_automation.service import (
     start_run,
 )
 from apps.network_automation.store import Store, read_model
-from packages.linkedin_browser import ManagedChromeSession
+from packages.linkedin_browser import BrowserBlockKind, ManagedChromeSession
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automation"
+
+
+def test_cli_help_documents_browser_backend_selection() -> None:
+    help_text = network_cli.build_parser().format_help()
+
+    assert "default: Playwriter" in help_text
+    assert "LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>" in help_text
+    assert "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>" in help_text
+    assert "LINKEDIN_TOOLS_BROWSER_BACKEND=playwright" in help_text
+    assert "Playwriter <method> is not ported yet" in help_text
 
 
 class FakeLiveBrowserClient:
@@ -289,6 +303,42 @@ class FakeLiveBrowserClient:
         )
 
 
+class _ClassifyLocator:
+    def __init__(
+        self,
+        *,
+        count: int = 0,
+        visible: bool = False,
+        box: dict[str, float] | None = None,
+    ) -> None:
+        self._count = count
+        self._visible = visible
+        self._box = box
+
+    async def count(self) -> int:
+        return self._count
+
+    def nth(self, _index: int) -> _ClassifyLocator:
+        return self
+
+    async def is_visible(self) -> bool:
+        return self._visible
+
+    async def bounding_box(self) -> dict[str, float] | None:
+        return self._box
+
+
+class _ClassifyPage:
+    def __init__(self, locator: _ClassifyLocator) -> None:
+        self.url = "https://www.linkedin.com/sales/lead/abc"
+        self._locator = locator
+
+    def locator(self, selector: str) -> _ClassifyLocator:
+        if selector == SECURITY_VERIFICATION_SELECTOR:
+            return self._locator
+        return _ClassifyLocator()
+
+
 class FakeSalesNavApiResponse:
     def __init__(self, payload: object) -> None:
         self.payload = payload
@@ -315,6 +365,36 @@ def test_menu_classifier_handles_linkedin_pending_dash() -> None:
         _classify_menu_labels([{"text": "Connect — Pending", "disabled": True}])
         == "already-pending"
     )
+
+
+@pytest.mark.asyncio
+async def test_page_classifier_ignores_hidden_security_verification_iframe() -> None:
+    classification = await _classify_page(
+        _ClassifyPage(_ClassifyLocator(count=1, visible=False, box=None))
+    )
+
+    assert classification.kind is BrowserBlockKind.CLEAR
+    assert classification.reason == "clear"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("visible", "box"),
+    [
+        (True, None),
+        (False, {"width": 320.0, "height": 240.0}),
+    ],
+)
+async def test_page_classifier_blocks_visible_security_verification_iframe(
+    visible: bool,
+    box: dict[str, float] | None,
+) -> None:
+    classification = await _classify_page(
+        _ClassifyPage(_ClassifyLocator(count=1, visible=visible, box=box))
+    )
+
+    assert classification.kind is BrowserBlockKind.SECURITY_CHALLENGE
+    assert classification.reason == "security-verification-present"
 
 
 @pytest.mark.asyncio
@@ -598,6 +678,52 @@ def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) 
     assert run.candidates[-1].status == CandidateStatus.REVERTED_CONNECT
 
 
+def test_source_yield_report_prioritizes_email_required_skips(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 6, 30), force=True)
+    source = "ASAP - Agency Owners Delivery"
+    for index in range(3):
+        record_candidate(
+            store,
+            source=source,
+            name=f"Email Required {index}",
+            profile_url=f"https://www.linkedin.com/sales/lead/email-{index}",
+            status=CandidateStatus.SKIPPED,
+            note="salesnav-send-one stopped on email-required invite flow",
+        )
+
+    stats = next(item for item in source_yield_report(store.load_run()) if item.source == source)
+
+    assert stats.email_required_skips == 3
+    assert (
+        stats.recommendation
+        == "high-email-required: capture more candidates before retrying source"
+    )
+
+
+def test_source_yield_report_prioritizes_non_durable_send_attempts(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 6, 30), force=True)
+    source = "ASAP - Agency Owners Delivery"
+    for index in range(3):
+        record_candidate(
+            store,
+            source=source,
+            name=f"Reverted {index}",
+            profile_url=f"https://www.linkedin.com/sales/lead/reverted-{index}",
+            status=CandidateStatus.REVERTED_CONNECT,
+            note="durable confirmation connectable again; invite not durable",
+        )
+
+    stats = next(item for item in source_yield_report(store.load_run()) if item.source == source)
+
+    assert stats.reverted_connect_count == 3
+    assert (
+        stats.recommendation
+        == "not-durable: pause source until send confirmation behavior is understood"
+    )
+
+
 def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
@@ -827,6 +953,257 @@ def test_pending_withdraw_browser_timeout_writes_failed_artifact(
     assert Path(path).exists()
 
 
+def test_playwriter_acceptance_followup_uses_script_and_preserves_guards(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[Path, dict[str, Any]]] = []
+    record = AcceptanceFollowupRecord(
+        key="source:lead",
+        id="lead-1",
+        source="source",
+        name="Accepted Lead",
+        profile_url="https://www.linkedin.com/sales/lead/abc",
+        accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
+        angle="general",
+        draft="Hey Accepted. Thanks for connecting.",
+        report_path=str(tmp_path / "followups.md"),
+    )
+    client = PlaywriterBrowserClient(out_dir=tmp_path, session="test", playwriter_bin="playwriter")
+
+    def fake_run_script(script: Path, config: dict[str, Any]) -> None:
+        calls.append((script, config))
+        _write_fake_artifact(
+            Path(config["out"]),
+            {
+                "candidate": {
+                    "id": record.id,
+                    "key": record.key,
+                    "name": record.name,
+                    "profileUrl": record.profile_url,
+                    "source": record.source,
+                },
+                "dryRun": config["dryRun"],
+                "url": record.profile_url,
+                "messageLength": len(record.draft),
+                "status": "dry-run-messageable",
+            },
+        )
+
+    client._run_script = fake_run_script  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="real send requires allow_send"):
+        client.send_acceptance_followup(
+            record,
+            dry_run=False,
+            preview_fill=False,
+            allow_send=False,
+        )
+    with pytest.raises(RuntimeError, match="preview_fill requires dry_run"):
+        client.send_acceptance_followup(
+            record,
+            dry_run=False,
+            preview_fill=True,
+            allow_send=True,
+        )
+
+    result, path = client.send_acceptance_followup(
+        record,
+        dry_run=True,
+        preview_fill=False,
+        allow_send=False,
+    )
+
+    assert result.status == "dry-run-messageable"
+    assert Path(path).exists()
+    assert calls[0][0].name == "acceptance_followup_send.js"
+    assert calls[0][1]["record"]["id"] == "lead-1"
+    assert calls[0][1]["dryRun"] is True
+    assert calls[0][1]["allowSend"] is False
+
+
+def test_playwriter_pending_capture_and_withdraw_use_scripts(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[Path, dict[str, Any]]] = []
+    candidate = PendingCandidateObservation(
+        index=0,
+        name="Stale Invite",
+        profile_url="https://www.linkedin.com/in/stale",
+        age_text="Sent 2 weeks ago",
+        eligible=True,
+    )
+    client = PlaywriterBrowserClient(out_dir=tmp_path, session="test", playwriter_bin="playwriter")
+
+    def fake_run_script(script: Path, config: dict[str, Any]) -> None:
+        calls.append((script, config))
+        if script.name == "pending_capture.js":
+            _write_fake_artifact(
+                Path(config["out"]),
+                {
+                    "capturedAt": "2026-06-30T00:00:00Z",
+                    "rows": [
+                        {
+                            "index": 0,
+                            "name": candidate.name,
+                            "profileUrl": candidate.profile_url,
+                            "ageText": candidate.age_text,
+                            "ageDays": 14,
+                            "eligible": True,
+                        }
+                    ],
+                },
+            )
+        else:
+            _write_fake_artifact(
+                Path(config["out"]),
+                {
+                    "candidate": {
+                        "name": candidate.name,
+                        "profileUrl": candidate.profile_url,
+                        "ageText": candidate.age_text,
+                    },
+                    "status": "dry-run-withdrawable",
+                    "detail": {"rowText": candidate.name},
+                },
+            )
+
+    client._run_script = fake_run_script  # type: ignore[method-assign]
+
+    capture, capture_path = client.capture_pending_invitations(
+        load_more=3,
+        threshold_days=14,
+        out=tmp_path / "pending-capture.json",
+    )
+    with pytest.raises(RuntimeError, match="real withdrawal requires allow_withdraw"):
+        client.withdraw_pending(candidate, dry_run=False, allow_withdraw=False)
+    withdraw, withdraw_path = client.withdraw_pending(
+        candidate,
+        dry_run=True,
+        allow_withdraw=False,
+    )
+
+    assert capture.rows[0].name == "Stale Invite"
+    assert Path(capture_path).exists()
+    assert withdraw.status == "dry-run-withdrawable"
+    assert Path(withdraw_path).exists()
+    assert [call[0].name for call in calls] == ["pending_capture.js", "pending_withdraw.js"]
+    assert calls[0][1]["loadMore"] == 3
+    assert calls[1][1]["candidate"]["name"] == "Stale Invite"
+    assert calls[1][1]["allowWithdraw"] is False
+
+
+def test_playwriter_send_connection_requires_allow_send(tmp_path: Path) -> None:
+    client = PlaywriterBrowserClient(
+        out_dir=tmp_path,
+        session="test-session",
+        playwriter_bin="/bin/echo",
+    )
+    candidate = CandidateObservation(
+        source="Saved search",
+        index=0,
+        name="Example Lead",
+        profile_url="https://www.linkedin.com/sales/lead/abc,def,ghi",
+        menu_state="connectable",
+    )
+
+    with pytest.raises(RuntimeError, match="real send requires allow_send=True"):
+        client.send_connection(candidate, dry_run=False, allow_send=False)
+
+
+def test_playwriter_network_methods_parse_script_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = PlaywriterBrowserClient(
+        out_dir=tmp_path,
+        session="test-session",
+        playwriter_bin="/bin/echo",
+    )
+    scripts: list[str] = []
+
+    def fake_run_script(script: Path, config: dict[str, Any]) -> None:
+        scripts.append(script.name)
+        out = Path(config["out"])
+        if script.name == "salesnav_send.js":
+            payload = {
+                "candidate": {
+                    "source": config["candidate"]["source"],
+                    "name": config["candidate"]["name"],
+                    "profileUrl": config["candidate"]["profile_url"],
+                },
+                "status": "dry-run-connectable",
+                "send": None,
+            }
+        elif script.name == "salesnav_capture.js":
+            payload = {
+                "capturedAt": "2026-06-30T00:00:00Z",
+                "source": config["source"],
+                "url": config["url"],
+                "stateCounts": {"connectable": 1},
+                "rawRowCount": 1,
+                "outputRowCount": 1,
+                "rows": [
+                    {
+                        "index": 0,
+                        "name": "Example Lead",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/abc,def,ghi",
+                        "menuState": "connectable",
+                    }
+                ],
+            }
+        elif script.name == "salesnav_audit.js":
+            payload = {"peopleCount": 7, "recentNames": ["Example Lead"]}
+        elif script.name == "salesnav_saved_searches.js":
+            payload = {
+                "url": config["url"],
+                "searches": [
+                    {
+                        "savedSearchId": "123",
+                        "name": "Founders",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=123",
+                    }
+                ],
+            }
+        else:
+            raise AssertionError(f"unexpected script {script}")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(client, "_run_script", fake_run_script)
+    candidate = CandidateObservation(
+        source="Saved search",
+        index=0,
+        name="Example Lead",
+        profile_url="https://www.linkedin.com/sales/lead/abc,def,ghi",
+        menu_state="connectable",
+    )
+
+    send, send_path = client.send_connection(candidate, dry_run=True, allow_send=False)
+    capture, capture_path = client.capture_salesnav(
+        source="Saved search",
+        url="https://www.linkedin.com/sales/search/people",
+    )
+    audit, audit_path = client.audit_sent_invitations(load_more=2)
+    saved, saved_path = client.resolve_saved_searches(
+        url="https://www.linkedin.com/sales/search/people",
+        out=tmp_path / "saved-searches.json",
+    )
+
+    assert send.status == "dry-run-connectable"
+    assert capture.rows[0].menu_state == "connectable"
+    assert audit.people_count == 7
+    assert saved.searches[0].saved_search_id == "123"
+    assert Path(send_path).name == "001-send-result.json"
+    assert Path(capture_path).name == "001-capture-page.json"
+    assert Path(audit_path).name == "001-audit.json"
+    assert Path(saved_path).name == "saved-searches.json"
+    assert scripts == [
+        "salesnav_send.js",
+        "salesnav_capture.js",
+        "salesnav_audit.js",
+        "salesnav_saved_searches.js",
+    ]
+
+
 def test_cli_namespace_runs_network_commands(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -921,6 +1298,7 @@ def test_cli_pending_withdraw_next_uses_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
+    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
     store = Store(tmp_path)
     pending_cleanup_start(store, max_withdrawals=1, threshold_days=14, force=True)
     pending_cleanup_import_capture(store, FIXTURES / "pending_capture.json")
@@ -953,9 +1331,18 @@ def test_cli_saved_searches_uses_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
+    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
     out = tmp_path / "saved-searches.json"
 
-    exit_code = network_main(["--state-dir", str(tmp_path), "saved-searches", "--out", str(out)])
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "saved-searches",
+            "--out",
+            str(out),
+        ]
+    )
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].calls == [
@@ -1003,6 +1390,7 @@ def test_cli_saved_searches_attaches_to_persistent_browser_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
+    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
     monkeypatch.setattr(
         network_cli,
         "browser_session_cdp_url",
@@ -1304,6 +1692,150 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
     assert (draft_out_dir / "accepted-candidates.json").exists()
     assert (draft_out_dir / "accepted-research.json").exists()
     assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"
+    events = [
+        json.loads(line)
+        for line in store.acceptance_event_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert any(
+        event["kind"] == "run-daily-session-check-start"
+        and event["payload"]["offset"] == 0
+        and event["payload"]["limit"] == 1
+        and event["payload"]["out"] == str(chunks / "chunk-0.json")
+        for event in events
+    )
+
+
+def test_cli_acceptance_run_daily_session_reuses_complete_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    ledger = AcceptanceLedger()
+    for name in ("Already Checked", "Needs Check"):
+        ledger.upsert_invitation(
+            _run_id(),
+            date(2026, 6, 24),
+            CandidateEvent(
+                at=datetime.now(UTC) - timedelta(days=8),
+                source="ASAP - Agency Owners Delivery",
+                name=name,
+                profile_url=f"https://www.linkedin.com/sales/lead/{name.replace(' ', '-').lower()}",
+                status=CandidateStatus.PENDING,
+            ),
+        )
+    store.save_acceptance_ledger(ledger)
+    candidates = tmp_path / "acceptance-candidates.json"
+    outcomes = tmp_path / "acceptance-outcomes.json"
+    chunks = tmp_path / "chunks"
+    _write_fake_artifact(
+        chunks / "chunk-0.json",
+        AcceptanceOutcomeArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "input": str(candidates),
+                "count": 1,
+                "offset": 0,
+                "limit": 1,
+                "totalCandidates": 2,
+                "complete": True,
+                "rows": [
+                    {
+                        "source": "ASAP - Agency Owners Delivery",
+                        "name": "Already Checked",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/already-checked",
+                        "status": "accepted",
+                        "checkedAt": "2026-06-24T12:00:00Z",
+                        "relationship": "1st",
+                        "evidence": "existing complete chunk",
+                        "note": "fixture",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(candidates),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(chunks),
+            "--chunk-size",
+            "1",
+            "--no-public-web",
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "acceptance-check:2:offset=1:limit=1:delay=750",
+        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500",
+    ]
+    assert json.loads(outcomes.read_text())["count"] == 2
+    events = [
+        json.loads(line)
+        for line in store.acceptance_event_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert any(
+        event["kind"] == "run-daily-session-check-reuse"
+        and event["payload"]["offset"] == 0
+        for event in events
+    )
+
+
+def test_cli_acceptance_run_daily_session_stops_on_blocked_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    FakeLiveBrowserClient.acceptance_status = "blocked"
+    store = Store(tmp_path)
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name="Blocked Lead",
+            profile_url="https://www.linkedin.com/sales/lead/blocked?_ntb=session",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_acceptance_ledger(ledger)
+    outcomes = tmp_path / "acceptance-outcomes.json"
+    chunks = tmp_path / "chunks"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(tmp_path / "acceptance-candidates.json"),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(chunks),
+            "--chunk-size",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "stopped:" in output
+    assert "chunk-0.json has 1 blocked rows" in output
+    assert not outcomes.exists()
+    assert store.load_acceptance_followup_ledger().drafts == []
 
 
 def test_cli_acceptance_run_daily_session_skips_browser_without_candidates(
@@ -1436,4 +1968,5 @@ def _run_id() -> uuid.UUID:
 def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "accepted"
+    monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)
     monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", FakeLiveBrowserClient)

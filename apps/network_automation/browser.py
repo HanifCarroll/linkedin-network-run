@@ -6,6 +6,10 @@ import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +21,7 @@ from pydantic import BaseModel
 from packages.linkedin_browser import (
     BrowserContextHandle,
     BrowserSession,
+    ChromeProfileConfig,
     PageReusePolicy,
     RealAction,
     RealActionApproval,
@@ -74,7 +79,15 @@ SEND_MESSAGE_BUTTON = re.compile(r"^(Send|Send message)$", re.I)
 PEOPLE_COUNT = re.compile(r"People \(([\d,]+)\)")
 SALES_NAV_LEAD_SEARCH_API = re.compile(r"/sales-api/salesApiLeadSearch", re.I)
 SALES_NAV_PROFILE_API = re.compile(r"/sales-api/salesApiProfiles", re.I)
+SECURITY_VERIFICATION_SELECTOR = (
+    "iframe#humanThirdPartyIframe,"
+    "iframe[title='LinkedIn security verification'],"
+    "iframe[src*='li.protechts.net']"
+)
 DISABLE_SALESNAV_API_CAPTURE_ENV = "LINKEDIN_TOOLS_DISABLE_SALESNAV_API_CAPTURE"
+PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
+PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
+PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -391,6 +404,229 @@ class FixtureBrowserClient:
         return read_model(self.withdraw_result, PendingWithdrawResult), str(self.withdraw_result)
 
 
+class PlaywriterBrowserClient:
+    """Playwriter-backed browser client for LinkedIn UI actions."""
+
+    def __init__(
+        self,
+        *,
+        out_dir: Path = DEFAULT_SEND_OUT_DIR,
+        session: str | None = None,
+        browser_key: str | None = None,
+        playwriter_bin: str | None = None,
+    ) -> None:
+        self.out_dir = out_dir
+        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
+        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
+        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+
+    @property
+    def session(self) -> str:
+        if self._session is None:
+            self._session = self._create_session()
+        return self._session
+
+    def close(self) -> None:
+        return None
+
+    def send_connection(
+        self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
+    ) -> tuple[SalesNavSendResult, str]:
+        if not candidate.profile_url:
+            raise RuntimeError("candidate profile_url is required for browser send")
+        if not dry_run and not allow_send:
+            raise RuntimeError("real send requires allow_send=True")
+        out = self._next_output_path("send-result")
+        config = {
+            "candidate": candidate.model_dump(mode="json"),
+            "dryRun": dry_run,
+            "allowSend": allow_send,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_salesnav_send_script(), config)
+        return read_model(out, SalesNavSendResult), str(out)
+
+    def capture_salesnav(
+        self,
+        *,
+        source: str,
+        url: str | None = None,
+        pages: int = 1,
+        limit: int = 25,
+        stop_after_connectable: int = 0,
+        only_connectable: bool = False,
+        row_scroll_delay_ms: int = 250,
+    ) -> tuple[SalesNavCapture, str]:
+        out = self._next_output_path("capture-page")
+        config = {
+            "source": source,
+            "url": url,
+            "pages": pages,
+            "limit": limit,
+            "stopAfterConnectable": stop_after_connectable,
+            "onlyConnectable": only_connectable,
+            "rowScrollDelayMs": row_scroll_delay_ms,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_salesnav_capture_script(), config)
+        return read_model(out, SalesNavCapture), str(out)
+
+    def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
+        out = self._next_output_path("audit")
+        config = {"loadMore": load_more, "out": str(out)}
+        self._run_script(_playwriter_salesnav_audit_script(), config)
+        return read_model(out, SalesNavAudit), str(out)
+
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
+        config = {"url": url, "out": str(out)}
+        self._run_script(_playwriter_salesnav_saved_searches_script(), config)
+        return read_model(out, SavedSearchArtifact), str(out)
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        config = {
+            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+            "input": str(input_path),
+            "out": str(out),
+            "offset": offset,
+            "limit": limit,
+            "delayMs": delay_ms,
+        }
+        self._run_script(_playwriter_acceptance_outcomes_script(), config)
+        return read_model(out, AcceptanceOutcomeArtifact), str(out)
+
+    def research_accepted_candidates(
+        self,
+        *,
+        candidates: list[AcceptedDraftCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        public_web: bool = True,
+        max_web_results: int = 5,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptedResearchArtifact, str]:
+        config = {
+            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
+            "input": str(input_path),
+            "out": str(out),
+            "offset": offset,
+            "limit": limit,
+            "publicWeb": public_web,
+            "maxWebResults": max_web_results,
+            "delayMs": delay_ms,
+        }
+        self._run_script(_playwriter_accepted_research_script(), config)
+        return read_model(out, AcceptedResearchArtifact), str(out)
+
+    def capture_pending_invitations(
+        self, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        config = {
+            "loadMore": load_more,
+            "thresholdDays": threshold_days,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_pending_capture_script(), config)
+        return read_model(out, PendingCapture), str(out)
+
+    def send_acceptance_followup(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        dry_run: bool,
+        preview_fill: bool,
+        allow_send: bool,
+    ) -> tuple[AcceptanceFollowupSendResult, str]:
+        if preview_fill and not dry_run:
+            raise RuntimeError("preview_fill requires dry_run=True")
+        if preview_fill and allow_send:
+            raise RuntimeError("preview_fill cannot run with allow_send=True")
+        if not dry_run and not allow_send:
+            raise RuntimeError("real send requires allow_send=True")
+        out = self._next_output_path(record.id)
+        config = {
+            "record": record.model_dump(mode="json"),
+            "dryRun": dry_run,
+            "previewFill": preview_fill,
+            "allowSend": allow_send,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_acceptance_followup_send_script(), config)
+        return read_model(out, AcceptanceFollowupSendResult), str(out)
+
+    def withdraw_pending(
+        self,
+        candidate: PendingCandidateObservation,
+        *,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawResult, str]:
+        if not dry_run and not allow_withdraw:
+            raise RuntimeError("real withdrawal requires allow_withdraw=True")
+        out = self._next_output_path("withdraw-result")
+        config = {
+            "candidate": candidate.model_dump(mode="json"),
+            "dryRun": dry_run,
+            "allowWithdraw": allow_withdraw,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_pending_withdraw_script(), config)
+        return read_model(out, PendingWithdrawResult), str(out)
+
+    def _create_session(self) -> str:
+        command = [self._playwriter_bin, "session", "new"]
+        if self._browser_key:
+            command.extend(["--browser", self._browser_key])
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
+        if not match:
+            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
+        return match.group(1)
+
+    def _run_script(self, script: Path, config: dict[str, Any]) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        config_path, staged_out, final_out = _stage_playwriter_config(config)
+        script_config = dict(config)
+        if staged_out is not None:
+            script_config["out"] = str(staged_out)
+        write_json_atomic(config_path, script_config)
+        command = [
+            self._playwriter_bin,
+            "-s",
+            self.session,
+            "-e",
+            f"state.linkedinToolsConfigPath = {json.dumps(str(config_path))}",
+        ]
+        _run_playwriter_command(command)
+        _run_playwriter_command(
+            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"]
+        )
+        if staged_out is not None and final_out is not None:
+            if not _wait_for_path(staged_out):
+                raise RuntimeError(
+                    "Playwriter browser script did not write an output artifact; "
+                    f"expected {staged_out}"
+                )
+            final_out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staged_out), str(final_out))
+
+    def _next_output_path(self, stem: str) -> Path:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(self.out_dir.glob(f"*-{_safe_stem(stem)}.json"))
+        next_index = len(existing) + 1
+        return self.out_dir / f"{next_index:03d}-{_safe_stem(stem)}.json"
+
+
 class PlaywrightBrowserClient:
     """Playwright-backed browser client using the shared LinkedIn Chrome profile."""
 
@@ -401,6 +637,8 @@ class PlaywrightBrowserClient:
         context: Any | None = None,
         context_factory: Callable[[], Awaitable[Any]] | None = None,
         cdp_url: str | None = None,
+        chrome_profile_config: ChromeProfileConfig | None = None,
+        capture_timeout_seconds: float | None = None,
         max_load_more: int = 260,
         withdraw_timeout_seconds: float = 90.0,
     ) -> None:
@@ -408,6 +646,8 @@ class PlaywrightBrowserClient:
         self._context = context
         self._context_factory = context_factory
         self._cdp_url = cdp_url
+        self._chrome_profile_config = chrome_profile_config
+        self._capture_timeout_seconds = capture_timeout_seconds
         self._context_handle_ref: BrowserContextHandle | None = None
         self._playwright_manager: Any | None = None
         self._playwright: Any | None = None
@@ -451,17 +691,18 @@ class PlaywrightBrowserClient:
         only_connectable: bool = False,
         row_scroll_delay_ms: int = 250,
     ) -> tuple[SalesNavCapture, str]:
-        return self._run(
-            self._capture_salesnav(
-                source=source,
-                url=url,
-                pages=pages,
-                limit=limit,
-                stop_after_connectable=stop_after_connectable,
-                only_connectable=only_connectable,
-                row_scroll_delay_ms=row_scroll_delay_ms,
-            )
+        capture = self._capture_salesnav(
+            source=source,
+            url=url,
+            pages=pages,
+            limit=limit,
+            stop_after_connectable=stop_after_connectable,
+            only_connectable=only_connectable,
+            row_scroll_delay_ms=row_scroll_delay_ms,
         )
+        if self._capture_timeout_seconds is not None:
+            capture = asyncio.wait_for(capture, timeout=self._capture_timeout_seconds)
+        return self._run(capture)
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         return self._run(self._audit_sent_invitations(load_more=load_more))
@@ -581,6 +822,7 @@ class PlaywrightBrowserClient:
         self._playwright = await self._playwright_manager.start()
         self._context_handle_ref = await open_linkedin_browser_context(
             self._playwright,
+            config=self._chrome_profile_config,
             cdp_url=self._cdp_url,
         )
         self._context = self._context_handle_ref.context
@@ -1376,6 +1618,95 @@ class PlaywrightBrowserClient:
         return model.model_validate(payload), str(path)
 
 
+def _playwriter_bin() -> str:
+    configured = os.environ.get(PLAYWRITER_BIN_ENV)
+    if configured:
+        return configured
+    default = Path.home() / ".bun/bin/playwriter"
+    if default.exists():
+        return str(default)
+    resolved = shutil.which("playwriter")
+    if resolved:
+        return resolved
+    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
+
+
+def _playwriter_script_dir() -> Path:
+    return Path(__file__).resolve().parent / "playwriter_scripts"
+
+
+def _playwriter_acceptance_outcomes_script() -> Path:
+    return _playwriter_script_dir() / "acceptance_outcomes.js"
+
+
+def _playwriter_accepted_research_script() -> Path:
+    return _playwriter_script_dir() / "accepted_research.js"
+
+
+def _playwriter_acceptance_followup_send_script() -> Path:
+    return _playwriter_script_dir() / "acceptance_followup_send.js"
+
+
+def _playwriter_pending_capture_script() -> Path:
+    return _playwriter_script_dir() / "pending_capture.js"
+
+
+def _playwriter_pending_withdraw_script() -> Path:
+    return _playwriter_script_dir() / "pending_withdraw.js"
+
+
+def _playwriter_salesnav_send_script() -> Path:
+    return _playwriter_script_dir() / "salesnav_send.js"
+
+
+def _playwriter_salesnav_capture_script() -> Path:
+    return _playwriter_script_dir() / "salesnav_capture.js"
+
+
+def _playwriter_salesnav_audit_script() -> Path:
+    return _playwriter_script_dir() / "salesnav_audit.js"
+
+
+def _playwriter_salesnav_saved_searches_script() -> Path:
+    return _playwriter_script_dir() / "salesnav_saved_searches.js"
+
+
+def _stage_playwriter_config(config: dict[str, Any]) -> tuple[Path, Path | None, Path | None]:
+    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_stem(Path(str(config.get("out") or "artifact.json")).stem)
+    config_path = staging_dir / f"{stem}-config.json"
+    final_out = Path(str(config["out"])) if config.get("out") else None
+    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
+    return config_path, staged_out, final_out
+
+
+def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return path.exists()
+
+
+def _run_playwriter_command(command: list[str]) -> None:
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = "\n".join(
+            part
+            for part in (
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+            if part
+        )
+        raise RuntimeError(
+            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
+            + (f"\n{detail}" if detail else "")
+        )
+
+
 def _send_result_base(
     candidate: CandidateObservation, *, dry_run: bool, url: str
 ) -> dict[str, Any]:
@@ -1434,11 +1765,15 @@ async def _classify_page(page: Any, *, http_status: int | None = None) -> Any:
         page.locator("input[name='session_key'], form[action*='/uas/login']")
     )
     checkpoint = await _locator_count(page.locator("input[name='pin'], input[name='challengeId']"))
+    security_verification = await _locator_has_visible_element(
+        page.locator(SECURITY_VERIFICATION_SELECTOR)
+    )
     evidence = BrowserStateEvidence(
         url=page.url,
         http_status=http_status,
         login_form_present=login > 0,
         checkpoint_present=checkpoint > 0,
+        security_verification_present=security_verification,
     )
     return classify_browser_state(evidence)
 
@@ -2337,6 +2672,18 @@ async def _locator_disabled(locator: Any) -> bool:
 
 async def _locator_visible(locator: Any) -> bool:
     return bool(await _ignore_errors(locator.is_visible(), False))
+
+
+async def _locator_has_visible_element(locator: Any) -> bool:
+    count = await _locator_count(locator)
+    for index in range(count):
+        item = locator.nth(index)
+        if await _locator_visible(item):
+            return True
+        box = await _ignore_errors(item.bounding_box(), None)
+        if box and float(box.get("width", 0)) > 0 and float(box.get("height", 0)) > 0:
+            return True
+    return False
 
 
 async def _ignore_errors[T](

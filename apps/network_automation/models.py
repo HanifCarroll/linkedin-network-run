@@ -213,6 +213,7 @@ class SourceYieldStats(AppModel):
     connectable_count: int
     already_pending_count: int
     email_required_skips: int
+    reverted_connect_count: int
     pending_sends: int
     connectable_yield: float | None
     recommendation: str
@@ -676,10 +677,20 @@ def source_yield_stats_for_run(run: Run, source: SourcePlan) -> SourceYieldStats
         and candidate.note is not None
         and "email-required" in candidate.note.lower()
     )
+    reverted_connect_count = sum(
+        1
+        for candidate in run.candidates
+        if candidate.source == source.name and candidate.status == CandidateStatus.REVERTED_CONNECT
+    )
     pending_sends = run.source_verified_count(source.name)
     yield_value = connectable_count / raw_row_count if raw_row_count > 0 else None
     recommendation = "no capture data"
-    if yield_value is not None:
+    attempted = pending_sends + email_required_skips + reverted_connect_count
+    if attempted >= 3 and email_required_skips / attempted >= 0.30:
+        recommendation = "high-email-required: capture more candidates before retrying source"
+    elif attempted >= 3 and reverted_connect_count / attempted >= 0.50:
+        recommendation = "not-durable: pause source until send confirmation behavior is understood"
+    elif yield_value is not None:
         if raw_row_count >= 50 and yield_value <= 0.05:
             recommendation = "low-yield: consider reservoir/fallback before deeper capture"
         elif raw_row_count >= 25 and yield_value <= 0.10:
@@ -692,6 +703,7 @@ def source_yield_stats_for_run(run: Run, source: SourcePlan) -> SourceYieldStats
         connectable_count=connectable_count,
         already_pending_count=already_pending_count,
         email_required_skips=email_required_skips,
+        reverted_connect_count=reverted_connect_count,
         pending_sends=pending_sends,
         connectable_yield=yield_value,
         recommendation=recommendation,

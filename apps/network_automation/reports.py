@@ -79,7 +79,8 @@ def render_report(run: Run) -> str:
         lines.append(
             f"- {stats.source}: {stats.connectable_count} connectable / {stats.raw_row_count} "
             f"rows ({yield_text}); already pending {stats.already_pending_count}; "
-            f"email-required skips {stats.email_required_skips}; {stats.recommendation}"
+            f"email-required skips {stats.email_required_skips}; "
+            f"reverted-to-connect {stats.reverted_connect_count}; {stats.recommendation}"
         )
     if audited_delta != run.target:
         lines.extend(["", "## Reconciliation"])

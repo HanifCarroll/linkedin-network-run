@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -12,7 +17,7 @@ from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from apps.comment_extractor.contracts import ExtractionResult
@@ -25,10 +30,6 @@ from apps.opportunity_intel.sources import load_query_pack
 from apps.opportunity_intel.store import OpportunityStore
 from packages.linkedin_browser.artifacts import ArtifactWriter
 from packages.linkedin_browser.config import ChromeProfileConfig, chrome_profile_from_env
-from packages.linkedin_browser.playwright import (
-    close_browser_context_handle,
-    open_linkedin_browser_context,
-)
 from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
@@ -84,6 +85,9 @@ LIVE_POST_TEXT_SELECTOR = (
     ".feed-shared-update-v2__description .update-components-text span.break-words,"
     ".update-components-update-v2__commentary span.break-words"
 )
+PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
+PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
+PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
 
 
 @dataclass(frozen=True)
@@ -214,16 +218,7 @@ async def browser_preflight(
         warnings.append("chrome_profile_dir_missing")
     if check_browser:
         try:
-            async with async_playwright() as playwright:
-                handle = await open_linkedin_browser_context(
-                    playwright,
-                    selected,
-                    cdp_url=_comment_extraction_cdp_url(cdp_url),
-                )
-                if handle.close_context:
-                    await handle.context.close()
-                if handle.browser is not None:
-                    await handle.browser.close()
+            _CommentExtractorPlaywriterClient(out_dir=Path.cwd()).preflight()
         except Exception as exc:
             warnings.append(f"browser_check_failed:{type(exc).__name__}")
     return BrowserPreflightResult(
@@ -292,39 +287,25 @@ async def extract_post_comments_from_url_async(
     comments_found = 0
     stop_reason = ""
     expansion_stats: CommentExpansionStats | None = None
-    handle: Any | None = None
     try:
-        async with async_playwright() as playwright:
-            handle = await open_linkedin_browser_context(
-                playwright,
-                selected,
-                cdp_url=_comment_extraction_cdp_url(cdp_url),
-            )
-            page = await _reusable_page(handle.context)
-            page.set_default_timeout(limits.action_timeout_ms)
-            post_result = await _extract_post_comments_with_page(
-                page=page,
-                input_row=input_row,
-                run_id=run_id,
-                run_dir=run_dir,
-                writer=writer,
-                store=store,
-                limits=limits,
-                progress=progress,
-            )
-            html_path = post_result.html_artifact_path
-            raw_path = post_result.raw_comments_path
-            warnings = post_result.warnings
-            comments_found = post_result.comments_found
-            status = post_result.status
-            stop_reason = post_result.stop_reason
-            expansion_stats = post_result.expansion_stats
-            await _close_context_handle(handle)
-            handle = None
+        post_result = _extract_post_comments_with_playwriter(
+            input_row=input_row,
+            run_id=run_id,
+            run_dir=run_dir,
+            writer=writer,
+            store=store,
+            limits=limits,
+            progress=progress,
+        )
+        html_path = post_result.html_artifact_path
+        raw_path = post_result.raw_comments_path
+        warnings = post_result.warnings
+        comments_found = post_result.comments_found
+        status = post_result.status
+        stop_reason = post_result.stop_reason
+        expansion_stats = post_result.expansion_stats
     except Exception as exc:
         stop_reason = _stop_reason_for_exception(exc)
-        if handle is not None:
-            await _close_context_handle(handle)
         store.record_error(
             run_id=run_id,
             post_url=input_row.post_url,
@@ -421,146 +402,127 @@ async def extract_post_comments_from_url_queue_async(
         output_dir=output_dir,
         provider_csv=provider_csv_path or "",
     )
-    handle: Any | None = None
-    try:
-        async with async_playwright() as playwright:
-            handle = await open_linkedin_browser_context(
-                playwright,
-                selected,
-                cdp_url=_comment_extraction_cdp_url(cdp_url),
+    _ = _comment_extraction_cdp_url(cdp_url)
+    client = _CommentExtractorPlaywriterClient(out_dir=output_dir)
+    for original_index, input_row in queued_rows:
+        processed += 1
+        reporter.emit(
+            "comment_post_start",
+            index=original_index,
+            total=len(input_rows),
+            remaining_index=processed,
+            remaining_total=len(queued_rows),
+            source_id=input_row.source_id,
+            query_id=input_row.query_id,
+            post_url=input_row.post_url,
+        )
+        run_id = store.start_extraction_run(
+            post_url=input_row.post_url,
+            source_id=input_row.source_id,
+            query_id=input_row.query_id,
+            source_kind=input_row.source_kind,
+            source_url=input_row.source_url,
+            search_query=input_row.search_query,
+            browser_profile=selected.profile_name,
+            safety_limits=asdict(limits),
+        )
+        run_dir = output_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        writer = ArtifactWriter(run_dir)
+        try:
+            result = _extract_post_comments_with_playwriter(
+                client=client,
+                input_row=input_row,
+                run_id=run_id,
+                run_dir=run_dir,
+                writer=writer,
+                store=store,
+                limits=limits,
+                progress=reporter,
             )
-            page = await _reusable_page(handle.context)
-            page.set_default_timeout(limits.action_timeout_ms)
-            for original_index, input_row in queued_rows:
-                processed += 1
-                reporter.emit(
-                    "comment_post_start",
-                    index=original_index,
-                    total=len(input_rows),
-                    remaining_index=processed,
-                    remaining_total=len(queued_rows),
-                    source_id=input_row.source_id,
-                    query_id=input_row.query_id,
-                    post_url=input_row.post_url,
-                )
-                run_id = store.start_extraction_run(
-                    post_url=input_row.post_url,
-                    source_id=input_row.source_id,
-                    query_id=input_row.query_id,
-                    source_kind=input_row.source_kind,
-                    source_url=input_row.source_url,
-                    search_query=input_row.search_query,
-                    browser_profile=selected.profile_name,
-                    safety_limits=asdict(limits),
-                )
-                run_dir = output_dir / run_id
-                run_dir.mkdir(parents=True, exist_ok=True)
-                writer = ArtifactWriter(run_dir)
-                try:
-                    result = await _extract_post_comments_with_page(
-                        page=page,
-                        input_row=input_row,
-                        run_id=run_id,
-                        run_dir=run_dir,
-                        writer=writer,
-                        store=store,
-                        limits=limits,
-                        progress=reporter,
-                    )
-                except Exception as exc:
-                    failed += 1
-                    stop_reason = _stop_reason_for_exception(exc)
-                    reporter.emit(
-                        "comment_post_failed",
-                        index=original_index,
-                        total=len(input_rows),
-                        remaining_index=processed,
-                        remaining_total=len(queued_rows),
-                        post_url=input_row.post_url,
-                        stop_reason=stop_reason,
-                        error=type(exc).__name__,
-                    )
-                    store.record_error(
-                        run_id=run_id,
-                        post_url=input_row.post_url,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                        retryable=True,
-                    )
-                    store.finish_extraction_run(
-                        run_id,
-                        status="failed",
-                        comments_found=0,
-                        failures=1,
-                        warning_count=0,
-                        retry_recommendation=(
-                            "Inspect browser artifacts and rerun with lower safety limits"
-                        ),
-                    )
-                    _append_jsonl(
-                        manifest_path,
-                        {
-                            "post_url": input_row.post_url,
-                            "run_id": run_id,
-                            "status": "failed",
-                            "comments_found": 0,
-                            "stop_reason": stop_reason,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-                else:
-                    succeeded += 1
-                    reporter.emit(
-                        "comment_post_done",
-                        index=original_index,
-                        total=len(input_rows),
-                        remaining_index=processed,
-                        remaining_total=len(queued_rows),
-                        post_url=input_row.post_url,
-                        comments_found=result.comments_found,
-                        stop_reason=result.stop_reason,
-                    )
-                    if provider_csv_path is not None:
-                        write_comment_csv(provider_csv_path, store.export_comments())
-                    _append_jsonl(
-                        manifest_path,
-                        {
-                            "post_url": input_row.post_url,
-                            "run_id": run_id,
-                            "status": result.status,
-                            "comments_found": result.comments_found,
-                            "stop_reason": result.stop_reason,
-                            "scrolls_performed": result.expansion_stats.scrolls_performed,
-                            "comment_control_clicks": (
-                                result.expansion_stats.comment_control_clicks
-                            ),
-                            "reply_control_clicks": result.expansion_stats.reply_control_clicks,
-                            "runtime_seconds": result.expansion_stats.runtime_seconds,
-                            "raw_comments_path": str(result.raw_comments_path),
-                            "provider_csv_path": (
-                                str(provider_csv_path) if provider_csv_path is not None else ""
-                            ),
-                        },
-                    )
-                _write_json_atomic(
-                    checkpoint_path,
-                    {
-                        "processed": processed,
-                        "succeeded": succeeded,
-                        "failed": failed,
-                        "skipped": skipped,
-                        "remaining": len(queued_rows) - processed,
-                        "total": len(input_rows),
-                        "provider_csv_path": (
-                            str(provider_csv_path) if provider_csv_path is not None else ""
-                        ),
-                    },
-                )
-            await _close_context_handle(handle)
-            handle = None
-    finally:
-        if handle is not None:
-            await _close_context_handle(handle)
+        except Exception as exc:
+            failed += 1
+            stop_reason = _stop_reason_for_exception(exc)
+            reporter.emit(
+                "comment_post_failed",
+                index=original_index,
+                total=len(input_rows),
+                remaining_index=processed,
+                remaining_total=len(queued_rows),
+                post_url=input_row.post_url,
+                stop_reason=stop_reason,
+                error=type(exc).__name__,
+            )
+            store.record_error(
+                run_id=run_id,
+                post_url=input_row.post_url,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                retryable=True,
+            )
+            store.finish_extraction_run(
+                run_id,
+                status="failed",
+                comments_found=0,
+                failures=1,
+                warning_count=0,
+                retry_recommendation="Inspect browser artifacts and rerun with lower safety limits",
+            )
+            _append_jsonl(
+                manifest_path,
+                {
+                    "post_url": input_row.post_url,
+                    "run_id": run_id,
+                    "status": "failed",
+                    "comments_found": 0,
+                    "stop_reason": stop_reason,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        else:
+            succeeded += 1
+            reporter.emit(
+                "comment_post_done",
+                index=original_index,
+                total=len(input_rows),
+                remaining_index=processed,
+                remaining_total=len(queued_rows),
+                post_url=input_row.post_url,
+                comments_found=result.comments_found,
+                stop_reason=result.stop_reason,
+            )
+            if provider_csv_path is not None:
+                write_comment_csv(provider_csv_path, store.export_comments())
+            _append_jsonl(
+                manifest_path,
+                {
+                    "post_url": input_row.post_url,
+                    "run_id": run_id,
+                    "status": result.status,
+                    "comments_found": result.comments_found,
+                    "stop_reason": result.stop_reason,
+                    "scrolls_performed": result.expansion_stats.scrolls_performed,
+                    "comment_control_clicks": result.expansion_stats.comment_control_clicks,
+                    "reply_control_clicks": result.expansion_stats.reply_control_clicks,
+                    "runtime_seconds": result.expansion_stats.runtime_seconds,
+                    "raw_comments_path": str(result.raw_comments_path),
+                    "provider_csv_path": (
+                        str(provider_csv_path) if provider_csv_path is not None else ""
+                    ),
+                },
+            )
+        _write_json_atomic(
+            checkpoint_path,
+            {
+                "processed": processed,
+                "succeeded": succeeded,
+                "failed": failed,
+                "skipped": skipped,
+                "remaining": len(queued_rows) - processed,
+                "total": len(input_rows),
+                "provider_csv_path": str(provider_csv_path) if provider_csv_path else "",
+            },
+        )
     reporter.emit(
         "comment_queue_done",
         processed=processed,
@@ -597,6 +559,203 @@ def _read_manifest_post_urls(manifest_path: Path) -> frozenset[str]:
                 raise ValueError(f"manifest line {line_number} missing text post_url")
             post_urls.add(post_url)
     return frozenset(post_urls)
+
+
+class _CommentExtractorPlaywriterClient:
+    def __init__(
+        self,
+        *,
+        out_dir: Path,
+        session: str | None = None,
+        browser_key: str | None = None,
+        playwriter_bin: str | None = None,
+    ) -> None:
+        self.out_dir = out_dir
+        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
+        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
+        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+
+    @property
+    def session(self) -> str:
+        if self._session is None:
+            self._session = self._create_session()
+        return self._session
+
+    def preflight(self) -> None:
+        self._run_script(
+            _playwriter_preflight_script(),
+            {"out": str(self.out_dir / "preflight.json")},
+        )
+
+    def extract(
+        self,
+        *,
+        input_row: BrowserExtractionInput,
+        run_id: str,
+        run_dir: Path,
+        limits: BrowserSafetyLimits,
+    ) -> dict[str, object]:
+        out = run_dir / "playwriter-extraction.json"
+        config = {
+            "input": asdict(input_row),
+            "runId": run_id,
+            "runDir": str(run_dir),
+            "limits": asdict(limits),
+            "selectors": {
+                "commentRoot": LIVE_COMMENT_ROOT_SELECTOR,
+                "commentText": LIVE_COMMENT_TEXT_SELECTOR,
+                "commentProfile": LIVE_COMMENT_PROFILE_SELECTOR,
+                "commentName": LIVE_COMMENT_NAME_SELECTOR,
+                "commentHeadline": LIVE_COMMENT_HEADLINE_SELECTOR,
+                "postAuthor": LIVE_POST_AUTHOR_SELECTOR,
+                "postText": LIVE_POST_TEXT_SELECTOR,
+            },
+            "out": str(out),
+        }
+        self._run_script(_playwriter_extract_script(), config)
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise RuntimeError("Playwriter comment extraction output must be a JSON object")
+        return payload
+
+    def _create_session(self) -> str:
+        command = [self._playwriter_bin, "session", "new"]
+        if self._browser_key:
+            command.extend(["--browser", self._browser_key])
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
+        if not match:
+            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
+        return match.group(1)
+
+    def _run_script(self, script: Path, config: dict[str, object]) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        config_path, staged_out, final_out = _stage_playwriter_config(config)
+        script_config = dict(config)
+        if staged_out is not None:
+            script_config["out"] = str(staged_out)
+        _write_json_atomic(config_path, script_config)
+        _run_playwriter_command(
+            [
+                self._playwriter_bin,
+                "-s",
+                self.session,
+                "-e",
+                f"state.linkedinToolsConfigPath = {json.dumps(str(config_path))}",
+            ]
+        )
+        _run_playwriter_command(
+            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
+        )
+        if staged_out is not None and final_out is not None:
+            if not _wait_for_path(staged_out):
+                raise RuntimeError(
+                    "Playwriter comment extractor script did not write an output artifact; "
+                    f"expected {staged_out}"
+                )
+            final_out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staged_out), str(final_out))
+
+
+def _extract_post_comments_with_playwriter(
+    *,
+    input_row: BrowserExtractionInput,
+    run_id: str,
+    run_dir: Path,
+    writer: ArtifactWriter,
+    store: OpportunityStore,
+    limits: BrowserSafetyLimits,
+    progress: ProgressReporter | None = None,
+    client: _CommentExtractorPlaywriterClient | None = None,
+) -> BrowserExtractionResult:
+    playwriter = client or _CommentExtractorPlaywriterClient(out_dir=run_dir)
+    artifact = playwriter.extract(
+        input_row=input_row,
+        run_id=run_id,
+        run_dir=run_dir,
+        limits=limits,
+    )
+    status = _string_value(artifact.get("status"))
+    if status != "extracted":
+        raise BrowserExtractionError(
+            _string_value(artifact.get("stop_reason")) or _string_value(artifact.get("blocker")),
+            _string_value(artifact.get("error")) or f"Playwriter status={status!r}",
+        )
+    html_path = Path(_string_value(artifact.get("html_path")) or run_dir / "post.html")
+    raw_rows = artifact.get("rows")
+    post_metadata = _post_metadata_from_artifact(artifact.get("post_metadata"))
+    extraction = _comments_from_page_rows(
+        raw_rows,
+        input_row=input_row,
+        post_metadata=post_metadata,
+    )
+    expansion_stats = _expansion_stats_from_artifact(artifact.get("expansion"))
+    warnings = (
+        *_list_of_strings(artifact.get("warnings")),
+        *extraction.warnings,
+    )
+    store.record_artifact(run_id=run_id, kind="html", path=html_path)
+    screenshot_path = _string_value(artifact.get("screenshot_path"))
+    if screenshot_path:
+        store.record_artifact(run_id=run_id, kind="screenshot", path=Path(screenshot_path))
+    raw_path = write_raw_comments_jsonl(extraction.comments, run_dir)
+    store.record_artifact(
+        run_id=run_id,
+        kind="raw_comments",
+        path=raw_path,
+        metadata={"comment_count": len(extraction.comments)},
+    )
+    store.persist_comments(
+        run_id=run_id,
+        comments=extraction.comments,
+        query_pack=load_query_pack(),
+    )
+    summary_ref = writer.write_json(
+        "summary",
+        {
+            "run_id": run_id,
+            "post_url": input_row.post_url,
+            "comments_found": len(extraction.comments),
+            "stop_reason": expansion_stats.stop_reason,
+            "scrolls_performed": expansion_stats.scrolls_performed,
+            "comment_control_clicks": expansion_stats.comment_control_clicks,
+            "reply_control_clicks": expansion_stats.reply_control_clicks,
+            "runtime_seconds": expansion_stats.runtime_seconds,
+            "warnings": list(warnings),
+            "safety_limits": asdict(limits),
+            "expansion": asdict(expansion_stats),
+            "browser_backend": "playwriter",
+        },
+    )
+    store.record_artifact(run_id=run_id, kind="summary", path=summary_ref.path)
+    store.finish_extraction_run(
+        run_id,
+        status="extracted",
+        comments_found=len(extraction.comments),
+        failures=0,
+        warning_count=len(warnings),
+        retry_recommendation="No retry needed" if extraction.comments else "Review HTML artifact",
+    )
+    _emit_progress(
+        progress,
+        "comment_expand_done",
+        stop_reason=expansion_stats.stop_reason,
+        scrolls=expansion_stats.scrolls_performed,
+        comment_clicks=expansion_stats.comment_control_clicks,
+        reply_clicks=expansion_stats.reply_control_clicks,
+        comments=expansion_stats.visible_comment_nodes,
+        runtime_seconds=expansion_stats.runtime_seconds,
+    )
+    return BrowserExtractionResult(
+        run_id=run_id,
+        status="extracted",
+        raw_comments_path=raw_path,
+        html_artifact_path=html_path,
+        comments_found=len(extraction.comments),
+        warnings=warnings,
+        stop_reason=expansion_stats.stop_reason,
+        expansion_stats=expansion_stats,
+    )
 
 
 async def _extract_post_comments_with_page(
@@ -1014,14 +1173,96 @@ async def _reusable_page(context: Any) -> Page:
     return cast(Page, await session.page(preferred_url_fragments=fragments))
 
 
-async def _close_context_handle(handle: Any) -> None:
-    await close_browser_context_handle(handle)
-
-
 def _comment_extraction_cdp_url(cdp_url: str | None) -> str:
     if cdp_url is None:
         return ""
     return cdp_url.strip()
+
+
+def _expansion_stats_from_artifact(value: object) -> CommentExpansionStats:
+    if not isinstance(value, dict):
+        raise ValueError("Playwriter expansion artifact must be an object")
+    return CommentExpansionStats(
+        stop_reason=_string_value(value.get("stop_reason")) or "unknown",
+        scrolls_performed=int(_float_value(value.get("scrolls_performed"))),
+        comment_control_clicks=int(_float_value(value.get("comment_control_clicks"))),
+        reply_control_clicks=int(_float_value(value.get("reply_control_clicks"))),
+        visible_comment_nodes=int(_float_value(value.get("visible_comment_nodes"))),
+        runtime_seconds=_float_value(value.get("runtime_seconds")),
+        no_progress_passes=int(_float_value(value.get("no_progress_passes"))),
+        max_no_progress_passes=int(_float_value(value.get("max_no_progress_passes"))),
+    )
+
+
+def _post_metadata_from_artifact(value: object) -> PostMetadata:
+    if not isinstance(value, dict):
+        return PostMetadata(author_name="", text="")
+    return PostMetadata(
+        author_name=_clean_text(_string_value(value.get("author_name"))),
+        text=_clean_text(_string_value(value.get("text"))),
+    )
+
+
+def _list_of_strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _playwriter_bin() -> str:
+    configured = os.environ.get(PLAYWRITER_BIN_ENV)
+    if configured:
+        return configured
+    default = Path.home() / ".bun/bin/playwriter"
+    if default.exists():
+        return str(default)
+    resolved = shutil.which("playwriter")
+    if resolved:
+        return resolved
+    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
+
+
+def _playwriter_script_dir() -> Path:
+    return Path(__file__).resolve().parent / "playwriter_scripts"
+
+
+def _playwriter_extract_script() -> Path:
+    return _playwriter_script_dir() / "extract_post_comments.js"
+
+
+def _playwriter_preflight_script() -> Path:
+    return _playwriter_script_dir() / "preflight.js"
+
+
+def _stage_playwriter_config(config: dict[str, object]) -> tuple[Path, Path | None, Path | None]:
+    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    final_out = Path(str(config["out"])) if config.get("out") else None
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", final_out.stem if final_out else "comments")
+    config_path = staging_dir / f"{stem}-config.json"
+    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
+    return config_path, staged_out, final_out
+
+
+def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return path.exists()
+
+
+def _run_playwriter_command(command: list[str]) -> None:
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = "\n".join(
+            part for part in (result.stdout.strip(), result.stderr.strip()) if part
+        )
+        raise RuntimeError(
+            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
+            + (f"\n{detail}" if detail else "")
+        )
 
 
 def _string_value(value: object) -> str:

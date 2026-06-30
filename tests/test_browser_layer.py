@@ -311,6 +311,15 @@ def test_blocked_state_classifies_rate_limit_and_checkpoint() -> None:
     )
 
 
+def test_blocked_state_classifies_security_verification() -> None:
+    classification = classify_browser_state(
+        BrowserStateEvidence(security_verification_present=True)
+    )
+
+    assert classification.kind is BrowserBlockKind.SECURITY_CHALLENGE
+    assert classification.reason == "security-verification-present"
+
+
 @pytest.mark.asyncio
 async def test_artifact_writer_writes_json_and_screenshot(tmp_path: Path) -> None:
     page = FakePage("https://www.linkedin.com")

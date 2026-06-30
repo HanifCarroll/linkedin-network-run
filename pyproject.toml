@@ -51,7 +51,10 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"apps.opportunity_intel" = ["data/*.json"]
+"apps.network_automation" = ["playwriter_scripts/*.js"]
+"apps.comment_extractor" = ["playwriter_scripts/*.js"]
+"apps.opportunity_intel" = ["data/*.json", "playwriter_scripts/*.js"]
+"apps.recruiter_agency_outreach" = ["playwriter_scripts/*.js"]
 "apps.review_ui" = ["templates/*.html", "templates/partials/*.html", "static/*.css"]
 
 [tool.pytest.ini_options]

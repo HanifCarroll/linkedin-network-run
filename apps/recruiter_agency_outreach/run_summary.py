@@ -106,6 +106,15 @@ def recommend_next_run_summary(summary: RunSummary) -> RunRecommendation:
             blocker=summary.blocker,
         )
     if summary.allow_send:
+        if agency_gap > 0 and recruiter_gap > 0:
+            return RunRecommendation(
+                should_retry=True,
+                command=_retry_command(agency_gap, recruiter_gap, True),
+                reason=(
+                    f"Agency target is still short by {agency_gap} sends and "
+                    f"recruiter target is still short by {recruiter_gap} sends."
+                ),
+            )
         if agency_gap > 0:
             return RunRecommendation(
                 should_retry=True,

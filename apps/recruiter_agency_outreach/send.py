@@ -116,11 +116,23 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
     else:
         browser = options.browser or _default_message_browser(options, store)
         try:
-            result, out_path = browser.send_message(
-                config,
-                dry_run=dry_run,
-                allow_send=options.allow_send,
-            )
+            try:
+                result, out_path = browser.send_message(
+                    config,
+                    dry_run=dry_run,
+                    allow_send=options.allow_send,
+                )
+            except Exception as exc:
+                if dry_run:
+                    raise
+                out_path = _write_browser_exception_result(
+                    browser,
+                    store,
+                    lead,
+                    dry_run=dry_run,
+                    exc=exc,
+                )
+                result = load_message_send_result(out_path)
         finally:
             close = getattr(browser, "close", None)
             if callable(close):
@@ -154,10 +166,39 @@ def send_message(store: Store, options: SendMessageOptions) -> str:
 
 
 def _default_message_browser(options: SendMessageOptions, store: Store) -> Any:
-    from .message_browser import PlaywrightMessageBrowserClient
+    from .message_browser import PlaywriterMessageBrowserClient
 
     out_dir = Path(options.out_dir) if options.out_dir else store.dir / "message-results"
-    return PlaywrightMessageBrowserClient(out_dir=out_dir)
+    session = None if options.session == "auto" else options.session
+    return PlaywriterMessageBrowserClient(out_dir=out_dir, session=session)
+
+
+def _write_browser_exception_result(
+    browser: Any,
+    store: Store,
+    lead: Lead,
+    *,
+    dry_run: bool,
+    exc: Exception,
+) -> str:
+    out_dir = Path(getattr(browser, "out_dir", store.dir / "message-results"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{now_iso().replace(':', '').replace('-', '')}-{_safe_stem(lead.id)}.json"
+    payload = {
+        "status": "send-failed",
+        "dryRun": dry_run,
+        "url": lead.profile_url,
+        "reason": f"{type(exc).__name__}: {exc}",
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return str(path)
+
+
+def _safe_stem(value: str) -> str:
+    cleaned = []
+    for char in value:
+        cleaned.append(char if char.isalnum() or char in {"-", "_"} else "_")
+    return "".join(cleaned).strip("._") or "lead"
 
 
 @dataclass(slots=True)

@@ -19,6 +19,7 @@ from apps.network_automation.store import write_json_atomic
 from packages.linkedin_browser import (
     BrowserContextHandle,
     BrowserSession,
+    ChromeProfileConfig,
     PageReusePolicy,
     close_browser_context_handle,
     open_linkedin_browser_context,
@@ -37,10 +38,12 @@ class PlaywrightAccountCaptureClient:
         out_dir: Path = DEFAULT_ACCOUNT_CAPTURE_OUT_DIR,
         context: Any | None = None,
         context_factory: Callable[[], Awaitable[Any]] | None = None,
+        chrome_profile_config: ChromeProfileConfig | None = None,
     ) -> None:
         self.out_dir = out_dir
         self._context = context
         self._context_factory = context_factory
+        self._chrome_profile_config = chrome_profile_config
         self._context_handle_ref: BrowserContextHandle | None = None
         self._playwright_manager: Any | None = None
         self._playwright: Any | None = None
@@ -89,7 +92,10 @@ class PlaywrightAccountCaptureClient:
 
         self._playwright_manager = async_playwright()
         self._playwright = await self._playwright_manager.start()
-        self._context_handle_ref = await open_linkedin_browser_context(self._playwright)
+        self._context_handle_ref = await open_linkedin_browser_context(
+            self._playwright,
+            config=self._chrome_profile_config,
+        )
         self._context = self._context_handle_ref.context
         return self._context
 

@@ -1337,6 +1337,45 @@ def _acceptance_check_and_import_chunks(
     for offset in range(0, len(candidates), chunk_size):
         limit = min(chunk_size, len(candidates) - offset)
         chunk_path = chunk_dir / f"chunk-{offset}.json"
+        if chunk_path.exists():
+            existing = read_model(chunk_path, AcceptanceOutcomeArtifact)
+            existing_blocked_rows = [
+                row
+                for row in existing.rows
+                if str(getattr(row, "status", "")).lower() == "blocked"
+            ]
+            if (
+                existing.complete is True
+                and existing.input == str(candidates_out)
+                and existing.offset == offset
+                and existing.limit == limit
+                and existing.total_candidates == len(candidates)
+                and len(existing.rows) == limit
+                and not existing_blocked_rows
+            ):
+                store.append_acceptance_event(
+                    "run-daily-session-check-reuse",
+                    {
+                        "input": str(candidates_out),
+                        "out": str(chunk_path),
+                        "offset": offset,
+                        "limit": limit,
+                        "candidates": len(candidates),
+                    },
+                )
+                messages.append(f"reused complete acceptance chunk: {chunk_path}")
+                chunk_paths.append(chunk_path)
+                continue
+        store.append_acceptance_event(
+            "run-daily-session-check-start",
+            {
+                "input": str(candidates_out),
+                "out": str(chunk_path),
+                "offset": offset,
+                "limit": limit,
+                "candidates": len(candidates),
+            },
+        )
         messages.append(
             acceptance_check(
                 store,
@@ -1354,6 +1393,13 @@ def _acceptance_check_and_import_chunks(
             blockers.append(f"{chunk_path} is incomplete")
         if len(artifact.rows) != limit:
             blockers.append(f"{chunk_path} has {len(artifact.rows)}/{limit} rows")
+        blocked_rows = [
+            row
+            for row in artifact.rows
+            if str(getattr(row, "status", "")).lower() == "blocked"
+        ]
+        if blocked_rows:
+            blockers.append(f"{chunk_path} has {len(blocked_rows)} blocked rows")
     if blockers:
         store.append_acceptance_event(
             "run-daily-session-blocked",

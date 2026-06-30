@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from packages.linkedin_browser import (
+    DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
+    DEFAULT_BROWSER_PROFILE_NAME,
+    ChromeProfileConfig,
+)
+
 from .dashboard import (
     DailyLeadAction,
     DashboardReport,
@@ -46,6 +52,7 @@ AGENCY_ACCOUNT_SOURCE = "ASAP - Agency Accounts Digital Agency"
 AGENCY_ACCOUNT_DEVELOPMENT_SOURCE = "ASAP - Agency Accounts Development Agency"
 AGENCY_ACCOUNT_PRODUCT_SOURCE = "ASAP - Agency Accounts Product Studio"
 AGENCY_ACCOUNT_CONTACTS_SOURCE = "ASAP - Agency Account Contacts"
+RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass(slots=True)
@@ -169,6 +176,19 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
                 completed_at=completed_at,
             ),
         )
+        state = store.load()
+        report = build_dashboard_report(
+            state,
+            str(store.state_path),
+            target_agencies=max(0, options.target_agencies),
+            target_recruiters=max(0, options.target_recruiters),
+            allow_send=False,
+            actions=actions,
+            mode="sourcing",
+            dashboard_path=dashboard_path,
+        )
+        write_dashboard_markdown(dashboard_path, report)
+        write_dashboard_markdown(str(store.latest_run_dashboard_path()), report)
         _progress(f"run-failed run_id={run_id} blocker={exc}")
         raise
     state = store.load()
@@ -280,6 +300,13 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
                 completed_at=completed_at,
             ),
         )
+        _write_send_ready_dashboard(
+            store,
+            dashboard_path=dashboard_path,
+            target_agencies=max(0, options.target_agencies),
+            target_recruiters=max(0, options.target_recruiters),
+            actions=actions,
+        )
         raise
 
     completed_at = now_iso()
@@ -303,19 +330,13 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
     )
     store.save(state)
 
-    state = store.load()
-    report = build_dashboard_report(
-        state,
-        str(store.state_path),
+    report = _write_send_ready_dashboard(
+        store,
+        dashboard_path=dashboard_path,
         target_agencies=max(0, options.target_agencies),
         target_recruiters=max(0, options.target_recruiters),
-        allow_send=True,
         actions=actions,
-        mode="sending",
-        dashboard_path=dashboard_path,
     )
-    write_dashboard_markdown(dashboard_path, report)
-    write_dashboard_markdown(str(store.latest_run_dashboard_path()), report)
     markdown = render_dashboard_markdown(report)
     summary = latest_run_summary(state, str(store.state_path))
     summary_text = render_run_summary_text(summary) if summary else ""
@@ -325,6 +346,30 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
         markdown=markdown,
         summary_text=summary_text,
     )
+
+
+def _write_send_ready_dashboard(
+    store: Store,
+    *,
+    dashboard_path: str,
+    target_agencies: int,
+    target_recruiters: int,
+    actions: list[DailyLeadAction],
+) -> DashboardReport:
+    state = store.load()
+    report = build_dashboard_report(
+        state,
+        str(store.state_path),
+        target_agencies=target_agencies,
+        target_recruiters=target_recruiters,
+        allow_send=True,
+        actions=actions,
+        mode="sending",
+        dashboard_path=dashboard_path,
+    )
+    write_dashboard_markdown(dashboard_path, report)
+    write_dashboard_markdown(str(store.latest_run_dashboard_path()), report)
+    return report
 
 
 def daily_buckets(target_agencies: int, target_recruiters: int) -> list[tuple[str, list[str], int]]:
@@ -411,7 +456,14 @@ def _run_agency_bucket(
             return
         if len(_agency_accounts_needing_contact_capture(store.load(), target)) < target:
             for source in _default_agency_account_sources():
-                _capture_account_source(store, options, run_id, source, round_number)
+                try:
+                    _capture_account_source(store, options, run_id, source, round_number)
+                except Exception as exc:
+                    _progress(
+                        f"capture-account-failed source={source!r} "
+                        f"round={round_number} error={exc}"
+                    )
+                    continue
                 if len(_agency_accounts_needing_contact_capture(store.load(), target)) >= target:
                     break
         _capture_agency_contacts_from_accounts(store, options, run_id, target, round_number)
@@ -529,7 +581,7 @@ def _capture_agency_contacts_from_accounts(
                 f"strategy={strategy.name} error={exc}"
             )
             _record_agency_contact_capture_error(store, account.id, strategy.name, exc)
-            raise
+            continue
         finally:
             close = getattr(browser, "close", None)
             if callable(close):
@@ -575,7 +627,11 @@ def _capture_browser(
 
     root = Path(options.capture_out_dir) if options.capture_out_dir else store.dir / "captures"
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
-    return PlaywrightBrowserClient(out_dir=out_dir)
+    return PlaywrightBrowserClient(
+        out_dir=out_dir,
+        chrome_profile_config=_recruiter_agency_chrome_profile_config(),
+        capture_timeout_seconds=RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS,
+    )
 
 
 def _account_browser(
@@ -593,7 +649,17 @@ def _account_browser(
         else store.dir / "account-captures"
     )
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
-    return PlaywrightAccountCaptureClient(out_dir=out_dir)
+    return PlaywrightAccountCaptureClient(
+        out_dir=out_dir,
+        chrome_profile_config=_recruiter_agency_chrome_profile_config(),
+    )
+
+
+def _recruiter_agency_chrome_profile_config() -> ChromeProfileConfig:
+    return ChromeProfileConfig(
+        user_data_dir=DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
+        profile_name=DEFAULT_BROWSER_PROFILE_NAME,
+    )
 
 
 def _ready_count(store: Store, bucket: str) -> int:

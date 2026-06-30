@@ -2,90 +2,61 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from apps.network_automation.browser import (
-    _classify_page,
-    _escape,
-    _fill_composer,
-    _fill_subject_if_present,
     _find_composer,
-    _find_message_action,
-    _find_send_message_button,
     _locator_count,
     _locator_disabled,
     _locator_visible,
-    _medium_wait,
-    _noop_async,
-    _profile_name,
     _safe_stem,
-    _same_sales_profile,
-    _wait_for_load,
+    _wait_for_path,
 )
 from apps.network_automation.store import write_json_atomic
-from packages.linkedin_browser import (
-    BrowserContextHandle,
-    BrowserSession,
-    PageReusePolicy,
-    RealAction,
-    RealActionApproval,
-    close_browser_context_handle,
-    guarded_click,
-    open_linkedin_browser_context,
-)
-from packages.linkedin_salesnav import (
-    CandidateIdentity,
-    MessageActionCandidate,
-    guarded_message_click,
-)
 
-from .send import MessageSendResult
+from .send import MessageSendResult, load_message_send_result
 
 DEFAULT_MESSAGE_OUT_DIR = Path("/tmp/recruiter-agency-outreach-message")
 SALES_NAV_INMAIL_ACTION = "button[data-anchor-send-inmail]"
 COMPOSER_WAIT_ATTEMPTS = 20
 COMPOSER_WAIT_MS = 500
-ResultT = TypeVar("ResultT")
+PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
+PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
+PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
 
 
-class PlaywrightMessageBrowserClient:
-    """Playwright-backed adapter for guarded recruiter/agency messages."""
+class PlaywriterMessageBrowserClient:
+    """Playwriter-backed adapter for guarded recruiter/agency messages."""
 
     def __init__(
         self,
         *,
         out_dir: Path = DEFAULT_MESSAGE_OUT_DIR,
-        context: Any | None = None,
-        context_factory: Callable[[], Awaitable[Any]] | None = None,
+        session: str | None = None,
+        browser_key: str | None = None,
+        playwriter_bin: str | None = None,
     ) -> None:
         self.out_dir = out_dir
-        self._context = context
-        self._context_factory = context_factory
-        self._context_handle_ref: BrowserContextHandle | None = None
-        self._playwright_manager: Any | None = None
-        self._playwright: Any | None = None
-        self._loop = asyncio.new_event_loop()
-        self._counter = 0
+        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
+        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
+        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+
+    @property
+    def session(self) -> str:
+        if self._session is None:
+            self._session = self._create_session()
+        return self._session
 
     def close(self) -> None:
-        async def _close() -> None:
-            if self._context_handle_ref is not None:
-                await close_browser_context_handle(self._context_handle_ref)
-            elif self._context is not None and hasattr(self._context, "close"):
-                await self._context.close()
-            if self._playwright is not None and hasattr(self._playwright, "stop"):
-                await self._playwright.stop()
-            elif self._playwright_manager is not None and hasattr(
-                self._playwright_manager, "__aexit__"
-            ):
-                await self._playwright_manager.__aexit__(None, None, None)
-
-        if not self._loop.is_closed():
-            self._loop.run_until_complete(_close())
-            self._loop.close()
+        return None
 
     def send_message(
         self,
@@ -96,158 +67,59 @@ class PlaywrightMessageBrowserClient:
     ) -> tuple[MessageSendResult, str]:
         if not dry_run and not allow_send:
             raise RuntimeError("real send requires allow_send=True")
-        return self._run(
-            self._send_message(config, dry_run=dry_run, allow_send=allow_send)
-        )
-
-    def _run(self, coroutine: Coroutine[Any, Any, ResultT]) -> ResultT:
-        return self._loop.run_until_complete(coroutine)
-
-    async def _context_handle(self) -> Any:
-        if self._context is not None:
-            return self._context
-        if self._context_factory is not None:
-            self._context = await self._context_factory()
-            return self._context
-        from playwright.async_api import async_playwright
-
-        self._playwright_manager = async_playwright()
-        self._playwright = await self._playwright_manager.start()
-        self._context_handle_ref = await open_linkedin_browser_context(self._playwright)
-        self._context = self._context_handle_ref.context
-        return self._context
-
-    async def _page(self) -> Any:
-        session = BrowserSession(
-            await self._context_handle(),
-            PageReusePolicy(
-                preferred_url_fragments=(
-                    "linkedin.com/sales/lead/",
-                    "linkedin.com/sales/search/people",
-                ),
-                foreground=False,
-            ),
-        )
-        return await session.page(
-            preferred_url_fragments=(
-                "linkedin.com/sales/lead/",
-                "linkedin.com/sales/search/people",
-            )
-        )
-
-    async def _send_message(
-        self,
-        config: Mapping[str, Any],
-        *,
-        dry_run: bool,
-        allow_send: bool,
-    ) -> tuple[MessageSendResult, str]:
         candidate = _candidate(config)
-        message = str(config.get("message") or "").replace("\r\n", "\n").strip()
-        subject = str(config.get("subject") or "").strip()
-        if not candidate.get("profileUrl"):
-            raise RuntimeError("candidate with profileUrl is required")
-        if not message:
-            raise RuntimeError("message is required")
+        out = self.out_dir / f"{_safe_stem(str(candidate['id']))}-message-result.json"
+        payload = {
+            "candidate": candidate,
+            "message": str(config.get("message") or ""),
+            "subject": str(config.get("subject") or ""),
+            "dryRun": dry_run,
+            "allowSend": allow_send,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_message_script(), payload)
+        return load_message_send_result(out), str(out)
 
-        page = await self._page()
-        await page.goto(str(candidate["profileUrl"]), wait_until="domcontentloaded", timeout=30000)
-        await _wait_for_load(page)
-        payload = _result_base(candidate, message, dry_run=dry_run, url=page.url)
-        block = await _classify_page(page)
-        if block.is_blocking:
-            payload.update({"status": "blocked", "reason": block.reason})
-            return self._write_result(str(candidate["id"]), payload)
-        if not _same_sales_profile(str(candidate["profileUrl"]), page.url):
-            payload.update({"status": "identity-mismatch", "reason": "loaded URL differs"})
-            return self._write_result(str(candidate["id"]), payload)
+    def _create_session(self) -> str:
+        command = [self._playwriter_bin, "session", "new"]
+        if self._browser_key:
+            command.extend(["--browser", self._browser_key])
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
+        if not match:
+            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
+        return match.group(1)
 
-        profile_name = await _profile_name(page)
-        action = await _find_message_action(page)
-        if action is None:
-            payload["status"] = "not-messageable"
-            return self._write_result(str(candidate["id"]), payload)
-
-        safety_action = MessageActionCandidate(
-            kind=action["kind"],
-            action_label=action["label"],
-            identity_label=profile_name or str(candidate["name"]),
-            source="profile-actions",
-            opened_page_url=page.url,
+    def _run_script(self, script: Path, config: dict[str, Any]) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        config_path, staged_out, final_out = _stage_playwriter_config(config)
+        script_config = dict(config)
+        if staged_out is not None:
+            script_config["out"] = str(staged_out)
+        write_json_atomic(config_path, script_config)
+        _run_playwriter_command(
+            [
+                self._playwriter_bin,
+                "-s",
+                self.session,
+                "-e",
+                f"state.recruiterAgencyMessageConfigPath = {json.dumps(str(config_path))}",
+            ]
         )
-        if dry_run:
-            click_result = await guarded_message_click(
-                CandidateIdentity(
-                    name=str(candidate["name"]),
-                    profile_url=str(candidate["profileUrl"]),
-                    candidate_id=str(candidate["id"]),
-                ),
-                safety_action,
-                lambda: _noop_async(),
-                dry_run=True,
-            )
-            status = (
-                "dry-run-messageable"
-                if click_result.safety.status == "ok"
-                else click_result.status
-            )
-            payload.update(
-                {"status": status, "action": click_result.safety.__dict__}
-            )
-            return self._write_result(str(candidate["id"]), payload)
-
-        action_click = await _click_message_action(page, action)
-        composer = await _wait_for_message_composer(page)
-        if composer is None:
-            payload.update(
-                {
-                    "status": "composer-missing",
-                    "action": safety_action.__dict__,
-                    "actionClick": action_click,
-                }
-            )
-            return self._write_result(str(candidate["id"]), payload)
-        subject_fill = await _fill_subject_if_present(page, subject)
-        body_fill = await _fill_composer(composer, message)
-        payload.update(
-            {
-                "action": safety_action.__dict__,
-                "actionClick": action_click,
-                "composerSelector": composer["selector"],
-                "subjectFill": subject_fill,
-                "bodyFill": body_fill,
-            }
+        _run_playwriter_command(
+            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
         )
-        send_button = await _find_send_message_button(page)
-        if send_button is None:
-            payload["status"] = "send-button-missing"
-            return self._write_result(str(candidate["id"]), payload)
+        if staged_out is not None and final_out is not None:
+            if not _wait_for_path(staged_out):
+                raise RuntimeError(
+                    "Playwriter recruiter message script did not write an output artifact; "
+                    f"expected {staged_out}"
+                )
+            final_out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(staged_out), str(final_out))
 
-        async def click_send() -> None:
-            await send_button.click(timeout=8000)
 
-        guard = await guarded_click(
-            RealAction.SEND_MESSAGE,
-            click_send,
-            label="Send",
-            candidate_id=str(candidate["id"]),
-            dry_run=False,
-            approval=RealActionApproval(RealAction.SEND_MESSAGE, allow=allow_send),
-        )
-        await _medium_wait(page)
-        payload.update({"status": "sent-clicked", "send": guard.__dict__})
-        await _escape(page)
-        return self._write_result(str(candidate["id"]), payload)
-
-    def _write_result(
-        self,
-        stem: str,
-        payload: dict[str, Any],
-    ) -> tuple[MessageSendResult, str]:
-        self._counter += 1
-        path = self.out_dir / f"{self._counter:03d}-{_safe_stem(stem)}.json"
-        write_json_atomic(path, payload)
-        return MessageSendResult.from_mapping(payload), str(path)
+PlaywrightMessageBrowserClient = PlaywriterMessageBrowserClient
 
 
 async def _click_message_action(page: Any, action: Mapping[str, Any]) -> dict[str, Any]:
@@ -294,20 +166,50 @@ def _candidate(config: Mapping[str, Any]) -> dict[str, Any]:
     raw = config.get("candidate")
     if not isinstance(raw, Mapping):
         raise RuntimeError("candidate is required")
-    return dict(raw)
+    candidate = dict(raw)
+    if not candidate.get("id"):
+        raise RuntimeError("candidate id is required")
+    if not candidate.get("profileUrl"):
+        raise RuntimeError("candidate with profileUrl is required")
+    if not str(config.get("message") or "").strip():
+        raise RuntimeError("message is required")
+    return candidate
 
 
-def _result_base(
-    candidate: Mapping[str, Any],
-    message: str,
-    *,
-    dry_run: bool,
-    url: str,
-) -> dict[str, Any]:
-    return {
-        "candidate": dict(candidate),
-        "dryRun": dry_run,
-        "url": url,
-        "messageLength": len(message),
-        "status": "unknown",
-    }
+def _playwriter_bin() -> str:
+    configured = os.environ.get(PLAYWRITER_BIN_ENV)
+    if configured:
+        return configured
+    default = Path.home() / ".bun/bin/playwriter"
+    if default.exists():
+        return str(default)
+    resolved = shutil.which("playwriter")
+    if resolved:
+        return resolved
+    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
+
+
+def _playwriter_message_script() -> Path:
+    return Path(__file__).resolve().parent / "playwriter_scripts" / "send_message.js"
+
+
+def _stage_playwriter_config(config: dict[str, Any]) -> tuple[Path, Path | None, Path | None]:
+    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    final_out = Path(str(config["out"])) if config.get("out") else None
+    stem = _safe_stem(final_out.stem if final_out is not None else "message-result")
+    config_path = staging_dir / f"{stem}-config.json"
+    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
+    return config_path, staged_out, final_out
+
+
+def _run_playwriter_command(command: list[str]) -> None:
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = "\n".join(
+            part for part in (result.stdout.strip(), result.stderr.strip()) if part
+        )
+        raise RuntimeError(
+            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
+            + (f"\n{detail}" if detail else "")
+        )

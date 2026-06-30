@@ -26,6 +26,7 @@ class BrowserStateEvidence:
     login_form_present: bool = False
     checkpoint_present: bool = False
     security_challenge_present: bool = False
+    security_verification_present: bool = False
     account_restricted_banner_present: bool = False
     blocked_banner_present: bool = False
 
@@ -48,6 +49,11 @@ def classify_browser_state(evidence: BrowserStateEvidence) -> BrowserStateClassi
         return BrowserStateClassification(
             BrowserBlockKind.SECURITY_CHALLENGE,
             "security-challenge-present",
+        )
+    if evidence.security_verification_present:
+        return BrowserStateClassification(
+            BrowserBlockKind.SECURITY_CHALLENGE,
+            "security-verification-present",
         )
     if evidence.checkpoint_present or url_kind is BrowserBlockKind.CHECKPOINT:
         return BrowserStateClassification(BrowserBlockKind.CHECKPOINT, "checkpoint-present")

@@ -180,7 +180,13 @@ def test_package_data_includes_runtime_assets() -> None:
     pyproject = tomllib.loads(pyproject_path.read_text())
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
-    assert package_data["apps.opportunity_intel"] == ["data/*.json"]
+    assert package_data["apps.network_automation"] == ["playwriter_scripts/*.js"]
+    assert package_data["apps.comment_extractor"] == ["playwriter_scripts/*.js"]
+    assert package_data["apps.opportunity_intel"] == [
+        "data/*.json",
+        "playwriter_scripts/*.js",
+    ]
+    assert package_data["apps.recruiter_agency_outreach"] == ["playwriter_scripts/*.js"]
     assert "templates/*.html" in package_data["apps.review_ui"]
     assert "static/*.css" in package_data["apps.review_ui"]
 
