@@ -1,14 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}Recruiter/Agency - LinkedIn Tools Review{% endblock %}
+{% block title %}Recruiter/Agency/Advisor - LinkedIn Tools Review{% endblock %}
 {% block eyebrow %}Send-capable workflow{% endblock %}
-{% block heading %}Recruiter/Agency Review{% endblock %}
+{% block heading %}Recruiter/Agency/Advisor Review{% endblock %}
 
 {% block content %}
   <section class="panel">
     <div class="toolbar">
       <h2>Latest Run Summary</h2>
-      <span class="badge badge--good">Live recruiter/agency state</span>
+      <span class="badge badge--good">Live outreach state</span>
     </div>
     <p><strong>Run:</strong> {{ snapshot.recruiter_summary.run_id }}</p>
     <p><strong>Started:</strong> {{ snapshot.recruiter_summary.started_at }}</p>
@@ -46,7 +46,7 @@
 
     <article class="panel">
       <h2>Source Quality And Blockers</h2>
-      <p>Agency accounts, website contacts, lead drafts, and guarded-send readiness are read from the recruiter/agency state store.</p>
+      <p>Agency accounts, website contacts, lead drafts, and guarded-send readiness are read from the outreach state store.</p>
       <p class="muted">Send-ready rows are still executed only through the guarded action service.</p>
     </article>
   </section>

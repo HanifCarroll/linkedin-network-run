@@ -105,6 +105,7 @@ class AcceptedFollowupTemplateKey(StrEnum):
     GENERAL = "general"
     AGENCY = "agency"
     RECRUITER = "recruiter"
+    ADVISOR = "advisor"
 
 
 class AcceptanceFollowupStatus(StrEnum):
@@ -1775,6 +1776,8 @@ def build_draft_item(
         draft = recruiter_accepted_followup_draft(first)
     elif template_key == AcceptedFollowupTemplateKey.AGENCY:
         draft = agency_accepted_followup_draft(first, company)
+    elif template_key == AcceptedFollowupTemplateKey.ADVISOR:
+        draft = advisor_accepted_followup_draft(first)
     else:
         draft = general_accepted_followup_draft(first, company)
     evidence: list[str] = []
@@ -1859,10 +1862,20 @@ def recruiter_accepted_followup_draft(first: str) -> str:
     )
 
 
+def advisor_accepted_followup_draft(first: str) -> str:
+    return (
+        f"Hey, {first}. Thanks for connecting.\n\n"
+        "I'm a full-stack product engineer working through HC Studio LLC. I help turn AI, "
+        "automation, and workflow strategy into shipped tools clients can actually use.\n\n"
+        "Are you the right person to ask about implementation support for strategy or "
+        "advisory clients?"
+    )
+
+
 ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES: dict[str, AcceptedFollowupTemplateKey] = {
     "ASAP - Agency Owners Delivery": AcceptedFollowupTemplateKey.AGENCY,
     "ASAP - Contract Recruiters Staffing": AcceptedFollowupTemplateKey.RECRUITER,
-    "ASAP - AI Advisors Implementation Partners": AcceptedFollowupTemplateKey.GENERAL,
+    "ASAP - AI Advisors Implementation Partners": AcceptedFollowupTemplateKey.ADVISOR,
     "ASAP - Startup CTO Eng Leaders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - High-Intent SaaS AI Founders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - Vertical Proof Buyers": AcceptedFollowupTemplateKey.GENERAL,
@@ -1886,6 +1899,8 @@ def choose_angle(
         return template_key, "contract-role availability ask" + company_suffix
     if template_key == AcceptedFollowupTemplateKey.AGENCY:
         return template_key, "project or overflow support ask" + company_suffix
+    if template_key == AcceptedFollowupTemplateKey.ADVISOR:
+        return template_key, "AI and workflow implementation support ask" + company_suffix
     return template_key, "product-engineering support ask" + company_suffix
 
 

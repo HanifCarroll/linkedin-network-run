@@ -1,4 +1,4 @@
-"""Typed state model for recruiter/agency outreach."""
+"""Typed state model for recruiter/agency/advisor outreach."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ class LeadType(StrEnum):
     AGENCY_RESOURCE = "agency_resource"
     AGENCY_DELIVERY = "agency_delivery"
     AGENCY_FOUNDER = "agency_founder"
+    AI_ADVISOR_IMPLEMENTATION_PARTNER = "ai_advisor_implementation_partner"
     BAD_FIT = "bad_fit"
 
 
@@ -520,6 +521,7 @@ class RunEvent:
     state_path: str = ""
     target_agencies: int = 0
     target_recruiters: int = 0
+    target_advisors: int = 0
     allow_send: bool = False
     started_at: str = ""
     completed_at: str = ""
@@ -544,6 +546,7 @@ class RunEvent:
             state_path=str(data.get("state_path") or ""),
             target_agencies=_optional_int(data.get("target_agencies")),
             target_recruiters=_optional_int(data.get("target_recruiters")),
+            target_advisors=_optional_int(data.get("target_advisors")),
             allow_send=bool(data.get("allow_send", False)),
             started_at=str(data.get("started_at") or ""),
             completed_at=str(data.get("completed_at") or ""),
@@ -568,6 +571,7 @@ class RunEvent:
             "state_path": self.state_path,
             "target_agencies": self.target_agencies,
             "target_recruiters": self.target_recruiters,
+            "target_advisors": self.target_advisors,
             "allow_send": self.allow_send,
             "started_at": self.started_at,
             "completed_at": self.completed_at,

@@ -1,4 +1,4 @@
-"""Run summary and retry recommendation helpers for recruiter/agency outreach."""
+"""Run summary and retry recommendation helpers for recruiter/agency/advisor outreach."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ class RunSummary:
     state_path: str = ""
     target_agencies: int = 0
     target_recruiters: int = 0
+    target_advisors: int = 0
     allow_send: bool = False
     counts: RunCounts = field(default_factory=RunCounts)
     actions: list[DailyLeadAction] = field(default_factory=list)
@@ -63,6 +64,7 @@ def recommend_next_run(
     *,
     target_agencies: int,
     target_recruiters: int,
+    target_advisors: int = 5,
     allow_send: bool,
 ) -> RunRecommendation:
     summary = latest_run_summary(state, state_path)
@@ -71,16 +73,18 @@ def recommend_next_run(
             summary.target_agencies = target_agencies
         if summary.target_recruiters == 0:
             summary.target_recruiters = target_recruiters
+        if summary.target_advisors == 0:
+            summary.target_advisors = target_advisors
         if allow_send:
             summary.allow_send = True
         return recommend_next_run_summary(summary)
-    if target_agencies > 0:
+    if target_agencies > 0 or target_recruiters > 0 or target_advisors > 0:
         return RunRecommendation(
             should_retry=True,
-            command=_retry_command(target_agencies, 0, allow_send),
+            command=_retry_command(target_agencies, target_recruiters, target_advisors, allow_send),
             reason=(
-                "No previous run summary is available. Start with an agency-focused "
-                "run if agency coverage is the open question."
+                "No previous run summary is available. Start with the requested "
+                "outreach targets."
             ),
         )
     return RunRecommendation(reason="No previous run summary is available.")
@@ -89,36 +93,76 @@ def recommend_next_run(
 def recommend_next_run_summary(summary: RunSummary) -> RunRecommendation:
     agency_gap = _non_zero(summary.target_agencies, 0) - summary.counts.sent.agencies
     recruiter_gap = _non_zero(summary.target_recruiters, 0) - summary.counts.sent.recruiters
+    advisor_gap = _non_zero(summary.target_advisors, 0) - summary.counts.sent.advisors
     if summary.status == "failed" or clean_text(summary.blocker):
         target_agencies = _positive_or_default(agency_gap, _non_zero(summary.target_agencies, 5))
         target_recruiters = _positive_or_default(
             recruiter_gap,
             _non_zero(summary.target_recruiters, 5),
         )
-        if agency_gap > 0 and recruiter_gap <= 0:
+        target_advisors = _positive_or_default(
+            advisor_gap,
+            _non_zero(summary.target_advisors, 5),
+        )
+        if agency_gap > 0 and recruiter_gap <= 0 and advisor_gap <= 0:
             target_recruiters = 0
-        elif recruiter_gap > 0 and agency_gap <= 0:
+            target_advisors = 0
+        elif recruiter_gap > 0 and agency_gap <= 0 and advisor_gap <= 0:
             target_agencies = 0
+            target_advisors = 0
+        elif advisor_gap > 0 and agency_gap <= 0 and recruiter_gap <= 0:
+            target_agencies = 0
+            target_recruiters = 0
         return RunRecommendation(
             should_retry=True,
-            command=_retry_command(target_agencies, target_recruiters, summary.allow_send),
+            command=_retry_command(
+                target_agencies, target_recruiters, target_advisors, summary.allow_send
+            ),
             reason="The latest run did not finish cleanly.",
             blocker=summary.blocker,
         )
     if summary.allow_send:
+        if agency_gap > 0 and recruiter_gap > 0 and advisor_gap > 0:
+            return RunRecommendation(
+                should_retry=True,
+                command=_retry_command(agency_gap, recruiter_gap, advisor_gap, True),
+                reason=(
+                    f"Agency target is still short by {agency_gap} sends and "
+                    f"recruiter target is still short by {recruiter_gap} sends and "
+                    f"advisor target is still short by {advisor_gap} sends."
+                ),
+            )
         if agency_gap > 0 and recruiter_gap > 0:
             return RunRecommendation(
                 should_retry=True,
-                command=_retry_command(agency_gap, recruiter_gap, True),
+                command=_retry_command(agency_gap, recruiter_gap, 0, True),
                 reason=(
                     f"Agency target is still short by {agency_gap} sends and "
                     f"recruiter target is still short by {recruiter_gap} sends."
                 ),
             )
+        if agency_gap > 0 and advisor_gap > 0:
+            return RunRecommendation(
+                should_retry=True,
+                command=_retry_command(agency_gap, 0, advisor_gap, True),
+                reason=(
+                    f"Agency target is still short by {agency_gap} sends and "
+                    f"advisor target is still short by {advisor_gap} sends."
+                ),
+            )
+        if recruiter_gap > 0 and advisor_gap > 0:
+            return RunRecommendation(
+                should_retry=True,
+                command=_retry_command(0, recruiter_gap, advisor_gap, True),
+                reason=(
+                    f"Recruiter target is still short by {recruiter_gap} sends and "
+                    f"advisor target is still short by {advisor_gap} sends."
+                ),
+            )
         if agency_gap > 0:
             return RunRecommendation(
                 should_retry=True,
-                command=_retry_command(agency_gap, 0, True),
+                command=_retry_command(agency_gap, 0, 0, True),
                 reason=(
                     f"Agency target is still short by {agency_gap} sends; validate "
                     "the fixed agency lane without spending time on recruiters."
@@ -127,8 +171,14 @@ def recommend_next_run_summary(summary: RunSummary) -> RunRecommendation:
         if recruiter_gap > 0:
             return RunRecommendation(
                 should_retry=True,
-                command=_retry_command(0, recruiter_gap, True),
+                command=_retry_command(0, recruiter_gap, 0, True),
                 reason=f"Recruiter target is still short by {recruiter_gap} sends.",
+            )
+        if advisor_gap > 0:
+            return RunRecommendation(
+                should_retry=True,
+                command=_retry_command(0, 0, advisor_gap, True),
+                reason=f"Advisor target is still short by {advisor_gap} sends.",
             )
     if not summary.allow_send:
         return RunRecommendation(
@@ -149,18 +199,28 @@ def render_run_summary_text(summary: RunSummary) -> str:
         f"status={summary.status}",
         f"state={summary.state_path}",
         f"dashboard={summary.dashboard_path}",
-        f"target={summary.target_agencies} agencies,{summary.target_recruiters} recruiters",
-        f"sent={summary.counts.sent.agencies} agencies,{summary.counts.sent.recruiters} recruiters",
+        (
+            f"target={summary.target_agencies} agencies,"
+            f"{summary.target_recruiters} recruiters,{summary.target_advisors} advisors"
+        ),
+        (
+            f"sent={summary.counts.sent.agencies} agencies,"
+            f"{summary.counts.sent.recruiters} recruiters,{summary.counts.sent.advisors} advisors"
+        ),
         (
             "checked_skipped="
             f"conversation_exists {summary.counts.conversation_exists.agencies} agencies,"
-            f"{summary.counts.conversation_exists.recruiters} recruiters; "
+            f"{summary.counts.conversation_exists.recruiters} recruiters,"
+            f"{summary.counts.conversation_exists.advisors} advisors; "
             f"not_messageable {summary.counts.not_messageable.agencies} agencies,"
-            f"{summary.counts.not_messageable.recruiters} recruiters; "
+            f"{summary.counts.not_messageable.recruiters} recruiters,"
+            f"{summary.counts.not_messageable.advisors} advisors; "
             f"blocked {summary.counts.blocked.agencies} agencies,"
-            f"{summary.counts.blocked.recruiters} recruiters; "
+            f"{summary.counts.blocked.recruiters} recruiters,"
+            f"{summary.counts.blocked.advisors} advisors; "
             f"send_failed {summary.counts.send_failed.agencies} agencies,"
-            f"{summary.counts.send_failed.recruiters} recruiters"
+            f"{summary.counts.send_failed.recruiters} recruiters,"
+            f"{summary.counts.send_failed.advisors} advisors"
         ),
     ]
     if clean_text(summary.blocker):
@@ -234,6 +294,8 @@ def _run_summaries_from_events(
             summary.target_agencies = event.target_agencies
         if event.target_recruiters:
             summary.target_recruiters = event.target_recruiters
+        if event.target_advisors:
+            summary.target_advisors = event.target_advisors
         if event.allow_send:
             summary.allow_send = True
         if event.blocker:
@@ -280,18 +342,22 @@ def _effective_run_time(summary: RunSummary) -> str:
     return summary.completed_at or summary.started_at
 
 
-def _retry_command(target_agencies: int, target_recruiters: int, allow_send: bool) -> str:
+def _retry_command(
+    target_agencies: int, target_recruiters: int, target_advisors: int, allow_send: bool
+) -> str:
     if allow_send:
         return (
             "recruiter-agency-outreach send-ready --session auto "
             f"--target-agencies {target_agencies} "
             f"--target-recruiters {target_recruiters} "
+            f"--target-advisors {target_advisors} "
             "--allow-send --print-markdown"
         )
     return (
         "recruiter-agency-outreach run-daily --session auto "
         f"--target-agencies {target_agencies} "
         f"--target-recruiters {target_recruiters} "
+        f"--target-advisors {target_advisors} "
         "--print-markdown"
     )
 

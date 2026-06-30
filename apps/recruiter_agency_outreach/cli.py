@@ -1,4 +1,4 @@
-"""CLI namespace for the recruiter/agency outreach port."""
+"""CLI namespace for the recruiter/agency/advisor outreach port."""
 
 from __future__ import annotations
 
@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_daily_parser.add_argument("--session", default="auto")
     run_daily_parser.add_argument("--target-agencies", type=int, default=5)
     run_daily_parser.add_argument("--target-recruiters", type=int, default=5)
+    run_daily_parser.add_argument("--target-advisors", type=int, default=5)
     run_daily_parser.add_argument("--allow-send", action="store_true")
     run_daily_parser.add_argument("--print-markdown", action="store_true")
     run_daily_parser.add_argument("--refresh-saved-searches", action="store_true")
@@ -136,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--out", default="")
     dashboard_parser.add_argument("--target-agencies", type=int, default=5)
     dashboard_parser.add_argument("--target-recruiters", type=int, default=5)
+    dashboard_parser.add_argument("--target-advisors", type=int, default=5)
     dashboard_parser.add_argument("--allow-send", action="store_true")
     dashboard_parser.add_argument("--print-markdown", action="store_true")
 
@@ -145,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_parser = subparsers.add_parser("recommend-next-run")
     recommend_parser.add_argument("--target-agencies", type=int, default=5)
     recommend_parser.add_argument("--target-recruiters", type=int, default=5)
+    recommend_parser.add_argument("--target-advisors", type=int, default=5)
     recommend_parser.add_argument("--allow-send", action="store_true")
     recommend_parser.add_argument("--json", action="store_true")
 
@@ -163,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     send_ready_parser.add_argument("--session", default="auto")
     send_ready_parser.add_argument("--target-agencies", type=int, default=5)
     send_ready_parser.add_argument("--target-recruiters", type=int, default=5)
+    send_ready_parser.add_argument("--target-advisors", type=int, default=5)
     send_ready_parser.add_argument("--allow-send", action="store_true")
     send_ready_parser.add_argument("--result-dir", default="")
     send_ready_parser.add_argument("--dashboard", default="")
@@ -262,6 +266,7 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
                 session=args.session,
                 target_agencies=args.target_agencies,
                 target_recruiters=args.target_recruiters,
+                target_advisors=args.target_advisors,
                 allow_send=args.allow_send,
                 print_markdown=args.print_markdown,
                 refresh_saved_searches=args.refresh_saved_searches,
@@ -366,6 +371,7 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
             str(store.state_path),
             target_agencies=args.target_agencies,
             target_recruiters=args.target_recruiters,
+            target_advisors=args.target_advisors,
             allow_send=args.allow_send,
             dashboard_path=out,
         )
@@ -391,6 +397,7 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
             str(store.state_path),
             target_agencies=args.target_agencies,
             target_recruiters=args.target_recruiters,
+            target_advisors=args.target_advisors,
             allow_send=args.allow_send,
         )
         if args.json:
@@ -435,6 +442,7 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
                 session=args.session,
                 target_agencies=args.target_agencies,
                 target_recruiters=args.target_recruiters,
+                target_advisors=args.target_advisors,
                 allow_send=args.allow_send,
                 result_dir=args.result_dir,
                 dashboard_path=args.dashboard,

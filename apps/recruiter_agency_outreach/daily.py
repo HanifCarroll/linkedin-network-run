@@ -1,4 +1,4 @@
-"""Daily recruiter/agency orchestration surface."""
+"""Daily recruiter/agency/advisor orchestration surface."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ AGENCY_ACCOUNT_SOURCE = "ASAP - Agency Accounts Digital Agency"
 AGENCY_ACCOUNT_DEVELOPMENT_SOURCE = "ASAP - Agency Accounts Development Agency"
 AGENCY_ACCOUNT_PRODUCT_SOURCE = "ASAP - Agency Accounts Product Studio"
 AGENCY_ACCOUNT_CONTACTS_SOURCE = "ASAP - Agency Account Contacts"
+ADVISOR_IMPLEMENTATION_SOURCE = "ASAP - AI Advisors Implementation Partners"
 RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS = 90.0
 
 
@@ -60,6 +61,7 @@ class DailyOptions:
     session: str
     target_agencies: int = 5
     target_recruiters: int = 5
+    target_advisors: int = 5
     allow_send: bool = False
     print_markdown: bool = False
     refresh_saved_searches: bool = False
@@ -87,6 +89,7 @@ class SendReadyOptions:
     session: str
     target_agencies: int = 5
     target_recruiters: int = 5
+    target_advisors: int = 5
     allow_send: bool = False
     print_markdown: bool = False
     result_dir: str = ""
@@ -127,6 +130,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
             dashboard_path=dashboard_path,
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             allow_send=False,
             started_at=started_at,
         ),
@@ -135,6 +139,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
     _progress(
         f"run-start run_id={run_id} target_agencies={max(0, options.target_agencies)} "
         f"target_recruiters={max(0, options.target_recruiters)} "
+        f"target_advisors={max(0, options.target_advisors)} "
         f"refresh_saved_searches={str(options.refresh_saved_searches).lower()}"
     )
     actions: list[DailyLeadAction] = []
@@ -142,6 +147,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
         for bucket, sources, target in daily_buckets(
             options.target_agencies,
             options.target_recruiters,
+            options.target_advisors,
         ):
             if target <= 0:
                 continue
@@ -171,6 +177,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
                 dashboard_path=dashboard_path,
                 target_agencies=max(0, options.target_agencies),
                 target_recruiters=max(0, options.target_recruiters),
+                target_advisors=max(0, options.target_advisors),
                 allow_send=False,
                 started_at=started_at,
                 completed_at=completed_at,
@@ -182,6 +189,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
             str(store.state_path),
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             allow_send=False,
             actions=actions,
             mode="sourcing",
@@ -206,6 +214,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
             dashboard_path=dashboard_path,
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             allow_send=False,
             started_at=started_at,
             completed_at=completed_at,
@@ -217,6 +226,7 @@ def run_daily(store: Store, options: DailyOptions) -> DailyResult:
         str(store.state_path),
         target_agencies=max(0, options.target_agencies),
         target_recruiters=max(0, options.target_recruiters),
+        target_advisors=max(0, options.target_advisors),
         allow_send=False,
         actions=actions,
         mode="sourcing",
@@ -256,6 +266,7 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
             dashboard_path=dashboard_path,
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             allow_send=True,
             started_at=started_at,
         ),
@@ -280,6 +291,15 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
             target=max(0, options.target_recruiters),
             actions=actions,
         )
+        _send_ready_bucket(
+            store,
+            result_root,
+            run_id=run_id,
+            session=options.session,
+            bucket="advisor",
+            target=max(0, options.target_advisors),
+            actions=actions,
+        )
     except Exception as exc:
         completed_at = now_iso()
         _append_lifecycle_event(
@@ -295,6 +315,7 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
                 dashboard_path=dashboard_path,
                 target_agencies=max(0, options.target_agencies),
                 target_recruiters=max(0, options.target_recruiters),
+                target_advisors=max(0, options.target_advisors),
                 allow_send=True,
                 started_at=started_at,
                 completed_at=completed_at,
@@ -305,6 +326,7 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
             dashboard_path=dashboard_path,
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             actions=actions,
         )
         raise
@@ -323,6 +345,7 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
             dashboard_path=dashboard_path,
             target_agencies=max(0, options.target_agencies),
             target_recruiters=max(0, options.target_recruiters),
+            target_advisors=max(0, options.target_advisors),
             allow_send=True,
             started_at=started_at,
             completed_at=completed_at,
@@ -335,6 +358,7 @@ def send_ready(store: Store, options: SendReadyOptions) -> SendReadyResult:
         dashboard_path=dashboard_path,
         target_agencies=max(0, options.target_agencies),
         target_recruiters=max(0, options.target_recruiters),
+        target_advisors=max(0, options.target_advisors),
         actions=actions,
     )
     markdown = render_dashboard_markdown(report)
@@ -354,6 +378,7 @@ def _write_send_ready_dashboard(
     dashboard_path: str,
     target_agencies: int,
     target_recruiters: int,
+    target_advisors: int,
     actions: list[DailyLeadAction],
 ) -> DashboardReport:
     state = store.load()
@@ -362,6 +387,7 @@ def _write_send_ready_dashboard(
         str(store.state_path),
         target_agencies=target_agencies,
         target_recruiters=target_recruiters,
+        target_advisors=target_advisors,
         allow_send=True,
         actions=actions,
         mode="sending",
@@ -372,10 +398,13 @@ def _write_send_ready_dashboard(
     return report
 
 
-def daily_buckets(target_agencies: int, target_recruiters: int) -> list[tuple[str, list[str], int]]:
+def daily_buckets(
+    target_agencies: int, target_recruiters: int, target_advisors: int = 5
+) -> list[tuple[str, list[str], int]]:
     return [
         ("agency", [], max(0, target_agencies)),
         ("recruiter", [RECRUITER_SOURCE], max(0, target_recruiters)),
+        ("advisor", [ADVISOR_IMPLEMENTATION_SOURCE], max(0, target_advisors)),
     ]
 
 
@@ -388,6 +417,8 @@ def _run_daily_args(options: DailyOptions) -> list[str]:
         str(max(0, options.target_agencies)),
         "--target-recruiters",
         str(max(0, options.target_recruiters)),
+        "--target-advisors",
+        str(max(0, options.target_advisors)),
     ]
     if options.refresh_saved_searches:
         args.append("--refresh-saved-searches")
@@ -776,6 +807,16 @@ def _default_people_source_url(source: str) -> str:
                 _agency_industry_filter(),
             ),
             "product studio",
+        )
+    if source == ADVISOR_IMPLEMENTATION_SOURCE:
+        return _sales_nav_people_search_url(
+            _base_people_filters(),
+            (
+                "AI consultant OR AI advisor OR business consultant OR operations consultant OR "
+                "fractional COO OR fractional CTO OR growth consultant OR automation consultant OR "
+                "AI strategy OR workflow automation OR AI implementation OR AI diagnostic OR "
+                "back office automation OR decision support"
+            ),
         )
     return ""
 

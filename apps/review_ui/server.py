@@ -283,7 +283,7 @@ def _nav_items() -> tuple[dict[str, str], ...]:
         {"id": "dashboard", "href": "/", "label": "Overview"},
         {"id": "opportunities", "href": "/opportunities", "label": "Opportunities"},
         {"id": "network", "href": "/network", "label": "Network"},
-        {"id": "recruiter", "href": "/recruiter-agency", "label": "Recruiter/Agency"},
+        {"id": "recruiter", "href": "/recruiter-agency", "label": "Outreach"},
         {"id": "browser", "href": "/browser", "label": "Browser"},
         {"id": "actions", "href": "/actions", "label": "Guarded Actions"},
     )

@@ -1,6 +1,6 @@
 # linkedin-tools
 
-Python monorepo for Hanif's LinkedIn networking, recruiter/agency outreach,
+Python monorepo for Hanif's LinkedIn networking, recruiter/agency/advisor outreach,
 opportunity intelligence, comment extraction, and local review UI tools.
 
 ## Current Status
@@ -10,7 +10,7 @@ opportunity intelligence, comment extraction, and local review UI tools.
 - Runtime: Python, `uv`, SQLite, FastAPI/Jinja, Playwriter, and Python
   Playwright fallback paths
 - State root: `~/Library/Application Support/linkedin-tools/`
-- Primary namespaces: network automation, recruiter/agency outreach,
+- Primary namespaces: network automation, recruiter/agency/advisor outreach,
   opportunity intelligence, comment extraction, and review UI
 
 ## Install And Verify
@@ -149,11 +149,11 @@ uv run linkedin-tools network \
   pending-cleanup run-session --session auto --withdraw-limit 1 --allow-withdraw
 ```
 
-## Recruiter And Agency Outreach
+## Recruiter, Agency, And Advisor Outreach
 
-The recruiter/agency namespace owns account sourcing, lead capture, drafting,
-dashboarding, guarded message dry-runs, and guarded sends. It must not send
-connection requests.
+The recruiter/agency namespace owns agency account sourcing, recruiter/advisor
+lead capture, drafting, dashboarding, guarded message dry-runs, and guarded
+sends. It must not send connection requests.
 
 ```sh
 uv run linkedin-tools recruiter-agency \
@@ -304,7 +304,7 @@ uv run linkedin-tools ui \
 ```
 
 The UI exposes review surfaces for opportunities, networking state,
-recruiter/agency state, browser artifacts, and guarded action paths.
+recruiter/agency/advisor state, browser artifacts, and guarded action paths.
 Opportunity review labels persist to SQLite: `strong`, `possible`, `weak`,
 `reject`, `needs research`, and `ready for outreach`. Reject reasons are
 `recruiter`, `agency`, `vendor`, `job seeker`, `not buyer`, `not relevant`,

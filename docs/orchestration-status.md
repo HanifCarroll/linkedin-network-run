@@ -3,7 +3,7 @@
 Last updated: 2026-06-25
 
 `linkedin-tools` is the active local toolchain for LinkedIn networking,
-recruiter/agency outreach, opportunity intelligence, comment extraction, and
+recruiter/agency/advisor outreach, opportunity intelligence, comment extraction, and
 review workflows. Runtime state lives under
 `~/Library/Application Support/linkedin-tools/`.
 
@@ -12,15 +12,15 @@ review workflows. Runtime state lives under
 - `linkedin-tools network`: deterministic Sales Navigator connection-request
   controller, sent-page audit reconciliation, source reservoirs, acceptance
   tracking, accepted follow-ups, and pending-invitation cleanup.
-- `linkedin-tools recruiter-agency`: recruiter and agency sourcing, lead
-  capture, drafting, dashboards, guarded message dry-runs, and guarded message
-  sends.
+- `linkedin-tools recruiter-agency`: recruiter, agency, and advisor sourcing,
+  lead capture, drafting, dashboards, guarded message dry-runs, and guarded
+  message sends.
 - `linkedin-tools opportunity`: recommend-only source registry, query packs,
   post queues, provider imports, capture batches, scoring, and review exports.
 - `linkedin-tools comments`: browser-backed and saved-HTML LinkedIn comment
   extraction.
 - `linkedin-tools ui`: local review UI for opportunities, networking state,
-  recruiter/agency state, browser artifacts, and guarded actions.
+  recruiter/agency/advisor state, browser artifacts, and guarded actions.
 
 ## Shared Runtime
 

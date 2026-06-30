@@ -1,4 +1,4 @@
-"""SQLite-backed state store for recruiter/agency outreach."""
+"""SQLite-backed state store for recruiter/agency/advisor outreach."""
 
 from __future__ import annotations
 

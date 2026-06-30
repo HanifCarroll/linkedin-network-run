@@ -1,7 +1,8 @@
 # linkedin-tools Architecture
 
-`linkedin-tools` is a Python monorepo for LinkedIn networking, recruiter/agency
-outreach, opportunity intelligence, comment extraction, and local review tools.
+`linkedin-tools` is a Python monorepo for LinkedIn networking,
+recruiter/agency/advisor outreach, opportunity intelligence, comment extraction,
+and local review tools.
 The top-level CLI is `uv run linkedin-tools`.
 
 ## Apps
@@ -9,7 +10,7 @@ The top-level CLI is `uv run linkedin-tools`.
 - `apps/network_automation`: Sales Navigator connection-request controller,
   source reservoirs, sent-page audit reconciliation, acceptance tracking,
   accepted follow-ups, and pending-invitation cleanup.
-- `apps/recruiter_agency_outreach`: recruiter and agency account sourcing,
+- `apps/recruiter_agency_outreach`: recruiter, agency, and advisor sourcing,
   lead capture, drafting, dashboards, guarded message dry-runs, and guarded
   message sends.
 - `apps/opportunity_intel`: recommend-only source registry, query packs,
@@ -17,7 +18,8 @@ The top-level CLI is `uv run linkedin-tools`.
 - `apps/comment_extractor`: browser-backed and saved-HTML extraction for
   LinkedIn post comments.
 - `apps/review_ui`: local FastAPI/Jinja review surfaces for opportunities,
-  networking, recruiter/agency state, browser artifacts, and guarded actions.
+  networking, recruiter/agency/advisor state, browser artifacts, and guarded
+  actions.
 
 ## Shared Packages
 

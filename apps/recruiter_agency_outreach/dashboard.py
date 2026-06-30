@@ -1,4 +1,4 @@
-"""Dashboard and agency-pool reporting for recruiter/agency outreach."""
+"""Dashboard and agency-pool reporting for recruiter/agency/advisor outreach."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from .utils import clean_text, now_iso
 class BucketCounts:
     agencies: int = 0
     recruiters: int = 0
+    advisors: int = 0
 
 
 @dataclass(slots=True)
@@ -126,6 +127,7 @@ class DashboardReport:
     state_path: str
     target_agencies: int
     target_recruiters: int
+    target_advisors: int
     allow_send: bool
     counts: StatusCounts
     run_counts: RunCounts
@@ -135,12 +137,16 @@ class DashboardReport:
     agency_funnel_counts: AgencyAccountFunnel
     ready_agencies: list[Lead]
     ready_recruiters: list[Lead]
+    ready_advisors: list[Lead]
     approved_agencies: list[Lead]
     approved_recruiters: list[Lead]
+    approved_advisors: list[Lead]
     sent_agencies: list[Lead]
     sent_recruiters: list[Lead]
+    sent_advisors: list[Lead]
     skipped_agencies: list[Lead]
     skipped_recruiters: list[Lead]
+    skipped_advisors: list[Lead]
     actions: list[DailyLeadAction] = field(default_factory=list)
     dashboard_path: str = ""
     limiting_reason: str = ""
@@ -178,6 +184,7 @@ def build_dashboard_report(
     *,
     target_agencies: int = 5,
     target_recruiters: int = 5,
+    target_advisors: int = 5,
     allow_send: bool = False,
     actions: list[DailyLeadAction] | None = None,
     mode: str = "render",
@@ -191,32 +198,42 @@ def build_dashboard_report(
         dashboard_path=dashboard_path,
         target_agencies=target_agencies,
         target_recruiters=target_recruiters,
+        target_advisors=target_advisors,
         allow_send=allow_send,
         counts=counts(state),
         run_counts=dashboard_run_counts(action_list),
         backlog_counts=BucketCounts(
             agencies=dashboard_bucket_count(state, "agency", MessageStatus.DRAFTED),
             recruiters=dashboard_bucket_count(state, "recruiter", MessageStatus.DRAFTED),
+            advisors=dashboard_bucket_count(state, "advisor", MessageStatus.DRAFTED),
         ),
         ready_counts=BucketCounts(
             agencies=dashboard_bucket_count(state, "agency", MessageStatus.DRY_RUN_READY),
             recruiters=dashboard_bucket_count(state, "recruiter", MessageStatus.DRY_RUN_READY),
+            advisors=dashboard_bucket_count(state, "advisor", MessageStatus.DRY_RUN_READY),
         ),
         lifetime_counts=BucketCounts(
             agencies=dashboard_bucket_count(state, "agency", MessageStatus.SENT),
             recruiters=dashboard_bucket_count(state, "recruiter", MessageStatus.SENT),
+            advisors=dashboard_bucket_count(state, "advisor", MessageStatus.SENT),
         ),
         agency_funnel_counts=agency_account_funnel_counts(state),
         ready_agencies=dashboard_leads(state, "agency", MessageStatus.DRY_RUN_READY),
         ready_recruiters=dashboard_leads(state, "recruiter", MessageStatus.DRY_RUN_READY),
+        ready_advisors=dashboard_leads(state, "advisor", MessageStatus.DRY_RUN_READY),
         approved_agencies=dashboard_leads(state, "agency", MessageStatus.APPROVED),
         approved_recruiters=dashboard_leads(state, "recruiter", MessageStatus.APPROVED),
+        approved_advisors=dashboard_leads(state, "advisor", MessageStatus.APPROVED),
         sent_agencies=dashboard_leads(state, "agency", MessageStatus.SENT),
         sent_recruiters=dashboard_leads(state, "recruiter", MessageStatus.SENT),
+        sent_advisors=dashboard_leads(state, "advisor", MessageStatus.SENT),
         skipped_agencies=dashboard_skipped_leads(state, "agency"),
         skipped_recruiters=dashboard_skipped_leads(state, "recruiter"),
+        skipped_advisors=dashboard_skipped_leads(state, "advisor"),
         actions=action_list,
-        limiting_reason=dashboard_limiting_reason(state, target_agencies, target_recruiters),
+        limiting_reason=dashboard_limiting_reason(
+            state, target_agencies, target_recruiters, target_advisors
+        ),
     )
 
 
@@ -225,34 +242,39 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
     candidate_counts = report.counts.by_agency_contact_candidate_status
     review_counts = report.counts.by_agency_contact_candidate_review_status
     lines = [
-        f"# Recruiter And Agency Outreach {report.generated_at[:10]}",
+        f"# Recruiter, Agency, And Advisor Outreach {report.generated_at[:10]}",
         "",
         f"- Generated: `{report.generated_at}`",
         f"- Mode: `{report.mode}`",
         f"- State: `{report.state_path}`",
         (
             f"- This-run target: `{report.target_agencies}` agencies, "
-            f"`{report.target_recruiters}` recruiters"
+            f"`{report.target_recruiters}` recruiters, "
+            f"`{report.target_advisors}` advisors"
         ),
         f"- Real sends enabled: `{str(report.allow_send).lower()}`",
         (
             f"- This-run sent: `{report.run_counts.sent.agencies}` agencies, "
-            f"`{report.run_counts.sent.recruiters}` recruiters"
+            f"`{report.run_counts.sent.recruiters}` recruiters, "
+            f"`{report.run_counts.sent.advisors}` advisors"
         ),
         (
             "- Ready now: "
             f"`{report.ready_counts.agencies}` agencies, "
-            f"`{report.ready_counts.recruiters}` recruiters"
+            f"`{report.ready_counts.recruiters}` recruiters, "
+            f"`{report.ready_counts.advisors}` advisors"
         ),
         (
             "- Backlog drafted/needs validation: "
             f"`{report.backlog_counts.agencies}` agencies, "
-            f"`{report.backlog_counts.recruiters}` recruiters"
+            f"`{report.backlog_counts.recruiters}` recruiters, "
+            f"`{report.backlog_counts.advisors}` advisors"
         ),
         (
             "- Lifetime sent: "
             f"`{report.lifetime_counts.agencies}` agencies, "
-            f"`{report.lifetime_counts.recruiters}` recruiters"
+            f"`{report.lifetime_counts.recruiters}` recruiters, "
+            f"`{report.lifetime_counts.advisors}` advisors"
         ),
         (
             "- Agency accounts: "
@@ -281,23 +303,27 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
         "",
         (
             f"- Ready to send: `{report.ready_counts.agencies}` agencies, "
-            f"`{report.ready_counts.recruiters}` recruiters"
+            f"`{report.ready_counts.recruiters}` recruiters, "
+            f"`{report.ready_counts.advisors}` advisors"
         ),
         (
             "- Drafted/needs validation: "
             f"`{report.backlog_counts.agencies}` agencies, "
-            f"`{report.backlog_counts.recruiters}` recruiters"
+            f"`{report.backlog_counts.recruiters}` recruiters, "
+            f"`{report.backlog_counts.advisors}` advisors"
         ),
         "",
         "## Send Results",
         "",
         (
             f"- This-run sent: `{report.run_counts.sent.agencies}` agencies, "
-            f"`{report.run_counts.sent.recruiters}` recruiters"
+            f"`{report.run_counts.sent.recruiters}` recruiters, "
+            f"`{report.run_counts.sent.advisors}` advisors"
         ),
         (
             f"- Lifetime sent: `{report.lifetime_counts.agencies}` agencies, "
-            f"`{report.lifetime_counts.recruiters}` recruiters"
+            f"`{report.lifetime_counts.recruiters}` recruiters, "
+            f"`{report.lifetime_counts.advisors}` advisors"
         ),
         "",
     ]
@@ -313,6 +339,11 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
     lines.extend(render_lead_cards("manually approved", report.approved_recruiters))
     lines.extend(render_lead_cards("sent", report.sent_recruiters))
     lines.extend(render_lead_cards("checked/skipped", report.skipped_recruiters))
+    lines.extend(["## Advisors", ""])
+    lines.extend(render_lead_cards("messageable/sendable", report.ready_advisors))
+    lines.extend(render_lead_cards("manually approved", report.approved_advisors))
+    lines.extend(render_lead_cards("sent", report.sent_advisors))
+    lines.extend(render_lead_cards("checked/skipped", report.skipped_advisors))
     return "\n".join(lines)
 
 
@@ -340,6 +371,8 @@ def render_lead_cards(label: str, leads: list[Lead]) -> list[str]:
 def bucket_for_lead(lead: Lead) -> str:
     if lead.lead_type == LeadType.CONTRACT_RECRUITER:
         return "recruiter"
+    if lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER:
+        return "advisor"
     if lead.lead_type in {
         LeadType.AGENCY_RESOURCE,
         LeadType.AGENCY_DELIVERY,
@@ -438,6 +471,8 @@ def dashboard_run_counts(actions: list[DailyLeadAction]) -> RunCounts:
             target.agencies += 1
         elif action.bucket == "recruiter":
             target.recruiters += 1
+        elif action.bucket == "advisor":
+            target.advisors += 1
     return result
 
 
@@ -792,11 +827,15 @@ def dashboard_limiting_reason(
     state: OutreachState,
     target_agencies: int,
     target_recruiters: int,
+    target_advisors: int,
 ) -> str:
     agency_gap = max(0, target_agencies - len(ready_leads(state, "agency")))
     recruiter_gap = max(0, target_recruiters - len(ready_leads(state, "recruiter")))
+    advisor_gap = max(0, target_advisors - len(ready_leads(state, "advisor")))
     if agency_gap > 0:
         return f"Agency ready-to-send pool is short by {agency_gap} for this render target."
     if recruiter_gap > 0:
         return f"Recruiter ready-to-send pool is short by {recruiter_gap} for this render target."
+    if advisor_gap > 0:
+        return f"Advisor ready-to-send pool is short by {advisor_gap} for this render target."
     return ""

@@ -1,4 +1,4 @@
-"""Deterministic recruiter/agency classification parity helpers."""
+"""Deterministic recruiter/agency/advisor classification parity helpers."""
 
 from __future__ import annotations
 
@@ -78,6 +78,21 @@ def classify_lead(
         "president",
         "managing director",
     )
+    source_advisor = contains_any(source.lower(), "ai advisors", "implementation partners")
+    advisor_signal = contains_any(
+        profile_text,
+        "ai consultant",
+        "ai advisor",
+        "business consultant",
+        "operations consultant",
+        "automation consultant",
+        "workflow automation",
+        "ai strategy",
+        "ai implementation",
+        "fractional coo",
+        "fractional cto",
+        "growth consultant",
+    )
     account_agency = agency_account is not None and (
         agency_account.status == AgencyAccountStatus.QUALIFIED
     )
@@ -135,6 +150,10 @@ def classify_lead(
         lead_type = LeadType.CONTRACT_RECRUITER
         score += 40
         reasons.append("recruiter/staffing signal")
+    elif source_advisor or advisor_signal:
+        lead_type = LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
+        score += 40
+        reasons.append("AI advisor/implementation partner signal")
     elif company_agency and (title_resource or title_delivery or title_founder):
         if title_resource:
             lead_type = LeadType.AGENCY_RESOURCE
@@ -149,7 +168,7 @@ def classify_lead(
     else:
         rejects.append("not a recruiter or agency/resource target")
 
-    if title_recruiter or title_resource or title_delivery or title_founder:
+    if title_recruiter or title_resource or title_delivery or title_founder or advisor_signal:
         score += 25
         reasons.append("title matches target persona")
     if contract_signal:

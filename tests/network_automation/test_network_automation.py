@@ -991,6 +991,12 @@ def test_acceptance_followup_template_routing_is_source_first() -> None:
         "ASAP - Contract Recruiters Staffing", "Founder", "Hiring Co"
     ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Hiring Co")
     assert choose_angle(
+        "ASAP - AI Advisors Implementation Partners", "AI Advisor", "Strategy Co"
+    ) == (
+        AcceptedFollowupTemplateKey.ADVISOR,
+        "AI and workflow implementation support ask for Strategy Co",
+    )
+    assert choose_angle(
         "ASAP - Vertical Proof Buyers", "Founder", "Proof Co"
     ) == (AcceptedFollowupTemplateKey.GENERAL, "product-engineering support ask for Proof Co")
     assert choose_angle(

@@ -89,6 +89,43 @@ def test_import_capture_classifies_contract_recruiter_and_drafts() -> None:
     assert "Are you the right person to ask about contract roles" in state.leads[0].draft.body
 
 
+def test_import_capture_classifies_ai_advisor_and_drafts() -> None:
+    state = OutreachState()
+    capture = {
+        "source": "ASAP - AI Advisors Implementation Partners",
+        "rows": [
+            {
+                "index": 0,
+                "name": "Avery Advisor",
+                "text": (
+                    "Avery Advisor\nAI Advisor\nStone Strategy\n"
+                    "AI implementation and workflow automation for operations clients"
+                ),
+                "profileUrl": "https://www.linkedin.com/sales/lead/advisor?_ntb=x",
+                "menuState": "connectable",
+            }
+        ],
+    }
+
+    summary = import_salesnav_capture(state, capture)
+    assert summary.eligible == 1
+    assert len(state.leads) == 1
+    lead = state.leads[0]
+    assert lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
+    assert lead.status == LeadStatus.ELIGIBLE
+    assert "AI advisor/implementation partner signal" in lead.fit_reasons
+
+    report = draft_messages(state, 10)
+    assert len(report.items) == 1
+    draft = state.leads[0].draft
+    assert draft is not None
+    assert draft.subject == "Implementation partner for AI and workflow systems"
+    assert "I'm a full-stack product engineer who builds AI tools" in draft.body
+    assert "with support for AI agents" in draft.body
+    assert "LinkedIn Tools: built a workflow system" in draft.body
+    assert "Would this kind of implementation support be useful for you?" in draft.body
+
+
 def test_agency_source_promotion_requires_salesnav_identity() -> None:
     capture = load_agency_source_csv(
         FIXTURES / "agency_directory.csv",
@@ -582,9 +619,10 @@ def test_run_daily_is_no_send_and_agency_bucket_is_account_first(tmp_path: Path)
     with pytest.raises(ValueError, match="run-daily is sourcing-only"):
         run_daily(store, DailyOptions(session="auto", allow_send=True))
 
-    buckets = daily_buckets(target_agencies=5, target_recruiters=5)
+    buckets = daily_buckets(target_agencies=5, target_recruiters=5, target_advisors=5)
     assert buckets[0] == ("agency", [], 5)
     assert buckets[1][0] == "recruiter"
+    assert buckets[2] == ("advisor", ["ASAP - AI Advisors Implementation Partners"], 5)
 
 
 def test_run_daily_validates_drafted_leads_with_live_dry_run_browser(
@@ -646,6 +684,8 @@ def test_run_daily_validates_drafted_leads_with_live_dry_run_browser(
                 "--target-agencies",
                 "1",
                 "--target-recruiters",
+                "0",
+                "--target-advisors",
                 "0",
                 "--refresh-saved-searches",
                 "--print-markdown",
@@ -774,6 +814,8 @@ def test_run_daily_captures_recruiters_and_validates_messages(
                 "0",
                 "--target-recruiters",
                 "1",
+                "--target-advisors",
+                "0",
                 "--max-capture-rounds",
                 "1",
             ]
@@ -787,6 +829,133 @@ def test_run_daily_captures_recruiters_and_validates_messages(
     assert "/sales/search/people?query=" in str(capture_instances[0].call["url"])
     state = Store(tmp_path).load()
     assert state.leads[0].name == "Riley Recruiter"
+    assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
+    assert state.run_events[-1].result == "completed"
+
+
+def test_run_daily_captures_advisors_and_validates_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCaptureBrowser:
+        def __init__(self, source: str, out_dir: Path) -> None:
+            self.source = source
+            self.out_dir = out_dir
+            self.closed = False
+            capture_instances.append(self)
+
+        def capture_salesnav(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+            stop_after_connectable: int = 0,
+            only_connectable: bool = False,
+            row_scroll_delay_ms: int = 250,
+        ) -> tuple[object, str]:
+            self.call = {
+                "source": source,
+                "url": url,
+                "pages": pages,
+                "limit": limit,
+                "stop_after_connectable": stop_after_connectable,
+                "only_connectable": only_connectable,
+                "row_scroll_delay_ms": row_scroll_delay_ms,
+            }
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "people.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-06-24T12:00:00Z",
+                        "rows": [
+                            {
+                                "index": 0,
+                                "name": "Avery Advisor",
+                                "text": (
+                                    "Avery Advisor\nAI Advisor\nStone Strategy\n"
+                                    "AI implementation and workflow automation"
+                                ),
+                                "profileUrl": "https://www.linkedin.com/sales/lead/advisor",
+                                "menuState": "connectable",
+                            }
+                        ],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeMessageBrowser:
+        def send_message(
+            self,
+            config: dict[str, object],
+            *,
+            dry_run: bool,
+            allow_send: bool,
+        ) -> tuple[MessageSendResult, str]:
+            assert dry_run is True
+            assert allow_send is False
+            candidate = config["candidate"]
+            assert isinstance(candidate, dict)
+            out = tmp_path / "message-results" / f"{candidate['id']}.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps({"status": "dry-run-messageable", "dryRun": True}))
+            return MessageSendResult.from_mapping(json.loads(out.read_text())), str(out)
+
+        def close(self) -> None:
+            pass
+
+    capture_instances: list[FakeCaptureBrowser] = []
+    monkeypatch.setattr(
+        daily_module,
+        "_capture_browser",
+        lambda store, options, run_id, source, round_number: FakeCaptureBrowser(
+            source,
+            store.dir / "captures" / run_id / source / str(round_number),
+        ),
+    )
+    monkeypatch.setattr(
+        send_module,
+        "_default_message_browser",
+        lambda options, store: FakeMessageBrowser(),
+    )
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "run-daily",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "0",
+                "--target-recruiters",
+                "0",
+                "--target-advisors",
+                "1",
+                "--max-capture-rounds",
+                "1",
+            ]
+        )
+        == 0
+    )
+
+    assert len(capture_instances) == 1
+    assert capture_instances[0].closed is True
+    assert capture_instances[0].call["source"] == "ASAP - AI Advisors Implementation Partners"
+    assert "AI%2520consultant" in str(capture_instances[0].call["url"])
+    state = Store(tmp_path).load()
+    assert state.leads[0].name == "Avery Advisor"
+    assert state.leads[0].lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
+    assert state.leads[0].draft is not None
+    assert state.leads[0].draft.subject == "Implementation partner for AI and workflow systems"
     assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
     assert state.run_events[-1].result == "completed"
 
@@ -949,6 +1118,8 @@ def test_run_daily_captures_agency_accounts_contacts_and_validates_messages(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--max-capture-rounds",
                 "1",
             ]
@@ -1093,6 +1264,8 @@ def test_run_daily_continues_after_one_agency_contact_capture_fails(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--max-capture-rounds",
                 "1",
             ]
@@ -1217,6 +1390,8 @@ def test_run_daily_continues_after_one_account_capture_source_fails(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--max-capture-rounds",
                 "1",
             ]
@@ -1270,6 +1445,8 @@ def test_run_daily_records_failed_lifecycle_when_validation_browser_fails(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
             ]
         )
         == 1
@@ -1299,6 +1476,8 @@ def test_cli_namespace_is_wired(tmp_path: Path) -> None:
                 "--target-agencies",
                 "0",
                 "--target-recruiters",
+                "0",
+                "--target-advisors",
                 "0",
             ]
         )
@@ -1408,6 +1587,8 @@ def test_send_ready_applies_structured_results_and_records_last_run(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--allow-send",
                 "--result-dir",
                 str(result_dir),
@@ -1436,6 +1617,8 @@ def test_send_ready_applies_structured_results_and_records_last_run(
                 "recommend-next-run",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--allow-send",
             ]
         )
@@ -1459,6 +1642,7 @@ def test_send_recommendation_keeps_recruiters_when_both_targets_are_short() -> N
     assert recommendation.should_retry is True
     assert "--target-agencies 5" in recommendation.command
     assert "--target-recruiters 5" in recommendation.command
+    assert "--target-advisors 0" in recommendation.command
     assert "Agency target is still short by 5" in recommendation.reason
     assert "recruiter target is still short by 5" in recommendation.reason
 
@@ -1522,6 +1706,8 @@ def test_send_ready_uses_live_browser_when_result_dir_is_missing(
                 "--target-agencies",
                 "1",
                 "--target-recruiters",
+                "0",
+                "--target-advisors",
                 "0",
                 "--allow-send",
             ]
@@ -1612,6 +1798,8 @@ def test_send_ready_stops_after_browser_blocked_result(
                 "2",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--allow-send",
             ]
         )
@@ -1672,6 +1860,8 @@ def test_send_ready_records_browser_exception_as_send_failed(
                 "1",
                 "--target-recruiters",
                 "0",
+                "--target-advisors",
+                "0",
                 "--allow-send",
                 "--print-markdown",
             ]
@@ -1714,6 +1904,8 @@ def test_send_ready_requires_real_send_result_artifacts(
                 "--target-agencies",
                 "1",
                 "--target-recruiters",
+                "0",
+                "--target-advisors",
                 "0",
                 "--allow-send",
                 "--result-dir",

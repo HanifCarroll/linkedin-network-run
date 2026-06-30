@@ -285,7 +285,7 @@ class SQLiteReviewReadModelProvider:
                     dependency="Live run, reservoir, acceptance, and pending-cleanup state.",
                 ),
                 IntegrationNotice(
-                    area="Recruiter/Agency Outreach",
+                    area="Recruiter/Agency/Advisor Outreach",
                     owner="SQLite state",
                     dependency="Live account pool, lead queue, drafts, and send readiness.",
                 ),
@@ -609,7 +609,7 @@ class SQLiteReviewReadModelProvider:
             return Metric(
                 "Recruiter/agency review",
                 "Not started",
-                "No recruiter/agency SQLite state file found.",
+                "No recruiter/agency/advisor SQLite state file found.",
                 "warning",
             )
         drafted = sum(1 for lead in state.leads if lead.draft is not None)
@@ -757,9 +757,21 @@ class SQLiteReviewReadModelProvider:
         latest = state.run_events[-1] if state.run_events else None
         next_action = build_agency_pool_next_action(state, str(self.recruiter_store.state_path))
         drafted = sum(1 for lead in state.leads if lead.draft is not None)
-        ready = report.ready_counts.agencies + report.ready_counts.recruiters
-        sent = report.lifetime_counts.agencies + report.lifetime_counts.recruiters
-        backlog = report.backlog_counts.agencies + report.backlog_counts.recruiters
+        ready = (
+            report.ready_counts.agencies
+            + report.ready_counts.recruiters
+            + report.ready_counts.advisors
+        )
+        sent = (
+            report.lifetime_counts.agencies
+            + report.lifetime_counts.recruiters
+            + report.lifetime_counts.advisors
+        )
+        backlog = (
+            report.backlog_counts.agencies
+            + report.backlog_counts.recruiters
+            + report.backlog_counts.advisors
+        )
         blocker = ""
         if latest and latest.blocker:
             blocker = latest.blocker

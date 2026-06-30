@@ -1,4 +1,4 @@
-"""Draft generation for recruiter/agency outreach."""
+"""Draft generation for recruiter/agency/advisor outreach."""
 
 from __future__ import annotations
 
@@ -96,6 +96,8 @@ def build_message_draft_record(lead: Lead, generated_at: str | None = None) -> M
 def message_body_for_angle(lead: Lead) -> str:
     if lead.lead_type == LeadType.CONTRACT_RECRUITER:
         return recruiter_draft(lead)
+    if lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER:
+        return advisor_draft(lead)
     if lead.lead_type in {
         LeadType.AGENCY_RESOURCE,
         LeadType.AGENCY_DELIVERY,
@@ -108,6 +110,8 @@ def message_body_for_angle(lead: Lead) -> str:
 def draft_angle(lead: Lead) -> str:
     if lead.lead_type == LeadType.CONTRACT_RECRUITER:
         return "contract recruiter routing for remote C2C/1099 product-engineering work"
+    if lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER:
+        return "implementation partner for AI and workflow systems"
     website = is_website_agency_lead(lead)
     if lead.lead_type == LeadType.AGENCY_RESOURCE:
         if website:
@@ -202,6 +206,26 @@ def agency_project_draft(first_name: str, agency_name: str) -> str:
     )
 
 
+def advisor_draft(lead: Lead) -> str:
+    return (
+        f"Hi {lead.first_name},\n\n"
+        "I'm a full-stack product engineer who builds AI tools, internal systems, and "
+        "workflow automation. I'm reaching out in case you need extra implementation "
+        "support for your projects.\n\n"
+        "Recent work:\n\n"
+        "• Genrupt: turned an AI media MVP into a working Amazon seller platform for "
+        "market research, review analysis, listing content, and A+ content workflows, "
+        "with support for AI agents\n"
+        "• Acquire: built a local operating system for finding, reviewing, preparing, "
+        "submitting, and tracking work opportunities in one workflow\n"
+        "• LinkedIn Tools: built a workflow system for running networking, outreach, "
+        "follow-ups, and opportunity research from one place\n\n"
+        "US citizen contracting through my LLC, available for US-hours work from "
+        "Buenos Aires.\n\n"
+        "Would this kind of implementation support be useful for you?"
+    )
+
+
 def recruiter_opening(lead: Lead) -> str:
     focus = recruiter_role_focus(lead)
     company = company_for_draft(lead.company)
@@ -266,6 +290,8 @@ def is_likely_location(value: str) -> bool:
 
 
 def message_subject(lead: Lead) -> str:
+    if lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER:
+        return "Implementation partner for AI and workflow systems"
     if lead.lead_type in {
         LeadType.AGENCY_RESOURCE,
         LeadType.AGENCY_DELIVERY,
@@ -305,7 +331,7 @@ def queue_item_from_lead(lead: Lead, *, include_draft: bool) -> QueueItem:
 
 def render_draft_markdown(report: DraftReport) -> str:
     lines = [
-        f"# Recruiter And Agency Drafts {report.generated_at[:10]}",
+        f"# Recruiter, Agency, And Advisor Drafts {report.generated_at[:10]}",
         "",
         f"- Generated: `{report.generated_at}`",
         f"- Draft count: {len(report.items)}",
@@ -315,7 +341,7 @@ def render_draft_markdown(report: DraftReport) -> str:
         ),
     ]
     if not report.items:
-        lines.extend(["", "No eligible recruiter or agency leads need drafts."])
+        lines.extend(["", "No eligible recruiter, agency, or advisor leads need drafts."])
         return "\n".join(lines)
     for item in report.items:
         lines.extend(["", f"## {clean_inline(item.name)}"])
