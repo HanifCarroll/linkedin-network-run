@@ -101,6 +101,15 @@ async function findMessageAction(page) {
   return null;
 }
 
+async function waitForMessageAction(page) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const action = await findMessageAction(page);
+    if (action) return action;
+    await page.waitForTimeout(500);
+  }
+  return findMessageAction(page);
+}
+
 async function fillEditable(locator, value) {
   await locator.fill(value, { timeout: 8000 }).catch(async (fillError) => {
     const setDirectly = await locator
@@ -153,6 +162,19 @@ async function waitForComposer(page) {
   return findComposer(page);
 }
 
+async function conversationPanelState(page) {
+  const closeConversation = page
+    .getByRole("button", { name: /^Close conversation with /i })
+    .first();
+  if (
+    (await closeConversation.count().catch(() => 0)) &&
+    (await closeConversation.isVisible().catch(() => false))
+  ) {
+    return { status: "open-without-composer" };
+  }
+  return null;
+}
+
 async function fillSubject(page) {
   if (!subject) return null;
   const selectors = ["input[name='subject']", "input[placeholder*='Subject']"];
@@ -167,14 +189,20 @@ async function fillSubject(page) {
 }
 
 async function findSendButton(page) {
-  const locator = page
-    .locator("button, [role='button']")
-    .filter({ hasText: /^(Send|Send message)$/i })
-    .first();
+  const locator = page.getByRole("button", { name: /^(Send|Send message)$/i }).first();
   if ((await locator.count().catch(() => 0)) && (await locator.isVisible().catch(() => false))) {
     return locator;
   }
   return null;
+}
+
+async function waitForSendButton(page) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const button = await findSendButton(page);
+    if (button) return button;
+    await page.waitForTimeout(500);
+  }
+  return findSendButton(page);
 }
 
 async function main() {
@@ -205,10 +233,14 @@ async function main() {
     return;
   }
 
-  const action = await findMessageAction(pageForMessage);
+  const action = await waitForMessageAction(pageForMessage);
   const name = await profileName(pageForMessage);
   if (!action) {
-    writeResult({ ...payload, status: "not-messageable" });
+    writeResult({
+      ...payload,
+      status: "not-messageable",
+      reason: "Message/InMail action was not visible after profile action wait",
+    });
     return;
   }
 
@@ -229,13 +261,23 @@ async function main() {
   await action.locator.click({ timeout: 8000 });
   const composer = await waitForComposer(pageForMessage);
   if (!composer) {
+    const conversationCheck = await conversationPanelState(pageForMessage);
+    if (conversationCheck) {
+      writeResult({
+        ...payload,
+        status: "conversation-exists",
+        action: actionPayload,
+        conversationCheck,
+      });
+      return;
+    }
     writeResult({ ...payload, status: "composer-missing", action: actionPayload });
     return;
   }
 
   const subjectFill = await fillSubject(pageForMessage);
   await fillEditable(composer.locator, message);
-  const sendButton = await findSendButton(pageForMessage);
+  const sendButton = await waitForSendButton(pageForMessage);
   if (!sendButton) {
     writeResult({
       ...payload,
