@@ -102,10 +102,29 @@ async function findMessageAction(page) {
 }
 
 async function fillEditable(locator, value) {
-  await locator.click({ timeout: 8000 });
-  await locator.fill(value, { timeout: 8000 }).catch(async () => {
+  await locator.fill(value, { timeout: 8000 }).catch(async (fillError) => {
+    const setDirectly = await locator
+      .evaluate((node, text) => {
+        if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+          node.value = text;
+          node.dispatchEvent(new Event("input", { bubbles: true }));
+          node.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }
+        if (node instanceof HTMLElement && node.isContentEditable) {
+          node.textContent = text;
+          node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+          return true;
+        }
+        return false;
+      }, value)
+      .catch(() => false);
+    if (setDirectly) return;
+    await locator.click({ timeout: 8000 });
     await locator.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    await locator.type(value, { delay: 0 });
+    await locator.type(value, { delay: 0 }).catch(() => {
+      throw fillError;
+    });
   });
 }
 
