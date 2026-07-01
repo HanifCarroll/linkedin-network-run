@@ -1521,17 +1521,37 @@ def _acceptance_check_and_import_chunks(
                 "candidates": len(candidates),
             },
         )
-        messages.append(
-            acceptance_check(
-                store,
-                browser,
-                input_path=candidates_out,
-                out=chunk_path,
-                offset=offset,
-                limit=limit,
-                delay_ms=delay_ms,
+        try:
+            messages.append(
+                acceptance_check(
+                    store,
+                    browser,
+                    input_path=candidates_out,
+                    out=chunk_path,
+                    offset=offset,
+                    limit=limit,
+                    delay_ms=delay_ms,
+                )
             )
-        )
+        except Exception as exc:
+            blocker = (
+                f"{chunk_path} failed during acceptance check "
+                f"(offset={offset}, limit={limit}, candidates={len(candidates)}): {exc}"
+            )
+            store.append_acceptance_event(
+                "run-daily-session-blocked",
+                {
+                    "reason": "acceptance chunk check failed",
+                    "blockers": [blocker],
+                    "input": str(candidates_out),
+                    "out": str(chunk_path),
+                    "offset": offset,
+                    "limit": limit,
+                    "candidates": len(candidates),
+                },
+            )
+            messages.append("stopped: " + blocker)
+            return messages
         artifact = read_model(chunk_path, AcceptanceOutcomeArtifact)
         chunk_paths.append(chunk_path)
         if artifact.complete is not True:

@@ -110,6 +110,7 @@ def test_cli_help_documents_browser_backend_selection() -> None:
 class FakeLiveBrowserClient:
     instances: ClassVar[list[FakeLiveBrowserClient]] = []
     acceptance_status: ClassVar[str] = "accepted"
+    fail_acceptance_check: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -198,6 +199,8 @@ class FakeLiveBrowserClient:
         self.calls.append(
             f"acceptance-check:{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
         )
+        if FakeLiveBrowserClient.fail_acceptance_check:
+            raise RuntimeError("browser timed out")
         selected = candidates[offset : offset + limit] if limit else candidates[offset:]
         artifact = AcceptanceOutcomeArtifact.model_validate(
             {
@@ -2148,6 +2151,54 @@ def test_cli_acceptance_run_daily_session_stops_on_blocked_chunk(
     assert store.load_acceptance_followup_ledger().drafts == []
 
 
+def test_cli_acceptance_run_daily_session_reports_chunk_check_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    FakeLiveBrowserClient.fail_acceptance_check = True
+    store = Store(tmp_path)
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name="Timeout Lead",
+            profile_url="https://www.linkedin.com/sales/lead/timeout?_ntb=session",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_acceptance_ledger(ledger)
+    outcomes = tmp_path / "acceptance-outcomes.json"
+    chunks = tmp_path / "chunks"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(tmp_path / "acceptance-candidates.json"),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(chunks),
+            "--chunk-size",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "stopped:" in output
+    assert "chunk-0.json failed during acceptance check" in output
+    assert "offset=0, limit=1, candidates=1" in output
+    assert "browser timed out" in output
+    assert not outcomes.exists()
+
+
 def test_cli_acceptance_run_daily_session_skips_browser_without_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2278,5 +2329,6 @@ def _run_id() -> uuid.UUID:
 def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "accepted"
+    FakeLiveBrowserClient.fail_acceptance_check = False
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)
     monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", FakeLiveBrowserClient)
