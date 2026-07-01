@@ -832,13 +832,16 @@ def dashboard_limiting_reason(
     target_recruiters: int,
     target_advisors: int,
 ) -> str:
-    agency_gap = max(0, target_agencies - len(ready_leads(state, "agency")))
-    recruiter_gap = max(0, target_recruiters - len(ready_leads(state, "recruiter")))
-    advisor_gap = max(0, target_advisors - len(ready_leads(state, "advisor")))
-    if agency_gap > 0:
-        return f"Agency ready-to-send pool is short by {agency_gap} for this render target."
-    if recruiter_gap > 0:
-        return f"Recruiter ready-to-send pool is short by {recruiter_gap} for this render target."
-    if advisor_gap > 0:
-        return f"Advisor ready-to-send pool is short by {advisor_gap} for this render target."
-    return ""
+    gaps = [
+        ("Agency", max(0, target_agencies - len(ready_leads(state, "agency")))),
+        ("Recruiter", max(0, target_recruiters - len(ready_leads(state, "recruiter")))),
+        ("Advisor", max(0, target_advisors - len(ready_leads(state, "advisor")))),
+    ]
+    shortfalls = [
+        f"{label} ready-to-send pool is short by {gap}"
+        for label, gap in gaps
+        if gap > 0
+    ]
+    if not shortfalls:
+        return ""
+    return "; ".join(shortfalls) + " for this render target."

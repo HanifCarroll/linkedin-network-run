@@ -2,7 +2,7 @@ const fs = require("node:fs");
 
 const config = JSON.parse(fs.readFileSync(state.linkedinToolsConfigPath, "utf8"));
 
-const SALES_NAV_PEOPLE_RESULT_ROW = "li.artdeco-list__item";
+const SALES_NAV_PEOPLE_RESULT_ROW = "li.artdeco-list__item:has(a[href*='/sales/lead/'])";
 const SALES_NAV_PROFILE_LINK = "a[href*='/sales/lead/']";
 const SALES_NAV_MORE_ACTIONS_BUTTON = 'button[aria-label^="See more actions for"]';
 const SECURITY_VERIFICATION_SELECTOR =
@@ -97,6 +97,16 @@ async function openRowMenu(page, row) {
   return { state: classifyMenuLabels(labels), labels, menu_id: menuId };
 }
 
+async function waitForRows(page) {
+  const deadline = Date.now() + Number(config.rowWaitTimeoutMs || 45000);
+  while (Date.now() < deadline) {
+    const count = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).count().catch(() => 0);
+    if (count > 0) return count;
+    await page.waitForTimeout(1000);
+  }
+  return 0;
+}
+
 async function captureRow(row, index, globalIndex, pageNumber) {
   const profile = row.locator(SALES_NAV_PROFILE_LINK).first();
   const profileUrl =
@@ -175,6 +185,7 @@ async function main() {
   if (blockReason) {
     throw new Error(`Sales Navigator capture blocked: ${blockReason}`);
   }
+  await waitForRows(activePage);
   const allRows = [];
   const pageSummaries = [];
   const totalPages = Math.max(1, Number(config.pages || 1));

@@ -153,6 +153,15 @@ def render_report(run: Run) -> str:
 
 
 def render_acceptance_report(report: AcceptanceReport) -> str:
+    if report.unchecked:
+        reconciliation_note = (
+            f"Daily acceptance reconciliation should check {report.unchecked} "
+            "candidate(s) in this report window."
+        )
+    else:
+        reconciliation_note = (
+            "Daily acceptance reconciliation appears current for this report window."
+        )
     lines = [
         "# LinkedIn Acceptance Report",
         "",
@@ -168,6 +177,7 @@ def render_acceptance_report(report: AcceptanceReport) -> str:
         f"- Blocked: {report.blocked}",
         f"- Failed: {report.failed}",
         f"- Withdrawn: {report.withdrawn}",
+        f"- Ledger freshness: {reconciliation_note}",
         "",
         "## By Source",
     ]

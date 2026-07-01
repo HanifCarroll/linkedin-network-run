@@ -344,7 +344,10 @@ class Run(AppModel):
             quota = self.source_quota_with_carryover(index)
             verified = self.source_verified_count(source.name)
             if source.fallback or verified < quota:
-                remaining_for_source = min(quota - min(quota, verified), total_remaining)
+                if source.fallback:
+                    remaining_for_source = total_remaining
+                else:
+                    remaining_for_source = min(quota - min(quota, verified), total_remaining)
                 return NextSource(
                     name=source.name,
                     quota=quota,
@@ -385,6 +388,8 @@ class Run(AppModel):
         if index is None:
             return False
         plan = self.sources[index]
+        if plan.fallback:
+            return plan.exhausted
         return plan.exhausted or self.source_verified_count(
             source
         ) >= self.source_quota_with_carryover(index)

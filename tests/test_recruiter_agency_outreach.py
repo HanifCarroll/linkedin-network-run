@@ -366,6 +366,26 @@ def test_guarded_send_flow_requires_dry_run_ready_and_updates_dashboard(tmp_path
     assert len(sent.leads[0].send_attempts) == 2
 
 
+def test_dashboard_limiting_reason_lists_all_short_ready_pools(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.DRY_RUN_READY))
+
+    report = build_dashboard_report(
+        store.load(),
+        str(store.state_path),
+        target_agencies=5,
+        target_recruiters=5,
+        target_advisors=5,
+        allow_send=True,
+    )
+
+    assert report.limiting_reason == (
+        "Agency ready-to-send pool is short by 4; "
+        "Recruiter ready-to-send pool is short by 5; "
+        "Advisor ready-to-send pool is short by 5 for this render target."
+    )
+
+
 def test_store_load_hydrates_draft_and_send_side_tables(tmp_path: Path) -> None:
     store = Store(tmp_path)
     state = OutreachState(

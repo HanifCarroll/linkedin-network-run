@@ -34,6 +34,24 @@ async function visibleCount(page, selector) {
   return visible;
 }
 
+async function firstVisible(locator) {
+  const count = await locator.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index);
+    if (await item.isVisible().catch(() => false)) return item;
+  }
+  return null;
+}
+
+async function savedSearchesControl(page) {
+  return (
+    await firstVisible(page.getByRole("button", { name: /Saved searches/i })) ||
+    await firstVisible(page.getByRole("tab", { name: /Saved searches/i })) ||
+    await firstVisible(page.getByRole("link", { name: /Saved searches/i })) ||
+    await firstVisible(page.locator("text=/^\\s*Saved searches\\s*$/i"))
+  );
+}
+
 async function blockedReason(page) {
   const url = page.url();
   if (/\/login|\/uas\/login/i.test(url)) return "login required";
@@ -46,20 +64,21 @@ async function blockedReason(page) {
 
 async function main() {
   const activePage = await getPage();
-  await activePage.goto(config.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  const navigationTimeoutMs = Number(config.navigationTimeoutMs || 45000);
+  await activePage.goto(config.url, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
   await waitForPageLoad({ page: activePage, timeout: 10000 }).catch(() => null);
   const block = await blockedReason(activePage);
   if (block) throw new Error(`saved searches blocked: ${block}`);
-  const button = activePage.getByRole("button", { name: /Saved searches/i }).first();
-  if (!(await button.count().catch(() => 0))) {
+  const control = await savedSearchesControl(activePage);
+  if (!control) {
     throw new Error(
-      "saved-searches button missing; verify the automation browser is logged into Sales Navigator with the expected LinkedIn profile"
+      "saved-searches control missing; verify the automation browser is logged into Sales Navigator with the expected LinkedIn profile"
     );
   }
   try {
-    await button.click({ timeout: 10000 });
+    await control.click({ timeout: 10000 });
   } catch {
-    await button.evaluate((element) => element.click());
+    await control.evaluate((element) => element.click());
   }
   await activePage.waitForTimeout(1500);
   const anchors = await activePage.locator("a[href*='savedSearchId=']").all();

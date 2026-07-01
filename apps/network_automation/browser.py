@@ -478,7 +478,7 @@ class PlaywriterBrowserClient:
         return read_model(out, SalesNavAudit), str(out)
 
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
-        config = {"url": url, "out": str(out)}
+        config = {"url": url, "out": str(out), "navigationTimeoutMs": 120000}
         self._run_script(_playwriter_salesnav_saved_searches_script(), config)
         return read_model(out, SavedSearchArtifact), str(out)
 
@@ -1151,16 +1151,21 @@ class PlaywrightBrowserClient:
         page = await self._page(("linkedin.com/sales/search/people", "linkedin.com/sales"))
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         await _wait_for_load(page)
-        button = page.get_by_role("button", name=re.compile(r"Saved searches", re.I)).first
-        if not await _locator_count(button):
+        control = await _first_visible_locator(
+            page.get_by_role("button", name=re.compile(r"Saved searches", re.I)),
+            page.get_by_role("tab", name=re.compile(r"Saved searches", re.I)),
+            page.get_by_role("link", name=re.compile(r"Saved searches", re.I)),
+            page.locator("text=/^\\s*Saved searches\\s*$/i"),
+        )
+        if control is None:
             raise RuntimeError(
-                "saved-searches button missing; verify the automation browser is logged "
+                "saved-searches control missing; verify the automation browser is logged "
                 "into Sales Navigator with the expected LinkedIn profile"
             )
         try:
-            await button.click(timeout=10000)
+            await control.click(timeout=10000)
         except Exception:
-            await button.evaluate("(element) => element.click()")
+            await control.evaluate("(element) => element.click()")
         await _medium_wait(page)
         searches = await page.locator("a[href*='savedSearchId=']").evaluate_all(
             """(anchors) => {
@@ -2684,6 +2689,19 @@ async def _locator_has_visible_element(locator: Any) -> bool:
         if box and float(box.get("width", 0)) > 0 and float(box.get("height", 0)) > 0:
             return True
     return False
+
+
+async def _first_visible_locator(*locators: Any) -> Any | None:
+    for locator in locators:
+        count = await _locator_count(locator)
+        for index in range(count):
+            item = locator.nth(index)
+            if await _locator_visible(item):
+                return item
+            box = await _ignore_errors(item.bounding_box(), None)
+            if box and float(box.get("width", 0)) > 0 and float(box.get("height", 0)) > 0:
+                return item
+    return None
 
 
 async def _ignore_errors[T](

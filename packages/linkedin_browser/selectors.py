@@ -1,6 +1,6 @@
 """Shared exact selectors used by LinkedIn and Sales Navigator browser adapters."""
 
-SALES_NAV_PEOPLE_RESULT_ROW = "li.artdeco-list__item"
+SALES_NAV_PEOPLE_RESULT_ROW = "li.artdeco-list__item:has(a[href*='/sales/lead/'])"
 SALES_NAV_PROFILE_LINK = "a[href*='/sales/lead/']"
 SALES_NAV_MORE_ACTIONS_BUTTON = 'button[aria-label^="See more actions for"]'
 SALES_NAV_OPEN_ACTIONS_BUTTON = 'button[aria-label="Open actions overflow menu"]'

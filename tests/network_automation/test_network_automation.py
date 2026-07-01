@@ -29,6 +29,8 @@ from apps.network_automation.models import (
     AcceptanceFollowupSendResult,
     AcceptanceLedger,
     AcceptanceOutcomeArtifact,
+    AcceptanceReport,
+    AcceptanceSourceReport,
     AcceptanceStatus,
     AcceptedDraftCandidate,
     AcceptedFollowupTemplateKey,
@@ -52,7 +54,7 @@ from apps.network_automation.models import (
     source_yield_report,
 )
 from apps.network_automation.old_state import inspect_old_state
-from apps.network_automation.reports import render_report
+from apps.network_automation.reports import render_acceptance_report, render_report
 from apps.network_automation.service import (
     acceptance_draft_followups,
     acceptance_import,
@@ -941,6 +943,58 @@ def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -
     assert ledger.invitations[0].name == "Duplicate Lead"
 
 
+def test_acceptance_report_marks_current_daily_reconciliation() -> None:
+    report = AcceptanceReport(
+        min_age_days=7,
+        max_age_days=45,
+        total_sent=1,
+        checked=1,
+        accepted=1,
+        by_source={
+            "ASAP - Agency Owners Delivery": AcceptanceSourceReport(
+                total_sent=1,
+                checked=1,
+                accepted=1,
+            )
+        },
+    )
+
+    output = render_acceptance_report(report)
+
+    assert "- Unchecked: 0" in output
+    assert (
+        "- Ledger freshness: Daily acceptance reconciliation appears current for this "
+        "report window."
+        in output
+    )
+
+
+def test_acceptance_report_routes_unchecked_candidates_to_daily_reconciliation() -> None:
+    report = AcceptanceReport(
+        min_age_days=7,
+        max_age_days=45,
+        total_sent=3,
+        checked=1,
+        accepted=1,
+        unchecked=2,
+        by_source={
+            "ASAP - Agency Owners Delivery": AcceptanceSourceReport(
+                total_sent=3,
+                checked=1,
+                accepted=1,
+                unchecked=2,
+            )
+        },
+    )
+
+    output = render_acceptance_report(report)
+
+    assert (
+        "- Ledger freshness: Daily acceptance reconciliation should check 2 candidate(s) "
+        "in this report window."
+    ) in output
+
+
 def test_acceptance_import_downgrades_mismatched_identity(tmp_path: Path) -> None:
     store = Store(tmp_path)
     ledger = AcceptanceLedger()
@@ -1322,9 +1376,11 @@ def test_playwriter_network_methods_parse_script_artifacts(
         playwriter_bin="/bin/echo",
     )
     scripts: list[str] = []
+    configs_by_script: dict[str, dict[str, Any]] = {}
 
     def fake_run_script(script: Path, config: dict[str, Any]) -> None:
         scripts.append(script.name)
+        configs_by_script[script.name] = config
         out = Path(config["out"])
         payload: dict[str, Any]
         if script.name == "salesnav_send.js":
@@ -1400,6 +1456,7 @@ def test_playwriter_network_methods_parse_script_artifacts(
     assert Path(capture_path).name == "001-capture-page.json"
     assert Path(audit_path).name == "001-audit.json"
     assert Path(saved_path).name == "saved-searches.json"
+    assert configs_by_script["salesnav_saved_searches.js"]["navigationTimeoutMs"] == 120000
     assert scripts == [
         "salesnav_send.js",
         "salesnav_capture.js",
