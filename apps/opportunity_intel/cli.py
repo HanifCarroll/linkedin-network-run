@@ -66,7 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_contract_args(preflight_parser)
     preflight_parser.add_argument("--state-dir", type=Path, default=None)
     preflight_parser.add_argument("--check-browser", action="store_true")
-    preflight_parser.add_argument("--cdp-url", default=None)
     preflight_parser.add_argument("--json", action="store_true")
 
     for name in ("post-queue", "collection-queue", "salesnav-feeder", "salesnav-activity"):
@@ -121,7 +120,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_BATCH_DIR / "provider-comments.csv",
     )
-    run_batch_parser.add_argument("--cdp-url", default=None)
 
     search_capture_parser = _add_command(
         subparsers,
@@ -132,7 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
     search_capture_parser.add_argument("--out", type=Path, required=True)
     search_capture_parser.add_argument("--metrics-jsonl", type=Path, default=None)
     search_capture_parser.add_argument("--checkpoint", type=Path, default=None)
-    search_capture_parser.add_argument("--cdp-url", default=None)
     search_capture_parser.add_argument("--max-results-per-search", type=int, default=50)
     search_capture_parser.add_argument("--max-scrolls", type=int, default=20)
     search_capture_parser.add_argument("--scroll-pixels", type=int, default=1800)
@@ -346,7 +343,7 @@ def _handle_preflight(args: argparse.Namespace) -> int:
     store = OpportunityStore(args.state_dir)
     store.sync_source_registry(registry)
     store.sync_post_candidates(candidates)
-    browser = run_browser_preflight(check_browser=args.check_browser, cdp_url=args.cdp_url)
+    browser = run_browser_preflight(check_browser=args.check_browser)
     artifact_path = write_preflight_artifact(store=store, result=browser)
     payload = {
         "ready": browser.ready,
@@ -489,8 +486,6 @@ def _handle_run_batch(args: argparse.Namespace) -> int:
     ]
     if args.state_dir is not None:
         command.extend(["--state-dir", str(args.state_dir)])
-    if args.cdp_url:
-        command.extend(["--cdp-url", str(args.cdp_url)])
     return comment_extractor_main(command)
 
 
@@ -510,7 +505,6 @@ def _handle_capture_search_posts(args: argparse.Namespace) -> int:
             action_timeout_ms=args.action_timeout_ms,
             settle_ms=args.settle_ms,
         ),
-        cdp_url=args.cdp_url,
         progress=ProgressReporter(),
     )
     if args.json:

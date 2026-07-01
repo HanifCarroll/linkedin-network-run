@@ -93,7 +93,7 @@ def test_review_pages_render_required_surfaces(tmp_path: Path) -> None:
     assert "Calibration Queue" in opportunities.text
     assert "Current Run Status" in network.text
     assert "Lead Queue, Drafts, And Messageability" in recruiter.text
-    assert "Latest Playwright Artifacts And Failed Actions" in browser.text
+    assert "Latest Playwriter Artifacts And Failed Actions" in browser.text
 
 
 def test_review_ui_reads_network_and_recruiter_state(tmp_path: Path) -> None:

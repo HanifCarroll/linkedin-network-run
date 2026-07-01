@@ -7,8 +7,7 @@ opportunity intelligence, comment extraction, and local review UI tools.
 
 - Active CLI: `uv run linkedin-tools`
 - Python package: `linkedin-tools`
-- Runtime: Python, `uv`, SQLite, FastAPI/Jinja, Playwriter, and Python
-  Playwright fallback paths
+- Runtime: Python, `uv`, SQLite, FastAPI/Jinja, and Playwriter
 - State root: `~/Library/Application Support/linkedin-tools/`
 - Primary namespaces: network automation, recruiter/agency/advisor outreach,
   opportunity intelligence, comment extraction, and review UI
@@ -80,26 +79,14 @@ uv run linkedin-tools network --state-dir "$state_root/network-automation" pendi
 uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto
 ```
 
-Browser-backed network commands default to the Playwriter backend. To reuse a
-specific Playwriter session, set `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>`. To
-create a new Playwriter session in a specific browser profile, set
-`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>` before running the command. If a
-command reports `Playwriter <method> is not ported yet`, rerun that command with
-the Python Playwright fallback:
+Browser-backed network commands use Playwriter only. To reuse a specific
+Playwriter session, set `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>`. To create a
+new Playwriter session in a specific browser profile, set
+`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>` before running the command.
+
+Scheduled browser automations run directly through the controller command:
 
 ```sh
-LINKEDIN_TOOLS_BROWSER_BACKEND=playwright \
-  uv run linkedin-tools network --state-dir "$state_root/network-automation" <command>
-```
-
-Use the session commands for scheduled browser automations that should keep one
-managed Chrome instance open across the whole run:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  browser-session start --force --url https://www.linkedin.com/sales/search/people
-
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
   run-session --session auto --target 30 --max-real-sends 30 --force --allow-send --finish
@@ -107,18 +94,7 @@ uv run linkedin-tools network \
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
   acceptance run-daily-session --session auto --min-age-days 1 --max-age-days 45
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  browser-session stop
 ```
-
-When `browser-session start` is running, later browser-backed network commands
-using `LINKEDIN_TOOLS_BROWSER_BACKEND=playwright` auto-attach to the saved CDP
-URL in `browser-session.json`. The window stays open between commands until
-`browser-session stop`. Browser actions reuse an existing tab in the attached
-context by default and do not bring Chrome to the foreground; a new tab is
-created only when the context has no open pages.
 
 Browser-backed commands default to guarded dry-run behavior unless the explicit
 real-action flag is provided:
@@ -193,9 +169,9 @@ uv run linkedin-tools opportunity sources --json
 uv run linkedin-tools opportunity post-queue --out /tmp/linkedin-opportunity-posts.csv
 ```
 
-Search/watchlist rows become concrete post URLs through the browser-backed
-search capture command. It uses the normal Chrome/Playwriter CDP path, writes
-post URLs incrementally, and prints progress lines to stderr while it runs:
+Search/watchlist rows become concrete post URLs through the Playwriter-backed
+search capture command. It writes post URLs incrementally and prints progress
+lines to stderr while it runs:
 
 ```sh
 uv run linkedin-tools opportunity capture-search-posts \

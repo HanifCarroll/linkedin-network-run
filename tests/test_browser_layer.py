@@ -5,27 +5,18 @@ from pathlib import Path
 import pytest
 
 from packages.linkedin_browser import (
-    DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
-    DEFAULT_BROWSER_PROFILE_NAME,
-    DEFAULT_CHROME_USER_DATA_DIR,
     ArtifactWriter,
     BrowserBlockKind,
-    BrowserContextHandle,
     BrowserSession,
     BrowserStateEvidence,
-    ChromeProfileConfig,
     PageReusePolicy,
     RealAction,
     RealActionApproval,
     UnsafeRealActionError,
     choose_reusable_page,
-    chrome_profile_from_env,
-    chrome_profile_storage_dir,
     classify_browser_state,
     guarded_click,
 )
-from packages.linkedin_browser import playwright as linkedin_playwright
-from packages.linkedin_browser.playwright import open_linkedin_browser_context
 
 
 class FakePage:
@@ -65,152 +56,6 @@ class FakeContext:
         page = FakePage("about:blank")
         self._pages.append(page)
         return page
-
-
-class FakeCdpBrowser:
-    def __init__(self) -> None:
-        self.contexts = [FakeContext([FakePage("https://www.linkedin.com/sales/lead/abc")])]
-
-
-class FakeCdpChromium:
-    def __init__(self) -> None:
-        self.connected_url: str | None = None
-        self.launched = False
-
-    async def connect_over_cdp(
-        self,
-        url: str,
-        *,
-        timeout: int,
-        no_defaults: bool,
-    ) -> FakeCdpBrowser:
-        _ = timeout
-        _ = no_defaults
-        self.connected_url = url
-        return FakeCdpBrowser()
-
-
-class FakeCdpPlaywright:
-    def __init__(self) -> None:
-        self.chromium = FakeCdpChromium()
-
-
-def test_profile_config_defaults_to_linkedin_profile() -> None:
-    config = chrome_profile_from_env({})
-    assert config.profile_name == DEFAULT_BROWSER_PROFILE_NAME
-    assert config.user_data_dir.name == "Chrome"
-    assert "--profile-directory=LinkedIn" in config.launch_args()
-
-
-def test_profile_config_can_be_overridden() -> None:
-    config = chrome_profile_from_env(
-        {
-            "LINKEDIN_TOOLS_CHROME_USER_DATA_DIR": "/tmp/chrome",
-            "LINKEDIN_TOOLS_CHROME_PROFILE_NAME": "LinkedIn Test",
-            "LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "automation",
-        }
-    )
-    assert config == ChromeProfileConfig(
-        user_data_dir=Path("/tmp/chrome"),
-        profile_name="LinkedIn Test",
-    )
-
-
-def test_profile_config_can_use_automation_mode() -> None:
-    config = chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "automation"})
-
-    assert config.user_data_dir == DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR
-    assert config.profile_name == "LinkedIn"
-
-
-def test_profile_storage_dir_uses_managed_root_for_automation_profiles() -> None:
-    config = ChromeProfileConfig(user_data_dir=Path("/tmp/linkedin-root"), profile_name="LinkedIn")
-
-    assert chrome_profile_storage_dir(config) == Path(
-        "/tmp/linkedin-root/managed-profiles/LinkedIn"
-    )
-
-
-def test_profile_config_can_use_real_mode() -> None:
-    config = chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "real"})
-
-    assert config.user_data_dir == DEFAULT_CHROME_USER_DATA_DIR
-    assert config.profile_name == "LinkedIn"
-
-
-def test_profile_config_rejects_unknown_mode() -> None:
-    with pytest.raises(ValueError, match="must be automation, real, or custom"):
-        chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "unknown"})
-
-
-def test_profile_config_custom_mode_requires_explicit_root() -> None:
-    with pytest.raises(ValueError, match="CHROME_USER_DATA_DIR is required"):
-        chrome_profile_from_env({"LINKEDIN_TOOLS_BROWSER_PROFILE_MODE": "custom"})
-
-
-@pytest.mark.asyncio
-async def test_open_linkedin_browser_context_uses_managed_chrome_cdp(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    playwright = FakeCdpPlaywright()
-    calls: list[tuple[object, ChromeProfileConfig]] = []
-
-    async def fake_launch_managed_chrome_cdp_context(
-        playwright_arg: object,
-        config: ChromeProfileConfig,
-    ) -> BrowserContextHandle:
-        calls.append((playwright_arg, config))
-        return BrowserContextHandle(
-            context=FakeContext([FakePage("about:blank")]),  # type: ignore[arg-type]
-            close_context=False,
-        )
-
-    monkeypatch.setattr(
-        linkedin_playwright,
-        "launch_managed_chrome_cdp_context",
-        fake_launch_managed_chrome_cdp_context,
-    )
-
-    handle = await open_linkedin_browser_context(
-        playwright,  # type: ignore[arg-type]
-        config=ChromeProfileConfig(user_data_dir=Path("/tmp/chrome"), profile_name="LinkedIn"),
-        cdp_url="",
-    )
-
-    assert handle.context.pages[0].url == "about:blank"
-    assert calls == [
-        (
-            playwright,
-            ChromeProfileConfig(user_data_dir=Path("/tmp/chrome"), profile_name="LinkedIn"),
-        )
-    ]
-
-
-def test_managed_chrome_command_uses_dedicated_root_without_named_subprofile() -> None:
-    command = linkedin_playwright._managed_chrome_command(
-        ChromeProfileConfig(user_data_dir=Path("/tmp/linkedin-root"), profile_name="LinkedIn"),
-        43210,
-    )
-
-    assert "--user-data-dir=/tmp/linkedin-root/managed-profiles/LinkedIn" in command
-    assert "--remote-debugging-port=43210" in command
-    assert "--remote-debugging-address=127.0.0.1" in command
-    assert "--profile-directory=LinkedIn" not in command
-
-
-@pytest.mark.asyncio
-async def test_open_linkedin_browser_context_prefers_cdp_attach() -> None:
-    playwright = FakeCdpPlaywright()
-
-    handle = await open_linkedin_browser_context(
-        playwright,  # type: ignore[arg-type]
-        cdp_url="ws://127.0.0.1:19988/cdp",
-    )
-
-    assert handle.close_context is False
-    assert handle.context.pages[0].url == "https://www.linkedin.com/sales/lead/abc"
-    assert playwright.chromium.connected_url == "ws://127.0.0.1:19988/cdp"
-    assert playwright.chromium.launched is False
 
 
 def test_choose_reusable_page_prefers_salesnav_page() -> None:

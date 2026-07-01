@@ -8,7 +8,6 @@ import pytest
 
 from apps.cli import APP_NAMES, main
 from apps.cutover.automation_audit import AUTOMATION_SPECS
-from packages.linkedin_browser import DEFAULT_BROWSER_PROFILE_NAME
 from packages.linkedin_common import APP_NAME
 
 
@@ -172,7 +171,6 @@ def test_cutover_automation_edit_plan_outputs_exact_replacements(
 
 def test_shared_defaults_match_prd() -> None:
     assert APP_NAME == "linkedin-tools"
-    assert DEFAULT_BROWSER_PROFILE_NAME == "LinkedIn"
 
 
 def test_package_data_includes_runtime_assets() -> None:

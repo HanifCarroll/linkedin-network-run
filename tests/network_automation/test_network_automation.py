@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -11,11 +10,9 @@ from urllib.parse import unquote
 import pytest
 
 import apps.network_automation.cli as network_cli
-import apps.network_automation.service as network_service
 from apps.network_automation.browser import (
     SECURITY_VERIFICATION_SELECTOR,
     FixtureBrowserClient,
-    PlaywrightBrowserClient,
     PlaywriterBrowserClient,
     _apply_salesnav_api_state,
     _capture_salesnav_api_response,
@@ -35,7 +32,6 @@ from apps.network_automation.models import (
     AcceptedDraftCandidate,
     AcceptedFollowupTemplateKey,
     AcceptedResearchArtifact,
-    BrowserSessionState,
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
@@ -92,7 +88,7 @@ from apps.recruiter_agency_outreach.models import (
     OutreachState,
 )
 from apps.recruiter_agency_outreach.storage import Store as OutreachStore
-from packages.linkedin_browser import BrowserBlockKind, ManagedChromeSession
+from packages.linkedin_browser import BrowserBlockKind
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automation"
 
@@ -100,11 +96,9 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automatio
 def test_cli_help_documents_browser_backend_selection() -> None:
     help_text = network_cli.build_parser().format_help()
 
-    assert "default: Playwriter" in help_text
+    assert "Playwriter only" in help_text
     assert "LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>" in help_text
     assert "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>" in help_text
-    assert "LINKEDIN_TOOLS_BROWSER_BACKEND=playwright" in help_text
-    assert "Playwriter <method> is not ported yet" in help_text
 
 
 class FakeLiveBrowserClient:
@@ -116,13 +110,9 @@ class FakeLiveBrowserClient:
         self,
         *,
         out_dir: Path,
-        cdp_url: str | None = None,
-        max_load_more: int = 260,
         withdraw_timeout_seconds: float = 90.0,
     ) -> None:
         self.out_dir = Path(out_dir)
-        self.cdp_url = cdp_url
-        self.max_load_more = max_load_more
         self.withdraw_timeout_seconds = withdraw_timeout_seconds
         self.calls: list[str] = []
         FakeLiveBrowserClient.instances.append(self)
@@ -1175,44 +1165,6 @@ def test_pending_cleanup_loads_legacy_month_threshold(tmp_path: Path) -> None:
     assert run.threshold_months == 2
 
 
-def test_pending_withdraw_browser_timeout_writes_failed_artifact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = PlaywrightBrowserClient(
-        out_dir=tmp_path,
-        withdraw_timeout_seconds=0.001,
-    )
-
-    async def slow_withdraw(
-        candidate: PendingCandidateObservation,
-        *,
-        dry_run: bool,
-        allow_withdraw: bool,
-    ) -> tuple[PendingWithdrawResult, str]:
-        _ = candidate, dry_run, allow_withdraw
-        await asyncio.sleep(60)
-        raise AssertionError("timeout did not fire")
-
-    monkeypatch.setattr(client, "_withdraw_pending", slow_withdraw)
-    candidate = PendingCandidateObservation(
-        index=0,
-        name="Stale Invite",
-        profile_url="https://www.linkedin.com/in/stale",
-        age_text="Sent 2 weeks ago",
-        eligible=True,
-    )
-
-    try:
-        result, path = client.withdraw_pending(candidate, dry_run=True, allow_withdraw=False)
-    finally:
-        client.close()
-
-    assert result.status == "timeout"
-    assert "timed out" in str(result.detail)
-    assert Path(path).exists()
-
-
 def test_playwriter_acceptance_followup_uses_script_and_preserves_guards(
     tmp_path: Path,
 ) -> None:
@@ -1563,7 +1515,6 @@ def test_cli_pending_withdraw_next_uses_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
-    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
     store = Store(tmp_path)
     pending_cleanup_start(store, max_withdrawals=1, threshold_days=14, force=True)
     pending_cleanup_import_capture(store, FIXTURES / "pending_capture.json")
@@ -1578,14 +1529,11 @@ def test_cli_pending_withdraw_next_uses_live_browser(
             "--allow-withdraw",
             "--out-dir",
             str(out_dir),
-            "--max-load-more",
-            "7",
         ]
     )
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
-    assert FakeLiveBrowserClient.instances[-1].max_load_more == 7
     assert FakeLiveBrowserClient.instances[-1].calls == [
         "withdraw:Stale Invite:dry=False:allow=True"
     ]
@@ -1596,7 +1544,6 @@ def test_cli_saved_searches_uses_live_browser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
-    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
     out = tmp_path / "saved-searches.json"
 
     exit_code = network_main(
@@ -1615,61 +1562,6 @@ def test_cli_saved_searches_uses_live_browser(
     ]
     payload = json.loads(out.read_text())
     assert payload["searches"][0]["name"] == "ASAP - Contract Recruiters Staffing"
-
-
-def test_cli_browser_session_start_records_persistent_cdp_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fake_start_session(config: object, *, start_url: str) -> ManagedChromeSession:
-        _ = config, start_url
-        return ManagedChromeSession(
-            pid=12345,
-            port=45678,
-            cdp_url="http://127.0.0.1:45678",
-            user_data_dir=tmp_path / "profile",
-            profile_name="LinkedIn",
-        )
-
-    monkeypatch.setattr(network_service, "start_managed_chrome_cdp_session", fake_start_session)
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "browser-session",
-            "start",
-            "--url",
-            "https://www.linkedin.com/sales/search/people",
-            "--force",
-        ]
-    )
-
-    assert exit_code == 0
-    state = read_model(Store(tmp_path).browser_session_path, BrowserSessionState)
-    assert state.pid == 12345
-    assert state.cdp_url == "http://127.0.0.1:45678"
-    assert state.start_url == "https://www.linkedin.com/sales/search/people"
-
-
-def test_cli_saved_searches_attaches_to_persistent_browser_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    monkeypatch.setenv("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwright")
-    monkeypatch.setattr(
-        network_cli,
-        "browser_session_cdp_url",
-        lambda store: "http://127.0.0.1:45678",
-    )
-    out = tmp_path / "saved-searches.json"
-
-    exit_code = network_main(["--state-dir", str(tmp_path), "saved-searches", "--out", str(out)])
-
-    assert exit_code == 0
-    assert FakeLiveBrowserClient.instances[-1].cdp_url == "http://127.0.0.1:45678"
-    assert FakeLiveBrowserClient.instances[-1].calls == [
-        "saved-searches:https://www.linkedin.com/sales/search/people"
-    ]
 
 
 def test_cli_acceptance_check_uses_live_browser(
@@ -1901,7 +1793,6 @@ def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", ZeroThenNextSourceBrowserClient)
-    monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", ZeroThenNextSourceBrowserClient)
     saved_searches = tmp_path / "saved-searches.json"
 
     exit_code = network_main(
@@ -2331,4 +2222,3 @@ def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.acceptance_status = "accepted"
     FakeLiveBrowserClient.fail_acceptance_check = False
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)
-    monkeypatch.setattr(network_cli, "PlaywrightBrowserClient", FakeLiveBrowserClient)

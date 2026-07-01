@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import signal
-import socket
-import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-
-from packages.linkedin_browser import ChromeProfileConfig, start_managed_chrome_cdp_session
 
 from .browser import BrowserClient
 from .models import (
@@ -22,7 +16,6 @@ from .models import (
     AcceptanceStatus,
     AcceptedDraftCandidate,
     AcceptedResearchArtifact,
-    BrowserSessionState,
     CandidateEvent,
     CandidateStatus,
     DraftStrategy,
@@ -194,146 +187,6 @@ def import_audit(store: Store, path: Path) -> str:
 def capture_saved_searches(browser: BrowserClient, *, url: str, out: Path) -> str:
     artifact, path = browser.resolve_saved_searches(url=url, out=out)
     return f"captured {len(artifact.searches)} saved searches to {path}"
-
-
-def browser_session_start(
-    store: Store,
-    *,
-    config: ChromeProfileConfig,
-    start_url: str,
-    force: bool,
-) -> str:
-    existing = _load_browser_session_state(store)
-    if existing is not None and _browser_session_is_usable(existing):
-        if not force:
-            return (
-                f"browser session already running: pid={existing.pid} "
-                f"cdp_url={existing.cdp_url}"
-            )
-        browser_session_stop(store)
-    launched = start_managed_chrome_cdp_session(config, start_url=start_url)
-    state = BrowserSessionState(
-        pid=launched.pid,
-        port=launched.port,
-        cdp_url=launched.cdp_url,
-        user_data_dir=str(launched.user_data_dir),
-        profile_name=launched.profile_name,
-        start_url=start_url,
-    )
-    write_json_atomic(store.browser_session_path, state.model_dump(mode="json", by_alias=False))
-    return f"browser session started: pid={state.pid} cdp_url={state.cdp_url}"
-
-
-def browser_session_status(store: Store, *, as_json: bool = False) -> str:
-    state = _load_browser_session_state(store)
-    payload: dict[str, object]
-    if state is None:
-        payload = {"configured": False, "alive": False, "reachable": False}
-    else:
-        command = _process_command(state.pid)
-        payload = {
-            "configured": True,
-            "alive": _browser_session_pid_matches(state, command),
-            "reachable": _is_local_port_reachable(state.port),
-            "pid": state.pid,
-            "port": state.port,
-            "cdp_url": state.cdp_url,
-            "user_data_dir": state.user_data_dir,
-            "profile_name": state.profile_name,
-            "start_url": state.start_url,
-            "started_at": state.started_at.isoformat(),
-        }
-    if as_json:
-        return json.dumps(payload, indent=2)
-    if not payload["configured"]:
-        return "browser session: not started"
-    state_text = "usable" if payload["alive"] and payload["reachable"] else "not usable"
-    return (
-        f"browser session: {state_text}; pid={payload['pid']} "
-        f"cdp_url={payload['cdp_url']}"
-    )
-
-
-def browser_session_stop(store: Store) -> str:
-    state = _load_browser_session_state(store)
-    if state is None:
-        return "browser session: not started"
-    command = _process_command(state.pid)
-    stopped = False
-    if _browser_session_pid_matches(state, command):
-        os.kill(state.pid, signal.SIGTERM)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if not _pid_alive(state.pid):
-                stopped = True
-                break
-            time.sleep(0.25)
-        if not stopped and _pid_alive(state.pid):
-            os.kill(state.pid, signal.SIGKILL)
-            stopped = True
-    store.browser_session_path.unlink(missing_ok=True)
-    if stopped:
-        return f"browser session stopped: pid={state.pid}"
-    return "browser session record removed; process was not running or did not match"
-
-
-def browser_session_cdp_url(store: Store) -> str | None:
-    state = _load_browser_session_state(store)
-    if state is None:
-        return None
-    if _browser_session_is_usable(state):
-        return state.cdp_url
-    return None
-
-
-def _load_browser_session_state(store: Store) -> BrowserSessionState | None:
-    if not store.browser_session_path.exists():
-        return None
-    return read_model(store.browser_session_path, BrowserSessionState)
-
-
-def _browser_session_is_usable(state: BrowserSessionState) -> bool:
-    return _browser_session_pid_matches(state, _process_command(state.pid)) and (
-        _is_local_port_reachable(state.port)
-    )
-
-
-def _browser_session_pid_matches(state: BrowserSessionState, command: str) -> bool:
-    if not command:
-        return False
-    return (
-        "Google Chrome" in command
-        and f"--remote-debugging-port={state.port}" in command
-        and state.user_data_dir in command
-    )
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
-def _process_command(pid: int) -> str:
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _is_local_port_reachable(port: int) -> bool:
-    with socket.socket() as sock:
-        sock.settimeout(0.3)
-        return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
 def network_run_session(

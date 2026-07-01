@@ -843,6 +843,9 @@ def find_lead_by_id(leads: list[Lead], lead_id: str) -> Lead | None:
 
 
 def find_lead_index(leads: list[Lead], candidate: Lead) -> int:
+    for index, lead in enumerate(leads):
+        if lead.id == candidate.id:
+            return index
     candidate_key = lead_key(candidate)
     for index, lead in enumerate(leads):
         if lead_key(lead) == candidate_key:

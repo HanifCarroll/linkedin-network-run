@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -40,7 +41,6 @@ from apps.recruiter_agency_outreach.models import (
     OutreachState,
 )
 from apps.recruiter_agency_outreach.storage import Store as RecruiterStore
-from packages.linkedin_browser.config import chrome_profile_from_env, chrome_profile_storage_dir
 
 
 @dataclass(frozen=True)
@@ -833,8 +833,8 @@ class SQLiteReviewReadModelProvider:
         return tuple(_recruiter_lead_row(state, lead) for lead in leads)
 
     def _browser_sessions(self) -> tuple[BrowserSessionRow, ...]:
-        config = chrome_profile_from_env()
-        profile_path = chrome_profile_storage_dir(config)
+        session = os.environ.get("LINKEDIN_TOOLS_PLAYWRITER_SESSION", "auto")
+        browser_key = os.environ.get("LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY", "")
         latest_error = self.store.fetch_all(
             """
             SELECT message
@@ -844,12 +844,12 @@ class SQLiteReviewReadModelProvider:
             """
         )
         warning = str(latest_error[0]["message"]) if latest_error else ""
-        state = "profile present" if profile_path.exists() else "profile missing"
+        state = "configured" if session != "auto" or browser_key else "auto session"
         return (
             BrowserSessionRow(
-                profile_name=config.profile_name,
+                profile_name="Playwriter",
                 session_state=state,
-                current_session=str(profile_path),
+                current_session=session if session != "auto" else browser_key or "auto",
                 safety_warning=warning,
             ),
         )

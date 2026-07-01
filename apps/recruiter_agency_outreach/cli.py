@@ -537,10 +537,10 @@ def _run_capture_command(args: argparse.Namespace, store: Store) -> None:
 
 
 def _browser_from_capture_args(args: argparse.Namespace, store: Store) -> Any:
-    from apps.network_automation.browser import PlaywrightBrowserClient
+    from apps.network_automation.browser import PlaywriterBrowserClient
 
     out_dir = Path(args.out_dir) if args.out_dir else store.dir / DEFAULT_CAPTURE_DIRNAME
-    return PlaywrightBrowserClient(out_dir=out_dir)
+    return PlaywriterBrowserClient(out_dir=out_dir)
 
 
 def _run_capture_accounts_command(args: argparse.Namespace, store: Store) -> None:
@@ -571,10 +571,10 @@ def _run_capture_accounts_command(args: argparse.Namespace, store: Store) -> Non
 
 
 def _account_browser_from_args(args: argparse.Namespace, store: Store) -> Any:
-    from .account_browser import PlaywrightAccountCaptureClient
+    from .account_browser import PlaywriterAccountCaptureClient
 
     out_dir = Path(args.out_dir) if args.out_dir else store.dir / DEFAULT_ACCOUNT_CAPTURE_DIRNAME
-    return PlaywrightAccountCaptureClient(out_dir=out_dir)
+    return PlaywriterAccountCaptureClient(out_dir=out_dir)
 
 
 def _run_serve_command(args: argparse.Namespace) -> None:

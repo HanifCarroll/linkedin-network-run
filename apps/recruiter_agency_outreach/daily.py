@@ -8,12 +8,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from packages.linkedin_browser import (
-    DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
-    DEFAULT_BROWSER_PROFILE_NAME,
-    ChromeProfileConfig,
-)
-
 from .dashboard import (
     DailyLeadAction,
     DashboardReport,
@@ -664,15 +658,12 @@ def _capture_browser(
     source: str,
     round_number: int,
 ) -> Any:
-    from apps.network_automation.browser import PlaywrightBrowserClient
+    from apps.network_automation.browser import PlaywriterBrowserClient
 
     root = Path(options.capture_out_dir) if options.capture_out_dir else store.dir / "captures"
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
-    return PlaywrightBrowserClient(
-        out_dir=out_dir,
-        chrome_profile_config=_recruiter_agency_chrome_profile_config(),
-        capture_timeout_seconds=RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS,
-    )
+    _ = RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS
+    return PlaywriterBrowserClient(out_dir=out_dir)
 
 
 def _account_browser(
@@ -682,7 +673,7 @@ def _account_browser(
     source: str,
     round_number: int,
 ) -> Any:
-    from .account_browser import PlaywrightAccountCaptureClient
+    from .account_browser import PlaywriterAccountCaptureClient
 
     root = (
         Path(options.account_capture_out_dir)
@@ -690,17 +681,7 @@ def _account_browser(
         else store.dir / "account-captures"
     )
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
-    return PlaywrightAccountCaptureClient(
-        out_dir=out_dir,
-        chrome_profile_config=_recruiter_agency_chrome_profile_config(),
-    )
-
-
-def _recruiter_agency_chrome_profile_config() -> ChromeProfileConfig:
-    return ChromeProfileConfig(
-        user_data_dir=DEFAULT_AUTOMATION_CHROME_USER_DATA_DIR,
-        profile_name=DEFAULT_BROWSER_PROFILE_NAME,
-    )
+    return PlaywriterAccountCaptureClient(out_dir=out_dir)
 
 
 def _ready_count(store: Store, bucket: str) -> int:

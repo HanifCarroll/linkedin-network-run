@@ -6,7 +6,7 @@ Act like a high-performing senior engineer. Be concise, direct, and execution-fo
 
 - Search before building. Inspect current files and state before changing behavior.
 - Make narrow, production-friendly changes that follow the existing Python,
-  Playwright, SQLite, and CLI patterns.
+  Playwriter, SQLite, and CLI patterns.
 - Protect user work. Do not revert or overwrite uncommitted changes you did not make.
 - Test before shipping. For docs-only changes, at least verify syntax and relevant references.
 - State blockers, assumptions, changed files, and verification results clearly.
@@ -33,7 +33,7 @@ Default local state:
 - Network state: `~/Library/Application Support/linkedin-tools/network-automation/`
 - Recruiter/agency state: `~/Library/Application Support/linkedin-tools/recruiter-agency-outreach/`
 
-The current stable workspace is `/Users/hanifcarroll/projects/linkedin-network-automation`. Older logs or comments may still mention `/Users/hanifcarroll/projects/tool`; do not reintroduce that path.
+The current stable workspace is `/Users/hanifcarroll/projects/linkedin-tools`. Older logs or comments may still mention obsolete workspace paths; do not reintroduce them.
 
 ## Build And Test
 

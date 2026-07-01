@@ -60,6 +60,7 @@ from apps.recruiter_agency_outreach.sourcing import (
 )
 from apps.recruiter_agency_outreach.storage import Store
 from apps.recruiter_agency_outreach.suppression import apply_network_suppression_to_outreach_state
+from apps.recruiter_agency_outreach.utils import stable_lead_id
 
 FIXTURES = Path(__file__).parent / "fixtures" / "recruiter_agency_outreach"
 
@@ -174,6 +175,62 @@ def test_agency_source_promotion_requires_salesnav_identity() -> None:
         in lead.evidence_text
     )
     assert lead.draft is not None
+
+
+def test_agency_contact_promotion_updates_existing_lead_by_id() -> None:
+    sales_profile_urn = "urn:li:fs_salesProfile:(ACwAADUPE,NAME_SEARCH,abc123)"
+    lead_id = stable_lead_id("agency_contact_candidate", "Dana Delivery", None, sales_profile_urn)
+    state = OutreachState(
+        agency_accounts=[
+            AgencyAccount(
+                id="acct_bright",
+                source="manual",
+                name="Bright Product Studio",
+                status=AgencyAccountStatus.QUALIFIED,
+            )
+        ],
+        leads=[
+            Lead(
+                id=lead_id,
+                source="older import",
+                name="Dana Delivery",
+                first_name="Dana",
+                profile_url="https://www.linkedin.com/in/dana-delivery/",
+                lead_type=LeadType.AGENCY_DELIVERY,
+                status=LeadStatus.ELIGIBLE,
+                message_status=MessageStatus.NONE,
+                agency_account_id="acct_bright",
+                agency_account_name="Bright Product Studio",
+            )
+        ],
+        agency_contact_candidates=[
+            AgencyContactCandidate(
+                id="agc_dana",
+                source="manual",
+                agency_account_id="acct_bright",
+                agency_account_name="Bright Product Studio",
+                name="Dana Delivery",
+                title="Technical Director",
+                profile_url="https://www.linkedin.com/in/dana-delivery/",
+                sales_profile_urn=sales_profile_urn,
+                status=AgencyContactCandidateStatus.WEBSITE_CONTACT_CANDIDATE,
+                review_status=AgencyContactReviewStatus.APPROVED,
+            )
+        ],
+    )
+
+    promoted = promote_agency_contact_candidates(
+        state,
+        limit=10,
+        draft=True,
+        allow_multiple_per_agency=True,
+    )
+
+    assert promoted.updated == 1
+    assert promoted.stored == 0
+    assert [lead.id for lead in state.leads] == [lead_id]
+    assert state.leads[0].sales_profile_urn == sales_profile_urn
+    assert state.leads[0].message_status == MessageStatus.DRAFTED
 
 
 def test_import_account_capture_qualifies_agency_accounts() -> None:

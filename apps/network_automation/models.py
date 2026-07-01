@@ -36,16 +36,6 @@ class RunState(StrEnum):
     BLOCKED = "Blocked"
 
 
-class BrowserSessionState(AppModel):
-    pid: int
-    port: int
-    cdp_url: str
-    user_data_dir: str
-    profile_name: str
-    start_url: str
-    started_at: datetime = Field(default_factory=now_utc)
-
-
 class CandidateStatus(StrEnum):
     PENDING_PROVISIONAL = "pending-provisional"
     PENDING = "pending"

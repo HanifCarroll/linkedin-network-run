@@ -16,10 +16,6 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
 from apps.comment_extractor.contracts import ExtractionResult
 from apps.comment_extractor.linkedin_post_comments import (
     write_raw_comments_jsonl,
@@ -29,7 +25,6 @@ from apps.opportunity_intel.imports import write_comment_csv
 from apps.opportunity_intel.sources import load_query_pack
 from apps.opportunity_intel.store import OpportunityStore
 from packages.linkedin_browser.artifacts import ArtifactWriter
-from packages.linkedin_browser.config import ChromeProfileConfig, chrome_profile_from_env
 from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
@@ -192,30 +187,16 @@ class BrowserExtractionError(RuntimeError):
 
 def run_browser_preflight(
     *,
-    config: ChromeProfileConfig | None = None,
     check_browser: bool = False,
-    cdp_url: str | None = None,
 ) -> BrowserPreflightResult:
-    return asyncio.run(
-        browser_preflight(config=config, check_browser=check_browser, cdp_url=cdp_url)
-    )
+    return asyncio.run(browser_preflight(check_browser=check_browser))
 
 
 async def browser_preflight(
     *,
-    config: ChromeProfileConfig | None = None,
     check_browser: bool = False,
-    cdp_url: str | None = None,
 ) -> BrowserPreflightResult:
-    selected = config or chrome_profile_from_env()
-    profile_dir = selected.user_data_dir / selected.profile_name
     warnings: list[str] = []
-    root_exists = selected.user_data_dir.exists()
-    profile_exists = profile_dir.exists()
-    if not root_exists:
-        warnings.append("chrome_user_data_dir_missing")
-    if not profile_exists:
-        warnings.append("chrome_profile_dir_missing")
     if check_browser:
         try:
             _CommentExtractorPlaywriterClient(out_dir=Path.cwd()).preflight()
@@ -223,11 +204,11 @@ async def browser_preflight(
             warnings.append(f"browser_check_failed:{type(exc).__name__}")
     return BrowserPreflightResult(
         ready=not warnings,
-        profile_name=selected.profile_name,
-        user_data_dir=selected.user_data_dir,
-        profile_dir=profile_dir,
-        profile_root_exists=root_exists,
-        profile_dir_exists=profile_exists,
+        profile_name="Playwriter",
+        user_data_dir=Path(),
+        profile_dir=Path(),
+        profile_root_exists=True,
+        profile_dir_exists=True,
         browser_checked=check_browser,
         warnings=tuple(warnings),
     )
@@ -239,8 +220,6 @@ def extract_post_comments_from_url(
     output_dir: Path,
     store: OpportunityStore,
     limits: BrowserSafetyLimits,
-    config: ChromeProfileConfig | None = None,
-    cdp_url: str | None = None,
     progress: ProgressReporter | None = None,
 ) -> BrowserExtractionResult:
     return asyncio.run(
@@ -249,8 +228,6 @@ def extract_post_comments_from_url(
             output_dir=output_dir,
             store=store,
             limits=limits,
-            config=config,
-            cdp_url=cdp_url,
             progress=progress,
         )
     )
@@ -262,11 +239,8 @@ async def extract_post_comments_from_url_async(
     output_dir: Path,
     store: OpportunityStore,
     limits: BrowserSafetyLimits,
-    config: ChromeProfileConfig | None = None,
-    cdp_url: str | None = None,
     progress: ProgressReporter | None = None,
 ) -> BrowserExtractionResult:
-    selected = config or chrome_profile_from_env()
     run_id = store.start_extraction_run(
         post_url=input_row.post_url,
         source_id=input_row.source_id,
@@ -274,7 +248,7 @@ async def extract_post_comments_from_url_async(
         source_kind=input_row.source_kind,
         source_url=input_row.source_url,
         search_query=input_row.search_query,
-        browser_profile=selected.profile_name,
+        browser_profile="Playwriter",
         safety_limits=asdict(limits),
     )
     run_dir = output_dir / run_id
@@ -350,8 +324,6 @@ def extract_post_comments_from_url_queue(
     store: OpportunityStore,
     limits: BrowserSafetyLimits,
     provider_csv_path: Path | None = None,
-    config: ChromeProfileConfig | None = None,
-    cdp_url: str | None = None,
     progress: ProgressReporter | None = None,
 ) -> BrowserQueueResult:
     return asyncio.run(
@@ -361,8 +333,6 @@ def extract_post_comments_from_url_queue(
             store=store,
             limits=limits,
             provider_csv_path=provider_csv_path,
-            config=config,
-            cdp_url=cdp_url,
             progress=progress,
         )
     )
@@ -375,11 +345,8 @@ async def extract_post_comments_from_url_queue_async(
     store: OpportunityStore,
     limits: BrowserSafetyLimits,
     provider_csv_path: Path | None = None,
-    config: ChromeProfileConfig | None = None,
-    cdp_url: str | None = None,
     progress: ProgressReporter | None = None,
 ) -> BrowserQueueResult:
-    selected = config or chrome_profile_from_env()
     reporter = progress or ProgressReporter(enabled=False)
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "extract_url_queue_manifest.jsonl"
@@ -402,7 +369,6 @@ async def extract_post_comments_from_url_queue_async(
         output_dir=output_dir,
         provider_csv=provider_csv_path or "",
     )
-    _ = _comment_extraction_cdp_url(cdp_url)
     client = _CommentExtractorPlaywriterClient(out_dir=output_dir)
     for original_index, input_row in queued_rows:
         processed += 1
@@ -423,7 +389,7 @@ async def extract_post_comments_from_url_queue_async(
             source_kind=input_row.source_kind,
             source_url=input_row.source_url,
             search_query=input_row.search_query,
-            browser_profile=selected.profile_name,
+            browser_profile="Playwriter",
             safety_limits=asdict(limits),
         )
         run_dir = output_dir / run_id
@@ -760,7 +726,7 @@ def _extract_post_comments_with_playwriter(
 
 async def _extract_post_comments_with_page(
     *,
-    page: Page,
+    page: Any,
     input_row: BrowserExtractionInput,
     run_id: str,
     run_dir: Path,
@@ -776,7 +742,7 @@ async def _extract_post_comments_with_page(
             wait_until="domcontentloaded",
             timeout=limits.navigation_timeout_ms,
         )
-    except PlaywrightTimeoutError as exc:
+    except TimeoutError as exc:
         raise BrowserExtractionError("navigation_timeout", str(exc)) from exc
     expansion_stats = await _expand_visible_comment_controls(
         page,
@@ -845,14 +811,14 @@ async def _extract_post_comments_with_page(
 
 async def _capture_optional_screenshot(
     *,
-    page: Page,
+    page: Any,
     run_id: str,
     writer: ArtifactWriter,
     store: OpportunityStore,
 ) -> tuple[str, ...]:
     try:
         screenshot = await writer.screenshot(page, "post-comments", full_page=True)
-    except PlaywrightError as exc:
+    except Exception as exc:
         return (f"screenshot_capture_failed:{type(exc).__name__}",)
     store.record_artifact(run_id=run_id, kind="screenshot", path=screenshot.path)
     return ()
@@ -860,7 +826,7 @@ async def _capture_optional_screenshot(
 
 async def extract_comments_from_page(
     *,
-    page: Page,
+    page: Any,
     input_row: BrowserExtractionInput,
 ) -> ExtractionResult:
     post_metadata = await _extract_post_metadata(page)
@@ -917,7 +883,7 @@ async def extract_comments_from_page(
     )
 
 
-async def _extract_post_metadata(page: Page) -> PostMetadata:
+async def _extract_post_metadata(page: Any) -> PostMetadata:
     payload = await page.evaluate(
         """
         (selectors) => {
@@ -1001,7 +967,7 @@ def _comments_from_page_rows(
 
 
 async def _expand_visible_comment_controls(
-    page: Page,
+    page: Any,
     limits: BrowserSafetyLimits,
     *,
     progress: ProgressReporter | None = None,
@@ -1043,7 +1009,7 @@ async def _expand_visible_comment_controls(
             await _scroll_page_down(page, 1800)
             scrolls += 1
             await page.wait_for_timeout(limits.settle_ms)
-        except PlaywrightTimeoutError:
+        except TimeoutError:
             stop_reason = "action_timeout"
             break
 
@@ -1098,17 +1064,17 @@ async def _expand_visible_comment_controls(
     return stats
 
 
-async def _scroll_page_down(page: Page, pixels: int) -> None:
+async def _scroll_page_down(page: Any, pixels: int) -> None:
     await page.evaluate(SCROLL_BY_SCRIPT, pixels)
 
 
-async def _click_controls(page: Page, pattern: re.Pattern[str], limit: int) -> int:
+async def _click_controls(page: Any, pattern: re.Pattern[str], limit: int) -> int:
     if limit <= 0:
         return 0
     locator = page.get_by_role("button", name=pattern)
     try:
         count = min(await locator.count(), limit)
-    except PlaywrightTimeoutError:
+    except TimeoutError:
         return 0
     clicked = 0
     for index in range(count):
@@ -1118,22 +1084,22 @@ async def _click_controls(page: Page, pattern: re.Pattern[str], limit: int) -> i
                 await button.click()
                 clicked += 1
                 await page.wait_for_timeout(250)
-        except PlaywrightTimeoutError:
+        except TimeoutError:
             continue
     return clicked
 
 
-async def _count_visible_comments(page: Page) -> int:
+async def _count_visible_comments(page: Any) -> int:
     try:
         return int(await page.locator(LIVE_COMMENT_ROOT_SELECTOR).count())
-    except PlaywrightTimeoutError:
+    except TimeoutError:
         return 0
 
 
-async def _read_scroll_state(page: Page) -> ScrollState:
+async def _read_scroll_state(page: Any) -> ScrollState:
     try:
         payload = await page.evaluate(SCROLL_STATE_SCRIPT)
-    except PlaywrightTimeoutError:
+    except TimeoutError:
         return ScrollState(scroll_y=0.0, scroll_height=0.0, inner_height=0.0)
     if not isinstance(payload, dict):
         return ScrollState(scroll_y=0.0, scroll_height=0.0, inner_height=0.0)
@@ -1160,7 +1126,7 @@ def _emit_progress(
         progress.emit(event, **fields)
 
 
-async def _reusable_page(context: Any) -> Page:
+async def _reusable_page(context: Any) -> Any:
     fragments = (
         "linkedin.com/posts/",
         "linkedin.com/feed/update/",
@@ -1170,13 +1136,7 @@ async def _reusable_page(context: Any) -> Page:
         context,
         PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
     )
-    return cast(Page, await session.page(preferred_url_fragments=fragments))
-
-
-def _comment_extraction_cdp_url(cdp_url: str | None) -> str:
-    if cdp_url is None:
-        return ""
-    return cdp_url.strip()
+    return cast(Any, await session.page(preferred_url_fragments=fragments))
 
 
 def _expansion_stats_from_artifact(value: object) -> CommentExpansionStats:
@@ -1306,9 +1266,9 @@ def _live_comment_warnings(comment: CommentEvidence) -> tuple[str, ...]:
 def _stop_reason_for_exception(exc: Exception) -> str:
     if isinstance(exc, BrowserExtractionError):
         return exc.stop_reason
-    if isinstance(exc, PlaywrightTimeoutError):
+    if isinstance(exc, TimeoutError):
         return "action_timeout"
-    if isinstance(exc, PlaywrightError):
+    if isinstance(exc, Exception):
         return "browser_error"
     return "browser_error"
 

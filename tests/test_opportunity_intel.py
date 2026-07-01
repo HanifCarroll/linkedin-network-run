@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from apps.comment_extractor.browser import (
     SCROLL_BY_SCRIPT,
@@ -17,7 +16,6 @@ from apps.comment_extractor.browser import (
     BrowserSafetyLimits,
     PostMetadata,
     _capture_optional_screenshot,
-    _comment_extraction_cdp_url,
     _comments_from_page_rows,
     _expand_visible_comment_controls,
     _read_manifest_post_urls,
@@ -480,13 +478,8 @@ async def test_optional_screenshot_failure_returns_warning_without_artifact() ->
         store=store,  # type: ignore[arg-type]
     )
 
-    assert warnings == ("screenshot_capture_failed:Error",)
+    assert warnings == ("screenshot_capture_failed:Exception",)
     assert store.artifacts == []
-
-
-def test_comment_extraction_disables_implicit_cdp_attachment() -> None:
-    assert _comment_extraction_cdp_url(None) == ""
-    assert _comment_extraction_cdp_url(" ws://127.0.0.1:19988/cdp ") == ("ws://127.0.0.1:19988/cdp")
 
 
 def test_provider_csv_snapshot_preserves_incremental_persisted_comments(
@@ -1389,7 +1382,7 @@ class _CopyInterceptPage:
     async def wait_for_function(self, expression: str, *, timeout: int) -> None:
         self.wait_for_function_calls.append((expression, timeout))
         if self.wait_times_out:
-            raise PlaywrightTimeoutError("timed out")
+            raise TimeoutError("timed out")
 
     def get_by_role(self, role: str, *, name: Any) -> _CopyInterceptMenuItem:
         pattern = getattr(name, "pattern", str(name))
@@ -1419,9 +1412,8 @@ class _CopyInterceptMenuItem:
 
 class _FailingScreenshotWriter:
     async def screenshot(self, *_args: Any, **_kwargs: Any) -> object:
-        from playwright.async_api import Error as PlaywrightError
-
-        raise PlaywrightError("Unable to capture screenshot")
+        
+        raise Exception("Unable to capture screenshot")
 
 
 class _ArtifactRecordingStore:

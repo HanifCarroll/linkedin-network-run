@@ -55,7 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
     extract_url_parser.add_argument("--search-query", default="")
     extract_url_parser.add_argument("--out-dir", type=Path, required=True)
     extract_url_parser.add_argument("--state-dir", type=Path, default=None)
-    extract_url_parser.add_argument("--cdp-url", default=None)
     _add_safety_limit_args(extract_url_parser)
     extract_url_parser.set_defaults(handler=_handle_extract_url)
 
@@ -64,7 +63,6 @@ def build_parser() -> argparse.ArgumentParser:
     url_queue_parser.add_argument("--out-dir", type=Path, required=True)
     url_queue_parser.add_argument("--state-dir", type=Path, default=None)
     url_queue_parser.add_argument("--provider-csv", type=Path, default=None)
-    url_queue_parser.add_argument("--cdp-url", default=None)
     _add_safety_limit_args(url_queue_parser)
     url_queue_parser.set_defaults(handler=_handle_extract_url_queue)
 
@@ -76,7 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser = subparsers.add_parser("preflight")
     preflight_parser.add_argument("--state-dir", type=Path, default=None)
     preflight_parser.add_argument("--check-browser", action="store_true")
-    preflight_parser.add_argument("--cdp-url", default=None)
     preflight_parser.add_argument("--json", action="store_true")
     preflight_parser.set_defaults(handler=_handle_preflight)
 
@@ -155,7 +152,6 @@ def _handle_extract_url(args: argparse.Namespace) -> int:
         output_dir=args.out_dir,
         store=OpportunityStore(args.state_dir),
         limits=_safety_limits_from_args(args),
-        cdp_url=args.cdp_url,
         progress=ProgressReporter(),
     )
     print(f"run: {result.run_id}")
@@ -173,7 +169,6 @@ def _handle_extract_url_queue(args: argparse.Namespace) -> int:
         store=OpportunityStore(args.state_dir),
         limits=_safety_limits_from_args(args),
         provider_csv_path=provider_csv,
-        cdp_url=args.cdp_url,
         progress=ProgressReporter(),
     )
     print(f"processed={result.processed}")
@@ -198,7 +193,7 @@ def _handle_extract_queue(args: argparse.Namespace) -> int:
 
 
 def _handle_preflight(args: argparse.Namespace) -> int:
-    result = run_browser_preflight(check_browser=args.check_browser, cdp_url=args.cdp_url)
+    result = run_browser_preflight(check_browser=args.check_browser)
     artifact_path = write_preflight_artifact(
         store=OpportunityStore(args.state_dir),
         result=result,

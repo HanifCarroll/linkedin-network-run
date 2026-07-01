@@ -117,11 +117,6 @@ class PlaywriterMessageBrowserClient:
                 )
             final_out.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(staged_out), str(final_out))
-
-
-PlaywrightMessageBrowserClient = PlaywriterMessageBrowserClient
-
-
 async def _click_message_action(page: Any, action: Mapping[str, Any]) -> dict[str, Any]:
     inmail = page.locator(SALES_NAV_INMAIL_ACTION).first
     if (

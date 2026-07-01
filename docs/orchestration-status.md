@@ -24,8 +24,8 @@ review workflows. Runtime state lives under
 
 ## Shared Runtime
 
-- Browser automation uses Python Playwright through the configured local
-  Chrome/Playwriter CDP path.
+- Browser automation uses Playwriter through the configured local browser
+  extension/session.
 - App state is stored in app-owned directories under the shared state root.
 - Browser artifacts are written to explicit output directories or app-owned
   state for auditability.

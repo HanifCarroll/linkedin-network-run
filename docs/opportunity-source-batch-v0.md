@@ -138,30 +138,18 @@ change. Each run summary records `stop_reason`, `scrolls_performed`,
 `comment_control_clicks`, `reply_control_clicks`, `comments_found`, and
 `runtime_seconds`.
 
-The extractor uses your real Google Chrome root and the Chrome profile named
-`LinkedIn` by default. It does not attach to the Playwriter CDP endpoint unless
-`--cdp-url` is passed explicitly. Use `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE` to
-switch roots:
+The extractor uses Playwriter through the configured browser extension/session.
+Set `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>` to reuse an existing session or
+`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>` to choose the browser used for a
+new session:
 
 ```sh
-# Default: your real Google Chrome root.
-export LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=real
-export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
-
-# Opt-in: isolated normal Google Chrome root for source experiments.
-export LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=automation
-export LINKEDIN_TOOLS_CHROME_PROFILE_NAME=LinkedIn
+export LINKEDIN_TOOLS_PLAYWRITER_SESSION=3
+export LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=install:Chrome:...
 ```
 
-Use `LINKEDIN_TOOLS_BROWSER_PROFILE_MODE=custom` plus
-`LINKEDIN_TOOLS_CHROME_USER_DATA_DIR` for another explicit root.
-
-The isolated root needs its own LinkedIn login once. Chrome's newer remote
-debugging protections require a non-default data dir for automation debugging,
-and that non-default data dir uses a different encryption key, so copying a
-profile folder does not reliably copy the logged-in session. It remains
-recommend-only and does not send messages, connect, withdraw, or click guarded
-LinkedIn actions.
+It remains recommend-only and does not send messages, connect, withdraw, or
+click guarded LinkedIn actions.
 
 For saved HTML fixtures or manual captures:
 

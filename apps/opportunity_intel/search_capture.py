@@ -17,14 +17,9 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote_plus
 
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
 from apps.opportunity_intel.company_pages import canonicalize_linkedin_post_url
 from apps.opportunity_intel.post_discovery import PostCandidate, prioritize_posts
 from apps.opportunity_intel.post_prefilter import POST_QUEUE_COLUMNS, read_post_queue
-from packages.linkedin_browser.config import ChromeProfileConfig, chrome_profile_from_env
 from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
@@ -168,8 +163,6 @@ def capture_search_posts_from_queue(
     metrics_path: Path,
     checkpoint_path: Path,
     limits: SearchCaptureLimits,
-    cdp_url: str | None = None,
-    config: ChromeProfileConfig | None = None,
     progress: ProgressReporter | None = None,
 ) -> SearchCaptureResult:
     return asyncio.run(
@@ -179,8 +172,6 @@ def capture_search_posts_from_queue(
             metrics_path=metrics_path,
             checkpoint_path=checkpoint_path,
             limits=limits,
-            cdp_url=cdp_url,
-            config=config,
             progress=progress,
         )
     )
@@ -193,14 +184,10 @@ async def capture_search_posts_from_queue_async(
     metrics_path: Path,
     checkpoint_path: Path,
     limits: SearchCaptureLimits,
-    cdp_url: str | None = None,
-    config: ChromeProfileConfig | None = None,
     progress: ProgressReporter | None = None,
 ) -> SearchCaptureResult:
     candidates = read_post_queue(post_queue_path)
     plan = plan_search_capture(candidates)
-    _ = config or chrome_profile_from_env()
-    _ = cdp_url
     reporter = progress or ProgressReporter(enabled=False)
     seen_post_urls: set[str] = set()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,7 +457,7 @@ def _import_search_capture_artifact(
 
 async def _capture_single_search(
     *,
-    page: Page,
+    page: Any,
     search_input: SearchCaptureInput,
     output_path: Path,
     metrics_path: Path,
@@ -494,7 +481,7 @@ async def _capture_single_search(
         buttons = page.get_by_role("button", name=POST_MENU_PATTERN)
         try:
             button_count = await buttons.count()
-        except PlaywrightTimeoutError:
+        except TimeoutError:
             button_count = 0
         reporter.emit(
             "search_scroll",
@@ -513,7 +500,7 @@ async def _capture_single_search(
                     page=page,
                     menu_button=buttons.nth(index),
                 )
-            except (PlaywrightError, PostCopyCaptureError) as exc:
+            except (Exception, PostCopyCaptureError) as exc:
                 _append_capture_metric(
                     metrics_path=metrics_path,
                     event="copy_failed",
@@ -574,14 +561,14 @@ async def _capture_single_search(
 
 async def _copy_post_url_from_menu(
     *,
-    page: Page,
+    page: Any,
     menu_button: Any,
 ) -> str:
     await page.evaluate(COPY_CAPTURE_INSTALL_SCRIPT)
     try:
         try:
             await menu_button.click(timeout=2_000)
-        except PlaywrightTimeoutError:
+        except TimeoutError:
             await menu_button.dispatch_event("click")
         menu_item = page.get_by_role("menuitem", name=COPY_LINK_PATTERN)
         await menu_item.click()
@@ -590,7 +577,7 @@ async def _copy_post_url_from_menu(
                 "() => window.__linkedinPostCopyCapture?.writes?.length > 0",
                 timeout=COPY_CAPTURE_TIMEOUT_MS,
             )
-        except PlaywrightTimeoutError as exc:
+        except TimeoutError as exc:
             raise PostCopyCaptureError(
                 "LinkedIn copy action did not call navigator.clipboard.writeText"
             ) from exc
@@ -605,7 +592,7 @@ async def _copy_post_url_from_menu(
         await page.evaluate(COPY_CAPTURE_RESTORE_SCRIPT)
 
 
-async def _reusable_page(context: Any) -> Page:
+async def _reusable_page(context: Any) -> Any:
     fragments = (
         "linkedin.com/search/results/content",
         "linkedin.com/feed/",
@@ -615,7 +602,7 @@ async def _reusable_page(context: Any) -> Page:
         context,
         PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
     )
-    return cast(Page, await session.page(preferred_url_fragments=fragments))
+    return cast(Any, await session.page(preferred_url_fragments=fragments))
 
 
 def _write_known_posts(

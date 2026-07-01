@@ -23,8 +23,8 @@ The top-level CLI is `uv run linkedin-tools`.
 
 ## Shared Packages
 
-- `packages/linkedin_browser`: Playwright/Chrome session management, browser
-  artifacts, and guarded browser action primitives.
+- `packages/linkedin_browser`: browser artifacts, reusable page helpers, state
+  classification, and guarded browser action primitives.
 - `packages/linkedin_salesnav`: Sales Navigator capture, audit, saved-search,
   and profile primitives.
 - `packages/linkedin_storage`: SQLite, JSONL, and CSV helpers.
@@ -48,15 +48,12 @@ review-ui/
 
 ## Browser Execution
 
-Browser-backed network commands default to Playwriter. Operators can select an
-existing Playwriter session with `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>` or
-select the browser used for new Playwriter sessions with
-`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>`. Methods that have not been
-ported fail explicitly with `Playwriter <method> is not ported yet`; rerun the
-same command with `LINKEDIN_TOOLS_BROWSER_BACKEND=playwright` when the Python
-Playwright CDP fallback is needed. Browser artifacts are written back to
-app-owned state or explicit output directories so controller state can be
-audited after uncertain browser behavior.
+Browser-backed commands use Playwriter only. Operators can select an existing
+Playwriter session with `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>` or select the
+browser used for new Playwriter sessions with
+`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>`. Browser artifacts are written
+back to app-owned state or explicit output directories so controller state can
+be audited after uncertain browser behavior.
 
 ## Safety Boundaries
 

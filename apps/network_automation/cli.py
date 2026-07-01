@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel
-
-from packages.linkedin_browser import LINKEDIN_CDP_URL_ENV, chrome_profile_from_env
 
 from .browser import (
     DEFAULT_AUDIT_OUT_DIR,
@@ -21,7 +18,6 @@ from .browser import (
     DEFAULT_WITHDRAW_OUT_DIR,
     BrowserClient,
     FixtureBrowserClient,
-    PlaywrightBrowserClient,
     PlaywriterBrowserClient,
 )
 from .models import CandidateStatus, DraftStrategy
@@ -41,10 +37,6 @@ from .service import (
     acceptance_seed_history,
     acceptance_send_followup,
     acceptance_send_ready_followups,
-    browser_session_cdp_url,
-    browser_session_start,
-    browser_session_status,
-    browser_session_stop,
     capture_saved_searches,
     capture_source,
     drain_stale_candidates,
@@ -95,12 +87,9 @@ DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR = Path("/tmp/linkedin-accepted-followups")
 DEFAULT_PENDING_CAPTURE = Path("/tmp/linkedin-pending-cleanup-capture.json")
 DEFAULT_PENDING_SESSION_OUT_DIR = Path("/tmp/linkedin-pending-cleanup-session")
 BACKEND_HELP = """browser backend:
-  default: Playwriter
+  Playwriter only
   Playwriter session: set LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>, or let the CLI create one
   Playwriter browser: set LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key> before session creation
-  fallback: set LINKEDIN_TOOLS_BROWSER_BACKEND=playwright to use the Python Playwright CDP path
-  unported Playwriter actions fail with "Playwriter <method> is not ported yet";
-  retry with the Playwright fallback when needed
 """
 
 
@@ -158,17 +147,6 @@ def build_parser() -> argparse.ArgumentParser:
     saved_searches.add_argument("--url", default=DEFAULT_SAVED_SEARCHES_URL)
     saved_searches.add_argument("--out", default=str(DEFAULT_SAVED_SEARCHES))
     saved_searches.add_argument("--fixture-result", default=None)
-
-    browser_session = subparsers.add_parser("browser-session")
-    browser_session_sub = browser_session.add_subparsers(
-        dest="browser_session_command", required=True
-    )
-    browser_session_start_parser = browser_session_sub.add_parser("start")
-    browser_session_start_parser.add_argument("--url", default=DEFAULT_SAVED_SEARCHES_URL)
-    browser_session_start_parser.add_argument("--force", action="store_true")
-    browser_session_status_parser = browser_session_sub.add_parser("status")
-    browser_session_status_parser.add_argument("--json", action="store_true")
-    browser_session_sub.add_parser("stop")
 
     reconcile = subparsers.add_parser("reconcile-audit")
     reconcile.add_argument("--session", default="auto")
@@ -535,8 +513,6 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             url=args.url,
             out=Path(args.out),
         )
-    if command == "browser-session":
-        return dispatch_browser_session(args, store)
     if command == "reconcile-audit":
         return reconcile_audit(
             store,
@@ -771,22 +747,6 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
     raise RuntimeError(f"unhandled acceptance command {command}")
 
 
-def dispatch_browser_session(args: argparse.Namespace, store: Store) -> str:
-    command = str(args.browser_session_command)
-    if command == "start":
-        return browser_session_start(
-            store,
-            config=chrome_profile_from_env(),
-            start_url=args.url,
-            force=args.force,
-        )
-    if command == "status":
-        return browser_session_status(store, as_json=args.json)
-    if command == "stop":
-        return browser_session_stop(store)
-    raise RuntimeError(f"unhandled browser-session command {command}")
-
-
 def dispatch_reservoir(args: argparse.Namespace, store: Store) -> str:
     command = str(args.reservoir_command)
     if command == "capture":
@@ -970,23 +930,8 @@ def browser_from_args(
             capture=Path(capture_fixture) if capture_fixture and capture else None,
             audit=Path(audit_fixture) if audit_fixture and audit else None,
         )
-    backend = os.environ.get("LINKEDIN_TOOLS_BROWSER_BACKEND", "playwriter").strip().lower()
-    if backend == "playwriter":
-        return PlaywriterBrowserClient(
-            out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
-        )
-    if backend != "playwright":
-        raise RuntimeError(
-            "unknown LINKEDIN_TOOLS_BROWSER_BACKEND; expected playwriter or playwright"
-        )
-    cdp_url = None
-    if not os.environ.get(LINKEDIN_CDP_URL_ENV):
-        cdp_url = browser_session_cdp_url(Store(getattr(args, "state_dir", None)))
-    return PlaywrightBrowserClient(
+    return PlaywriterBrowserClient(
         out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
-        cdp_url=cdp_url,
-        max_load_more=int(getattr(args, "max_load_more", 260)),
-        withdraw_timeout_seconds=float(getattr(args, "withdraw_timeout_seconds", 90.0)),
     )
 
 
