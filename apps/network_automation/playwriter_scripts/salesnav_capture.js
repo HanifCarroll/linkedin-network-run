@@ -108,6 +108,18 @@ async function waitForRows(page) {
 }
 
 async function captureRow(row, index, globalIndex, pageNumber) {
+  const rowEvidence = await row
+    .evaluate((element) => ({
+      text: element.textContent || "",
+      links: Array.from(element.querySelectorAll("a")).map((link, linkIndex) => ({
+        index: linkIndex,
+        text: String(link.textContent || "").replace(/\s+/g, " ").trim(),
+        aria: link.getAttribute("aria-label"),
+        href: link.href || link.getAttribute("href") || null,
+        id: link.id || null,
+      })),
+    }))
+    .catch(() => ({ text: "", links: [] }));
   const profile = row.locator(SALES_NAV_PROFILE_LINK).first();
   const profileUrl =
     (await profile.count().catch(() => 0)) > 0
@@ -136,6 +148,7 @@ async function captureRow(row, index, globalIndex, pageNumber) {
     globalIndex,
     pageNumber,
     name,
+    text: rowEvidence.text,
     profileUrl,
     scrollUrn,
     visibleState: {
@@ -144,7 +157,7 @@ async function captureRow(row, index, globalIndex, pageNumber) {
     },
     menuLabels: [],
     menuState: "not-opened",
-    links: profileUrl ? [{ href: profileUrl }] : [],
+    links: rowEvidence.links.length ? rowEvidence.links : profileUrl ? [{ href: profileUrl }] : [],
   };
 }
 

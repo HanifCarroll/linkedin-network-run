@@ -663,7 +663,8 @@ def _capture_browser(
     root = Path(options.capture_out_dir) if options.capture_out_dir else store.dir / "captures"
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
     _ = RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS
-    return PlaywriterBrowserClient(out_dir=out_dir)
+    session = None if options.session == "auto" else options.session
+    return PlaywriterBrowserClient(out_dir=out_dir, session=session)
 
 
 def _account_browser(
@@ -681,7 +682,8 @@ def _account_browser(
         else store.dir / "account-captures"
     )
     out_dir = root / run_id / _safe_path_segment(source) / f"round-{round_number:02d}"
-    return PlaywriterAccountCaptureClient(out_dir=out_dir)
+    session = None if options.session == "auto" else options.session
+    return PlaywriterAccountCaptureClient(out_dir=out_dir, session=session)
 
 
 def _ready_count(store: Store, bucket: str) -> int:

@@ -139,4 +139,4 @@ async function main() {
   fs.writeFileSync(config.out, JSON.stringify(payload, null, 2));
 }
 
-main();
+await main();

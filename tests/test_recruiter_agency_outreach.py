@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+import apps.network_automation.browser as network_browser_module
+import apps.recruiter_agency_outreach.account_browser as account_browser_module
 import apps.recruiter_agency_outreach.cli as recruiter_cli
 import apps.recruiter_agency_outreach.daily as daily_module
 import apps.recruiter_agency_outreach.message_browser as message_browser_module
@@ -759,6 +761,40 @@ def test_run_daily_is_no_send_and_agency_bucket_is_account_first(tmp_path: Path)
     assert buckets[0] == ("agency", [], 5)
     assert buckets[1][0] == "recruiter"
     assert buckets[2] == ("advisor", ["ASAP - AI Advisors Implementation Partners"], 5)
+
+
+def test_run_daily_browser_helpers_pass_explicit_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    people_sessions: list[str | None] = []
+    account_sessions: list[str | None] = []
+
+    class FakePeopleBrowser:
+        def __init__(self, *, out_dir: Path, session: str | None = None) -> None:
+            self.out_dir = out_dir
+            people_sessions.append(session)
+
+    class FakeAccountBrowser:
+        def __init__(self, *, out_dir: Path, session: str | None = None) -> None:
+            self.out_dir = out_dir
+            account_sessions.append(session)
+
+    monkeypatch.setattr(network_browser_module, "PlaywriterBrowserClient", FakePeopleBrowser)
+    monkeypatch.setattr(
+        account_browser_module, "PlaywriterAccountCaptureClient", FakeAccountBrowser
+    )
+
+    store = Store(tmp_path)
+    explicit = DailyOptions(session="session-123")
+    auto = DailyOptions(session="auto")
+
+    daily_module._capture_browser(store, explicit, "run", "source", 1)
+    daily_module._account_browser(store, explicit, "run", "source", 1)
+    daily_module._capture_browser(store, auto, "run", "source", 2)
+    daily_module._account_browser(store, auto, "run", "source", 2)
+
+    assert people_sessions == ["session-123", None]
+    assert account_sessions == ["session-123", None]
 
 
 def test_run_daily_validates_drafted_leads_with_live_dry_run_browser(
