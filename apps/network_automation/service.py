@@ -240,6 +240,50 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
     )
 
 
+def reset_source_progress(store: Store, sources: Sequence[str]) -> str:
+    if not sources:
+        raise ValueError("at least one source is required")
+    progress = store.load_source_progress()
+    removed: list[str] = []
+    missing: list[str] = []
+    for source in sources:
+        if progress.sources.pop(source, None) is None:
+            missing.append(source)
+        else:
+            removed.append(source)
+    store.save_source_progress(progress)
+
+    updated_run_sources: list[str] = []
+    if store.active_path.exists():
+        run = store.load_run()
+        for source in sources:
+            run.capture_cursors.pop(source, None)
+        for source_config in run.sources:
+            if source_config.name in sources and source_config.exhausted:
+                source_config.exhausted = False
+                updated_run_sources.append(source_config.name)
+        if updated_run_sources:
+            run.notes.append("reset source progress: " + ", ".join(updated_run_sources))
+            run.mark_updated()
+            store.save_run(run)
+            store.append_event(
+                run,
+                "reset-source-progress",
+                {
+                    "sources": list(sources),
+                    "removed": removed,
+                    "missing": missing,
+                    "updated_run_sources": updated_run_sources,
+                },
+            )
+    return (
+        "source progress reset"
+        f"; removed={len(removed)}"
+        f"; missing={len(missing)}"
+        f"; active_sources_reopened={len(updated_run_sources)}"
+    )
+
+
 def update_source_progress_after_capture(
     store: Store,
     *,

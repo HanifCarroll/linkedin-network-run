@@ -65,6 +65,7 @@ from .service import (
     reservoir_clear,
     reservoir_fill_run,
     reservoir_import_capture,
+    reset_source_progress,
     resume_blocked,
     review_candidates,
     send_guarded,
@@ -277,6 +278,8 @@ def build_parser() -> argparse.ArgumentParser:
     set_public_profile = subparsers.add_parser("set-public-profile-url")
     set_public_profile.add_argument("--lead-key", required=True)
     set_public_profile.add_argument("--url", required=True)
+    reset_progress = subparsers.add_parser("reset-source-progress")
+    reset_progress.add_argument("--source", action="append", required=True)
 
     subparsers.add_parser("next")
     next_candidate = subparsers.add_parser("next-candidate")
@@ -650,6 +653,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return apply_lead_review_decisions(store, Path(args.path))
     if command == "set-public-profile-url":
         return set_lead_public_profile_url(store, args.lead_key, args.url)
+    if command == "reset-source-progress":
+        return reset_source_progress(store, args.source)
     if command == "next":
         return json_model_or_text(store.load_run().next_source())
     if command == "next-candidate":

@@ -50,6 +50,7 @@ from apps.network_automation.models import (
     SalesNavCapture,
     SalesNavSendResult,
     SavedSearchArtifact,
+    SourceCaptureCursor,
     SourceScanProgress,
     SourceScanProgressLedger,
     acceptance_followup_diagnostics,
@@ -85,6 +86,7 @@ from apps.network_automation.service import (
     pending_cleanup_withdraw_next,
     record_audit,
     record_candidate,
+    reset_source_progress,
     resolve_network_source_url,
     review_candidates,
     send_guarded,
@@ -2943,6 +2945,47 @@ def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
     )
     run = store.load_run()
     assert any("seeded source progress" in note for note in run.notes)
+
+
+def test_reset_source_progress_reopens_active_source(tmp_path: Path) -> None:
+    source = "ASAP - Vertical Proof Buyers"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 2),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.sources[0].exhausted = True
+    run.capture_cursors[source] = SourceCaptureCursor(
+        source=source,
+        resume_url="https://www.linkedin.com/sales/search/people?page=2",
+    )
+    store.save_run(run)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    saved_search_id="1975836745",
+                    saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=1975836745",
+                    end_of_results=True,
+                )
+            }
+        )
+    )
+
+    output = reset_source_progress(store, [source])
+
+    assert output == "source progress reset; removed=1; missing=0; active_sources_reopened=1"
+    assert source not in store.load_source_progress().sources
+    reopened = store.load_run()
+    assert reopened.sources[0].exhausted is False
+    assert source not in reopened.capture_cursors
+    assert "reset source progress: ASAP - Vertical Proof Buyers" in reopened.notes
 
 
 def test_cli_network_run_session_exhausts_source_at_end_of_results(
