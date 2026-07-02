@@ -44,6 +44,7 @@ function basePayload(url) {
     url,
     status: "unknown",
     publicProfileUrl: candidate.public_profile_url || candidate.publicProfileUrl || null,
+    searchUrl: candidate.search_url || candidate.searchUrl || null,
   };
 }
 
@@ -153,6 +154,44 @@ async function findMenuItem(page, menuId, label) {
     }
   }
   return null;
+}
+
+function salesLeadPath(value) {
+  try {
+    const parsed = new URL(String(value || ""), "https://www.linkedin.com");
+    if (!parsed.pathname.includes("/sales/lead/")) return null;
+    return parsed.pathname;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForSearchRows(page) {
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    const count = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).count().catch(() => 0);
+    if (count > 0) return count;
+    await page.waitForTimeout(1000);
+  }
+  return 0;
+}
+
+async function findSearchResultRow(page, profileUrl) {
+  const targetPath = salesLeadPath(profileUrl);
+  if (!targetPath) return null;
+  const rows = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
+  for (const row of rows) {
+    const links = await row.locator(SALES_NAV_PROFILE_LINK).all();
+    for (const link of links) {
+      const href = await link.getAttribute("href").catch(() => null);
+      if (salesLeadPath(href) === targetPath) return row;
+    }
+  }
+  return null;
+}
+
+async function openSearchRowMenu(page, row) {
+  const trigger = row.locator(SALES_NAV_MORE_ACTIONS_BUTTON).first();
+  return openMenuFromTrigger(page, trigger, false);
 }
 
 async function openNormalProfileMoreMenu(page) {
@@ -277,6 +316,9 @@ async function sendFromCurrentPage(page) {
     if (payload.publicProfileUrl) {
       return sendFromPublicProfile(page, payload, `sales-nav:${menuState}`);
     }
+    if (payload.searchUrl) {
+      return sendFromSearchRow(page, payload, `sales-nav:${menuState}`);
+    }
     payload.status = `not-connectable:${menuState}`;
   } else if (dryRun) {
     payload.status = "dry-run-connectable";
@@ -363,6 +405,71 @@ async function sendFromPublicProfile(page, salesPayload, reason) {
   } else {
     payload.status = "pending-provisional";
     payload.after = { state: "clicked-send-from-linkedin-profile" };
+  }
+  await page.keyboard.press("Escape").catch(() => null);
+  return payload;
+}
+
+async function sendFromSearchRow(page, salesPayload, reason) {
+  const searchUrl = salesPayload.searchUrl;
+  const payload = {
+    ...salesPayload,
+    status: "unknown",
+    salesNavUrl: salesPayload.url,
+    url: searchUrl,
+    fallback: { type: "sales-nav-search-row", reason },
+  };
+  if (!searchUrl) {
+    payload.status = "not-connectable:search-row-url-missing";
+    return payload;
+  }
+  await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await waitForPageLoad({ page, timeout: 10000 }).catch(() => null);
+  await waitForSearchRows(page);
+  payload.url = page.url();
+  const block = await classifyPage(page);
+  if (block.blocked) {
+    payload.status = "blocked";
+    payload.reason = block.reason;
+    return payload;
+  }
+  const row = await findSearchResultRow(page, salesPayload.candidate.profileUrl);
+  if (!row) {
+    payload.status = "not-connectable:search-row-not-found";
+    return payload;
+  }
+  const menu = await openSearchRowMenu(page, row);
+  payload.fallback.before = menu;
+  const connect = await findMenuItem(page, menu.menu_id, "Connect");
+  if (!connect) {
+    payload.status =
+      classifyMenuLabels(menu.labels || []) === "already-pending"
+        ? "already-pending"
+        : "not-connectable:search-row-missing-connect";
+    await page.keyboard.press("Escape").catch(() => null);
+    return payload;
+  }
+  if (dryRun) {
+    payload.status = "dry-run-connectable";
+    await page.keyboard.press("Escape").catch(() => null);
+    return payload;
+  }
+  if (!allowSend) {
+    payload.status = "blocked";
+    payload.reason = "real send requires allowSend";
+    await page.keyboard.press("Escape").catch(() => null);
+    return payload;
+  }
+  await connect.click({ timeout: 8000 }).catch(async () => connect.evaluate((element) => element.click()));
+  await page.waitForTimeout(750);
+  const send = await clickSendInvitation(page);
+  payload.send = { ...send, guard: { action: "send_connection", allowed: allowSend } };
+  if (send.status !== "clicked-send") {
+    payload.status = statusFromSend(send.status);
+    payload.after = { state: send.status };
+  } else {
+    payload.status = "pending-provisional";
+    payload.after = { state: "clicked-send-from-search-row" };
   }
   await page.keyboard.press("Escape").catch(() => null);
   return payload;

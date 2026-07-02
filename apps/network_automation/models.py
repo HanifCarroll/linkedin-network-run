@@ -156,6 +156,9 @@ class CandidateObservation(AppModel):
     public_profile_url: str | None = Field(
         default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
     )
+    search_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("search_url", "searchUrl")
+    )
     sales_profile_urn: str | None = None
     text: str | None = None
     visible_state: Any = None
@@ -170,6 +173,7 @@ class LeadRecord(AppModel):
     name: str
     profile_url: str | None = None
     public_profile_url: str | None = None
+    search_url: str | None = None
     sales_profile_urn: str | None = None
     first_seen_at: datetime = Field(default_factory=now_utc)
     last_seen_at: datetime = Field(default_factory=now_utc)
@@ -197,6 +201,7 @@ class LeadLedger(AppModel):
                 name=observation.name,
                 profile_url=observation.profile_url,
                 public_profile_url=observation.public_profile_url,
+                search_url=observation.search_url,
                 sales_profile_urn=observation.sales_profile_urn,
                 first_seen_at=current,
                 last_seen_at=current,
@@ -209,6 +214,7 @@ class LeadLedger(AppModel):
             record.name = observation.name or record.name
             record.profile_url = observation.profile_url or record.profile_url
             record.public_profile_url = observation.public_profile_url or record.public_profile_url
+            record.search_url = observation.search_url or record.search_url
             record.sales_profile_urn = observation.sales_profile_urn or record.sales_profile_urn
             record.last_seen_at = current
             record.last_source = observation.source
@@ -305,6 +311,7 @@ class LeadReviewCandidate(AppModel):
     name: str
     profile_url: str | None = None
     public_profile_url: str | None = None
+    search_url: str | None = None
     send_blockers: list[str] = Field(default_factory=list)
     captured_at: str | None = None
     menu_state: str
@@ -1173,6 +1180,7 @@ def capture_to_observations(
                 name=row.name.strip(),
                 profile_url=profile_url,
                 public_profile_url=row.public_profile_url,
+                search_url=capture.start_url or capture.url or capture.last_scanned_url,
                 sales_profile_urn=row.scroll_urn,
                 text=row.text,
                 visible_state=row.visible_state,

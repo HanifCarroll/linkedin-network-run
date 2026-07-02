@@ -566,6 +566,34 @@ def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallba
     assert exhausted.next_source() is None
 
 
+def test_per_source_target_can_use_explicit_source_names(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+
+    output = start_run(
+        store,
+        per_source_target=2,
+        run_date=date(2026, 7, 2),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[
+            "ASAP - Vertical Proof Buyers",
+            "ASAP - High-Intent SaaS AI Founders",
+        ],
+    )
+
+    run = store.load_run()
+    assert "target 4" in output
+    assert run.target == 4
+    assert run.max_real_sends == 4
+    assert run.carry_over_shortfall is False
+    assert run.allow_fallback_sources is False
+    assert [(source.name, source.target, source.fallback) for source in run.sources] == [
+        ("ASAP - Vertical Proof Buyers", 2, False),
+        ("ASAP - High-Intent SaaS AI Founders", 2, False),
+        ("FO - Founders - Urgent", 0, True),
+    ]
+
+
 def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Path) -> None:
     saved_searches = tmp_path / "saved-searches.json"
     saved_searches.write_text(
@@ -774,10 +802,8 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
         "https://www.linkedin.com/in/duplicate-lead"
     )
     assert packet["candidates"][0]["send_blockers"] == []
-    assert packet["candidates"][1]["send_blockers"] == [
-        "missing exact public LinkedIn /in/ URL; capture or backfill public_profile_url "
-        "before approval/send"
-    ]
+    assert packet["candidates"][1]["search_url"]
+    assert packet["candidates"][1]["send_blockers"] == []
     assert packet["candidates"][0]["links"][0]["text"] == "Duplicate Lead"
 
     with pytest.raises(RuntimeError, match="need review"):
@@ -835,11 +861,21 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     )
 
 
-def test_lead_review_blocks_approval_without_public_profile_url(tmp_path: Path) -> None:
+def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
+    tmp_path: Path,
+) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    run = store.load_run()
+    for observation in run.observations:
+        observation.search_url = None
+    store.save_run(run)
+    ledger = store.load_lead_ledger()
+    for record in ledger.leads.values():
+        record.search_url = None
+    store.save_lead_ledger(ledger)
     review_path = tmp_path / "review.json"
     review_candidates(store, source="ASAP - Agency Owners Delivery", out=review_path)
     packet = json.loads(review_path.read_text())
@@ -2571,8 +2607,10 @@ def test_cli_network_run_session_reuses_one_live_browser(
             "--state-dir",
             str(tmp_path),
             "run-session",
-            "--target",
+            "--per-source-target",
             "1",
+            "--source",
+            "ASAP - Agency Owners Delivery",
             "--max-real-sends",
             "1",
             "--force",
@@ -2595,8 +2633,8 @@ def test_cli_network_run_session_reuses_one_live_browser(
         "audit:load_more=0",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
-            "capture:ASAP - Contract Recruiters Staffing:pages=3:limit=0:only=True:"
-            "url=https://www.linkedin.com/sales/search/people?savedSearchId=def"
+            "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
+            "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
         ),
     ]
     store = Store(tmp_path)

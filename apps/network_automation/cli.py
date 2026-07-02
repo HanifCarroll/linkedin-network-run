@@ -114,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--force", action="store_true")
     start.add_argument("--max-real-sends", type=int, default=None)
     start.add_argument("--no-fallback", action="store_true")
+    start.add_argument(
+        "--source",
+        action="append",
+        default=None,
+        help="explicit source name to target; repeat with --per-source-target",
+    )
 
     run_session = subparsers.add_parser("run-session")
     run_session.add_argument(
@@ -144,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--max-steps", type=int, default=100)
     run_session.add_argument("--finish", action="store_true")
     run_session.add_argument("--fixture-result", default=None)
+    run_session.add_argument(
+        "--source",
+        action="append",
+        default=None,
+        help="explicit source name to target on a new run; repeat with --per-source-target",
+    )
 
     audit = subparsers.add_parser("audit")
     audit.add_argument("people_count", type=int)
@@ -501,6 +513,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             max_real_sends=args.max_real_sends,
             per_source_target=args.per_source_target,
             allow_fallback_sources=not args.no_fallback,
+            source_names=args.source,
         )
     if command == "run-session":
         browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
@@ -528,6 +541,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                     if args.review_out
                     else Path(args.out_dir) / "lead-review-candidates.json"
                 ),
+                source_names=args.source,
             )
         finally:
             close = getattr(browser, "close", None)

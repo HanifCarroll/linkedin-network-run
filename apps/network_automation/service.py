@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -41,6 +41,7 @@ from .models import (
     SalesNavSendResult,
     SavedSearchRow,
     SourceCaptureCursor,
+    SourcePlan,
     SourceScanProgress,
     acceptance_followup_id,
     accepted_followup_candidate_key,
@@ -93,6 +94,7 @@ def start_run(
     max_real_sends: int | None = None,
     per_source_target: int | None = None,
     allow_fallback_sources: bool = True,
+    source_names: Sequence[str] | None = None,
 ) -> str:
     if store.active_path.exists() and not force:
         raise RuntimeError("an active run already exists; use --force to replace it")
@@ -101,11 +103,24 @@ def start_run(
     parsed_date = run_date if isinstance(run_date, date) else None
     sources = None
     carry_over_shortfall = True
+    explicit_source_names = [name.strip() for name in source_names or [] if name.strip()]
+    if len(explicit_source_names) != len(set(explicit_source_names)):
+        raise ValueError("--source values must be unique")
+    if explicit_source_names and per_source_target is None:
+        raise ValueError("--source requires --per-source-target")
     if per_source_target is not None:
         if per_source_target < 0:
             raise ValueError("--per-source-target must be >= 0")
-        target = target_for_per_source_target(per_source_target)
-        sources = sources_for_per_source_target(per_source_target)
+        if explicit_source_names:
+            target = per_source_target * len(explicit_source_names)
+            sources = [
+                SourcePlan(name=name, target=per_source_target)
+                for name in explicit_source_names
+            ]
+            sources.append(SourcePlan(name="FO - Founders - Urgent", target=0, fallback=True))
+        else:
+            target = target_for_per_source_target(per_source_target)
+            sources = sources_for_per_source_target(per_source_target)
         carry_over_shortfall = False
     run = new_run(
         target,
@@ -122,6 +137,7 @@ def start_run(
         {
             "target": target,
             "per_source_target": per_source_target,
+            "source_names": explicit_source_names,
             "allow_fallback_sources": allow_fallback_sources,
             "carry_over_shortfall": carry_over_shortfall,
         },
@@ -343,15 +359,21 @@ def _lead_send_blockers(
     record: Any | None, observation: CandidateObservation | None = None
 ) -> list[str]:
     public_profile_url = None
+    search_url = None
     if record is not None:
         public_profile_url = record.public_profile_url
+        search_url = record.search_url
     if not public_profile_url and observation is not None:
         public_profile_url = observation.public_profile_url
+    if not search_url and observation is not None:
+        search_url = observation.search_url
     if _is_public_linkedin_profile_url(public_profile_url):
         return []
+    if search_url:
+        return []
     return [
-        "missing exact public LinkedIn /in/ URL; capture or backfill public_profile_url "
-        "before approval/send"
+        "missing exact public LinkedIn /in/ URL and captured Sales Nav search row URL; "
+        "capture or backfill public_profile_url before approval/send"
     ]
 
 
@@ -460,6 +482,7 @@ def build_lead_review_packet(
                 name=observation.name,
                 profile_url=observation.profile_url,
                 public_profile_url=record.public_profile_url,
+                search_url=observation.search_url,
                 send_blockers=_lead_send_blockers(record, observation),
                 captured_at=observation.captured_at,
                 menu_state=observation.menu_state,
@@ -502,6 +525,7 @@ def render_lead_review_markdown(packet: LeadReviewPacket) -> str:
                 f"- Status: `{candidate.current_status.value}`",
                 f"- Profile URL: `{candidate.profile_url or ''}`",
                 f"- Public profile URL: `{candidate.public_profile_url or ''}`",
+                f"- Captured search URL: `{candidate.search_url or ''}`",
                 f"- Menu: `{candidate.menu_state}`",
             ]
         )
@@ -835,7 +859,8 @@ def _review_needed_message(run: Run, ledger: LeadLedger) -> str:
         suffix = "..." if len(public_url_blocked) > 5 else ""
         return (
             f"{len(public_url_blocked)} approved candidate(s) are blocked from send "
-            f"because public_profile_url is missing or invalid: {names}{suffix}"
+            "because public_profile_url is missing or invalid and search_url is missing: "
+            f"{names}{suffix}"
         )
     reviewable = reviewable_observations(run, ledger)
     if reviewable:
@@ -893,6 +918,7 @@ def network_run_session(
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
     review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
+    source_names: Sequence[str] | None = None,
 ) -> str:
     messages: list[str] = []
     if resume:
@@ -922,6 +948,7 @@ def network_run_session(
                     max_real_sends=max_real_sends,
                     per_source_target=per_source_target,
                     allow_fallback_sources=allow_fallback_sources,
+                    source_names=source_names,
                 ),
                 reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False),
                 capture_saved_searches(
