@@ -2085,30 +2085,21 @@ def general_accepted_followup_draft(first: str, company: str | None) -> str:
         f"Hey, {first}. Thanks for connecting.\n\n"
         "I'm a full-stack product engineer focused on shipping AI-powered web and "
         "mobile products.\n\n"
-        "That usually helps teams turn fuzzy product or workflow ideas into tools "
-        "people can actually use.\n\n"
-        f"If that kind of product-engineering support would be useful{target}, "
-        "I'd be glad to compare notes."
+        "Are you the right person to ask about whether that kind of product-engineering "
+        f"support would be useful{target}?"
     )
 
 
 def agency_accepted_followup_draft(first: str, company: str | None) -> str:
-    scope = (
-        " I can help with client implementation support, prototypes, internal tools, "
-        "and AI-enabled product builds."
-    )
+    company_intro = ""
     if company:
-        scope = (
-            f" I came across {clean_inline(company)}, and I can help with client "
-            "implementation support, prototypes, internal tools, and AI-enabled "
-            "product builds."
-        )
+        company_intro = f" I came across {clean_inline(company)}, and"
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
         "I'm a full-stack product engineer that works across web and mobile products."
-        f"{scope}\n\n"
-        "If extra product engineering capacity would help with client delivery, "
-        "I'd be glad to compare notes."
+        f"{company_intro} I'm reaching out about project overflow, prototypes, and "
+        "AI-enabled product builds.\n\n"
+        "Are you the right person to ask about this kind of project support?"
     )
 
 
@@ -2117,8 +2108,7 @@ def recruiter_accepted_followup_draft(first: str) -> str:
         f"Hey, {first}. Thanks for connecting.\n\n"
         "I'm a full-stack product engineer focused on full-stack product builds and "
         "AI workflows.\n\n"
-        "If contract product engineering, full-stack, or AI workflow roles come across "
-        "your desk, I'd be glad to be on your radar."
+        "Are you the right person to ask about contract roles that fit this background?"
     )
 
 
