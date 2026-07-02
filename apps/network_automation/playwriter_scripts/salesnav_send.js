@@ -12,6 +12,7 @@ const SALES_NAV_OPEN_ACTIONS_BUTTON = 'button[aria-label="Open actions overflow 
 const LINKEDIN_DIALOG = "[role='dialog'], .artdeco-modal, [data-test-modal]";
 const SECURITY_VERIFICATION_SELECTOR =
   "iframe#humanThirdPartyIframe,iframe[title='LinkedIn security verification'],iframe[src*='li.protechts.net']";
+const SEND_INVITATION_LABEL = /^(Send Invitation|Send invite|Send now|Send without a note|Send)$/i;
 
 function clean(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -279,28 +280,38 @@ async function capturePublicProfileUrl(page, menuId) {
 }
 
 async function clickSendInvitation(page) {
-  if ((await page.locator("input[type='email'], input[name*='email' i]").first().count().catch(() => 0)) > 0) {
-    return { status: "email-required" };
-  }
-  let sendButton = null;
-  const dialogs = await page.locator(LINKEDIN_DIALOG).all();
-  for (const dialog of dialogs) {
-    if (!(await dialog.isVisible().catch(() => false))) continue;
-    const buttons = await dialog.locator("button").all();
-    for (const button of buttons) {
-      if (!(await button.isVisible().catch(() => false))) continue;
-      const text = clean(await button.textContent().catch(() => ""));
-      const aria = clean(await button.getAttribute("aria-label").catch(() => ""));
-      if (/^(Send Invitation|Send invite|Send now|Send without a note|Send)$/i.test(text || aria)) {
-        sendButton = button;
+  const deadline = Date.now() + 6000;
+  let observedButtons = [];
+  while (Date.now() <= deadline) {
+    if ((await page.locator("input[type='email'], input[name*='email' i]").first().count().catch(() => 0)) > 0) {
+      return { status: "email-required" };
+    }
+    let sendButton = null;
+    observedButtons = [];
+    const dialogs = await page.locator(LINKEDIN_DIALOG).all();
+    for (const dialog of dialogs) {
+      if (!(await dialog.isVisible().catch(() => false))) continue;
+      const buttons = await dialog.locator("button").all();
+      for (const button of buttons) {
+        if (!(await button.isVisible().catch(() => false))) continue;
+        const text = clean(await button.textContent().catch(() => ""));
+        const aria = clean(await button.getAttribute("aria-label").catch(() => ""));
+        const label = text || aria;
+        if (label) observedButtons.push(label);
+        if (SEND_INVITATION_LABEL.test(label)) {
+          sendButton = button;
+        }
       }
     }
+    if (sendButton) {
+      if (await sendButton.isDisabled().catch(() => false)) return { status: "send-button-disabled" };
+      if (!allowSend) return { status: "blocked", reason: "real send requires allowSend" };
+      await sendButton.click({ timeout: 8000 }).catch(async () => sendButton.evaluate((element) => element.click()));
+      return { status: "clicked-send", label: "Send Invitation" };
+    }
+    await page.waitForTimeout(250);
   }
-  if (!sendButton) return { status: "send-button-missing" };
-  if (await sendButton.isDisabled().catch(() => false)) return { status: "send-button-disabled" };
-  if (!allowSend) return { status: "blocked", reason: "real send requires allowSend" };
-  await sendButton.click({ timeout: 8000 }).catch(async () => sendButton.evaluate((element) => element.click()));
-  return { status: "clicked-send", label: "Send Invitation" };
+  return { status: "send-button-missing", observedButtons };
 }
 
 function statusFromSend(status) {

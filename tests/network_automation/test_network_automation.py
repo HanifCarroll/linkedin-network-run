@@ -2416,6 +2416,18 @@ def test_playwriter_network_methods_parse_script_artifacts(
     ]
 
 
+def test_salesnav_send_script_waits_for_public_profile_send_button() -> None:
+    script = (
+        Path("apps/network_automation/playwriter_scripts/salesnav_send.js")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "const SEND_INVITATION_LABEL" in script
+    assert "Date.now() + 6000" in script
+    assert "Send without a note" in script
+    assert "observedButtons" in script
+
+
 def test_cli_namespace_runs_network_commands(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
