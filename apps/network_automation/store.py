@@ -23,6 +23,7 @@ from .models import (
     CandidateReservoir,
     PendingCleanupRun,
     Run,
+    SourceScanProgressLedger,
 )
 
 NETWORK_STATE_DIRNAME = "network-automation"
@@ -69,6 +70,10 @@ class Store:
     @property
     def reservoir_path(self) -> Path:
         return self.dir / "candidate-reservoir.json"
+
+    @property
+    def source_progress_path(self) -> Path:
+        return self.dir / "source-progress.json"
 
     def default_acceptance_followup_report_path(self) -> Path:
         from .models import today
@@ -122,6 +127,14 @@ class Store:
 
     def save_reservoir(self, reservoir: CandidateReservoir) -> None:
         write_model_atomic(self.reservoir_path, reservoir)
+
+    def load_source_progress(self) -> SourceScanProgressLedger:
+        if not self.source_progress_path.exists():
+            return SourceScanProgressLedger()
+        return read_model(self.source_progress_path, SourceScanProgressLedger)
+
+    def save_source_progress(self, progress: SourceScanProgressLedger) -> None:
+        write_model_atomic(self.source_progress_path, progress)
 
     def append_event(self, run: Run, kind: str, payload: object) -> None:
         append_jsonl(

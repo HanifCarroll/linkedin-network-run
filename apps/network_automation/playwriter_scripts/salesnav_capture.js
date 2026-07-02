@@ -188,12 +188,19 @@ async function clickNext(page) {
   return page.url() !== before;
 }
 
+async function nextPageIsAvailable(page) {
+  const button = page.getByRole("button", { name: /^Next$/i }).first();
+  if (!(await button.count().catch(() => 0))) return false;
+  return !(await button.isDisabled().catch(() => true));
+}
+
 async function main() {
   const activePage = await getPage();
   if (config.url) {
     await activePage.goto(config.url, { waitUntil: "domcontentloaded", timeout: 45000 });
     await waitForPageLoad({ page: activePage, timeout: 10000 }).catch(() => null);
   }
+  const startUrl = activePage.url();
   const blockReason = await classifyPage(activePage);
   if (blockReason) {
     throw new Error(`Sales Navigator capture blocked: ${blockReason}`);
@@ -202,13 +209,17 @@ async function main() {
   const allRows = [];
   const pageSummaries = [];
   const totalPages = Math.max(1, Number(config.pages || 1));
-  const limit = Math.max(0, Number(config.limit || 25));
+  const requestedLimit = Math.max(0, Number(config.limit || 0));
   const stopAfterConnectable = Math.max(0, Number(config.stopAfterConnectable || 0));
+  let lastScannedUrl = activePage.url();
+  let nextUrl = null;
+  let nextAvailable = false;
+  let stoppedEarly = false;
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     await activePage.waitForTimeout(500);
     pageSummaries.push({ url: activePage.url(), pageLabel: null });
     const rowLocators = await activePage.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
-    const rowLimit = Math.min(limit, rowLocators.length);
+    const rowLimit = requestedLimit > 0 ? Math.min(requestedLimit, rowLocators.length) : rowLocators.length;
     for (let rowIndex = 0; rowIndex < rowLimit; rowIndex += 1) {
       const row = rowLocators[rowIndex];
       await row.scrollIntoViewIfNeeded().catch(() => null);
@@ -220,11 +231,30 @@ async function main() {
       item.menuLabels = menu.labels || [];
       item.menuState = classifyMenuLabels(item.menuLabels);
       allRows.push(item);
-      if (stopAfterConnectable > 0 && countState(allRows, "connectable") >= stopAfterConnectable) break;
+      if (stopAfterConnectable > 0 && countState(allRows, "connectable") >= stopAfterConnectable) {
+        stoppedEarly = true;
+        break;
+      }
     }
-    if (stopAfterConnectable > 0 && countState(allRows, "connectable") >= stopAfterConnectable) break;
-    if (pageNumber < totalPages && !(await clickNext(activePage))) break;
+    lastScannedUrl = activePage.url();
+    nextAvailable = await nextPageIsAvailable(activePage);
+    if (stoppedEarly) {
+      nextUrl = activePage.url();
+      break;
+    }
+    if (pageNumber < totalPages) {
+      if (!(await clickNext(activePage))) break;
+      nextUrl = activePage.url();
+      continue;
+    }
+    if (nextAvailable && (await clickNext(activePage))) {
+      nextUrl = activePage.url();
+    } else {
+      nextUrl = null;
+      nextAvailable = false;
+    }
   }
+  const endOfResults = !nextAvailable && !stoppedEarly;
   const outputRows = [];
   for (const row of allRows) {
     if (!config.onlyConnectable || row.menuState === "connectable") outputRows.push(row);
@@ -232,15 +262,20 @@ async function main() {
   const payload = {
     schemaVersion: 1,
     capturedAt: nowIso(),
-    url: activePage.url(),
-    resumeUrl: activePage.url(),
+    url: lastScannedUrl,
+    startUrl,
+    lastScannedUrl,
+    nextUrl,
+    resumeUrl: nextUrl || lastScannedUrl,
+    nextPageAvailable: nextAvailable,
+    endOfResults,
     source: config.source,
     page: pageSummaries.length ? pageSummaries[pageSummaries.length - 1] : null,
     pages: pageSummaries,
     menuInspection: "menu",
     filters: { onlyConnectable: Boolean(config.onlyConnectable) },
     captureOptions: {
-      limit,
+      limit: requestedLimit,
       pages: totalPages,
       stopAfterConnectable,
       rowScrollDelayMs: Number(config.rowScrollDelayMs || 0),

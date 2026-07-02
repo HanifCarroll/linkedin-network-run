@@ -7,7 +7,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from .browser import BrowserClient
 from .models import (
@@ -26,12 +25,14 @@ from .models import (
     SalesNavAudit,
     SalesNavCapture,
     SalesNavSendResult,
+    SavedSearchRow,
     acceptance_followup_id,
     apply_acceptance_followup_send_result,
     apply_audit,
     apply_pending_audit,
     build_draft_report,
     candidate_key,
+    capture_state_count,
     drain_stale_connectable_candidates,
     fill_run_from_reservoir,
     import_capture,
@@ -48,6 +49,8 @@ from .models import (
     record_top_up_send_result,
     render_draft_markdown,
     source_repeated_send_noop,
+    SourceCaptureCursor,
+    SourceScanProgress,
     validate_acceptance_followup_can_send,
 )
 from .reports import (
@@ -60,89 +63,6 @@ from .store import Store, read_model, write_json_atomic
 from .suppression import skip_outreach_suppressed_observations
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
-ZERO_CAPTURE_EXHAUSTION_STREAK = 3
-
-
-def _sales_nav_filter(filter_type: str, values: list[tuple[str, str]]) -> dict[str, object]:
-    return {"type": filter_type, "values": [{"id": item[0], "text": item[1]} for item in values]}
-
-
-def _sales_nav_value_escape(value: str) -> str:
-    return quote(value, safe="")
-
-
-def _sales_nav_filter_expression(item: dict[str, object]) -> str:
-    raw_values = item.get("values")
-    values = raw_values if isinstance(raw_values, list) else []
-    expressions = []
-    for value in values:
-        if not isinstance(value, dict):
-            continue
-        expressions.append(
-            "("
-            f"id:{_sales_nav_value_escape(str(value.get('id') or ''))},"
-            f"text:{_sales_nav_value_escape(str(value.get('text') or ''))},"
-            "selectionType:INCLUDED"
-            ")"
-        )
-    escaped_type = _sales_nav_value_escape(str(item.get("type") or ""))
-    joined = ",".join(expressions)
-    return f"(type:{escaped_type},values:List({joined}))"
-
-
-def _sales_nav_people_search_url(filters: list[dict[str, object]], keywords: str) -> str:
-    expressions = [_sales_nav_filter_expression(item) for item in filters]
-    body = f"filters:List({','.join(expressions)})"
-    if keywords.strip():
-        body += ",keywords:" + _sales_nav_value_escape(keywords)
-    return "https://www.linkedin.com/sales/search/people?query=" + quote(f"({body})", safe="")
-
-
-def _base_asap_people_filters() -> list[dict[str, object]]:
-    return [
-        _sales_nav_filter("REGION", [("103644278", "United States")]),
-        _sales_nav_filter("RELATIONSHIP", [("S", "2nd degree connections")]),
-        _sales_nav_filter("POSTED_ON_LINKEDIN", [("RPOL", "Posted on LinkedIn")]),
-    ]
-
-
-NETWORK_SOURCE_URL_OVERRIDES: dict[str, str] = {
-    "ASAP - Agency Owners Delivery": _sales_nav_people_search_url(
-        [
-            *_base_asap_people_filters(),
-            _sales_nav_filter(
-                "COMPANY_HEADCOUNT",
-                [("B", "1-10"), ("C", "11-50"), ("D", "51-200")],
-            ),
-            _sales_nav_filter(
-                "CURRENT_TITLE",
-                [
-                    ("35", "Founder"),
-                    ("103", "Co-Founder"),
-                    ("1", "Owner"),
-                    ("18", "Partner"),
-                    ("154", "Managing Partner"),
-                    ("182", "Principal Consultant"),
-                    ("200", "Technical Director"),
-                ],
-            ),
-        ],
-        (
-            "software agency OR development agency OR AI agency OR automation agency OR "
-            "product studio OR product development OR custom software OR app development OR "
-            "web development OR fractional CTO"
-        ),
-    ),
-    "ASAP - AI Advisors Implementation Partners": _sales_nav_people_search_url(
-        _base_asap_people_filters(),
-        (
-            "AI consultant OR AI advisor OR business consultant OR operations consultant OR "
-            "fractional COO OR fractional CTO OR growth consultant OR automation consultant OR "
-            "AI strategy OR workflow automation OR AI implementation OR AI diagnostic OR "
-            "back office automation OR decision support"
-        ),
-    ),
-}
 
 
 def start_run(
@@ -189,6 +109,114 @@ def capture_saved_searches(browser: BrowserClient, *, url: str, out: Path) -> st
     return f"captured {len(artifact.searches)} saved searches to {path}"
 
 
+def saved_search_row_for_source(path: Path, source: str) -> SavedSearchRow | None:
+    if not path.exists():
+        return None
+    data: Any = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"saved searches artifact must be a JSON object: {path}")
+    searches = data.get("searches", data.get("savedSearches"))
+    if not isinstance(searches, list):
+        raise ValueError(f"saved searches artifact has no searches array: {path}")
+    for item in searches:
+        if not isinstance(item, dict) or item.get("name") != source:
+            continue
+        return SavedSearchRow.model_validate(item)
+    return None
+
+
+def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
+    run = store.load_run()
+    progress = store.load_source_progress()
+    seeded: list[str] = []
+    ended: list[str] = []
+    for source in run.sources:
+        row = saved_search_row_for_source(saved_searches, source.name)
+        if row is None:
+            continue
+        existing = progress.sources.get(source.name)
+        if (
+            existing is None
+            or existing.saved_search_id != row.saved_search_id
+            or existing.saved_search_url != row.view_url
+        ):
+            progress.sources[source.name] = SourceScanProgress(
+                source=source.name,
+                saved_search_id=row.saved_search_id,
+                saved_search_url=row.view_url,
+                last_note="saved search initialized or changed",
+            )
+            continue
+        if existing.end_of_results:
+            source.exhausted = True
+            ended.append(source.name)
+            continue
+        if existing.next_url:
+            run.capture_cursors[source.name] = SourceCaptureCursor(
+                source=source.name,
+                saved_search_id=row.saved_search_id,
+                saved_search_url=row.view_url,
+                resume_url=existing.next_url,
+                next_url=existing.next_url,
+                last_scanned_url=existing.last_scanned_url,
+                start_url=existing.last_started_url,
+                end_of_results=False,
+            )
+            seeded.append(source.name)
+    if seeded or ended:
+        details: list[str] = []
+        if seeded:
+            details.append("seeded source progress: " + ", ".join(seeded))
+        if ended:
+            details.append("source progress already at end: " + ", ".join(ended))
+        run.notes.extend(details)
+    store.save_run(run)
+    store.save_source_progress(progress)
+    return (
+        "source progress seeded"
+        f"; resumed={len(seeded)}"
+        f"; ended={len(ended)}"
+    )
+
+
+def update_source_progress_after_capture(
+    store: Store,
+    *,
+    source: str,
+    saved_searches: Path | None,
+    capture: SalesNavCapture,
+    imported: int,
+) -> None:
+    progress = store.load_source_progress()
+    row = saved_search_row_for_source(saved_searches, source) if saved_searches else None
+    existing = progress.sources.get(source)
+    zero_streak = existing.zero_usable_capture_streak if existing else 0
+    zero_streak = 0 if imported > 0 else zero_streak + 1
+    progress.sources[source] = SourceScanProgress(
+        source=source,
+        saved_search_id=row.saved_search_id if row else (existing.saved_search_id if existing else None),
+        saved_search_url=row.view_url if row else (existing.saved_search_url if existing else None),
+        next_url=capture.next_url,
+        last_scanned_url=capture.last_scanned_url or capture.url or capture.resume_url,
+        last_started_url=capture.start_url,
+        end_of_results=capture.end_of_results,
+        zero_usable_capture_streak=zero_streak,
+        last_raw_row_count=capture.raw_row_count or 0,
+        last_output_row_count=capture.output_row_count or 0,
+        last_connectable_count=capture_state_count(capture, "connectable"),
+        last_already_pending_count=capture_state_count(capture, "already-pending"),
+        last_state_counts=capture.state_counts,
+        last_note=(
+            "end of results"
+            if capture.end_of_results
+            else "advanced to next_url"
+            if capture.next_url
+            else "no next_url recorded"
+        ),
+    )
+    store.save_source_progress(progress)
+
+
 def network_run_session(
     store: Store,
     browser: BrowserClient,
@@ -214,6 +242,7 @@ def network_run_session(
             url=saved_searches_url,
             out=saved_searches_out,
         ),
+        seed_run_source_progress(store, saved_searches_out),
     ]
     zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):
@@ -238,9 +267,9 @@ def network_run_session(
                 browser,
                 source=plan.source,
                 url=source_url,
-                saved_searches=None,
+                saved_searches=saved_searches_out,
                 pages=plan.capture.pages,
-                limit=18,
+                limit=0,
                 stop_after_connectable=plan.capture.stop_after_connectable,
                 only_connectable=True,
                 row_scroll_delay_ms=250,
@@ -253,9 +282,10 @@ def network_run_session(
             else:
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
                 zero_capture_streaks[plan.source] = streak
-                if streak >= ZERO_CAPTURE_EXHAUSTION_STREAK:
+                cursor = after_run.capture_cursors.get(plan.source)
+                if cursor and cursor.end_of_results:
                     note = (
-                        f"{streak} consecutive captures imported 0 usable candidates; "
+                        "reached end of saved-search results with no usable candidates; "
                         "carrying remaining quota forward"
                     )
                     messages.append(source_exhausted(store, plan.source, note=note))
@@ -846,6 +876,13 @@ def capture_source(
     suppressed = skip_outreach_suppressed_observations(run)
     drained = drain_stale_connectable_candidates(run)
     store.save_run(run)
+    update_source_progress_after_capture(
+        store,
+        source=capture_source_name,
+        saved_searches=saved_searches,
+        capture=capture,
+        imported=imported,
+    )
     store.append_event(
         run,
         "capture",
@@ -1058,9 +1095,6 @@ def resolve_capture_url(
         return explicit_url
     if cursor_url:
         return cursor_url
-    source_url = network_source_url_override(source)
-    if source_url:
-        return source_url
     if saved_searches is None:
         return None
     resolved = resolve_saved_search_url(saved_searches, source)
@@ -1071,14 +1105,7 @@ def resolve_capture_url(
     )
 
 
-def network_source_url_override(source: str) -> str | None:
-    return NETWORK_SOURCE_URL_OVERRIDES.get(source)
-
-
 def resolve_network_source_url(path: Path | None, source: str) -> str | None:
-    source_url = network_source_url_override(source)
-    if source_url:
-        return source_url
     if path is None:
         return None
     return resolve_saved_search_url(path, source)
@@ -1483,13 +1510,21 @@ def acceptance_draft_followups(
     public_web: bool = True,
     max_web_results: int = 5,
     delay_ms: int = 500,
+    research_offset: int = 0,
+    research_limit: int = 0,
 ) -> str:
     ledger = store.load_acceptance_ledger()
     followups = store.load_acceptance_followup_ledger()
     candidates = ledger.accepted_for_followup(followups, include_drafted)
+    if research_limit > 0:
+        report_candidates = candidates[research_offset : research_offset + research_limit]
+    elif research_offset > 0:
+        report_candidates = candidates[research_offset:]
+    else:
+        report_candidates = candidates
     report_path = out or store.default_acceptance_followup_report_path()
     generated_research: Path | None = None
-    if candidates and research is None:
+    if report_candidates and research is None:
         if browser is None:
             raise RuntimeError("--session is required when --research is not provided")
         generated_dir = research_out_dir or (store.dir / "acceptance-followups" / "research")
@@ -1504,8 +1539,8 @@ def acceptance_draft_followups(
             candidates=candidates,
             input_path=candidates_path,
             out=generated_research,
-            offset=0,
-            limit=0,
+            offset=research_offset,
+            limit=research_limit,
             public_web=public_web,
             max_web_results=max_web_results,
             delay_ms=delay_ms,
@@ -1513,7 +1548,7 @@ def acceptance_draft_followups(
         research = generated_research
     artifact = read_model(research, AcceptedResearchArtifact) if research else None
     report = build_draft_report(
-        candidates, artifact, strategy, str(research) if research is not None else None
+        report_candidates, artifact, strategy, str(research) if research is not None else None
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(render_draft_markdown(report))

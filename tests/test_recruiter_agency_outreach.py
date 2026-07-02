@@ -25,11 +25,13 @@ from apps.recruiter_agency_outreach.cli import build_parser, main
 from apps.recruiter_agency_outreach.daily import DailyOptions, daily_buckets, run_daily
 from apps.recruiter_agency_outreach.dashboard import (
     BucketCounts,
+    DailyLeadAction,
     RunCounts,
     build_agency_pool_diagnosis,
     build_agency_pool_next_action,
     build_dashboard_report,
     ready_leads,
+    render_dashboard_markdown,
 )
 from apps.recruiter_agency_outreach.drafts import draft_messages
 from apps.recruiter_agency_outreach.models import (
@@ -443,6 +445,44 @@ def test_dashboard_limiting_reason_lists_all_short_ready_pools(tmp_path: Path) -
         "Recruiter ready-to-send pool is short by 5; "
         "Advisor ready-to-send pool is short by 5 for this render target."
     )
+
+
+def test_dashboard_markdown_includes_this_run_checked_skipped_counts(tmp_path: Path) -> None:
+    state = _sendable_state(message_status=MessageStatus.SEND_FAILED)
+    store = Store(tmp_path)
+    store.save(state)
+
+    report = build_dashboard_report(
+        store.load(),
+        str(store.state_path),
+        target_agencies=1,
+        target_recruiters=0,
+        target_advisors=0,
+        allow_send=True,
+        actions=[
+            DailyLeadAction(
+                at="2026-07-02T09:00:00Z",
+                bucket="agency",
+                lead_id="lead_fixture",
+                name="Dana Delivery",
+                lead_type=LeadType.AGENCY_DELIVERY,
+                message_status=MessageStatus.SEND_FAILED,
+                action="send-message",
+                result="send-failed",
+                run_id="send-ready-test",
+            )
+        ],
+        mode="sending",
+    )
+    markdown = render_dashboard_markdown(report)
+
+    assert (
+        "- This-run checked/skipped: conversation_exists `0` agencies, `0` recruiters, "
+        "`0` advisors; not_messageable `0` agencies, `0` recruiters, `0` advisors; "
+        "blocked `0` agencies, `0` recruiters, `0` advisors; suppressed `0` agencies, "
+        "`0` recruiters, `0` advisors; send_failed `1` agencies, `0` recruiters, "
+        "`0` advisors"
+    ) in markdown
 
 
 def test_store_load_hydrates_draft_and_send_side_tables(tmp_path: Path) -> None:

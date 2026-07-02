@@ -5,7 +5,6 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import unquote
 
 import pytest
 
@@ -44,6 +43,8 @@ from apps.network_automation.models import (
     SalesNavCapture,
     SalesNavSendResult,
     SavedSearchArtifact,
+    SourceScanProgress,
+    SourceScanProgressLedger,
     choose_angle,
     default_sources,
     general_accepted_followup_draft,
@@ -366,7 +367,10 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
                     "capturedAt": "2026-06-24T12:00:00Z",
                     "source": source,
                     "url": url or "",
-                    "resumeUrl": url or "",
+                    "resumeUrl": None,
+                    "nextUrl": None,
+                    "lastScannedUrl": url or "",
+                    "endOfResults": True,
                     "rawRowCount": 5,
                     "outputRowCount": 0,
                     "stateCounts": {"unknown": 5},
@@ -380,6 +384,8 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
                 "source": source,
                 "url": url or "",
                 "resumeUrl": url or "",
+                "nextUrl": "https://www.linkedin.com/sales/search/people?page=2",
+                "lastScannedUrl": url or "",
                 "rawRowCount": 1,
                 "outputRowCount": 1,
                 "stateCounts": {"connectable": 1},
@@ -467,7 +473,7 @@ def test_default_source_mix_matches_current_contract() -> None:
     assert sources[3].fallback is True
 
 
-def test_network_source_url_overrides_tightened_lanes(tmp_path: Path) -> None:
+def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Path) -> None:
     saved_searches = tmp_path / "saved-searches.json"
     saved_searches.write_text(
         json.dumps(
@@ -479,7 +485,11 @@ def test_network_source_url_overrides_tightened_lanes(tmp_path: Path) -> None:
                     },
                     {
                         "name": "ASAP - Agency Owners Delivery",
-                        "viewUrl": "https://stale.example/agency",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    },
+                    {
+                        "name": "ASAP - AI Advisors Implementation Partners",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     },
                 ]
             }
@@ -494,18 +504,8 @@ def test_network_source_url_overrides_tightened_lanes(tmp_path: Path) -> None:
     )
 
     assert contract_url == "https://www.linkedin.com/sales/search/people?savedSearchId=def"
-    assert agency_url is not None
-    assert "stale.example" not in agency_url
-    agency_query = unquote(unquote(agency_url))
-    assert "COMPANY_HEADCOUNT" in agency_query
-    assert "CURRENT_TITLE" in agency_query
-    assert "RPOL" in agency_query
-    assert "software agency OR development agency" in agency_query
-    assert advisor_url is not None
-    advisor_query = unquote(unquote(advisor_url))
-    assert "RPOL" in advisor_query
-    assert "AI consultant OR AI advisor" in advisor_query
-    assert "workflow automation" in advisor_query
+    assert agency_url == "https://www.linkedin.com/sales/search/people?savedSearchId=abc"
+    assert advisor_url == "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
 
 
 def test_menu_classifier_handles_linkedin_pending_dash() -> None:
@@ -814,6 +814,24 @@ def test_report_names_uncertain_send_recovery_for_active_audit_gap(tmp_path: Pat
 
     assert "- Recorded invite events minus audited delta: 1" in report
     assert "Uncertain send recovery: pause further sends" in report
+
+
+def test_report_surfaces_blocked_next_action_when_sources_exhausted(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    for source in run.sources:
+        source.exhausted = True
+    store.save_run(run)
+
+    report = render_report(store.load_run())
+
+    assert "- State: `StartAudited`" in report
+    assert (
+        "- Next action: `blocked` (no connectable candidate and no available source)"
+        in report
+    )
 
 
 def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
@@ -1644,12 +1662,16 @@ def test_cli_acceptance_draft_followups_can_generate_research(
             "--out-dir",
             str(out_dir),
             "--no-public-web",
+            "--research-offset",
+            "0",
+            "--research-limit",
+            "1",
         ]
     )
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].calls == [
-        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500"
+        "accepted-research:1:offset=0:limit=1:web=False:max=5:delay=500"
     ]
     assert (out_dir / "accepted-candidates.json").exists()
     assert (out_dir / "accepted-research.json").exists()
@@ -1777,7 +1799,7 @@ def test_cli_network_run_session_reuses_one_live_browser(
         "audit:load_more=0",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
-            "capture:ASAP - Contract Recruiters Staffing:pages=3:limit=18:only=True:"
+            "capture:ASAP - Contract Recruiters Staffing:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=def"
         ),
         "send:Duplicate Lead:dry=False:allow=True",
@@ -1788,7 +1810,60 @@ def test_cli_network_run_session_reuses_one_live_browser(
     assert store.load_run().verified_count() == 1
 
 
-def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
+def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                "ASAP - Contract Recruiters Staffing": SourceScanProgress(
+                    source="ASAP - Contract Recruiters Staffing",
+                    saved_search_id="def",
+                    saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=def",
+                    next_url="https://www.linkedin.com/sales/search/people?page=4&savedSearchId=def",
+                    last_scanned_url="https://www.linkedin.com/sales/search/people?page=3&savedSearchId=def",
+                )
+            }
+        )
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--target",
+            "1",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(tmp_path / "saved-searches.json"),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert any(
+        call.endswith(
+            "url=https://www.linkedin.com/sales/search/people?page=4&savedSearchId=def"
+        )
+        for call in FakeLiveBrowserClient.instances[0].calls
+        if call.startswith("capture:ASAP - Contract Recruiters Staffing")
+    )
+    run = store.load_run()
+    assert any("seeded source progress" in note for note in run.notes)
+
+
+def test_cli_network_run_session_exhausts_source_at_end_of_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
@@ -1824,13 +1899,14 @@ def test_cli_network_run_session_exhausts_repeated_zero_capture_source(
     assert run.sources[0].name == "ASAP - Contract Recruiters Staffing"
     assert run.sources[0].exhausted is True
     assert any(
-        "3 consecutive captures imported 0 usable candidates" in note for note in run.notes
+        "reached end of saved-search results with no usable candidates" in note
+        for note in run.notes
     )
     assert run.verified_count() == 1
     calls = ZeroThenNextSourceBrowserClient.instances[0].calls
     assert sum(
         call.startswith("capture:ASAP - Contract Recruiters Staffing") for call in calls
-    ) == 3
+    ) == 1
     assert any(call.startswith("capture:ASAP - Agency Owners Delivery") for call in calls)
     assert any(call.startswith("send:ASAP - Agency Owners Delivery Lead") for call in calls)
 

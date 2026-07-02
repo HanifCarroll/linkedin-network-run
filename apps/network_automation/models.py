@@ -148,7 +148,14 @@ class SourceCaptureCursor(AppModel):
     source: str
     updated_at: datetime = Field(default_factory=now_utc)
     captured_at: str | None = None
+    saved_search_id: str | None = None
+    saved_search_url: str | None = None
     resume_url: str | None = None
+    start_url: str | None = None
+    last_scanned_url: str | None = None
+    next_url: str | None = None
+    next_page_available: bool | None = None
+    end_of_results: bool = False
     page_label: str | None = None
     captured_pages: int = 0
     raw_row_count: int = 0
@@ -157,6 +164,28 @@ class SourceCaptureCursor(AppModel):
     already_pending_count: int = 0
     missing_trigger_count: int = 0
     state_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class SourceScanProgress(AppModel):
+    source: str
+    updated_at: datetime = Field(default_factory=now_utc)
+    saved_search_id: str | None = None
+    saved_search_url: str | None = None
+    next_url: str | None = None
+    last_scanned_url: str | None = None
+    last_started_url: str | None = None
+    end_of_results: bool = False
+    zero_usable_capture_streak: int = 0
+    last_raw_row_count: int = 0
+    last_output_row_count: int = 0
+    last_connectable_count: int = 0
+    last_already_pending_count: int = 0
+    last_state_counts: dict[str, int] = Field(default_factory=dict)
+    last_note: str | None = None
+
+
+class SourceScanProgressLedger(AppModel):
+    sources: dict[str, SourceScanProgress] = Field(default_factory=dict)
 
 
 class RunTimingEvent(AppModel):
@@ -771,6 +800,21 @@ class SalesNavCapture(AppModel):
     resume_url: str | None = Field(
         default=None, validation_alias=AliasChoices("resume_url", "resumeUrl")
     )
+    start_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("start_url", "startUrl")
+    )
+    last_scanned_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("last_scanned_url", "lastScannedUrl")
+    )
+    next_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("next_url", "nextUrl")
+    )
+    next_page_available: bool | None = Field(
+        default=None, validation_alias=AliasChoices("next_page_available", "nextPageAvailable")
+    )
+    end_of_results: bool = Field(
+        default=False, validation_alias=AliasChoices("end_of_results", "endOfResults")
+    )
     page: SalesNavCapturePage | None = None
     pages: list[SalesNavCapturePage] = Field(default_factory=list)
     state_counts: dict[str, int] = Field(
@@ -885,7 +929,8 @@ def capture_to_observations(
 
 def update_capture_cursor(run: Run, source: str, capture: SalesNavCapture) -> None:
     last_page = capture.page or (capture.pages[-1] if capture.pages else None)
-    resume_url = capture.resume_url or capture.url or (last_page.url if last_page else None)
+    last_scanned_url = capture.last_scanned_url or capture.url or (last_page.url if last_page else None)
+    resume_url = capture.next_url or capture.resume_url or last_scanned_url
     captured_pages = len(capture.pages) or (1 if capture.page else 0)
     raw_row_count = (
         capture.raw_row_count if capture.raw_row_count is not None else len(capture.rows)
@@ -898,6 +943,11 @@ def update_capture_cursor(run: Run, source: str, capture: SalesNavCapture) -> No
         updated_at=now_utc(),
         captured_at=capture.captured_at,
         resume_url=resume_url,
+        start_url=capture.start_url,
+        last_scanned_url=last_scanned_url,
+        next_url=capture.next_url,
+        next_page_available=capture.next_page_available,
+        end_of_results=capture.end_of_results,
         page_label=last_page.page_label if last_page else None,
         captured_pages=captured_pages,
         raw_row_count=raw_row_count,

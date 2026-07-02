@@ -334,6 +334,8 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_draft.add_argument("--no-public-web", action="store_true")
     acceptance_draft.add_argument("--max-web-results", type=int, default=5)
     acceptance_draft.add_argument("--delay-ms", type=int, default=500)
+    acceptance_draft.add_argument("--research-offset", type=int, default=0)
+    acceptance_draft.add_argument("--research-limit", type=int, default=0)
     acceptance_draft.add_argument("--fixture-result", default=None)
     acceptance_send = acceptance_sub.add_parser("send-followup")
     acceptance_send.add_argument("--id", required=True)
@@ -723,6 +725,8 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             public_web=not args.no_public_web,
             max_web_results=args.max_web_results,
             delay_ms=args.delay_ms,
+            research_offset=args.research_offset,
+            research_limit=args.research_limit,
         )
     if command == "send-followup":
         return acceptance_send_followup(

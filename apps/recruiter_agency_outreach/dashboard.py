@@ -259,6 +259,7 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
             f"`{report.run_counts.sent.recruiters}` recruiters, "
             f"`{report.run_counts.sent.advisors}` advisors"
         ),
+        "- This-run checked/skipped: " + format_run_outcome_counts(report.run_counts),
         (
             "- Ready now: "
             f"`{report.ready_counts.agencies}` agencies, "
@@ -321,6 +322,7 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
             f"`{report.run_counts.sent.recruiters}` recruiters, "
             f"`{report.run_counts.sent.advisors}` advisors"
         ),
+        "- This-run checked/skipped: " + format_run_outcome_counts(report.run_counts),
         (
             f"- Lifetime sent: `{report.lifetime_counts.agencies}` agencies, "
             f"`{report.lifetime_counts.recruiters}` recruiters, "
@@ -346,6 +348,24 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
     lines.extend(render_lead_cards("sent", report.sent_advisors))
     lines.extend(render_lead_cards("checked/skipped", report.skipped_advisors))
     return "\n".join(lines)
+
+
+def format_run_outcome_counts(run_counts: RunCounts) -> str:
+    outcomes = [
+        ("conversation_exists", run_counts.conversation_exists),
+        ("not_messageable", run_counts.not_messageable),
+        ("blocked", run_counts.blocked),
+        ("suppressed", run_counts.suppressed),
+        ("send_failed", run_counts.send_failed),
+    ]
+    return "; ".join(
+        (
+            f"{label} `{counts.agencies}` agencies, "
+            f"`{counts.recruiters}` recruiters, "
+            f"`{counts.advisors}` advisors"
+        )
+        for label, counts in outcomes
+    )
 
 
 def write_dashboard_markdown(path: str | Path, report: DashboardReport) -> None:

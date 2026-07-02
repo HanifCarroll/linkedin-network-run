@@ -29,6 +29,7 @@ def percentage_suffix(numerator: int, denominator: int) -> str:
 
 def render_report(run: Run) -> str:
     audited_delta = run.audited_delta()
+    plan = run.operator_plan()
     audit_top_up_count = sum(
         1 for candidate in run.candidates if candidate.status == CandidateStatus.AUDIT_TOP_UP
     )
@@ -49,6 +50,7 @@ def render_report(run: Run) -> str:
         "",
         f"- Run id: `{run.id}`",
         f"- State: `{run.state.value}`",
+        f"- Next action: `{plan.action}`" + (f" ({plan.reason})" if plan.reason else ""),
         f"- Target: {run.target}",
         f"- Start audit: {format_option(run.start_audit)}",
         f"- Final/latest audit: {format_option(run.latest_audit)}",
@@ -82,6 +84,18 @@ def render_report(run: Run) -> str:
             f"email-required skips {stats.email_required_skips}; "
             f"reverted-to-connect {stats.reverted_connect_count}; {stats.recommendation}"
         )
+    if run.capture_cursors:
+        lines.extend(["", "## Source Scan Progress"])
+        for source in run.sources:
+            cursor = run.capture_cursors.get(source.name)
+            if cursor is None:
+                continue
+            next_text = cursor.next_url or cursor.resume_url or "None"
+            status = "end of results" if cursor.end_of_results else "resume available"
+            lines.append(
+                f"- {source.name}: {status}; next scan URL: {next_text}; "
+                f"last scanned: {cursor.last_scanned_url or 'unknown'}"
+            )
     if audited_delta != run.target:
         lines.extend(["", "## Reconciliation"])
         if run.start_audit is not None:

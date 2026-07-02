@@ -96,6 +96,25 @@ uv run linkedin-tools network \
   acceptance run-daily-session --session auto --min-age-days 1 --max-age-days 45
 ```
 
+For network sends, Sales Navigator saved searches are the source of truth for
+each configured source. The controller stores durable per-source scan progress
+in `source-progress.json` and seeds new forced runs from that file when the
+saved-search id still matches. That makes daily runs continue forward through a
+stable saved search instead of restarting at page 1. A source is exhausted only
+when capture reaches the end of results, not merely because a few captures
+returned zero connectable rows.
+
+If a large accepted-followup draft batch times out during profile research,
+retry it in smaller draft chunks. Completed drafts are recorded in the
+follow-up ledger and drop out of the next chunk:
+
+```sh
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance draft-followups --session auto \
+  --research-offset 0 --research-limit 10
+```
+
 Browser-backed commands default to guarded dry-run behavior unless the explicit
 real-action flag is provided:
 
