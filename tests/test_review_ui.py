@@ -118,6 +118,8 @@ def test_review_ui_reads_network_and_recruiter_state(tmp_path: Path) -> None:
     assert "Sent Founder" in network.text
     assert "Queued CTO" in network.text
     assert "Hi Accepted" in network.text
+    assert "Excluded Lead" in network.text
+    assert "not applicable" in network.text
     assert "Sales Nav profile" in network.text
     assert "Old Invite" in network.text
     assert "Thread 4 read model pending" not in network.text
@@ -277,6 +279,18 @@ def _seed_network_store(path: Path) -> NetworkStore:
                     draft="Hi Accepted - saw the product work and wanted to compare notes.",
                     status=AcceptanceFollowupStatus.DRAFTED,
                     report_path="/tmp/accepted.md",
+                ),
+                AcceptanceFollowupRecord(
+                    key="excluded-key",
+                    id="afu_excluded",
+                    source="Network - Founder Operators (11-50)",
+                    name="Excluded Lead",
+                    profile_url="https://www.linkedin.com/sales/lead/excluded-lead",
+                    accepted_at=accepted_at,
+                    angle="general",
+                    draft="Hi Excluded - older source draft.",
+                    status=AcceptanceFollowupStatus.EXCLUDED,
+                    report_path="/tmp/excluded.md",
                 )
             ]
         )

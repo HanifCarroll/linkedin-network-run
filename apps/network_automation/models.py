@@ -105,6 +105,7 @@ class AcceptanceFollowupStatus(StrEnum):
     SENT = "sent"
     CONVERSATION_EXISTS = "conversation_exists"
     INVALID_ACCEPTANCE = "invalid_acceptance"
+    EXCLUDED = "excluded"
     NOT_MESSAGEABLE = "not_messageable"
     BLOCKED = "blocked"
     SEND_FAILED = "send_failed"
@@ -1232,6 +1233,9 @@ WEAK_MESSAGE_ACCEPTED_NOTE = "profile shows first-degree/message evidence"
 WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE = (
     "invalidated weak message-based acceptance; sampled profiles were 2nd-degree"
 )
+SOURCE_EXCLUDED_FOLLOWUP_NOTE = (
+    "excluded from accepted follow-up queue; source is not in current ASAP source mix"
+)
 
 
 class AcceptanceInvitation(AppModel):
@@ -1753,6 +1757,7 @@ class AcceptanceFollowupRecord(AppModel):
             AcceptanceFollowupStatus.SENT,
             AcceptanceFollowupStatus.CONVERSATION_EXISTS,
             AcceptanceFollowupStatus.INVALID_ACCEPTANCE,
+            AcceptanceFollowupStatus.EXCLUDED,
         }
 
 
@@ -1820,6 +1825,32 @@ class AcceptanceFollowupLedger(AppModel):
         updated = 0
         for record in self.invalidatable_for_acceptance_keys(keys):
             record.status = AcceptanceFollowupStatus.INVALID_ACCEPTANCE
+            record.updated_at = current
+            if note not in record.warnings:
+                record.warnings.append(note)
+            updated += 1
+        return updated
+
+    def exclude_sources_not_in(
+        self,
+        allowed_sources: set[str],
+        *,
+        note: str = SOURCE_EXCLUDED_FOLLOWUP_NOTE,
+        at: datetime | None = None,
+    ) -> int:
+        current = at or now_utc()
+        updated = 0
+        mutable_statuses = {
+            AcceptanceFollowupStatus.DRAFTED,
+            AcceptanceFollowupStatus.DRY_RUN_READY,
+            AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+            AcceptanceFollowupStatus.BLOCKED,
+            AcceptanceFollowupStatus.SEND_FAILED,
+        }
+        for record in self.drafts:
+            if record.source in allowed_sources or record.status not in mutable_statuses:
+                continue
+            record.status = AcceptanceFollowupStatus.EXCLUDED
             record.updated_at = current
             if note not in record.warnings:
                 record.warnings.append(note)

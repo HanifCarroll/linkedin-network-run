@@ -1153,6 +1153,59 @@ def test_acceptance_invalidates_historical_message_only_acceptance() -> None:
     assert "invalidated weak message-based acceptance" in followups.drafts[0].warnings[0]
 
 
+def test_acceptance_followups_exclude_sources_outside_allowed_mix() -> None:
+    def record(
+        name: str, source: str, status: AcceptanceFollowupStatus
+    ) -> AcceptanceFollowupRecord:
+        return AcceptanceFollowupRecord(
+            key=f"{source}:{name}",
+            id=f"afu_{name}",
+            source=source,
+            name=name,
+            profile_url=f"https://www.linkedin.com/sales/lead/{name}",
+            accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+            angle="general",
+            draft=f"Hey, {name}. Thanks for connecting.",
+            status=status,
+            report_path="followups.md",
+        )
+
+    ledger = AcceptanceFollowupLedger(
+        drafts=[
+            record(
+                "allowed",
+                "ASAP - Agency Owners Delivery",
+                AcceptanceFollowupStatus.DRY_RUN_READY,
+            ),
+            record(
+                "old-ready",
+                "Network - Founder Operators (11-50)",
+                AcceptanceFollowupStatus.DRY_RUN_READY,
+            ),
+            record(
+                "old-classified",
+                "Network - Founder Operators (11-50)",
+                AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+            ),
+            record(
+                "old-sent",
+                "Network - Founder Operators (11-50)",
+                AcceptanceFollowupStatus.SENT,
+            ),
+        ]
+    )
+
+    updated = ledger.exclude_sources_not_in({"ASAP - Agency Owners Delivery"})
+
+    assert updated == 2
+    assert ledger.drafts[0].status == AcceptanceFollowupStatus.DRY_RUN_READY
+    assert ledger.drafts[1].status == AcceptanceFollowupStatus.EXCLUDED
+    assert ledger.drafts[2].status == AcceptanceFollowupStatus.EXCLUDED
+    assert ledger.drafts[3].status == AcceptanceFollowupStatus.SENT
+    assert ledger.drafts[1].terminal() is True
+    assert "not in current ASAP source mix" in ledger.drafts[1].warnings[0]
+
+
 def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
