@@ -159,8 +159,10 @@ async function findMenuItem(page, menuId, label) {
 function salesLeadPath(value) {
   try {
     const parsed = new URL(String(value || ""), "https://www.linkedin.com");
-    if (!parsed.pathname.includes("/sales/lead/")) return null;
-    return parsed.pathname;
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 3 || parts[0] !== "sales" || parts[1] !== "lead") return null;
+    const leadId = parts[2].split(",", 1)[0];
+    return leadId ? `/sales/lead/${leadId}` : null;
   } catch {
     return null;
   }
