@@ -1372,8 +1372,9 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     rendered = report_path.read_text()
     assert "Hey, Duplicate. Thanks for connecting." in rendered
     assert "works across web and mobile products" in rendered
-    assert "project overflow, prototypes, and AI-enabled product builds" in rendered
-    assert "Are you the right person to ask about this kind of project support?" in rendered
+    assert "client implementation support, prototypes, internal tools" in rendered
+    assert "I'd be glad to compare notes." in rendered
+    assert "Are you the right person" not in rendered
     assert "HC Studio LLC" not in rendered
     assert "- Template: `agency`" in rendered
     followups = store.load_acceptance_followup_ledger()
@@ -1558,8 +1559,10 @@ def test_acceptance_followup_template_routing_is_source_first() -> None:
 def test_general_accepted_followup_uses_low_friction_relevant_cta() -> None:
     draft = general_accepted_followup_draft("Sam", "Acme AI")
 
-    assert "Are you the right person to ask" in draft
-    assert "would be useful at Acme AI?" in draft
+    assert "Are you the right person to ask" not in draft
+    assert "turn fuzzy product or workflow ideas into tools people can actually use" in draft
+    assert "would be useful at Acme AI" in draft
+    assert "I'd be glad to compare notes." in draft
     assert "HC Studio LLC" not in draft
     assert "resume" not in draft.lower()
 
@@ -1578,12 +1581,15 @@ def test_accepted_followup_templates_omit_hc_studio_and_frame_advisor_benefit() 
         "I'm a full-stack product engineer that works across web and mobile products."
         in agency
     )
+    assert "client implementation support, prototypes, internal tools" in agency
+    recruiter = drafts[2]
+    assert "contract product engineering, full-stack, or AI workflow roles" in recruiter
     advisor = drafts[-1]
     assert "turn AI and workflow strategy into working systems" in advisor
     assert "automations, decision-support tools, integrations, and reporting" in advisor
     assert "make client implementation easier to deliver" in advisor
     assert "Would that be helpful for the type of strategy work you do?" in advisor
-    assert "Are you the right person" not in advisor
+    assert all("Are you the right person" not in draft for draft in drafts)
 
 
 def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path) -> None:
