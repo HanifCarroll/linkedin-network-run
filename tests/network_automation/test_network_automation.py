@@ -129,9 +129,11 @@ class FakeLiveBrowserClient:
         self,
         *,
         out_dir: Path,
+        session: str | None = None,
         withdraw_timeout_seconds: float = 90.0,
     ) -> None:
         self.out_dir = Path(out_dir)
+        self.session = session
         self.withdraw_timeout_seconds = withdraw_timeout_seconds
         self.calls: list[str] = []
         FakeLiveBrowserClient.instances.append(self)
@@ -2354,6 +2356,27 @@ def test_cli_saved_searches_uses_live_browser(
     ]
     payload = json.loads(out.read_text())
     assert payload["searches"][0]["name"] == "ASAP - Contract Recruiters Staffing"
+
+
+def test_cli_passes_explicit_playwriter_session_to_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "saved-searches",
+            "--session",
+            "18",
+            "--out",
+            str(tmp_path / "saved-searches.json"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[-1].session == "18"
 
 
 def test_cli_acceptance_check_uses_live_browser(

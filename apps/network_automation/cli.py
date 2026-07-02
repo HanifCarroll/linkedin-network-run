@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "logical automation session name; with the default Playwriter backend, "
-            "select the browser session with LINKEDIN_TOOLS_PLAYWRITER_SESSION"
+            "pass a Playwriter session id here or set LINKEDIN_TOOLS_PLAYWRITER_SESSION"
         ),
     )
     run_session.add_argument("--target", type=int, default=10)
@@ -971,8 +971,11 @@ def browser_from_args(
             capture=Path(capture_fixture) if capture_fixture and capture else None,
             audit=Path(audit_fixture) if audit_fixture and audit else None,
         )
+    session_arg = getattr(args, "session", None)
+    session = None if session_arg in {None, "", "auto"} else str(session_arg)
     return PlaywriterBrowserClient(
         out_dir=Path(getattr(args, "out_dir", str(DEFAULT_SEND_OUT_DIR))),
+        session=session,
     )
 
 
