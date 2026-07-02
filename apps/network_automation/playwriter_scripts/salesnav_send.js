@@ -282,19 +282,24 @@ async function clickSendInvitation(page) {
   if ((await page.locator("input[type='email'], input[name*='email' i]").first().count().catch(() => 0)) > 0) {
     return { status: "email-required" };
   }
-  const buttons = await page.locator(`${LINKEDIN_DIALOG} button`).all();
   let sendButton = null;
-  for (const button of buttons) {
-    const text = clean(await button.textContent().catch(() => ""));
-    const aria = clean(await button.getAttribute("aria-label").catch(() => ""));
-    if (/^(Send Invitation|Send invite|Send now|Send without a note|Send)$/i.test(text || aria)) {
-      sendButton = button;
+  const dialogs = await page.locator(LINKEDIN_DIALOG).all();
+  for (const dialog of dialogs) {
+    if (!(await dialog.isVisible().catch(() => false))) continue;
+    const buttons = await dialog.locator("button").all();
+    for (const button of buttons) {
+      if (!(await button.isVisible().catch(() => false))) continue;
+      const text = clean(await button.textContent().catch(() => ""));
+      const aria = clean(await button.getAttribute("aria-label").catch(() => ""));
+      if (/^(Send Invitation|Send invite|Send now|Send without a note|Send)$/i.test(text || aria)) {
+        sendButton = button;
+      }
     }
   }
   if (!sendButton) return { status: "send-button-missing" };
   if (await sendButton.isDisabled().catch(() => false)) return { status: "send-button-disabled" };
   if (!allowSend) return { status: "blocked", reason: "real send requires allowSend" };
-  await sendButton.click({ timeout: 8000 });
+  await sendButton.click({ timeout: 8000 }).catch(async () => sendButton.evaluate((element) => element.click()));
   return { status: "clicked-send", label: "Send Invitation" };
 }
 
@@ -474,8 +479,13 @@ async function sendFromSearchRow(page, salesPayload, reason) {
     payload.status = statusFromSend(send.status);
     payload.after = { state: send.status };
   } else {
-    payload.status = "pending-provisional";
-    payload.after = { state: "clicked-send-from-search-row" };
+    await page.waitForTimeout(1500);
+    const after = await openSearchRowMenu(page, row);
+    payload.after = after;
+    payload.status =
+      classifyMenuLabels(after.labels || []) === "already-pending"
+        ? "pending-provisional"
+        : "unverified:clicked-send";
   }
   await page.keyboard.press("Escape").catch(() => null);
   return payload;
