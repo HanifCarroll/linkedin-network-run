@@ -800,6 +800,15 @@ def apply_candidate_event_to_lead_ledger(store: Store, event: CandidateEvent) ->
     store.save_lead_ledger(ledger)
 
 
+def _with_ledger_public_profile_url(
+    observation: CandidateObservation, ledger: LeadLedger
+) -> CandidateObservation:
+    record = ledger.get_for_observation(observation)
+    if record and record.public_profile_url and not observation.public_profile_url:
+        return observation.model_copy(update={"public_profile_url": record.public_profile_url})
+    return observation
+
+
 def apply_candidate_events_to_lead_ledger(store: Store, events: list[CandidateEvent]) -> None:
     if not events:
         return
@@ -996,8 +1005,15 @@ def network_run_session(
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
     review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
     source_names: Sequence[str] | None = None,
+    emit: Callable[[str], None] | None = None,
 ) -> str:
     messages: list[str] = []
+
+    def add(message: str) -> None:
+        messages.append(message)
+        if emit is not None:
+            emit(message)
+
     if resume:
         run = store.load_run()
         if not allow_fallback_sources and run.allow_fallback_sources:
@@ -1005,18 +1021,18 @@ def network_run_session(
             run.mark_updated()
             store.save_run(run)
             store.append_event(run, "disable-fallback-sources", {})
-        messages.append(f"resumed run {run.id} for {run.date.isoformat()}")
+        add(f"resumed run {run.id} for {run.date.isoformat()}")
         if not saved_searches_out.exists():
-            messages.append(
+            add(
                 capture_saved_searches(
                     browser,
                     url=saved_searches_url,
                     out=saved_searches_out,
                 )
             )
-            messages.append(seed_run_source_progress(store, saved_searches_out))
+            add(seed_run_source_progress(store, saved_searches_out))
     else:
-        messages.append(
+        add(
             start_run(
                 store,
                 target=target,
@@ -1027,27 +1043,29 @@ def network_run_session(
                 source_names=source_names,
             )
         )
-        messages.append(reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False))
+        add("auditing sent-page count before run")
+        add(reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False))
         if saved_searches_out.exists():
-            messages.append(f"using saved searches from {saved_searches_out}")
+            add(f"using saved searches from {saved_searches_out}")
         else:
-            messages.append(
+            add("capturing saved-search index")
+            add(
                 capture_saved_searches(
                     browser,
                     url=saved_searches_url,
                     out=saved_searches_out,
                 )
             )
-        messages.append(seed_run_source_progress(store, saved_searches_out))
-    messages.append(require_saved_search_coverage(store, saved_searches_out))
+        add(seed_run_source_progress(store, saved_searches_out))
+    add(require_saved_search_coverage(store, saved_searches_out))
     zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):
         plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
-        messages.append(f"plan: {plan.action}")
+        add(f"plan: {plan.action}")
         if plan.action == "source-exhausted":
             if not plan.source:
                 raise RuntimeError("source-exhausted plan did not include source")
-            messages.append(
+            add(
                 source_exhausted(
                     store,
                     plan.source,
@@ -1058,7 +1076,7 @@ def network_run_session(
         if plan.action == "use-reservoir":
             if not plan.source:
                 raise RuntimeError("use-reservoir plan did not include source")
-            messages.append(reservoir_fill_run(store, source=plan.source, limit=None))
+            add(reservoir_fill_run(store, source=plan.source, limit=None))
             continue
         if plan.action == "capture-source":
             if plan.source is None or plan.capture is None:
@@ -1069,6 +1087,10 @@ def network_run_session(
             if source_url is None:
                 raise RuntimeError(f"network source URL missing for source {plan.source}")
             before_imported = len(store.load_run().observations)
+            add(
+                f"capturing source {plan.source}: pages={plan.capture.pages}; "
+                f"stop_after_connectable={plan.capture.stop_after_connectable}"
+            )
             capture_message = capture_source(
                 store,
                 browser,
@@ -1081,7 +1103,7 @@ def network_run_session(
                 only_connectable=True,
                 row_scroll_delay_ms=250,
             )
-            messages.append(capture_message)
+            add(capture_message)
             after_run = store.load_run()
             imported = len(after_run.observations) - before_imported
             if imported > 0:
@@ -1095,7 +1117,7 @@ def network_run_session(
                         saved_searches=saved_searches_out,
                         allow_fallback_sources=allow_fallback_sources,
                     )
-                    messages.append(
+                    add(
                         review_candidates(
                             store,
                             source=plan.source,
@@ -1103,7 +1125,7 @@ def network_run_session(
                             next_commands=commands,
                         )
                     )
-                    messages.append("stopped: lead review required before connection requests")
+                    add("stopped: lead review required before connection requests")
                     break
             else:
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
@@ -1114,7 +1136,7 @@ def network_run_session(
                         "reached end of saved-search results with no usable candidates; "
                         "carrying remaining quota forward"
                     )
-                    messages.append(source_exhausted(store, plan.source, note=note))
+                    add(source_exhausted(store, plan.source, note=note))
             continue
         if plan.action == "send-candidate":
             run_for_send = store.load_run()
@@ -1130,7 +1152,7 @@ def network_run_session(
                     saved_searches=saved_searches_out,
                     allow_fallback_sources=allow_fallback_sources,
                 )
-                messages.append(
+                add(
                     review_candidates(
                         store,
                         source=None,
@@ -1138,10 +1160,10 @@ def network_run_session(
                         next_commands=commands,
                     )
                 )
-                messages.append("stopped: lead review required before connection requests")
+                add("stopped: lead review required before connection requests")
                 break
             if not allow_send:
-                messages.append("stopped: pass --allow-send for real network sends")
+                add("stopped: pass --allow-send for real network sends")
                 break
             messages.append(
                 send_guarded(
@@ -1154,11 +1176,12 @@ def network_run_session(
                     no_record=False,
                     confirm_delay_ms=confirm_delay_ms,
                     confirm_out_dir=confirm_out_dir,
+                    emit=emit,
                 )
             )
             continue
         if plan.action in {"reaudit", "final-audit"}:
-            messages.append(
+            add(
                 reconcile_audit(
                     store,
                     browser,
@@ -1170,17 +1193,17 @@ def network_run_session(
             if finish:
                 run = store.load_run()
                 if run.verified_count() >= run.target:
-                    messages.append(finish_run(store))
+                    add(finish_run(store))
                 else:
                     raise RuntimeError(
                         f"durable confirmed sends are {run.verified_count()}/{run.target}; "
                         "continue normal guarded sends before finishing"
                     )
             break
-        messages.append(f"stopped: {plan.reason or plan.action}")
+        add(f"stopped: {plan.reason or plan.action}")
         break
     else:
-        messages.append(f"stopped: max steps {max_steps} reached")
+        add(f"stopped: max steps {max_steps} reached")
     return "\n".join(messages)
 
 
@@ -1307,7 +1330,7 @@ def confirm_provisional_send(
         run_date=run.date,
         source=event.source,
         name=event.name,
-        profile_url=event.profile_url,
+        profile_url=event.public_profile_url or event.profile_url,
         sent_at=event.at,
         latest_status=AcceptanceStatus.SENT,
         latest_checked_at=None,
@@ -1442,11 +1465,7 @@ def send_next(
     candidate = next_approved_connectable_observation(run, ledger)
     if candidate is None:
         raise RuntimeError(_review_needed_message(run, ledger))
-    record = ledger.get_for_observation(candidate)
-    if record and record.public_profile_url and not candidate.public_profile_url:
-        candidate = candidate.model_copy(
-            update={"public_profile_url": record.public_profile_url}
-        )
+    candidate = _with_ledger_public_profile_url(candidate, ledger)
     result, path = browser.send_connection(
         candidate, dry_run=dry_run or not allow_send, allow_send=allow_send
     )
@@ -1485,6 +1504,7 @@ def send_guarded(
     no_record: bool = False,
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
+    emit: Callable[[str], None] | None = None,
 ) -> str:
     if not dry_run and not allow_send:
         raise RuntimeError("real guarded sends require --allow-send")
@@ -1497,6 +1517,12 @@ def send_guarded(
     source = next_source.name
     attempts = 0
     messages: list[str] = []
+
+    def add(message: str) -> None:
+        messages.append(message)
+        if emit is not None:
+            emit(message)
+
     while attempts < max_attempts:
         run = store.load_run()
         if run.state == RunState.NEEDS_REAUDIT:
@@ -1529,12 +1555,14 @@ def send_guarded(
             if reviewable_observations(run, ledger, source):
                 raise RuntimeError(_review_needed_message(run, ledger))
             break
+        candidate = _with_ledger_public_profile_url(candidate, ledger)
         attempts += 1
         if dry_run or not single_pass:
+            add(f"dry-running candidate: {candidate.name}")
             dry_result, dry_path = browser.send_connection(
                 candidate, dry_run=True, allow_send=False
             )
-            messages.append(f"dry-run status: {dry_result.status}")
+            add(f"dry-run status: {dry_result.status}")
             if dry_result.status != "dry-run-connectable":
                 if not no_record:
                     run = store.load_run()
@@ -1548,8 +1576,9 @@ def send_guarded(
             if dry_run:
                 break
         run = store.load_run()
+        add(f"sending candidate: {candidate.name}")
         result, path = browser.send_connection(candidate, dry_run=False, allow_send=True)
-        messages.append(f"send status: {result.status}")
+        add(f"send status: {result.status}")
         if no_record:
             break
         event = record_send_result(run, result, path)
@@ -1580,7 +1609,8 @@ def send_guarded(
         if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
-            messages.append(
+            add(f"confirming provisional send: {event.name}")
+            add(
                 confirm_provisional_send(
                     store,
                     browser,

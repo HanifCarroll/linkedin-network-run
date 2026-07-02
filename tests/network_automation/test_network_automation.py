@@ -75,6 +75,7 @@ from apps.network_automation.service import (
     acceptance_import,
     acceptance_send_followup,
     apply_lead_review_decisions,
+    confirm_provisional_send,
     finish_run,
     import_audit,
     import_capture_path,
@@ -380,6 +381,32 @@ class CandidateCapturingBrowser(FakeLiveBrowserClient):
         _ = dry_run, allow_send
         self.candidate = candidate
         return read_model(FIXTURES / "send_pending.json", SalesNavSendResult), "send.json"
+
+
+class AcceptanceCandidateCapturingBrowser(FakeLiveBrowserClient):
+    def __init__(self, out_dir: Path) -> None:
+        super().__init__(out_dir=out_dir)
+        self.acceptance_candidates: list[AcceptanceCheckCandidate] = []
+
+    def check_acceptance_outcomes(
+        self,
+        *,
+        candidates: list[AcceptanceCheckCandidate],
+        input_path: Path,
+        out: Path,
+        offset: int = 0,
+        limit: int = 0,
+        delay_ms: int = 500,
+    ) -> tuple[AcceptanceOutcomeArtifact, str]:
+        self.acceptance_candidates = candidates
+        return super().check_acceptance_outcomes(
+            candidates=candidates,
+            input_path=input_path,
+            out=out,
+            offset=offset,
+            limit=limit,
+            delay_ms=delay_ms,
+        )
 
 
 class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
@@ -956,6 +983,60 @@ def test_send_next_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
 
     assert browser.candidate is not None
     assert browser.candidate.public_profile_url == public_url
+
+
+def test_send_guarded_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    run = store.load_run()
+    observation = run.observations[0]
+    lead_key = lead_key_for_observation(observation)
+    public_url = "https://www.linkedin.com/in/duplicate-lead"
+    set_lead_public_profile_url(store, lead_key, public_url)
+    ledger = store.load_lead_ledger()
+    ledger.approve(lead_key, "fit")
+    store.save_lead_ledger(ledger)
+    run = store.load_run()
+    run.observations[0].public_profile_url = None
+    store.save_run(run)
+    browser = CandidateCapturingBrowser()
+
+    send_guarded(
+        store,
+        browser,
+        dry_run=False,
+        allow_send=True,
+        single_pass=True,
+        no_record=True,
+    )
+
+    assert browser.candidate is not None
+    assert browser.candidate.public_profile_url == public_url
+
+
+def test_confirmation_prefers_public_profile_url(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    event = CandidateEvent(
+        source="ASAP - Agency Owners Delivery",
+        name="Duplicate Lead",
+        profile_url="https://www.linkedin.com/sales/lead/dup,SEARCH,y",
+        public_profile_url="https://www.linkedin.com/in/duplicate-lead",
+        status=CandidateStatus.PENDING_PROVISIONAL,
+        note="pending",
+    )
+    run = store.load_run()
+    run.candidates.append(event)
+    store.save_run(run)
+    browser = AcceptanceCandidateCapturingBrowser(tmp_path / "browser")
+
+    confirm_provisional_send(store, browser, event, delay_ms=0, out_dir=tmp_path)
+
+    assert browser.acceptance_candidates[0].profile_url == (
+        "https://www.linkedin.com/in/duplicate-lead"
+    )
 
 
 def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> None:

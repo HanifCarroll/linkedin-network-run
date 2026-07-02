@@ -499,6 +499,18 @@ async function main() {
   await context
     .grantPermissions(["clipboard-read", "clipboard-write"], { origin: "https://www.linkedin.com" })
     .catch(() => null);
+  const publicPayload = basePayload(profileUrl);
+  if (normalizePublicProfileUrl(publicPayload.publicProfileUrl)) {
+    const payload = await sendFromPublicProfile(
+      activePage,
+      publicPayload,
+      "candidate-public-profile-url",
+    );
+    payload.capturedAt = nowIso();
+    fs.writeFileSync(config.out, `${JSON.stringify(payload, null, 2)}\n`);
+    console.log(`wrote Sales Navigator send result to ${config.out}`);
+    return;
+  }
   await activePage.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await waitForPageLoad({ page: activePage, timeout: 10000 }).catch(() => null);
   await activePage.waitForTimeout(1500);

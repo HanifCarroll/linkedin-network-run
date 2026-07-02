@@ -525,7 +525,10 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "run-session":
         browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
         try:
-            return network_run_session(
+            def emit_progress(message: str) -> None:
+                print(message, flush=True)
+
+            network_run_session(
                 store,
                 browser,
                 target=args.target,
@@ -549,7 +552,9 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                     else Path(args.out_dir) / "lead-review-candidates.json"
                 ),
                 source_names=args.source,
+                emit=emit_progress,
             )
+            return None
         finally:
             close = getattr(browser, "close", None)
             if callable(close):
