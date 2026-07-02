@@ -67,6 +67,7 @@ from .service import (
     reservoir_import_capture,
     reset_source_progress,
     resume_blocked,
+    retry_failed_lead,
     review_candidates,
     send_guarded,
     send_next,
@@ -97,6 +98,10 @@ BACKEND_HELP = """browser backend:
   Playwriter session: set LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>, or let the CLI create one
   Playwriter browser: set LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key> before session creation
 """
+
+
+def _emit_progress(message: str) -> None:
+    print(message, flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -278,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     set_public_profile = subparsers.add_parser("set-public-profile-url")
     set_public_profile.add_argument("--lead-key", required=True)
     set_public_profile.add_argument("--url", required=True)
+    retry_failed = subparsers.add_parser("retry-failed-lead")
+    retry_failed.add_argument("--lead-key", required=True)
+    retry_failed.add_argument("--reason", default=None)
     reset_progress = subparsers.add_parser("reset-source-progress")
     reset_progress.add_argument("--source", action="append", required=True)
 
@@ -525,9 +533,6 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "run-session":
         browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
         try:
-            def emit_progress(message: str) -> None:
-                print(message, flush=True)
-
             network_run_session(
                 store,
                 browser,
@@ -552,7 +557,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                     else Path(args.out_dir) / "lead-review-candidates.json"
                 ),
                 source_names=args.source,
-                emit=emit_progress,
+                emit=_emit_progress,
             )
             return None
         finally:
@@ -601,6 +606,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             no_record=args.no_record,
             confirm_delay_ms=args.confirm_delay_ms,
             confirm_out_dir=Path(args.confirm_out_dir),
+            emit=_emit_progress,
         )
     if command == "send-guarded":
         return send_guarded(
@@ -613,6 +619,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             no_record=args.no_record,
             confirm_delay_ms=args.confirm_delay_ms,
             confirm_out_dir=Path(args.confirm_out_dir),
+            emit=_emit_progress,
         )
     if command == "top-up-reconcile":
         return top_up_reconcile(
@@ -658,6 +665,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return apply_lead_review_decisions(store, Path(args.path))
     if command == "set-public-profile-url":
         return set_lead_public_profile_url(store, args.lead_key, args.url)
+    if command == "retry-failed-lead":
+        return retry_failed_lead(store, args.lead_key, args.reason)
     if command == "reset-source-progress":
         return reset_source_progress(store, args.source)
     if command == "next":

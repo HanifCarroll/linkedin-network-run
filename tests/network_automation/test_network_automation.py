@@ -89,6 +89,7 @@ from apps.network_automation.service import (
     record_candidate,
     reset_source_progress,
     resolve_network_source_url,
+    retry_failed_lead,
     review_candidates,
     send_guarded,
     send_next,
@@ -1014,6 +1015,46 @@ def test_send_guarded_uses_backfilled_public_profile_url(tmp_path: Path) -> None
 
     assert browser.candidate is not None
     assert browser.candidate.public_profile_url == public_url
+
+
+def test_retry_failed_lead_clears_failed_event_for_approved_lead(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+    run = store.load_run()
+    observation = run.observations[0]
+    lead_key = lead_key_for_observation(observation)
+    other_lead_key = lead_key_for_observation(run.observations[1])
+    ledger = store.load_lead_ledger()
+    ledger.skip(other_lead_key, "outside retry test")
+    store.save_lead_ledger(ledger)
+    run.candidates.append(
+        CandidateEvent(
+            source=observation.source,
+            name=observation.name,
+            profile_url=observation.profile_url,
+            status=CandidateStatus.FAILED,
+            note="durable confirmation unknown",
+        )
+    )
+    store.save_run(run)
+
+    with pytest.raises(RuntimeError, match="no approved connectable candidate"):
+        send_next(store, CandidateCapturingBrowser(), dry_run=True, allow_send=False)
+
+    output = retry_failed_lead(store, lead_key, "retry after public profile backfill")
+
+    assert "cleared 1 failed candidate event" in output
+    assert store.load_lead_ledger().leads[lead_key].status == LeadStatus.APPROVED
+    assert all(
+        event.status != CandidateStatus.FAILED for event in store.load_run().candidates
+    )
+    browser = CandidateCapturingBrowser()
+    send_next(store, browser, dry_run=True, allow_send=False)
+    assert browser.candidate is not None
+    assert browser.candidate.name == observation.name
 
 
 def test_confirmation_prefers_public_profile_url(tmp_path: Path) -> None:
@@ -2386,7 +2427,7 @@ def test_cli_namespace_runs_network_commands(
 
 
 def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_fake_live_browser(monkeypatch)
     store = Store(tmp_path)
@@ -2408,6 +2449,9 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
     )
 
     assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "sending candidate: Duplicate Lead" in output
+    assert "send status: pending" in output
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
     assert FakeLiveBrowserClient.instances[-1].calls == [
         "send:Duplicate Lead:dry=False:allow=True",

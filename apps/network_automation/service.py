@@ -794,6 +794,72 @@ def set_lead_public_profile_url(store: Store, lead_key: str, public_profile_url:
     )
 
 
+def _candidate_event_lead_key(event: CandidateEvent) -> str:
+    return lead_key_for_values(event.profile_url or event.public_profile_url, None, event.name)
+
+
+def retry_failed_lead(store: Store, lead_key: str, reason: str | None = None) -> str:
+    run = store.load_run()
+    if run.state in {RunState.NEEDS_REAUDIT, RunState.DONE, RunState.BLOCKED}:
+        raise RuntimeError(f"run state {run.state.value} cannot retry failed leads")
+    ledger = store.load_lead_ledger()
+    record = ledger.require(lead_key)
+    if record.status != LeadStatus.APPROVED:
+        raise RuntimeError(
+            f"lead {record.name} must be approved before retry; status={record.status.value}"
+        )
+    blockers = _lead_send_blockers(record)
+    if blockers:
+        raise RuntimeError(f"lead {record.name} is not send-ready: " + "; ".join(blockers))
+    matching_events = [
+        event for event in run.candidates if _candidate_event_lead_key(event) == lead_key
+    ]
+    delivered_or_in_flight = [
+        event
+        for event in matching_events
+        if event.status
+        in {
+            CandidateStatus.PENDING_PROVISIONAL,
+            CandidateStatus.PENDING,
+            CandidateStatus.ACCEPTED,
+            CandidateStatus.ALREADY_PENDING,
+            CandidateStatus.AUDIT_TOP_UP,
+        }
+    ]
+    if delivered_or_in_flight:
+        statuses = ", ".join(event.status.value for event in delivered_or_in_flight)
+        raise RuntimeError(
+            f"lead {record.name} has delivered or in-flight candidate event(s): {statuses}"
+        )
+    failed_events = [event for event in matching_events if event.status == CandidateStatus.FAILED]
+    if not failed_events:
+        raise RuntimeError(f"lead {record.name} has no failed candidate event to retry")
+    run.candidates = [
+        event
+        for event in run.candidates
+        if not (
+            _candidate_event_lead_key(event) == lead_key
+            and event.status == CandidateStatus.FAILED
+        )
+    ]
+    run.mark_updated()
+    store.save_run(run)
+    store.append_event(
+        run,
+        "retry-failed-lead",
+        {
+            "lead_key": lead_key,
+            "name": record.name,
+            "reason": reason,
+            "removed_failed_events": failed_events,
+        },
+    )
+    return (
+        f"cleared {len(failed_events)} failed candidate event(s) for {record.name}; "
+        "lead remains approved"
+    )
+
+
 def apply_candidate_event_to_lead_ledger(store: Store, event: CandidateEvent) -> None:
     ledger = store.load_lead_ledger()
     ledger.apply_candidate_event(event)
@@ -1441,7 +1507,15 @@ def send_next(
     no_record: bool = False,
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
+    emit: Callable[[str], None] | None = None,
 ) -> str:
+    messages: list[str] = []
+
+    def add(message: str) -> None:
+        messages.append(message)
+        if emit is not None:
+            emit(message)
+
     run = store.load_run()
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit before sending")
@@ -1466,9 +1540,14 @@ def send_next(
     if candidate is None:
         raise RuntimeError(_review_needed_message(run, ledger))
     candidate = _with_ledger_public_profile_url(candidate, ledger)
+    if dry_run or not allow_send:
+        add(f"dry-running candidate: {candidate.name}")
+    else:
+        add(f"sending candidate: {candidate.name}")
     result, path = browser.send_connection(
         candidate, dry_run=dry_run or not allow_send, allow_send=allow_send
     )
+    add(f"send status: {result.status}")
     if allow_send and not dry_run and not no_record:
         run = store.load_run()
         event = record_send_result(run, result, path)
@@ -1478,9 +1557,10 @@ def send_next(
         store.append_event(run, "record-send-result", {"path": path, "event": event})
         if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
-        messages = [f"send result: {path}; recorded {event.status.value}"]
+        add(f"send result: {path}; recorded {event.status.value}")
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
-            messages.append(
+            add(f"confirming provisional send: {event.name}")
+            add(
                 confirm_provisional_send(
                     store,
                     browser,
@@ -1490,7 +1570,8 @@ def send_next(
                 )
             )
         return "\n".join(messages)
-    return f"send result: {path}; dry_run={dry_run or not allow_send}"
+    add(f"send result: {path}; dry_run={dry_run or not allow_send}")
+    return "\n".join(messages)
 
 
 def send_guarded(
