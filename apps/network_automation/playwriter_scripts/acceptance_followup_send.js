@@ -63,23 +63,50 @@ async function classifyBlock(page) {
   return null;
 }
 
-async function visibleAction(page, pattern) {
+async function actionDetails(item) {
+  const text = (
+    (await item.textContent().catch(() => "")) ||
+    (await item.getAttribute("aria-label").catch(() => "")) ||
+    ""
+  ).trim();
+  const ariaLabel = ((await item.getAttribute("aria-label").catch(() => "")) || "").trim();
+  const label = text || ariaLabel;
+  if (!label) return null;
+  return {
+    label,
+    ariaLabel,
+    disabled: await item.isDisabled().catch(() => false),
+    tagName: await item.evaluate((node) => node.tagName.toLowerCase()).catch(() => null),
+    role: await item.getAttribute("role").catch(() => null),
+  };
+}
+
+async function scanVisibleActions(page, pattern) {
   const locator = page.locator("button,a,[role='button']");
   const count = await locator.count().catch(() => 0);
+  const visibleActions = [];
   for (let index = 0; index < count; index += 1) {
     const item = locator.nth(index);
     if (!(await item.isVisible().catch(() => false))) continue;
-    if (await item.isDisabled().catch(() => false)) continue;
-    const label = (
-      (await item.textContent().catch(() => "")) ||
-      (await item.getAttribute("aria-label").catch(() => "")) ||
-      ""
-    ).trim();
-    if (pattern.test(label)) {
-      return { locator: item, label, kind: /^InMail\b/i.test(label) ? "inmail" : "message" };
+    const details = await actionDetails(item);
+    if (!details) continue;
+    visibleActions.push(details);
+    if (!details.disabled && pattern.test(details.label)) {
+      return {
+        action: {
+          locator: item,
+          label: details.label,
+          kind: /^InMail\b/i.test(details.label) ? "inmail" : "message",
+        },
+        visibleActions,
+      };
     }
   }
-  return null;
+  return { action: null, visibleActions };
+}
+
+async function visibleAction(page, pattern) {
+  return (await scanVisibleActions(page, pattern)).action;
 }
 
 async function visibleComposer(page) {
@@ -128,9 +155,15 @@ async function main() {
     return;
   }
 
-  const action = await visibleAction(page, /^(Message|InMail)\b/i);
+  const actionScan = await scanVisibleActions(page, /^(Message|InMail)\b/i);
+  const action = actionScan.action;
   if (!action) {
-    fs.writeFileSync(config.out, `${JSON.stringify({ ...payload, status: "not-messageable" }, null, 2)}\n`);
+    fs.writeFileSync(config.out, `${JSON.stringify({
+      ...payload,
+      status: "not-messageable",
+      reason: "no visible Message or InMail action",
+      visibleActions: actionScan.visibleActions,
+    }, null, 2)}\n`);
     return;
   }
   const actionPayload = {

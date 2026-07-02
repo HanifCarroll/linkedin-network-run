@@ -985,6 +985,8 @@ def _network_observation_row(
 
 
 def _acceptance_dry_run_status(record: AcceptanceFollowupRecord) -> str:
+    if record.status.value == "invalid_acceptance":
+        return "not applicable"
     for attempt in reversed(record.attempts):
         if attempt.dry_run:
             return attempt.status

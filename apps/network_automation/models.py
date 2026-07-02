@@ -63,6 +63,7 @@ class AcceptanceStatus(StrEnum):
     SENT = "sent"
     PENDING = "pending"
     ACCEPTED = "accepted"
+    INVALIDATED = "invalidated"
     CONNECTABLE = "connectable"
     WITHDRAWN = "withdrawn"
     UNKNOWN = "unknown"
@@ -103,6 +104,7 @@ class AcceptanceFollowupStatus(StrEnum):
     DRY_RUN_READY = "dry_run_ready"
     SENT = "sent"
     CONVERSATION_EXISTS = "conversation_exists"
+    INVALID_ACCEPTANCE = "invalid_acceptance"
     NOT_MESSAGEABLE = "not_messageable"
     BLOCKED = "blocked"
     SEND_FAILED = "send_failed"
@@ -929,7 +931,9 @@ def capture_to_observations(
 
 def update_capture_cursor(run: Run, source: str, capture: SalesNavCapture) -> None:
     last_page = capture.page or (capture.pages[-1] if capture.pages else None)
-    last_scanned_url = capture.last_scanned_url or capture.url or (last_page.url if last_page else None)
+    last_scanned_url = (
+        capture.last_scanned_url or capture.url or (last_page.url if last_page else None)
+    )
     resume_url = capture.next_url or capture.resume_url or last_scanned_url
     captured_pages = len(capture.pages) or (1 if capture.page else 0)
     raw_row_count = (
@@ -1223,6 +1227,13 @@ class AcceptanceOutcomeEvent(AppModel):
     evidence: str | None = None
 
 
+DURABLY_CONFIRMED_ACCEPTED_NOTE = "durably confirmed accepted during send"
+WEAK_MESSAGE_ACCEPTED_NOTE = "profile shows first-degree/message evidence"
+WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE = (
+    "invalidated weak message-based acceptance; sampled profiles were 2nd-degree"
+)
+
+
 class AcceptanceInvitation(AppModel):
     run_id: uuid.UUID
     run_date: Date
@@ -1316,6 +1327,7 @@ class AcceptanceSourceReport(AppModel):
     total_sent: int = 0
     checked: int = 0
     accepted: int = 0
+    invalidated: int = 0
     pending: int = 0
     connectable: int = 0
     unknown: int = 0
@@ -1331,6 +1343,7 @@ class AcceptanceReport(AppModel):
     total_sent: int = 0
     checked: int = 0
     accepted: int = 0
+    invalidated: int = 0
     pending: int = 0
     connectable: int = 0
     unknown: int = 0
@@ -1356,6 +1369,9 @@ class AcceptanceReport(AppModel):
         elif status == AcceptanceStatus.ACCEPTED:
             self.accepted += 1
             source_report.accepted += 1
+        elif status == AcceptanceStatus.INVALIDATED:
+            self.invalidated += 1
+            source_report.invalidated += 1
         elif status == AcceptanceStatus.CONNECTABLE:
             self.connectable += 1
             source_report.connectable += 1
@@ -1466,13 +1482,51 @@ class AcceptanceLedger(AppModel):
                 summary.unmatched += 1
         return summary
 
+    def weak_message_acceptances(self) -> list[AcceptanceInvitation]:
+        result: list[AcceptanceInvitation] = []
+        for invitation in self.invitations:
+            if invitation.latest_status != AcceptanceStatus.ACCEPTED:
+                continue
+            accepted_event = latest_acceptance_event(invitation)
+            if accepted_event is not None and accepted_event.note == WEAK_MESSAGE_ACCEPTED_NOTE:
+                result.append(invitation)
+        return result
+
+    def invalidate_weak_message_acceptances(
+        self,
+        *,
+        note: str = WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
+        at: datetime | None = None,
+    ) -> list[str]:
+        current = at or now_utc()
+        invalidated_keys: list[str] = []
+        for invitation in self.weak_message_acceptances():
+            accepted_event = latest_acceptance_event(invitation)
+            invitation.latest_status = AcceptanceStatus.INVALIDATED
+            invitation.latest_checked_at = current
+            invitation.history.append(
+                AcceptanceOutcomeEvent(
+                    at=current,
+                    status=AcceptanceStatus.INVALIDATED,
+                    note=note,
+                    relationship=accepted_event.relationship if accepted_event else None,
+                    evidence=accepted_event.evidence if accepted_event else None,
+                )
+            )
+            invalidated_keys.append(invitation.key())
+        return invalidated_keys
+
     def eligible_for_check(
         self, min_age_days: int, max_age_days: int | None
     ) -> list[AcceptanceInvitation]:
         current = now_utc()
         result: list[AcceptanceInvitation] = []
         for invitation in self.invitations:
-            if invitation.latest_status in {AcceptanceStatus.ACCEPTED, AcceptanceStatus.WITHDRAWN}:
+            if invitation.latest_status in {
+                AcceptanceStatus.ACCEPTED,
+                AcceptanceStatus.INVALIDATED,
+                AcceptanceStatus.WITHDRAWN,
+            }:
                 continue
             if invitation.profile_url is None:
                 continue
@@ -1502,17 +1556,10 @@ class AcceptanceLedger(AppModel):
         for invitation in self.invitations:
             if invitation.latest_status != AcceptanceStatus.ACCEPTED:
                 continue
-            accepted_event: AcceptanceOutcomeEvent | None = None
-            for event in reversed(invitation.history):
-                if event.status == AcceptanceStatus.ACCEPTED:
-                    accepted_event = event
-                    break
-            if accepted_event is not None:
-                accepted_at = accepted_event.at
-            elif invitation.latest_checked_at is not None:
-                accepted_at = invitation.latest_checked_at
-            else:
+            accepted_event = latest_acceptance_event(invitation)
+            if accepted_event is None or not accepted_event_confirms_followup(accepted_event):
                 continue
+            accepted_at = accepted_event.at
             candidate = AcceptedDraftCandidate(
                 run_id=invitation.run_id,
                 run_date=invitation.run_date,
@@ -1533,8 +1580,18 @@ class AcceptanceLedger(AppModel):
 def sanitize_acceptance_outcome(
     row: AcceptanceOutcomeRow, invitation: AcceptanceInvitation
 ) -> AcceptanceOutcomeRow:
-    if row.status != AcceptanceStatus.ACCEPTED or row.evidence is None:
+    if row.status != AcceptanceStatus.ACCEPTED:
         return row
+    if not acceptance_row_confirms_first_degree(row):
+        note = "accepted outcome did not include first-degree relationship evidence"
+        if row.note and row.note.strip():
+            note = f"{row.note.strip()}; {note}"
+        return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
+    if row.evidence is None:
+        note = "accepted outcome did not include candidate identity evidence"
+        if row.note and row.note.strip():
+            note = f"{row.note.strip()}; {note}"
+        return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
     if acceptance_evidence_matches_candidate(
         row.evidence, row.name
     ) or acceptance_evidence_matches_candidate(row.evidence, invitation.name):
@@ -1543,6 +1600,25 @@ def sanitize_acceptance_outcome(
     if row.note and row.note.strip():
         note = f"{row.note.strip()}; {note}"
     return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
+
+
+def latest_acceptance_event(invitation: AcceptanceInvitation) -> AcceptanceOutcomeEvent | None:
+    for event in reversed(invitation.history):
+        if event.status == AcceptanceStatus.ACCEPTED:
+            return event
+    return None
+
+
+def accepted_event_confirms_followup(event: AcceptanceOutcomeEvent) -> bool:
+    if event.note == DURABLY_CONFIRMED_ACCEPTED_NOTE:
+        return True
+    if event.note == WEAK_MESSAGE_ACCEPTED_NOTE:
+        return False
+    return event.relationship == "1st"
+
+
+def acceptance_row_confirms_first_degree(row: AcceptanceOutcomeRow) -> bool:
+    return row.relationship == "1st" and row.note != WEAK_MESSAGE_ACCEPTED_NOTE
 
 
 def acceptance_evidence_matches_candidate(evidence: str, name: str) -> bool:
@@ -1676,6 +1752,7 @@ class AcceptanceFollowupRecord(AppModel):
         return self.status in {
             AcceptanceFollowupStatus.SENT,
             AcceptanceFollowupStatus.CONVERSATION_EXISTS,
+            AcceptanceFollowupStatus.INVALID_ACCEPTANCE,
         }
 
 
@@ -1700,19 +1777,54 @@ class AcceptanceFollowupLedger(AppModel):
         ]
         return records[:limit] if limit > 0 else records
 
-    def needs_dry_run(self, limit: int) -> list[AcceptanceFollowupRecord]:
-        records = [
+    def needs_dry_run(
+        self, limit: int, *, retry_classified: bool = False
+    ) -> list[AcceptanceFollowupRecord]:
+        statuses = {AcceptanceFollowupStatus.DRAFTED}
+        if retry_classified:
+            statuses.update(
+                {
+                    AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+                    AcceptanceFollowupStatus.BLOCKED,
+                    AcceptanceFollowupStatus.SEND_FAILED,
+                }
+            )
+        records = [record for record in self.drafts if record.status in statuses]
+        return records[:limit] if limit > 0 else records
+
+    def invalidatable_for_acceptance_keys(
+        self, keys: set[str]
+    ) -> list[AcceptanceFollowupRecord]:
+        return [
             record
             for record in self.drafts
-            if record.status
+            if record.key in keys
+            and record.status
             in {
                 AcceptanceFollowupStatus.DRAFTED,
+                AcceptanceFollowupStatus.DRY_RUN_READY,
                 AcceptanceFollowupStatus.NOT_MESSAGEABLE,
                 AcceptanceFollowupStatus.BLOCKED,
                 AcceptanceFollowupStatus.SEND_FAILED,
             }
         ]
-        return records[:limit] if limit > 0 else records
+
+    def invalidate_acceptance_keys(
+        self,
+        keys: set[str],
+        *,
+        note: str = WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
+        at: datetime | None = None,
+    ) -> int:
+        current = at or now_utc()
+        updated = 0
+        for record in self.invalidatable_for_acceptance_keys(keys):
+            record.status = AcceptanceFollowupStatus.INVALID_ACCEPTANCE
+            record.updated_at = current
+            if note not in record.warnings:
+                record.warnings.append(note)
+            updated += 1
+        return updated
 
     def record_report(
         self, report: DraftReport, report_path: str, research_path: str | None
@@ -1878,8 +1990,8 @@ def general_accepted_followup_draft(first: str, company: str | None) -> str:
     target = f" at {clean_inline(company)}" if company else ""
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer working through HC Studio LLC, focused on "
-        "shipping AI-powered web and mobile products.\n\n"
+        "I'm a full-stack product engineer focused on shipping AI-powered web and "
+        "mobile products.\n\n"
         "Are you the right person to ask about whether that kind of product-engineering "
         f"support would be useful{target}?"
     )
@@ -1891,7 +2003,7 @@ def agency_accepted_followup_draft(first: str, company: str | None) -> str:
         company_intro = f" I came across {clean_inline(company)}, and"
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer working through HC Studio LLC."
+        "I'm a full-stack product engineer that works across web and mobile products."
         f"{company_intro} I'm reaching out about project overflow, prototypes, and "
         "AI-enabled product builds.\n\n"
         "Are you the right person to ask about this kind of project support?"
@@ -1901,8 +2013,8 @@ def agency_accepted_followup_draft(first: str, company: str | None) -> str:
 def recruiter_accepted_followup_draft(first: str) -> str:
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer working through HC Studio LLC, focused on "
-        "full-stack product builds and AI workflows.\n\n"
+        "I'm a full-stack product engineer focused on full-stack product builds and "
+        "AI workflows.\n\n"
         "Are you the right person to ask about contract roles that fit this background?"
     )
 
@@ -1910,10 +2022,10 @@ def recruiter_accepted_followup_draft(first: str) -> str:
 def advisor_accepted_followup_draft(first: str) -> str:
     return (
         f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer working through HC Studio LLC. I help turn AI, "
-        "automation, and workflow strategy into shipped tools clients can actually use.\n\n"
-        "Are you the right person to ask about implementation support for strategy or "
-        "advisory clients?"
+        "I help consultants and advisors turn AI and workflow strategy into working "
+        "systems: automations, decision-support tools, integrations, and reporting that "
+        "make client implementation easier to deliver.\n\n"
+        "Would that be helpful for the type of strategy work you do?"
     )
 
 
@@ -2013,7 +2125,7 @@ def render_draft_markdown(report: DraftReport) -> str:
             ]
         )
         if item.candidate.profile_url:
-            lines.append("- Profile: " + clean_inline(item.candidate.profile_url))
+            lines.append("- Sales Nav profile: " + clean_inline(item.candidate.profile_url))
         lines.append(f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`")
         lines.append(f"- Template: `{item.template_key.value}`")
         lines.append("- Best angle: " + clean_inline(item.angle))
@@ -2053,6 +2165,9 @@ class AcceptanceFollowupSendResult(AppModel):
     status: str
     reason: str | None = None
     action: Any = None
+    visible_actions: Any = Field(
+        default=None, validation_alias=AliasChoices("visible_actions", "visibleActions")
+    )
     search_row_action: Any = Field(
         default=None, validation_alias=AliasChoices("search_row_action", "searchRowAction")
     )
@@ -2145,6 +2260,7 @@ def acceptance_followup_diagnostics(result: AcceptanceFollowupSendResult) -> dic
         "send_buttons": result.send_buttons,
         "conversation": result.conversation_check,
         "action": result.action,
+        "visible_actions": result.visible_actions,
     }.items():
         if value is not None:
             diagnostics[key] = compact_json(value)
@@ -2155,6 +2271,8 @@ def acceptance_followup_result_note(result: AcceptanceFollowupSendResult) -> str
     parts: list[str] = []
     if result.reason and result.reason.strip():
         parts.append(result.reason.strip())
+    if result.visible_actions is not None:
+        parts.append("visible_actions " + compact_json(result.visible_actions))
     if result.composer_selector and result.composer_selector.strip():
         parts.append("composer " + result.composer_selector.strip())
     if result.body_fill is not None:

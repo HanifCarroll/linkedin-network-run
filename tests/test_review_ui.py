@@ -118,6 +118,7 @@ def test_review_ui_reads_network_and_recruiter_state(tmp_path: Path) -> None:
     assert "Sent Founder" in network.text
     assert "Queued CTO" in network.text
     assert "Hi Accepted" in network.text
+    assert "Sales Nav profile" in network.text
     assert "Old Invite" in network.text
     assert "Thread 4 read model pending" not in network.text
     assert "Acme Talent" in recruiter.text

@@ -21,10 +21,14 @@ from apps.network_automation.browser import (
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
     AcceptanceCheckCandidate,
+    AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
+    AcceptanceFollowupStatus,
+    AcceptanceInvitation,
     AcceptanceLedger,
     AcceptanceOutcomeArtifact,
+    AcceptanceOutcomeEvent,
     AcceptanceReport,
     AcceptanceSourceReport,
     AcceptanceStatus,
@@ -34,6 +38,8 @@ from apps.network_automation.models import (
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
+    DraftItem,
+    DraftReport,
     DraftStrategy,
     PendingCandidateObservation,
     PendingCapture,
@@ -45,9 +51,15 @@ from apps.network_automation.models import (
     SavedSearchArtifact,
     SourceScanProgress,
     SourceScanProgressLedger,
+    acceptance_followup_diagnostics,
+    acceptance_followup_result_note,
+    advisor_accepted_followup_draft,
+    agency_accepted_followup_draft,
     choose_angle,
     default_sources,
     general_accepted_followup_draft,
+    recruiter_accepted_followup_draft,
+    render_draft_markdown,
     source_yield_report,
 )
 from apps.network_automation.old_state import inspect_old_state
@@ -236,14 +248,11 @@ class FakeLiveBrowserClient:
         out: Path,
         offset: int = 0,
         limit: int = 0,
-        public_web: bool = True,
-        max_web_results: int = 5,
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]:
         self.calls.append(
             "accepted-research:"
-            f"{len(candidates)}:offset={offset}:limit={limit}:web={public_web}:"
-            f"max={max_web_results}:delay={delay_ms}"
+            f"{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
         )
         selected = candidates[offset : offset + limit] if limit else candidates[offset:]
         artifact = AcceptedResearchArtifact.model_validate(
@@ -1029,6 +1038,206 @@ def test_acceptance_import_downgrades_mismatched_identity(tmp_path: Path) -> Non
     assert "downgraded to unknown" in (updated.invitations[0].history[0].note or "")
 
 
+def test_acceptance_import_downgrades_message_only_acceptance() -> None:
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name="Weak Lead",
+            profile_url="https://www.linkedin.com/sales/lead/weak-lead",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    artifact = AcceptanceOutcomeArtifact.model_validate(
+        {
+            "rows": [
+                {
+                    "source": "ASAP - Agency Owners Delivery",
+                    "name": "Weak Lead",
+                    "profileUrl": "https://www.linkedin.com/sales/lead/weak-lead",
+                    "status": "accepted",
+                    "checkedAt": "2026-07-02T12:00:00Z",
+                    "relationship": "1st",
+                    "evidence": '{"labels":["Weak Lead","Message"]}',
+                    "note": "profile shows first-degree/message evidence",
+                }
+            ]
+        }
+    )
+
+    summary = ledger.import_outcomes(artifact)
+
+    assert summary.matched == 1
+    assert ledger.invitations[0].latest_status == AcceptanceStatus.UNKNOWN
+    assert "did not include first-degree relationship evidence" in (
+        ledger.invitations[0].history[0].note or ""
+    )
+
+
+def test_acceptance_followup_candidates_skip_historical_message_only_acceptance() -> None:
+    ledger = AcceptanceLedger(
+        invitations=[
+            AcceptanceInvitation(
+                run_id=_run_id(),
+                run_date=date(2026, 6, 24),
+                source="ASAP - Agency Owners Delivery",
+                name="Weak Lead",
+                profile_url="https://www.linkedin.com/sales/lead/weak-lead",
+                sent_at=datetime(2026, 6, 24, tzinfo=UTC),
+                latest_status=AcceptanceStatus.ACCEPTED,
+                latest_checked_at=datetime(2026, 7, 2, tzinfo=UTC),
+                history=[
+                    AcceptanceOutcomeEvent(
+                        at=datetime(2026, 7, 2, tzinfo=UTC),
+                        status=AcceptanceStatus.ACCEPTED,
+                        relationship="1st",
+                        note="profile shows first-degree/message evidence",
+                    )
+                ],
+            )
+        ]
+    )
+
+    assert ledger.accepted_for_followup(AcceptanceFollowupLedger(), include_drafted=False) == []
+
+
+def test_acceptance_invalidates_historical_message_only_acceptance() -> None:
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 6, 24),
+        source="ASAP - Agency Owners Delivery",
+        name="Weak Lead",
+        profile_url="https://www.linkedin.com/sales/lead/weak-lead",
+        sent_at=datetime(2026, 6, 24, tzinfo=UTC),
+        latest_status=AcceptanceStatus.ACCEPTED,
+        latest_checked_at=datetime(2026, 7, 2, tzinfo=UTC),
+        history=[
+            AcceptanceOutcomeEvent(
+                at=datetime(2026, 7, 2, tzinfo=UTC),
+                status=AcceptanceStatus.ACCEPTED,
+                relationship="1st",
+                note="profile shows first-degree/message evidence",
+            )
+        ],
+    )
+    ledger = AcceptanceLedger(invitations=[invitation])
+    followups = AcceptanceFollowupLedger(
+        drafts=[
+            AcceptanceFollowupRecord(
+                key=invitation.key(),
+                id="afu_weak",
+                source=invitation.source,
+                name=invitation.name,
+                profile_url=invitation.profile_url,
+                accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+                angle="general",
+                draft="Hey Weak. Thanks for connecting.",
+                status=AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+                report_path="followups.md",
+            )
+        ]
+    )
+
+    invalidated_keys = set(ledger.invalidate_weak_message_acceptances())
+    followup_count = followups.invalidate_acceptance_keys(invalidated_keys)
+
+    assert invalidated_keys == {invitation.key()}
+    assert followup_count == 1
+    assert ledger.invitations[0].latest_status == AcceptanceStatus.INVALIDATED
+    assert ledger.invitations[0].history[-1].status == AcceptanceStatus.INVALIDATED
+    assert followups.drafts[0].status == AcceptanceFollowupStatus.INVALID_ACCEPTANCE
+    assert followups.drafts[0].terminal() is True
+    assert "invalidated weak message-based acceptance" in followups.drafts[0].warnings[0]
+
+
+def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = Store(tmp_path)
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 6, 24),
+        source="ASAP - Agency Owners Delivery",
+        name="Weak Lead",
+        profile_url="https://www.linkedin.com/sales/lead/weak-lead",
+        sent_at=datetime(2026, 6, 24, tzinfo=UTC),
+        latest_status=AcceptanceStatus.ACCEPTED,
+        latest_checked_at=datetime(2026, 7, 2, tzinfo=UTC),
+        history=[
+            AcceptanceOutcomeEvent(
+                at=datetime(2026, 7, 2, tzinfo=UTC),
+                status=AcceptanceStatus.ACCEPTED,
+                relationship="1st",
+                note="profile shows first-degree/message evidence",
+            )
+        ],
+    )
+    store.save_acceptance_ledger(AcceptanceLedger(invitations=[invitation]))
+    store.save_acceptance_followup_ledger(
+        AcceptanceFollowupLedger(
+            drafts=[
+                AcceptanceFollowupRecord(
+                    key=invitation.key(),
+                    id="afu_weak",
+                    source=invitation.source,
+                    name=invitation.name,
+                    profile_url=invitation.profile_url,
+                    accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+                    angle="general",
+                    draft="Hey Weak. Thanks for connecting.",
+                    status=AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+                    report_path="followups.md",
+                )
+            ]
+        )
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "invalidate-weak-message-acceptances",
+            "--sample-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    dry_run = capsys.readouterr().out
+    assert "weak acceptance invalidation dry-run: 1 invitation(s), 1 follow-up draft(s)" in dry_run
+    assert store.load_acceptance_ledger().invitations[0].latest_status == AcceptanceStatus.ACCEPTED
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "invalidate-weak-message-acceptances",
+            "--apply",
+            "--sample-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    applied = capsys.readouterr().out
+    assert "weak acceptance invalidation applied: 1 invitation(s), 1 follow-up draft(s)" in applied
+    assert (
+        store.load_acceptance_ledger().invitations[0].latest_status
+        == AcceptanceStatus.INVALIDATED
+    )
+    assert (
+        store.load_acceptance_followup_ledger().drafts[0].status
+        == AcceptanceFollowupStatus.INVALID_ACCEPTANCE
+    )
+    event = json.loads(store.acceptance_event_path.read_text().strip().splitlines()[-1])
+    assert event["kind"] == "invalidate-weak-message-acceptances"
+
+
 def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     store = Store(tmp_path)
     ledger = AcceptanceLedger()
@@ -1058,8 +1267,10 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     assert "accepted follow-up drafts: 1" in output
     rendered = report_path.read_text()
     assert "Hey, Duplicate. Thanks for connecting." in rendered
+    assert "works across web and mobile products" in rendered
     assert "project overflow, prototypes, and AI-enabled product builds" in rendered
     assert "Are you the right person to ask about this kind of project support?" in rendered
+    assert "HC Studio LLC" not in rendered
     assert "- Template: `agency`" in rendered
     followups = store.load_acceptance_followup_ledger()
     record = followups.drafts[0]
@@ -1085,6 +1296,118 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
 
     assert "status=preview-filled" in preview
     assert store.load_acceptance_followup_ledger().drafts[0].status.value == "dry_run_ready"
+
+
+def test_acceptance_dry_run_selection_skips_already_classified_records() -> None:
+    def record(name: str, status: AcceptanceFollowupStatus) -> AcceptanceFollowupRecord:
+        return AcceptanceFollowupRecord(
+            key=f"source:{name}",
+            id=f"lead-{name}",
+            source="source",
+            name=name,
+            profile_url=f"https://www.linkedin.com/sales/lead/{name}",
+            accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
+            angle="general",
+            draft=f"Hey {name}. Thanks for connecting.",
+            status=status,
+            report_path="followups.md",
+        )
+
+    ledger = AcceptanceFollowupLedger(
+        drafts=[
+            record("drafted", AcceptanceFollowupStatus.DRAFTED),
+            record("not-messageable", AcceptanceFollowupStatus.NOT_MESSAGEABLE),
+            record("blocked", AcceptanceFollowupStatus.BLOCKED),
+            record("failed", AcceptanceFollowupStatus.SEND_FAILED),
+            record("ready", AcceptanceFollowupStatus.DRY_RUN_READY),
+            record("sent", AcceptanceFollowupStatus.SENT),
+        ]
+    )
+
+    assert [record.name for record in ledger.needs_dry_run(0)] == ["drafted"]
+    assert [record.name for record in ledger.needs_dry_run(0, retry_classified=True)] == [
+        "drafted",
+        "not-messageable",
+        "blocked",
+        "failed",
+    ]
+
+
+def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None:
+    result = AcceptanceFollowupSendResult.model_validate(
+        {
+            "dryRun": True,
+            "url": "https://www.linkedin.com/sales/lead/abc",
+            "messageLength": 128,
+            "status": "not-messageable",
+            "reason": "no visible Message or InMail action",
+            "visibleActions": [
+                {
+                    "label": "Connect",
+                    "ariaLabel": "Connect",
+                    "disabled": False,
+                    "tagName": "button",
+                    "role": None,
+                },
+                {
+                    "label": "Save",
+                    "ariaLabel": "",
+                    "disabled": False,
+                    "tagName": "button",
+                    "role": None,
+                },
+            ],
+        }
+    )
+
+    diagnostics = acceptance_followup_diagnostics(result)
+    note = acceptance_followup_result_note(result)
+
+    assert diagnostics["visible_actions"] == (
+        '[{"ariaLabel":"Connect","disabled":false,"label":"Connect",'
+        '"role":null,"tagName":"button"},{"ariaLabel":"","disabled":false,'
+        '"label":"Save","role":null,"tagName":"button"}]'
+    )
+    assert note is not None
+    assert "no visible Message or InMail action" in note
+    assert '"label":"Connect"' in note
+
+
+def test_acceptance_draft_markdown_labels_sales_nav_without_public_profile_identity() -> None:
+    candidate = AcceptedDraftCandidate(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 2),
+        source="Network - Founder Operators (11-50)",
+        name="Accepted Lead",
+        profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
+        sent_at=datetime(2026, 7, 1, tzinfo=UTC),
+        accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+    )
+    report = DraftReport(
+        items=[
+            DraftItem(
+                candidate=candidate,
+                angle="general",
+                draft="Hey, Accepted. Thanks for connecting.",
+                evidence=["Public web URL: https://au.linkedin.com/in/accepted-lead/"],
+            )
+        ]
+    )
+
+    rendered = render_draft_markdown(report)
+
+    assert (
+        "- Sales Nav profile: https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
+        in rendered
+    )
+    assert "Public profile" not in rendered
+
+
+def test_playwriter_acceptance_check_requires_first_degree_not_message_label() -> None:
+    script = Path("apps/network_automation/playwriter_scripts/acceptance_outcomes.js").read_text()
+
+    assert r"\b1st\b|\bMessage\b" not in script
+    assert r"\b1st\b" in script
 
 
 def test_acceptance_draft_followups_explains_zero_new_drafts(tmp_path: Path) -> None:
@@ -1130,7 +1453,30 @@ def test_general_accepted_followup_uses_low_friction_relevant_cta() -> None:
 
     assert "Are you the right person to ask" in draft
     assert "would be useful at Acme AI?" in draft
+    assert "HC Studio LLC" not in draft
     assert "resume" not in draft.lower()
+
+
+def test_accepted_followup_templates_omit_hc_studio_and_frame_advisor_benefit() -> None:
+    drafts = [
+        general_accepted_followup_draft("Sam", "Acme AI"),
+        agency_accepted_followup_draft("Jordan", "Acme Studio"),
+        recruiter_accepted_followup_draft("Riley"),
+        advisor_accepted_followup_draft("Morgan"),
+    ]
+
+    assert all("HC Studio LLC" not in draft for draft in drafts)
+    agency = drafts[1]
+    assert (
+        "I'm a full-stack product engineer that works across web and mobile products."
+        in agency
+    )
+    advisor = drafts[-1]
+    assert "turn AI and workflow strategy into working systems" in advisor
+    assert "automations, decision-support tools, integrations, and reporting" in advisor
+    assert "make client implementation easier to deliver" in advisor
+    assert "Would that be helpful for the type of strategy work you do?" in advisor
+    assert "Are you the right person" not in advisor
 
 
 def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path) -> None:
@@ -1661,7 +2007,6 @@ def test_cli_acceptance_draft_followups_can_generate_research(
             "auto",
             "--out-dir",
             str(out_dir),
-            "--no-public-web",
             "--research-offset",
             "0",
             "--research-limit",
@@ -1671,7 +2016,7 @@ def test_cli_acceptance_draft_followups_can_generate_research(
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].calls == [
-        "accepted-research:1:offset=0:limit=1:web=False:max=5:delay=500"
+        "accepted-research:1:offset=0:limit=1:delay=500"
     ]
     assert (out_dir / "accepted-candidates.json").exists()
     assert (out_dir / "accepted-research.json").exists()
@@ -1954,7 +2299,6 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
             str(draft_report),
             "--draft-out-dir",
             str(draft_out_dir),
-            "--no-public-web",
             "--out-dir",
             str(browser_out_dir),
         ]
@@ -1965,7 +2309,7 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
     assert FakeLiveBrowserClient.instances[0].out_dir == browser_out_dir
     assert FakeLiveBrowserClient.instances[0].calls == [
         "acceptance-check:1:offset=0:limit=1:delay=750",
-        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500",
+        "accepted-research:1:offset=0:limit=0:delay=500",
     ]
     assert json.loads(outcomes.read_text())["rows"][0]["status"] == "accepted"
     assert draft_report.exists()
@@ -2049,14 +2393,13 @@ def test_cli_acceptance_run_daily_session_reuses_complete_chunks(
             str(chunks),
             "--chunk-size",
             "1",
-            "--no-public-web",
         ]
     )
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[0].calls == [
         "acceptance-check:2:offset=1:limit=1:delay=750",
-        "accepted-research:1:offset=0:limit=0:web=False:max=5:delay=500",
+        "accepted-research:1:offset=0:limit=0:delay=500",
     ]
     assert json.loads(outcomes.read_text())["count"] == 2
     events = [

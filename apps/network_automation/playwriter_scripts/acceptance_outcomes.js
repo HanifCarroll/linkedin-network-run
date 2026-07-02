@@ -91,10 +91,10 @@ async function classifyCandidate(candidate) {
     } else if (security > 0) {
       status = "blocked";
       note = "security verification present";
-    } else if (/\b1st\b|\bMessage\b/i.test(combined)) {
+    } else if (/\b1st\b/i.test(combined)) {
       status = "accepted";
       relationship = "1st";
-      note = "profile shows first-degree/message evidence";
+      note = "profile shows first-degree relationship evidence";
     } else if (/Pending|Withdraw/i.test(combined)) {
       status = "pending";
       note = "profile still shows pending invitation evidence";

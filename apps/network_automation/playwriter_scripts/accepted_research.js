@@ -26,9 +26,18 @@ async function getPage() {
   return state.linkedinToolsPage;
 }
 
-function firstMatch(text, regex) {
-  const match = text.match(regex);
-  return match ? match[1].trim() : null;
+function clean(value) {
+  return String(value || "").replace(/\s+/g, " ").trim() || null;
+}
+
+async function textFromFirst(page, selectors) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if ((await locator.count().catch(() => 0)) === 0) continue;
+    const text = clean(await locator.textContent({ timeout: 1500 }).catch(() => ""));
+    if (text) return text;
+  }
+  return null;
 }
 
 async function researchCandidate(candidate) {
@@ -53,7 +62,7 @@ async function researchCandidate(candidate) {
       web: {
         query: null,
         results: [],
-        warnings: ["public web research is not implemented in Playwriter backend"],
+        warnings: ["accepted follow-up research records Sales Nav evidence only"],
       },
       warnings,
     };
@@ -62,16 +71,22 @@ async function researchCandidate(candidate) {
     await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
     await waitForPageLoad({ page, timeout: 10000 }).catch(() => null);
     if (delayMs > 0) await page.waitForTimeout(Math.min(delayMs, 2000));
-    const text = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
-    const lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const title = await textFromFirst(page, [
+      "[data-anonymize='headline']",
+      "[data-anonymize='title']",
+    ]);
+    const company = await textFromFirst(page, [
+      "[data-anonymize='company-name']",
+      "[data-anonymize='company']",
+    ]);
+    if (!title && !company) {
+      warnings.push("Sales Navigator title/company selectors did not produce evidence");
+    }
     salesNav = {
-      name: lines[0] || candidate.name,
-      title: firstMatch(text, /(?:Title|Role)\s*\n([^\n]+)/i) || lines[1] || null,
-      company: firstMatch(text, /(?:Company|Current company)\s*\n([^\n]+)/i),
-      location: firstMatch(text, /(?:Location)\s*\n([^\n]+)/i),
+      name: await textFromFirst(page, ["[data-anonymize='person-name']"]) || candidate.name,
+      title,
+      company,
+      location: await textFromFirst(page, ["[data-anonymize='location']"]),
       url: page.url(),
       warnings,
     };
@@ -84,11 +99,9 @@ async function researchCandidate(candidate) {
     profileUrl,
     salesNav,
     web: {
-      query: config.publicWeb ? `${candidate.name} LinkedIn` : null,
+      query: null,
       results: [],
-      warnings: config.publicWeb
-        ? ["public web research is not implemented in Playwriter backend"]
-        : [],
+      warnings: ["accepted follow-up research records Sales Nav evidence only"],
     },
     warnings,
   };

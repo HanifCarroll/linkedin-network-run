@@ -185,6 +185,7 @@ def render_acceptance_report(report: AcceptanceReport) -> str:
         f"- Checked: {report.checked}",
         f"- Unchecked: {report.unchecked}",
         f"- Accepted: {report.accepted}{percentage_suffix(report.accepted, report.checked)}",
+        f"- Invalidated accepted evidence: {report.invalidated}",
         f"- Pending: {report.pending}",
         f"- Connectable/not pending: {report.connectable}",
         f"- Unknown: {report.unknown}",
@@ -203,7 +204,8 @@ def render_acceptance_report(report: AcceptanceReport) -> str:
             lines.append(
                 f"- {source}: accepted {source_report.accepted}"
                 f"{percentage_suffix(source_report.accepted, source_report.checked)} / "
-                f"checked {source_report.checked}, pending {source_report.pending}, "
+                f"checked {source_report.checked}, invalidated {source_report.invalidated}, "
+                f"pending {source_report.pending}, "
                 f"connectable {source_report.connectable}, unknown {source_report.unknown}, "
                 f"unchecked {source_report.unchecked}"
             )

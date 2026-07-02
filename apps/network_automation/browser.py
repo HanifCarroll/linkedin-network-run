@@ -14,7 +14,6 @@ from collections.abc import Awaitable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 from pydantic import BaseModel
 
@@ -121,8 +120,6 @@ class BrowserClient(Protocol):
         out: Path,
         offset: int = 0,
         limit: int = 0,
-        public_web: bool = True,
-        max_web_results: int = 5,
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]: ...
 
@@ -200,11 +197,9 @@ class UnavailableBrowserClient:
         out: Path,
         offset: int = 0,
         limit: int = 0,
-        public_web: bool = True,
-        max_web_results: int = 5,
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]:
-        _ = candidates, input_path, out, offset, limit, public_web, max_web_results, delay_ms
+        _ = candidates, input_path, out, offset, limit, delay_ms
         raise RuntimeError("browser client is not configured")
 
     def capture_pending_invitations(
@@ -346,11 +341,9 @@ class FixtureBrowserClient:
         out: Path,
         offset: int = 0,
         limit: int = 0,
-        public_web: bool = True,
-        max_web_results: int = 5,
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]:
-        _ = candidates, input_path, out, offset, limit, public_web, max_web_results, delay_ms
+        _ = candidates, input_path, out, offset, limit, delay_ms
         if self.accepted_research is None:
             raise RuntimeError("accepted-research fixture was not provided")
         return read_model(self.accepted_research, AcceptedResearchArtifact), str(
@@ -500,8 +493,6 @@ class PlaywriterBrowserClient:
         out: Path,
         offset: int = 0,
         limit: int = 0,
-        public_web: bool = True,
-        max_web_results: int = 5,
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]:
         config = {
@@ -510,8 +501,6 @@ class PlaywriterBrowserClient:
             "out": str(out),
             "offset": offset,
             "limit": limit,
-            "publicWeb": public_web,
-            "maxWebResults": max_web_results,
             "delayMs": delay_ms,
         }
         self._run_script(_playwriter_accepted_research_script(), config)
@@ -1521,90 +1510,6 @@ async def _text_from_first(page: Any, selectors: tuple[str, ...]) -> str | None:
         if text:
             return text
     return None
-
-
-async def _public_web_research(
-    page: Any,
-    candidate: AcceptedDraftCandidate,
-    sales_nav: dict[str, Any],
-    *,
-    public_web: bool,
-    max_web_results: int,
-) -> dict[str, Any]:
-    if not public_web:
-        return {"query": None, "results": [], "warnings": ["public web research disabled"]}
-    query = _clean(
-        " ".join(
-            str(part)
-            for part in (
-                candidate.name,
-                sales_nav.get("company"),
-                sales_nav.get("title"),
-                "contract hiring product engineering AI workflow",
-            )
-            if part
-        )
-    )
-    if not query:
-        return {
-            "query": None,
-            "results": [],
-            "warnings": ["not enough evidence to build public web query"],
-        }
-    try:
-        await page.goto(
-            f"https://duckduckgo.com/html/?q={quote_plus(query)}",
-            wait_until="domcontentloaded",
-            timeout=45000,
-        )
-        await _wait_for_load(page)
-        results = await page.locator(".result").evaluate_all(
-            """(items, maxItems) => {
-              const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
-              const selected = [];
-              for (const item of items) {
-                if (maxItems > 0 && selected.length >= maxItems) break;
-                const link = item.querySelector(".result__a");
-                const snippet = item.querySelector(".result__snippet");
-                const row = {
-                  title: clean(link ? link.textContent : null) || null,
-                  url: link ? link.getAttribute("href") : null,
-                  snippet: clean(snippet ? snippet.textContent : null) || null,
-                };
-                if (row.title || row.url || row.snippet) selected.push(row);
-              }
-              return selected;
-            }""",
-            max_web_results,
-        )
-        return {
-            "query": query,
-            "results": [
-                {
-                    "title": row.get("title"),
-                    "url": _normalize_duckduckgo_href(row.get("url")),
-                    "snippet": row.get("snippet"),
-                }
-                for row in results
-                if isinstance(row, dict)
-            ],
-            "warnings": [] if results else ["public web search returned no structured results"],
-        }
-    except Exception as exc:
-        return {
-            "query": query,
-            "results": [],
-            "warnings": [f"public web research failed: {exc}"],
-        }
-
-
-def _normalize_duckduckgo_href(href: object) -> str | None:
-    if not isinstance(href, str) or not href:
-        return None
-    parsed = urlparse(href)
-    params = parse_qs(parsed.query)
-    uddg = params.get("uddg", [None])[0]
-    return unquote(uddg) if uddg else href
 
 
 def _window[T](items: list[T], *, offset: int, limit: int) -> list[T]:

@@ -10,6 +10,7 @@ from typing import Any
 
 from .browser import BrowserClient
 from .models import (
+    WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
     AcceptanceCheckCandidate,
     AcceptanceOutcomeArtifact,
     AcceptanceStatus,
@@ -26,6 +27,8 @@ from .models import (
     SalesNavCapture,
     SalesNavSendResult,
     SavedSearchRow,
+    SourceCaptureCursor,
+    SourceScanProgress,
     acceptance_followup_id,
     apply_acceptance_followup_send_result,
     apply_audit,
@@ -49,8 +52,6 @@ from .models import (
     record_top_up_send_result,
     render_draft_markdown,
     source_repeated_send_noop,
-    SourceCaptureCursor,
-    SourceScanProgress,
     validate_acceptance_followup_can_send,
 )
 from .reports import (
@@ -194,7 +195,9 @@ def update_source_progress_after_capture(
     zero_streak = 0 if imported > 0 else zero_streak + 1
     progress.sources[source] = SourceScanProgress(
         source=source,
-        saved_search_id=row.saved_search_id if row else (existing.saved_search_id if existing else None),
+        saved_search_id=(
+            row.saved_search_id if row else (existing.saved_search_id if existing else None)
+        ),
         saved_search_url=row.view_url if row else (existing.saved_search_url if existing else None),
         next_url=capture.next_url,
         last_scanned_url=capture.last_scanned_url or capture.url or capture.resume_url,
@@ -1197,6 +1200,64 @@ def acceptance_import(store: Store, path: Path) -> str:
     )
 
 
+def acceptance_invalidate_weak_message_acceptances(
+    store: Store, *, apply: bool, sample_limit: int = 10
+) -> str:
+    ledger = store.load_acceptance_ledger()
+    followups = store.load_acceptance_followup_ledger()
+    invitations = ledger.weak_message_acceptances()
+    keys = {invitation.key() for invitation in invitations}
+    followup_records = followups.invalidatable_for_acceptance_keys(keys)
+    followup_status_by_key = {record.key: record.status.value for record in followups.drafts}
+
+    if apply and invitations:
+        invalidated_keys = set(ledger.invalidate_weak_message_acceptances())
+        followup_count = followups.invalidate_acceptance_keys(invalidated_keys)
+        store.save_acceptance_ledger(ledger)
+        store.save_acceptance_followup_ledger(followups)
+        store.append_acceptance_event(
+            "invalidate-weak-message-acceptances",
+            {
+                "apply": True,
+                "reason": WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
+                "invitations": len(invalidated_keys),
+                "followups": followup_count,
+                "sample": [
+                    {
+                        "name": invitation.name,
+                        "source": invitation.source,
+                        "profile_url": invitation.profile_url,
+                    }
+                    for invitation in invitations[: max(0, sample_limit)]
+                ],
+            },
+        )
+        mode = "applied"
+        followup_count_for_output = followup_count
+    else:
+        mode = "dry-run"
+        followup_count_for_output = len(followup_records)
+
+    lines = [
+        (
+            f"weak acceptance invalidation {mode}: {len(invitations)} invitation(s), "
+            f"{followup_count_for_output} follow-up draft(s)"
+        )
+    ]
+    if sample_limit > 0 and invitations:
+        lines.append("sample:")
+        for invitation in invitations[:sample_limit]:
+            followup_status = followup_status_by_key.get(invitation.key(), "none")
+            lines.append(
+                "- "
+                f"{invitation.name} | {invitation.source} | "
+                f"followup={followup_status} | {invitation.profile_url or 'no profile URL'}"
+            )
+    if not apply and invitations:
+        lines.append("rerun with --apply to update acceptance and follow-up ledgers")
+    return "\n".join(lines)
+
+
 def acceptance_check(
     store: Store,
     browser: BrowserClient,
@@ -1264,8 +1325,6 @@ def acceptance_run_daily_session(
     followup_research_out_dir: Path | None,
     include_drafted: bool,
     strategy: DraftStrategy,
-    public_web: bool,
-    max_web_results: int,
     research_delay_ms: int,
 ) -> str:
     messages = [
@@ -1323,8 +1382,6 @@ def acceptance_run_daily_session(
                     strategy=strategy,
                     browser=browser,
                     research_out_dir=followup_research_out_dir,
-                    public_web=public_web,
-                    max_web_results=max_web_results,
                     delay_ms=research_delay_ms,
                 )
             )
@@ -1507,8 +1564,6 @@ def acceptance_draft_followups(
     strategy: DraftStrategy,
     browser: BrowserClient | None = None,
     research_out_dir: Path | None = None,
-    public_web: bool = True,
-    max_web_results: int = 5,
     delay_ms: int = 500,
     research_offset: int = 0,
     research_limit: int = 0,
@@ -1541,8 +1596,6 @@ def acceptance_draft_followups(
             out=generated_research,
             offset=research_offset,
             limit=research_limit,
-            public_web=public_web,
-            max_web_results=max_web_results,
             delay_ms=delay_ms,
         )
         research = generated_research
@@ -1565,8 +1618,6 @@ def acceptance_draft_followups(
             "recorded": recorded,
             "strategy": strategy.value,
             "include_drafted": include_drafted,
-            "public_web": public_web,
-            "max_web_results": max_web_results,
             "generated_research": str(generated_research) if generated_research else None,
         },
     )
@@ -1587,8 +1638,6 @@ def acceptance_research(
     out: Path,
     offset: int,
     limit: int,
-    public_web: bool,
-    max_web_results: int,
     delay_ms: int,
 ) -> str:
     candidates = load_accepted_draft_candidates(input_path)
@@ -1598,8 +1647,6 @@ def acceptance_research(
         out=out,
         offset=offset,
         limit=limit,
-        public_web=public_web,
-        max_web_results=max_web_results,
         delay_ms=delay_ms,
     )
     store.append_acceptance_event(
@@ -1610,8 +1657,6 @@ def acceptance_research(
             "count": len(artifact.rows),
             "offset": offset,
             "limit": limit,
-            "public_web": public_web,
-            "max_web_results": max_web_results,
         },
     )
     return f"accepted research: {len(artifact.rows)} rows written to {path}"
@@ -1696,11 +1741,13 @@ def acceptance_send_ready_followups(
     return "\n".join(messages)
 
 
-def acceptance_dry_run_followups(store: Store, browser: BrowserClient, *, limit: int) -> str:
+def acceptance_dry_run_followups(
+    store: Store, browser: BrowserClient, *, limit: int, retry_classified: bool = False
+) -> str:
     ledger = store.load_acceptance_followup_ledger()
-    pending = ledger.needs_dry_run(limit)
+    pending = ledger.needs_dry_run(limit, retry_classified=retry_classified)
     if not pending:
-        return "no accepted follow-ups need a dry-run check"
+        return "no drafted accepted follow-ups need a dry-run check"
     messages = [
         acceptance_send_followup(
             store,

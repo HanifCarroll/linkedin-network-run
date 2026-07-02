@@ -30,6 +30,7 @@ from .service import (
     acceptance_export,
     acceptance_export_followup_candidates,
     acceptance_import,
+    acceptance_invalidate_weak_message_acceptances,
     acceptance_report,
     acceptance_research,
     acceptance_run_daily_session,
@@ -282,8 +283,6 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_daily.add_argument("--draft-out-dir", default=str(DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR))
     acceptance_daily.add_argument("--include-drafted", action="store_true")
     acceptance_daily.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
-    acceptance_daily.add_argument("--no-public-web", action="store_true")
-    acceptance_daily.add_argument("--max-web-results", type=int, default=5)
     acceptance_daily.add_argument("--research-delay-ms", type=int, default=500)
     acceptance_daily.add_argument("--out-dir", default=str(DEFAULT_ACCEPTANCE_SESSION_OUT_DIR))
     acceptance_daily.add_argument("--fixture-result", default=None)
@@ -295,6 +294,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     acceptance_import_parser = acceptance_sub.add_parser("import")
     acceptance_import_parser.add_argument("path")
+    acceptance_invalidate = acceptance_sub.add_parser("invalidate-weak-message-acceptances")
+    acceptance_invalidate.add_argument("--apply", action="store_true")
+    acceptance_invalidate.add_argument("--sample-limit", type=int, default=10)
     acceptance_check_parser = acceptance_sub.add_parser("check")
     acceptance_check_parser.add_argument("--session", default="auto")
     acceptance_check_parser.add_argument(
@@ -320,8 +322,6 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_research_parser.add_argument("--out", default=str(DEFAULT_ACCEPTED_RESEARCH))
     acceptance_research_parser.add_argument("--offset", type=int, default=0)
     acceptance_research_parser.add_argument("--limit", type=int, default=0)
-    acceptance_research_parser.add_argument("--no-public-web", action="store_true")
-    acceptance_research_parser.add_argument("--max-web-results", type=int, default=5)
     acceptance_research_parser.add_argument("--delay-ms", type=int, default=500)
     acceptance_research_parser.add_argument("--fixture-result", default=None)
     acceptance_draft = acceptance_sub.add_parser("draft-followups")
@@ -331,8 +331,6 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_draft.add_argument("--out-dir", default="/tmp/linkedin-accepted-followups")
     acceptance_draft.add_argument("--include-drafted", action="store_true")
     acceptance_draft.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
-    acceptance_draft.add_argument("--no-public-web", action="store_true")
-    acceptance_draft.add_argument("--max-web-results", type=int, default=5)
     acceptance_draft.add_argument("--delay-ms", type=int, default=500)
     acceptance_draft.add_argument("--research-offset", type=int, default=0)
     acceptance_draft.add_argument("--research-limit", type=int, default=0)
@@ -348,6 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_dry = acceptance_sub.add_parser("dry-run-followups")
     acceptance_dry.add_argument("--session", default="auto")
     acceptance_dry.add_argument("--limit", type=int, default=5)
+    acceptance_dry.add_argument("--retry-classified", action="store_true")
     acceptance_dry.add_argument("--fixture-result", default=None)
     acceptance_dry.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
     acceptance_ready = acceptance_sub.add_parser("send-ready-followups")
@@ -663,8 +662,6 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             followup_research_out_dir=Path(args.draft_out_dir) if args.draft_out_dir else None,
             include_drafted=args.include_drafted,
             strategy=DraftStrategy(args.strategy),
-            public_web=not args.no_public_web,
-            max_web_results=args.max_web_results,
             research_delay_ms=args.research_delay_ms,
         )
     if command == "export":
@@ -676,6 +673,12 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
         )
     if command == "import":
         return acceptance_import(store, Path(args.path))
+    if command == "invalidate-weak-message-acceptances":
+        return acceptance_invalidate_weak_message_acceptances(
+            store,
+            apply=args.apply,
+            sample_limit=args.sample_limit,
+        )
     if command == "check":
         return acceptance_check(
             store,
@@ -707,8 +710,6 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             out=Path(args.out),
             offset=args.offset,
             limit=args.limit,
-            public_web=not args.no_public_web,
-            max_web_results=args.max_web_results,
             delay_ms=args.delay_ms,
         )
     if command == "draft-followups":
@@ -722,8 +723,6 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             if args.session is not None or args.fixture_result
             else None,
             research_out_dir=Path(args.out_dir) if args.out_dir else None,
-            public_web=not args.no_public_web,
-            max_web_results=args.max_web_results,
             delay_ms=args.delay_ms,
             research_offset=args.research_offset,
             research_limit=args.research_limit,
@@ -739,7 +738,10 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
         )
     if command == "dry-run-followups":
         return acceptance_dry_run_followups(
-            store, browser_from_args(args, followup=True), limit=args.limit
+            store,
+            browser_from_args(args, followup=True),
+            limit=args.limit,
+            retry_classified=args.retry_classified,
         )
     if command == "send-ready-followups":
         return acceptance_send_ready_followups(
