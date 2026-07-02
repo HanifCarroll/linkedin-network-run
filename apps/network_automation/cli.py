@@ -69,6 +69,7 @@ from .service import (
     review_candidates,
     send_guarded,
     send_next,
+    set_lead_public_profile_url,
     source_exhausted,
     start_run,
     top_up_reconcile,
@@ -273,6 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply_review = subparsers.add_parser("apply-lead-decisions")
     apply_review.add_argument("path")
+    set_public_profile = subparsers.add_parser("set-public-profile-url")
+    set_public_profile.add_argument("--lead-key", required=True)
+    set_public_profile.add_argument("--url", required=True)
 
     subparsers.add_parser("next")
     next_candidate = subparsers.add_parser("next-candidate")
@@ -644,6 +648,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         return review_candidates(store, source=args.source, out=Path(args.out), as_json=args.json)
     if command == "apply-lead-decisions":
         return apply_lead_review_decisions(store, Path(args.path))
+    if command == "set-public-profile-url":
+        return set_lead_public_profile_url(store, args.lead_key, args.url)
     if command == "next":
         return json_model_or_text(store.load_run().next_source())
     if command == "next-candidate":

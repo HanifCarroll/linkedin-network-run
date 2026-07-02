@@ -717,6 +717,39 @@ def apply_lead_review_decisions(store: Store, path: Path) -> str:
     )
 
 
+def set_lead_public_profile_url(store: Store, lead_key: str, public_profile_url: str) -> str:
+    if not _is_public_linkedin_profile_url(public_profile_url):
+        raise ValueError("public profile URL must be an exact LinkedIn /in/ URL")
+    ledger = store.load_lead_ledger()
+    record = ledger.require(lead_key)
+    record.public_profile_url = public_profile_url
+    ledger.leads[lead_key] = record
+    store.save_lead_ledger(ledger)
+    updated_observations = 0
+    if store.active_path.exists():
+        run = store.load_run()
+        for observation in run.observations:
+            if lead_key_for_observation(observation) == lead_key:
+                observation.public_profile_url = public_profile_url
+                updated_observations += 1
+        if updated_observations:
+            run.mark_updated()
+            store.save_run(run)
+        store.append_event(
+            run,
+            "set-lead-public-profile-url",
+            {
+                "lead_key": lead_key,
+                "public_profile_url": public_profile_url,
+                "updated_observations": updated_observations,
+            },
+        )
+    return (
+        f"updated public profile URL for {record.name}; "
+        f"observations={updated_observations}"
+    )
+
+
 def apply_candidate_event_to_lead_ledger(store: Store, event: CandidateEvent) -> None:
     ledger = store.load_lead_ledger()
     ledger.apply_candidate_event(event)
@@ -1362,6 +1395,11 @@ def send_next(
     candidate = next_approved_connectable_observation(run, ledger)
     if candidate is None:
         raise RuntimeError(_review_needed_message(run, ledger))
+    record = ledger.get_for_observation(candidate)
+    if record and record.public_profile_url and not candidate.public_profile_url:
+        candidate = candidate.model_copy(
+            update={"public_profile_url": record.public_profile_url}
+        )
     result, path = browser.send_connection(
         candidate, dry_run=dry_run or not allow_send, allow_send=allow_send
     )

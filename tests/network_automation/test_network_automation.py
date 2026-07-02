@@ -59,6 +59,7 @@ from apps.network_automation.models import (
     choose_angle,
     default_sources,
     general_accepted_followup_draft,
+    lead_key_for_observation,
     record_send_result,
     recruiter_accepted_followup_draft,
     render_draft_markdown,
@@ -88,6 +89,7 @@ from apps.network_automation.service import (
     review_candidates,
     send_guarded,
     send_next,
+    set_lead_public_profile_url,
     start_run,
 )
 from apps.network_automation.store import Store, read_model
@@ -363,6 +365,19 @@ class FakeLiveBrowserClient:
             read_model(FIXTURES / "withdraw_result.json", PendingWithdrawResult),
             str(self.out_dir / "withdraw-result.json"),
         )
+
+
+class CandidateCapturingBrowser(FakeLiveBrowserClient):
+    def __init__(self) -> None:
+        super().__init__(out_dir=Path("/tmp"))
+        self.candidate: CandidateObservation | None = None
+
+    def send_connection(
+        self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
+    ) -> tuple[SalesNavSendResult, str]:
+        _ = dry_run, allow_send
+        self.candidate = candidate
+        return read_model(FIXTURES / "send_pending.json", SalesNavSendResult), "send.json"
 
 
 class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
@@ -911,6 +926,34 @@ def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
             dry_run=False,
             allow_send=True,
         )
+
+
+def test_send_next_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    run = store.load_run()
+    observation = run.observations[0]
+    lead_key = lead_key_for_observation(observation)
+    public_url = "https://www.linkedin.com/in/duplicate-lead"
+
+    output = set_lead_public_profile_url(store, lead_key, public_url)
+
+    assert "updated public profile URL for Duplicate Lead" in output
+    ledger = store.load_lead_ledger()
+    record = ledger.approve(lead_key, "fit")
+    assert record.public_profile_url == public_url
+    store.save_lead_ledger(ledger)
+    run = store.load_run()
+    run.observations[0].public_profile_url = None
+    store.save_run(run)
+    browser = CandidateCapturingBrowser()
+
+    send_next(store, browser, dry_run=True, allow_send=False)
+
+    assert browser.candidate is not None
+    assert browser.candidate.public_profile_url == public_url
 
 
 def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> None:
