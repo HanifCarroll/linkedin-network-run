@@ -114,26 +114,33 @@ function classifyMenuLabels(labels) {
   return "unknown";
 }
 
-async function clickReadonly(locator, timeout) {
+async function clickAction(locator, timeout) {
   try {
     await locator.click({ timeout });
+    return "locator";
   } catch {
-    await locator.evaluate((element) => element.click());
+    try {
+      await locator.click({ timeout: Math.min(timeout, 3000), force: true });
+      return "force";
+    } catch {
+      await locator.evaluate((element) => element.click());
+      return "dom";
+    }
   }
 }
 
 async function openMenuFromTrigger(page, trigger, closeAfter) {
   if (!(await trigger.count().catch(() => 0))) return { state: "missing-trigger", labels: [] };
   const menuId = await trigger.getAttribute("aria-controls").catch(() => null);
-  await clickReadonly(trigger, 8000);
+  const clickMethod = await clickAction(trigger, 8000);
   await page.waitForTimeout(500);
   const menu = menuId ? page.locator(`#${menuId}`).first() : page.locator("[data-popper-placement]").last();
   if (!(await menu.count().catch(() => 0))) {
-    return { state: "missing-menu", labels: [], menu_id: menuId };
+    return { state: "missing-menu", labels: [], menu_id: menuId, click_method: clickMethod };
   }
   const labels = await menuLabels(menu);
   if (closeAfter) await page.keyboard.press("Escape").catch(() => null);
-  return { state: classifyMenuLabels(labels), labels, menu_id: menuId };
+  return { state: classifyMenuLabels(labels), labels, menu_id: menuId, click_method: clickMethod };
 }
 
 async function openProfileActionsMenu(page) {
@@ -205,10 +212,10 @@ async function openNormalProfileMoreMenu(page) {
   const buttons = await page.getByRole("button", { name: /^More$/i }).all();
   for (const button of buttons) {
     if (!(await button.isVisible().catch(() => false))) continue;
-    await clickReadonly(button, 8000);
+    const clickMethod = await clickAction(button, 8000);
     await page.waitForTimeout(500);
     const labels = await normalProfileMenuLabels(page);
-    if (labels.length > 0) return { state: classifyMenuLabels(labels), labels };
+    if (labels.length > 0) return { state: classifyMenuLabels(labels), labels, click_method: clickMethod };
     await page.keyboard.press("Escape").catch(() => null);
   }
   return { state: "missing-trigger", labels: [] };
@@ -353,7 +360,7 @@ async function sendFromCurrentPage(page) {
       payload.after = { state: "missing-connect-menu" };
       return payload;
     }
-    await connect.click({ timeout: 8000 });
+    payload.connectClickMethod = await clickAction(connect, 8000);
     await page.waitForTimeout(500);
     const send = await clickSendInvitation(page);
     payload.send = { ...send, guard: { action: "send_connection", allowed: allowSend } };
@@ -417,7 +424,7 @@ async function sendFromPublicProfile(page, salesPayload, reason) {
     payload.reason = "real send requires allowSend";
     return payload;
   }
-  await connect.click({ timeout: 8000 }).catch(async () => connect.evaluate((element) => element.click()));
+  payload.connectClickMethod = await clickAction(connect, 8000);
   await page.waitForTimeout(750);
   const send = await clickSendInvitation(page);
   payload.send = { ...send, guard: { action: "send_connection", allowed: allowSend } };
@@ -482,7 +489,7 @@ async function sendFromSearchRow(page, salesPayload, reason) {
     await page.keyboard.press("Escape").catch(() => null);
     return payload;
   }
-  await connect.click({ timeout: 8000 }).catch(async () => connect.evaluate((element) => element.click()));
+  payload.connectClickMethod = await clickAction(connect, 8000);
   await page.waitForTimeout(750);
   const send = await clickSendInvitation(page);
   payload.send = { ...send, guard: { action: "send_connection", allowed: allowSend } };
