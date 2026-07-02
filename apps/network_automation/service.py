@@ -972,26 +972,29 @@ def network_run_session(
             )
             messages.append(seed_run_source_progress(store, saved_searches_out))
     else:
-        messages.extend(
-            [
-                start_run(
-                    store,
-                    target=target,
-                    force=force,
-                    max_real_sends=max_real_sends,
-                    per_source_target=per_source_target,
-                    allow_fallback_sources=allow_fallback_sources,
-                    source_names=source_names,
-                ),
-                reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False),
+        messages.append(
+            start_run(
+                store,
+                target=target,
+                force=force,
+                max_real_sends=max_real_sends,
+                per_source_target=per_source_target,
+                allow_fallback_sources=allow_fallback_sources,
+                source_names=source_names,
+            )
+        )
+        messages.append(reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False))
+        if saved_searches_out.exists():
+            messages.append(f"using saved searches from {saved_searches_out}")
+        else:
+            messages.append(
                 capture_saved_searches(
                     browser,
                     url=saved_searches_url,
                     out=saved_searches_out,
-                ),
-                seed_run_source_progress(store, saved_searches_out),
-            ]
-        )
+                )
+            )
+        messages.append(seed_run_source_progress(store, saved_searches_out))
     messages.append(require_saved_search_coverage(store, saved_searches_out))
     zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):

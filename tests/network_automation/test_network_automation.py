@@ -2687,6 +2687,62 @@ def test_cli_network_run_session_reuses_one_live_browser(
     assert json.loads(review_packet.read_text())["candidates"][0]["name"] == "Duplicate Lead"
 
 
+def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    saved_searches = tmp_path / "saved-searches.json"
+    _write_fake_artifact(
+        saved_searches,
+        SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-24T12:00:00Z",
+                "url": "https://www.linkedin.com/sales/search/people",
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--per-source-target",
+            "1",
+            "--source",
+            "ASAP - Agency Owners Delivery",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(saved_searches),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        (
+            "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
+            "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
+        ),
+    ]
+
+
 def test_cli_network_run_session_resume_sends_after_review_decisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
