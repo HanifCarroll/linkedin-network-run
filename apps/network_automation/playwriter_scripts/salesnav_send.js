@@ -180,13 +180,17 @@ async function waitForSearchRows(page) {
 async function findSearchResultRow(page, profileUrl) {
   const targetPath = salesLeadPath(profileUrl);
   if (!targetPath) return null;
-  const rows = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
-  for (const row of rows) {
-    const links = await row.locator(SALES_NAV_PROFILE_LINK).all();
-    for (const link of links) {
-      const href = await link.getAttribute("href").catch(() => null);
-      if (salesLeadPath(href) === targetPath) return row;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const rows = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
+    for (const row of rows) {
+      const links = await row.locator(SALES_NAV_PROFILE_LINK).all();
+      for (const link of links) {
+        const href = await link.getAttribute("href").catch(() => null);
+        if (salesLeadPath(href) === targetPath) return row;
+      }
     }
+    await page.mouse.wheel(0, 900).catch(() => null);
+    await page.waitForTimeout(500);
   }
   return null;
 }

@@ -1016,6 +1016,7 @@ class SalesNavCaptureLink(AppModel):
 
 class SalesNavCaptureRow(AppModel):
     index: int
+    page_url: str | None = Field(default=None, validation_alias=AliasChoices("page_url", "pageUrl"))
     name: str | None = None
     text: str | None = None
     profile_url: str | None = Field(
@@ -1180,7 +1181,12 @@ def capture_to_observations(
                 name=row.name.strip(),
                 profile_url=profile_url,
                 public_profile_url=row.public_profile_url,
-                search_url=capture.start_url or capture.url or capture.last_scanned_url,
+                search_url=(
+                    row.page_url
+                    or capture.url
+                    or capture.last_scanned_url
+                    or capture.start_url
+                ),
                 sales_profile_urn=row.scroll_urn,
                 text=row.text,
                 visible_state=row.visible_state,

@@ -242,6 +242,7 @@ async function main() {
         await activePage.waitForTimeout(Number(config.rowScrollDelayMs));
       }
       const item = await captureRow(row, rowIndex, allRows.length, pageNumber);
+      item.pageUrl = activePage.url();
       const menu = await openRowMenu(activePage, row);
       item.menuLabels = menu.labels || [];
       item.menuState = classifyMenuLabels(item.menuLabels);
