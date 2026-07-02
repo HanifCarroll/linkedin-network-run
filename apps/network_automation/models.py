@@ -129,6 +129,9 @@ class CandidateEvent(AppModel):
     source: str
     name: str
     profile_url: str | None = None
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
     status: CandidateStatus
     note: str | None = None
 
@@ -852,6 +855,9 @@ class SalesNavSendResult(AppModel):
     candidate: SalesNavSendCandidate
     status: str
     send: Any = None
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
 
     def to_candidate_status(self) -> tuple[CandidateStatus, str]:
         if self.status == "pending-provisional":
@@ -1135,6 +1141,7 @@ def record_send_result(run: Run, result: SalesNavSendResult, path: str) -> Candi
         source=result.candidate.source,
         name=result.candidate.name,
         profile_url=result.candidate.profile_url,
+        public_profile_url=result.public_profile_url,
         status=status,
         note=note,
     )
@@ -1171,6 +1178,7 @@ def record_top_up_send_result(
         source=result.candidate.source,
         name=result.candidate.name,
         profile_url=result.candidate.profile_url,
+        public_profile_url=result.public_profile_url,
         status=status,
         note="; ".join(parts),
     )
@@ -1244,6 +1252,9 @@ class AcceptanceInvitation(AppModel):
     source: str
     name: str
     profile_url: str | None = None
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
     sent_at: datetime
     latest_status: AcceptanceStatus = AcceptanceStatus.SENT
     latest_checked_at: datetime | None = None
@@ -1422,6 +1433,8 @@ class AcceptanceLedger(AppModel):
         key = candidate_key(event.source, event.name, event.profile_url)
         for invitation in self.invitations:
             if invitation.key() == key:
+                if event.public_profile_url and not invitation.public_profile_url:
+                    invitation.public_profile_url = event.public_profile_url
                 if invitation.run_id != run_id and invitation.sent_at > event.at:
                     invitation.run_id = run_id
                     invitation.run_date = run_date
@@ -1434,6 +1447,7 @@ class AcceptanceLedger(AppModel):
                 source=event.source,
                 name=event.name,
                 profile_url=event.profile_url,
+                public_profile_url=event.public_profile_url,
                 sent_at=event.at,
                 latest_status=(
                     AcceptanceStatus.ACCEPTED
@@ -1569,7 +1583,12 @@ class AcceptanceLedger(AppModel):
                 run_date=invitation.run_date,
                 source=invitation.source,
                 name=invitation.name,
-                profile_url=invitation.profile_url,
+                profile_url=invitation.public_profile_url or invitation.profile_url,
+                sales_nav_profile_url=(
+                    invitation.profile_url
+                    if is_sales_nav_profile_url(invitation.profile_url)
+                    else None
+                ),
                 sent_at=invitation.sent_at,
                 accepted_at=accepted_at,
                 relationship=accepted_event.relationship if accepted_event else None,
@@ -1655,6 +1674,9 @@ class AcceptedDraftCandidate(AppModel):
     source: str
     name: str
     profile_url: str | None = None
+    sales_nav_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("sales_nav_profile_url", "salesNavProfileUrl")
+    )
     sent_at: datetime
     accepted_at: datetime
     relationship: str | None = None
@@ -1688,6 +1710,12 @@ class AcceptedResearchRow(AppModel):
     name: str
     profile_url: str | None = Field(
         default=None, validation_alias=AliasChoices("profile_url", "profileUrl")
+    )
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
+    sales_nav_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("sales_nav_profile_url", "salesNavProfileUrl")
     )
     sales_nav: SalesNavResearch | None = Field(
         default=None, validation_alias=AliasChoices("sales_nav", "salesNav")
@@ -1737,6 +1765,9 @@ class AcceptanceFollowupRecord(AppModel):
     source: str
     name: str
     profile_url: str | None = None
+    sales_nav_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("sales_nav_profile_url", "salesNavProfileUrl")
+    )
     drafted_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
     accepted_at: datetime
@@ -1765,7 +1796,7 @@ class AcceptanceFollowupLedger(AppModel):
     drafts: list[AcceptanceFollowupRecord] = Field(default_factory=list)
 
     def has_draft_for(self, candidate: AcceptedDraftCandidate) -> bool:
-        key = candidate_key(candidate.source, candidate.name, candidate.profile_url)
+        key = accepted_followup_candidate_key(candidate)
         return any(record.key == key for record in self.drafts)
 
     def find_by_id(self, record_id: str) -> int | None:
@@ -1862,9 +1893,7 @@ class AcceptanceFollowupLedger(AppModel):
     ) -> int:
         written = 0
         for item in report.items:
-            key = candidate_key(
-                item.candidate.source, item.candidate.name, item.candidate.profile_url
-            )
+            key = accepted_followup_candidate_key(item.candidate)
             existing_index = next(
                 (index for index, record in enumerate(self.drafts) if record.key == key),
                 None,
@@ -1880,6 +1909,8 @@ class AcceptanceFollowupLedger(AppModel):
                             "template_key": item.template_key,
                             "angle": item.angle,
                             "draft": item.draft,
+                            "profile_url": item.candidate.profile_url,
+                            "sales_nav_profile_url": item.candidate.sales_nav_profile_url,
                             "evidence": list(item.evidence),
                             "warnings": list(item.warnings),
                             "report_path": report_path,
@@ -1894,6 +1925,7 @@ class AcceptanceFollowupLedger(AppModel):
                     source=item.candidate.source,
                     name=item.candidate.name,
                     profile_url=item.candidate.profile_url,
+                    sales_nav_profile_url=item.candidate.sales_nav_profile_url,
                     drafted_at=report.generated_at,
                     updated_at=report.generated_at,
                     accepted_at=item.candidate.accepted_at,
@@ -1915,6 +1947,16 @@ def acceptance_followup_id(key: str) -> str:
     return "afu_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
+def accepted_followup_candidate_key(candidate: AcceptedDraftCandidate) -> str:
+    identity_url = candidate.sales_nav_profile_url or candidate.profile_url
+    return candidate_key(candidate.source, candidate.name, identity_url)
+
+
+def accepted_research_row_key(row: AcceptedResearchRow) -> str:
+    identity_url = row.sales_nav_profile_url or row.profile_url
+    return candidate_key(row.source, row.name, identity_url)
+
+
 def build_draft_report(
     candidates: list[AcceptedDraftCandidate],
     artifact: AcceptedResearchArtifact | None,
@@ -1926,12 +1968,12 @@ def build_draft_report(
     if artifact is not None:
         research_captured_at = artifact.captured_at
         for row in artifact.rows:
-            research_by_key[candidate_key(row.source, row.name, row.profile_url)] = row
+            research_by_key[accepted_research_row_key(row)] = row
     seen: set[str] = set()
     items: list[DraftItem] = []
     skipped_names: list[str] = []
     for candidate in candidates:
-        key = candidate_key(candidate.source, candidate.name, candidate.profile_url)
+        key = accepted_followup_candidate_key(candidate)
         if key in seen:
             skipped_names.append(candidate.name)
             continue
@@ -1953,6 +1995,20 @@ def build_draft_item(
 ) -> DraftItem:
     _ = strategy
     sales_nav = research.sales_nav if research else None
+    sales_nav_profile_url = (
+        (research.sales_nav_profile_url if research else None)
+        or candidate.sales_nav_profile_url
+        or candidate.profile_url
+    )
+    messaging_profile_url = (
+        (research.public_profile_url if research else None) or candidate.profile_url
+    )
+    draft_candidate = candidate.model_copy(
+        update={
+            "profile_url": messaging_profile_url,
+            "sales_nav_profile_url": sales_nav_profile_url,
+        }
+    )
     title = _non_empty(sales_nav.title if sales_nav else None)
     company = _non_empty(sales_nav.company if sales_nav else None)
     web_result = (
@@ -1980,6 +2036,8 @@ def build_draft_item(
             evidence.append(f"Sales Nav location: {sales_nav.location}")
         if _non_empty(sales_nav.url):
             evidence.append(f"Sales Nav URL after load: {sales_nav.url}")
+    if research and research.public_profile_url:
+        evidence.append(f"LinkedIn profile URL: {research.public_profile_url}")
     if candidate.relationship:
         evidence.append(f"Sales Nav relationship: {candidate.relationship}")
     if candidate.acceptance_note:
@@ -2007,8 +2065,12 @@ def build_draft_item(
             warnings.extend(research.web.warnings)
     if not title and not company:
         warnings.append("Sales Nav title/company were not extracted; review before sending.")
+    if research is not None and not research.public_profile_url:
+        warnings.append(
+            "Public LinkedIn profile URL was not extracted; follow-up send may use Sales Nav URL."
+        )
     return DraftItem(
-        candidate=candidate,
+        candidate=draft_candidate,
         template_key=template_key,
         angle=angle_label,
         draft=draft,
@@ -2156,7 +2218,11 @@ def render_draft_markdown(report: DraftReport) -> str:
             ]
         )
         if item.candidate.profile_url:
-            lines.append("- Sales Nav profile: " + clean_inline(item.candidate.profile_url))
+            lines.append("- LinkedIn profile: " + clean_inline(item.candidate.profile_url))
+        if item.candidate.sales_nav_profile_url:
+            lines.append(
+                "- Sales Nav profile: " + clean_inline(item.candidate.sales_nav_profile_url)
+            )
         lines.append(f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`")
         lines.append(f"- Template: `{item.template_key.value}`")
         lines.append("- Best angle: " + clean_inline(item.angle))
@@ -2183,6 +2249,9 @@ class AcceptanceFollowupMessageCandidate(AppModel):
     key: str
     name: str
     profile_url: str = Field(validation_alias=AliasChoices("profile_url", "profileUrl"))
+    sales_nav_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("sales_nav_profile_url", "salesNavProfileUrl")
+    )
     source: str
 
 
@@ -2236,11 +2305,36 @@ def validate_acceptance_followup_can_send(
         raise ValueError(f"accepted follow-up {record.id} has no profile URL")
     if not dry_run and not allow_send:
         raise ValueError("real send requires --allow-send")
+    if not dry_run and not is_public_linkedin_profile_url(record.profile_url):
+        raise ValueError(
+            f"accepted follow-up {record.id} has no public LinkedIn profile URL; "
+            "rerun accepted profile research before sending"
+        )
     if not dry_run and record.status != AcceptanceFollowupStatus.DRY_RUN_READY:
         raise ValueError(
             f"accepted follow-up {record.id} is {record.status.value}; real sends require "
             f"{AcceptanceFollowupStatus.DRY_RUN_READY.value}"
         )
+
+
+def is_public_linkedin_profile_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value)
+    host = parsed.hostname or ""
+    return (host == "linkedin.com" or host.endswith(".linkedin.com")) and parsed.path.startswith(
+        "/in/"
+    )
+
+
+def is_sales_nav_profile_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value)
+    host = parsed.hostname or ""
+    return (host == "linkedin.com" or host.endswith(".linkedin.com")) and parsed.path.startswith(
+        "/sales/lead/"
+    )
 
 
 def apply_acceptance_followup_send_result(

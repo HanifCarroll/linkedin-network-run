@@ -58,6 +58,7 @@ from apps.network_automation.models import (
     choose_angle,
     default_sources,
     general_accepted_followup_draft,
+    record_send_result,
     recruiter_accepted_followup_draft,
     render_draft_markdown,
     source_yield_report,
@@ -263,6 +264,9 @@ class FakeLiveBrowserClient:
                         "source": candidate.source,
                         "name": candidate.name,
                         "profileUrl": candidate.profile_url,
+                        "salesNavProfileUrl": candidate.sales_nav_profile_url
+                        or candidate.profile_url,
+                        "publicProfileUrl": "https://www.linkedin.com/in/example-lead",
                         "salesNav": {
                             "name": candidate.name,
                             "title": "Founder",
@@ -1077,6 +1081,53 @@ def test_acceptance_import_downgrades_message_only_acceptance() -> None:
     )
 
 
+def test_record_send_result_preserves_public_profile_url(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    run = store.load_run()
+    result = SalesNavSendResult.model_validate(
+        {
+            "candidate": {
+                "source": "ASAP - Agency Owners Delivery",
+                "name": "Public Lead",
+                "profileUrl": "https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x",
+            },
+            "status": "pending-provisional",
+            "publicProfileUrl": "https://www.linkedin.com/in/public-lead",
+        }
+    )
+
+    event = record_send_result(run, result, "/tmp/send-result.json")
+
+    assert event.profile_url == "https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x"
+    assert event.public_profile_url == "https://www.linkedin.com/in/public-lead"
+
+
+def test_acceptance_followup_candidates_prefer_public_profile_url() -> None:
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 7, 2),
+        CandidateEvent(
+            at=datetime(2026, 7, 2, tzinfo=UTC),
+            source="ASAP - Agency Owners Delivery",
+            name="Public Lead",
+            profile_url="https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x",
+            public_profile_url="https://www.linkedin.com/in/public-lead",
+            status=CandidateStatus.ACCEPTED,
+        ),
+    )
+
+    candidates = ledger.accepted_for_followup(AcceptanceFollowupLedger(), include_drafted=False)
+
+    assert len(candidates) == 1
+    assert candidates[0].profile_url == "https://www.linkedin.com/in/public-lead"
+    assert (
+        candidates[0].sales_nav_profile_url
+        == "https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x"
+    )
+
+
 def test_acceptance_followup_candidates_skip_historical_message_only_acceptance() -> None:
     ledger = AcceptanceLedger(
         invitations=[
@@ -1328,6 +1379,8 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     followups = store.load_acceptance_followup_ledger()
     record = followups.drafts[0]
     assert record.template_key == AcceptedFollowupTemplateKey.AGENCY
+    assert record.profile_url == "https://www.linkedin.com/in/duplicate-lead"
+    assert record.sales_nav_profile_url == "https://www.linkedin.com/sales/lead/dup"
     with pytest.raises(ValueError, match="real sends require dry_run_ready"):
         acceptance_send_followup(
             store,
@@ -1426,13 +1479,14 @@ def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None
     assert '"label":"Connect"' in note
 
 
-def test_acceptance_draft_markdown_labels_sales_nav_without_public_profile_identity() -> None:
+def test_acceptance_draft_markdown_labels_public_and_sales_nav_profiles() -> None:
     candidate = AcceptedDraftCandidate(
         run_id=_run_id(),
         run_date=date(2026, 7, 2),
         source="Network - Founder Operators (11-50)",
         name="Accepted Lead",
-        profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
+        profile_url="https://www.linkedin.com/in/accepted-lead",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
         sent_at=datetime(2026, 7, 1, tzinfo=UTC),
         accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
     )
@@ -1449,11 +1503,11 @@ def test_acceptance_draft_markdown_labels_sales_nav_without_public_profile_ident
 
     rendered = render_draft_markdown(report)
 
+    assert "- LinkedIn profile: https://www.linkedin.com/in/accepted-lead" in rendered
     assert (
         "- Sales Nav profile: https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
         in rendered
     )
-    assert "Public profile" not in rendered
 
 
 def test_playwriter_acceptance_check_requires_first_degree_not_message_label() -> None:
@@ -1591,7 +1645,8 @@ def test_playwriter_acceptance_followup_uses_script_and_preserves_guards(
         id="lead-1",
         source="source",
         name="Accepted Lead",
-        profile_url="https://www.linkedin.com/sales/lead/abc",
+        profile_url="https://www.linkedin.com/in/accepted-lead",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc",
         accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
         angle="general",
         draft="Hey Accepted. Thanks for connecting.",
@@ -1609,6 +1664,7 @@ def test_playwriter_acceptance_followup_uses_script_and_preserves_guards(
                     "key": record.key,
                     "name": record.name,
                     "profileUrl": record.profile_url,
+                    "salesNavProfileUrl": record.sales_nav_profile_url,
                     "source": record.source,
                 },
                 "dryRun": config["dryRun"],

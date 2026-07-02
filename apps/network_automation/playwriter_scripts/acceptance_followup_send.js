@@ -28,6 +28,7 @@ function basePayload(url) {
       key: record.key,
       name: record.name,
       profileUrl: record.profile_url || record.profileUrl,
+      salesNavProfileUrl: record.sales_nav_profile_url || record.salesNavProfileUrl || null,
       source: record.source,
     },
     dryRun: Boolean(config.dryRun),

@@ -21,6 +21,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizePublicProfileUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""), "https://www.linkedin.com");
+    if (!["linkedin.com", "www.linkedin.com"].includes(parsed.hostname)) return null;
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2 || parts[0] !== "in") return null;
+    return `https://www.linkedin.com/in/${encodeURIComponent(decodeURIComponent(parts[1]))}`;
+  } catch {
+    return null;
+  }
+}
+
 function basePayload(url) {
   return {
     candidate: {
@@ -142,6 +154,37 @@ async function findMenuItem(page, menuId, label) {
   return null;
 }
 
+async function publicProfileUrlFromMenuItemHrefs(page, menuId) {
+  const menu = menuId ? page.locator(`#${menuId}`).first() : page.locator("[data-popper-placement]").last();
+  const items = await menu.locator("button,a,[role=menuitem]").all();
+  for (const item of items) {
+    const text = clean(await item.textContent().catch(() => ""));
+    const aria = clean(await item.getAttribute("aria-label").catch(() => ""));
+    if (!/^View LinkedIn profile$/i.test(text) && !/^View LinkedIn profile$/i.test(aria)) {
+      continue;
+    }
+    const href = await item.getAttribute("href").catch(() => null);
+    const normalized = normalizePublicProfileUrl(href);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+async function publicProfileUrlFromCopyAction(page, menuId) {
+  const copy = await findMenuItem(page, menuId, "Copy LinkedIn.com URL");
+  if (!copy) return null;
+  await copy.click({ timeout: 8000 }).catch(async () => copy.evaluate((element) => element.click()));
+  await page.waitForTimeout(500);
+  const clipboardText = await page.evaluate(async () => navigator.clipboard.readText()).catch(() => null);
+  return normalizePublicProfileUrl(clipboardText);
+}
+
+async function capturePublicProfileUrl(page, menuId) {
+  const fromHref = await publicProfileUrlFromMenuItemHrefs(page, menuId);
+  if (fromHref) return fromHref;
+  return publicProfileUrlFromCopyAction(page, menuId);
+}
+
 async function clickSendInvitation(page) {
   if ((await page.locator("input[type='email'], input[name*='email' i]").first().count().catch(() => 0)) > 0) {
     return { status: "email-required" };
@@ -175,6 +218,7 @@ async function sendFromCurrentPage(page) {
   }
   const menu = await openProfileActionsMenu(page);
   payload.before = menu;
+  payload.publicProfileUrl = await capturePublicProfileUrl(page, menu.menu_id).catch(() => null);
   const menuState = classifyMenuLabels(menu.labels || []);
   if (menuState === "already-pending") {
     payload.status = "already-pending";
@@ -183,7 +227,9 @@ async function sendFromCurrentPage(page) {
   } else if (dryRun) {
     payload.status = "dry-run-connectable";
   } else {
-    const connect = await findMenuItem(page, menu.menu_id, "Connect");
+    await page.keyboard.press("Escape").catch(() => null);
+    const sendMenu = await openProfileActionsMenu(page);
+    const connect = await findMenuItem(page, sendMenu.menu_id, "Connect");
     if (!connect) {
       payload.status = "not-connectable:missing-connect-menu";
       payload.after = { state: "missing-connect-menu" };
@@ -215,6 +261,9 @@ async function main() {
   const profileUrl = candidate.profile_url || candidate.profileUrl;
   if (!profileUrl) throw new Error("candidate profile_url is required for browser send");
   const activePage = await getPage();
+  await context
+    .grantPermissions(["clipboard-read", "clipboard-write"], { origin: "https://www.linkedin.com" })
+    .catch(() => null);
   await activePage.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await waitForPageLoad({ page: activePage, timeout: 10000 }).catch(() => null);
   await activePage.waitForTimeout(1500);

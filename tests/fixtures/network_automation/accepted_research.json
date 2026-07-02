@@ -5,6 +5,8 @@
       "source": "ASAP - Agency Owners Delivery",
       "name": "Duplicate Lead",
       "profileUrl": "https://www.linkedin.com/sales/lead/dup",
+      "salesNavProfileUrl": "https://www.linkedin.com/sales/lead/dup",
+      "publicProfileUrl": "https://www.linkedin.com/in/duplicate-lead",
       "salesNav": {
         "name": "Duplicate Lead",
         "title": "AI Product Leader",
