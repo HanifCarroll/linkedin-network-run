@@ -598,7 +598,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "drain-stale-candidates":
         return drain_stale_candidates(store, args.source)
     if command == "send-next":
-        return send_next(
+        send_next(
             store,
             browser_from_args(args, send=True),
             dry_run=args.dry_run,
@@ -608,8 +608,9 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             confirm_out_dir=Path(args.confirm_out_dir),
             emit=_emit_progress,
         )
+        return None
     if command == "send-guarded":
-        return send_guarded(
+        send_guarded(
             store,
             browser_from_args(args, send=True),
             dry_run=args.dry_run,
@@ -621,6 +622,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             confirm_out_dir=Path(args.confirm_out_dir),
             emit=_emit_progress,
         )
+        return None
     if command == "top-up-reconcile":
         return top_up_reconcile(
             store,
