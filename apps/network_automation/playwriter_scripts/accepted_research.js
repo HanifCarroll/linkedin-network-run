@@ -100,6 +100,104 @@ async function publicProfileUrlsFromAnchors(page) {
   });
 }
 
+async function companyProfileUrlsFromAnchors(page) {
+  return page.evaluate(() => {
+    const normalize = (value) => {
+      try {
+        const parsed = new URL(String(value), "https://www.linkedin.com");
+        if (!["www.linkedin.com", "linkedin.com"].includes(parsed.hostname)) return null;
+        if (!parsed.pathname.startsWith("/sales/company/")) return null;
+        return `https://www.linkedin.com${parsed.pathname}`.replace(/\/$/, "");
+      } catch {
+        return null;
+      }
+    };
+    return [...document.querySelectorAll("a[href*='/sales/company/']")]
+      .map((anchor) => normalize(anchor.getAttribute("href")))
+      .filter(Boolean);
+  });
+}
+
+async function externalUrlsFromAnchors(page) {
+  return page.evaluate(() => {
+    const blockedHosts = new Set(["linkedin.com", "www.linkedin.com", "lnkd.in"]);
+    const urls = [];
+    for (const anchor of document.querySelectorAll("a[href]")) {
+      try {
+        const parsed = new URL(anchor.getAttribute("href"), window.location.href);
+        if (!["http:", "https:"].includes(parsed.protocol)) continue;
+        if (blockedHosts.has(parsed.hostname)) continue;
+        if (parsed.hostname.endsWith(".linkedin.com")) continue;
+        parsed.hash = "";
+        urls.push(parsed.toString().replace(/\/$/, ""));
+      } catch {
+        continue;
+      }
+    }
+    return [...new Set(urls)];
+  });
+}
+
+async function pageMetadata(page, url) {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await waitForPageLoad({ page, timeout: 7000 }).catch(() => null);
+    return await page.evaluate(() => {
+      const clean = (value) => String(value || "").replace(/\s+/g, " ").trim() || null;
+      const metaDescription =
+        document.querySelector("meta[name='description']")?.getAttribute("content") ||
+        document.querySelector("meta[property='og:description']")?.getAttribute("content");
+      return {
+        title: clean(document.querySelector("title")?.textContent),
+        description: clean(metaDescription),
+      };
+    });
+  } catch (error) {
+    return {
+      title: null,
+      description: null,
+      warning: `website metadata fetch failed: ${String(error && error.message ? error.message : error)}`,
+    };
+  }
+}
+
+async function webSearch(query) {
+  if (!query) {
+    return { query: null, results: [], warnings: ["web search query unavailable"] };
+  }
+  const page = await getPage();
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await waitForPageLoad({ page, timeout: 7000 }).catch(() => null);
+    const results = await page.evaluate(() => {
+      const clean = (value) => String(value || "").replace(/\s+/g, " ").trim() || null;
+      return [...document.querySelectorAll(".result")]
+        .map((result) => {
+          const anchor = result.querySelector(".result__a");
+          const snippet = result.querySelector(".result__snippet");
+          return {
+            title: clean(anchor?.textContent),
+            url: anchor?.href || null,
+            snippet: clean(snippet?.textContent),
+          };
+        })
+        .filter((item) => item.title || item.url || item.snippet);
+    });
+    return {
+      query,
+      results,
+      warnings: results.length ? [] : ["web search returned no parsed results"],
+    };
+  } catch (error) {
+    return {
+      query,
+      results: [],
+      warnings: [`web search failed: ${String(error && error.message ? error.message : error)}`],
+    };
+  }
+}
+
 async function textFromFirst(page, selectors) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
@@ -135,6 +233,13 @@ async function researchCandidate(candidate) {
     url: profileUrl || null,
     warnings,
   };
+  let companyProfile = null;
+  let companyWebsite = null;
+  let web = {
+    query: null,
+    results: [],
+    warnings: ["accepted follow-up research did not reach web search"],
+  };
   if (!profileUrl) {
     warnings.push("missing profile URL");
     return {
@@ -144,11 +249,9 @@ async function researchCandidate(candidate) {
       salesNavProfileUrl,
       publicProfileUrl: null,
       salesNav,
-      web: {
-        query: null,
-        results: [],
-        warnings: ["accepted follow-up research records LinkedIn profile URL and Sales Nav evidence only"],
-      },
+      companyProfile,
+      companyWebsite,
+      web,
       warnings,
     };
   }
@@ -176,6 +279,60 @@ async function researchCandidate(candidate) {
       url: page.url(),
       warnings,
     };
+    const companyProfileUrl = (await companyProfileUrlsFromAnchors(page)).find(Boolean) || null;
+    let companyWebsiteUrl = (await externalUrlsFromAnchors(page)).find(Boolean) || null;
+    companyProfile = {
+      name: company,
+      url: companyProfileUrl,
+      websiteUrl: companyWebsiteUrl,
+      description: null,
+      industry: null,
+      size: null,
+      warnings: [],
+    };
+    if (companyProfileUrl) {
+      try {
+        await page.goto(companyProfileUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await waitForPageLoad({ page, timeout: 7000 }).catch(() => null);
+        const profileName = await textFromFirst(page, ["[data-anonymize='company-name']"]);
+        const profileDescription = await textFromFirst(page, [
+          "[data-test-company-about-description]",
+          "[data-test-company-description]",
+        ]);
+        companyWebsiteUrl = companyWebsiteUrl || (await externalUrlsFromAnchors(page)).find(Boolean) || null;
+        companyProfile = {
+          name: profileName || company,
+          url: companyProfileUrl,
+          websiteUrl: companyWebsiteUrl,
+          description: profileDescription,
+          industry: null,
+          size: null,
+          warnings: profileDescription ? [] : ["company profile description was not extracted"],
+        };
+      } catch (error) {
+        companyProfile.warnings.push(`company profile research failed: ${String(error && error.message ? error.message : error)}`);
+      }
+    } else {
+      companyProfile.warnings.push("company profile URL was not extracted from Sales Nav");
+    }
+    if (companyWebsiteUrl) {
+      const metadata = await pageMetadata(page, companyWebsiteUrl);
+      companyWebsite = {
+        url: companyWebsiteUrl,
+        title: metadata.title || null,
+        description: metadata.description || null,
+        warnings: metadata.warning ? [metadata.warning] : [],
+      };
+    } else {
+      companyWebsite = {
+        url: null,
+        title: null,
+        description: null,
+        warnings: ["company website URL was not extracted"],
+      };
+    }
+    const queryParts = [candidate.name, title, company].filter(Boolean);
+    web = await webSearch(queryParts.join(" "));
   } catch (error) {
     warnings.push(`Playwriter profile research failed: ${String(error && error.message ? error.message : error)}`);
   } finally {
@@ -195,11 +352,9 @@ async function researchCandidate(candidate) {
     salesNavProfileUrl,
     publicProfileUrl,
     salesNav,
-    web: {
-      query: null,
-      results: [],
-      warnings: ["accepted follow-up research records LinkedIn profile URL and Sales Nav evidence only"],
-    },
+    companyProfile,
+    companyWebsite,
+    web,
     warnings,
   };
 }

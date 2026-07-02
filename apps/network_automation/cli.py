@@ -38,6 +38,7 @@ from .service import (
     acceptance_seed_history,
     acceptance_send_followup,
     acceptance_send_ready_followups,
+    apply_lead_review_decisions,
     capture_saved_searches,
     capture_source,
     drain_stale_candidates,
@@ -65,6 +66,7 @@ from .service import (
     reservoir_fill_run,
     reservoir_import_capture,
     resume_blocked,
+    review_candidates,
     send_guarded,
     send_next,
     source_exhausted,
@@ -78,6 +80,7 @@ DEFAULT_RESERVOIR_CAPTURE_OUT_DIR = Path("/tmp/linkedin-network-run-reservoir-ca
 DEFAULT_SAVED_SEARCHES = Path("/tmp/linkedin-network-run-saved-searches.json")
 DEFAULT_SAVED_SEARCHES_URL = "https://www.linkedin.com/sales/search/people"
 DEFAULT_NETWORK_SESSION_OUT_DIR = Path("/tmp/linkedin-network-session")
+DEFAULT_LEAD_REVIEW = DEFAULT_NETWORK_SESSION_OUT_DIR / "lead-review-candidates.json"
 DEFAULT_ACCEPTANCE_CANDIDATES = Path("/tmp/linkedin-acceptance-candidates.json")
 DEFAULT_ACCEPTANCE_OUTCOMES = Path("/tmp/linkedin-acceptance-outcomes.json")
 DEFAULT_ACCEPTANCE_CHUNK_DIR = Path("/tmp/linkedin-acceptance-chunks")
@@ -106,9 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     start = subparsers.add_parser("start")
     start.add_argument("--target", type=int, default=30)
+    start.add_argument("--per-source-target", type=int, default=None)
     start.add_argument("--date", default=None)
     start.add_argument("--force", action="store_true")
     start.add_argument("--max-real-sends", type=int, default=None)
+    start.add_argument("--no-fallback", action="store_true")
 
     run_session = subparsers.add_parser("run-session")
     run_session.add_argument(
@@ -120,11 +125,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_session.add_argument("--target", type=int, default=10)
-    run_session.add_argument("--max-real-sends", type=int, default=10)
+    run_session.add_argument("--per-source-target", type=int, default=None)
+    run_session.add_argument("--max-real-sends", type=int, default=None)
     run_session.add_argument("--force", action="store_true")
+    run_session.add_argument("--resume", action="store_true")
+    run_session.add_argument("--no-fallback", action="store_true")
     run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
     run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
     run_session.add_argument("--out-dir", default=str(DEFAULT_NETWORK_SESSION_OUT_DIR))
+    run_session.add_argument("--review-out", default=None)
     run_session.add_argument("--allow-send", action="store_true")
     run_session.add_argument("--audit-attempts", type=int, default=3)
     run_session.add_argument("--audit-delay-ms", type=int, default=5000)
@@ -245,6 +254,14 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--out-dir", default=str(DEFAULT_CAPTURE_OUT_DIR))
     capture.add_argument("--fixture-result", default=None)
 
+    review = subparsers.add_parser("review-candidates")
+    review.add_argument("--source", default=None)
+    review.add_argument("--out", default=str(DEFAULT_LEAD_REVIEW))
+    review.add_argument("--json", action="store_true")
+
+    apply_review = subparsers.add_parser("apply-lead-decisions")
+    apply_review.add_argument("path")
+
     subparsers.add_parser("next")
     next_candidate = subparsers.add_parser("next-candidate")
     next_candidate.add_argument("--json", action="store_true")
@@ -280,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_daily.add_argument("--check-delay-ms", type=int, default=750)
     acceptance_daily.add_argument("--no-draft-followups", action="store_true")
     acceptance_daily.add_argument("--draft-report", default=None)
+    acceptance_daily.add_argument("--draft-review", default=None)
     acceptance_daily.add_argument("--draft-out-dir", default=str(DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR))
     acceptance_daily.add_argument("--include-drafted", action="store_true")
     acceptance_daily.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
@@ -328,6 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_draft.add_argument("--session", default=None)
     acceptance_draft.add_argument("--research", default=None)
     acceptance_draft.add_argument("--out", default=None)
+    acceptance_draft.add_argument("--review-out", default=None)
     acceptance_draft.add_argument("--out-dir", default="/tmp/linkedin-accepted-followups")
     acceptance_draft.add_argument("--include-drafted", action="store_true")
     acceptance_draft.add_argument("--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value)
@@ -480,6 +499,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             run_date=parsed_date,
             force=args.force,
             max_real_sends=args.max_real_sends,
+            per_source_target=args.per_source_target,
+            allow_fallback_sources=not args.no_fallback,
         )
     if command == "run-session":
         browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
@@ -490,6 +511,9 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                 target=args.target,
                 max_real_sends=args.max_real_sends,
                 force=args.force,
+                resume=args.resume,
+                per_source_target=args.per_source_target,
+                allow_fallback_sources=not args.no_fallback,
                 saved_searches_url=args.saved_searches_url,
                 saved_searches_out=Path(args.saved_searches),
                 audit_attempts=args.audit_attempts,
@@ -499,6 +523,11 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                 finish=args.finish,
                 confirm_delay_ms=args.confirm_delay_ms,
                 confirm_out_dir=Path(args.confirm_out_dir),
+                review_out=(
+                    Path(args.review_out)
+                    if args.review_out
+                    else Path(args.out_dir) / "lead-review-candidates.json"
+                ),
             )
         finally:
             close = getattr(browser, "close", None)
@@ -597,6 +626,10 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             only_connectable=args.only_connectable,
             row_scroll_delay_ms=args.row_scroll_delay_ms,
         )
+    if command == "review-candidates":
+        return review_candidates(store, source=args.source, out=Path(args.out), as_json=args.json)
+    if command == "apply-lead-decisions":
+        return apply_lead_review_decisions(store, Path(args.path))
     if command == "next":
         return json_model_or_text(store.load_run().next_source())
     if command == "next-candidate":
@@ -659,6 +692,7 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             check_delay_ms=args.check_delay_ms,
             draft_followups=not args.no_draft_followups,
             followup_out=Path(args.draft_report) if args.draft_report else None,
+            followup_review_out=Path(args.draft_review) if args.draft_review else None,
             followup_research_out_dir=Path(args.draft_out_dir) if args.draft_out_dir else None,
             include_drafted=args.include_drafted,
             strategy=DraftStrategy(args.strategy),
@@ -726,6 +760,7 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             delay_ms=args.delay_ms,
             research_offset=args.research_offset,
             research_limit=args.research_limit,
+            review_out=Path(args.review_out) if args.review_out else None,
         )
     if command == "send-followup":
         return acceptance_send_followup(

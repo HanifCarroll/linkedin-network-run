@@ -25,6 +25,18 @@ function absoluteLinkedinUrl(href) {
   }
 }
 
+function normalizePublicProfileUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""), "https://www.linkedin.com");
+    if (!["linkedin.com", "www.linkedin.com"].includes(parsed.hostname)) return null;
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2 || parts[0] !== "in") return null;
+    return `https://www.linkedin.com/in/${encodeURIComponent(decodeURIComponent(parts[1]))}`;
+  } catch {
+    return null;
+  }
+}
+
 async function getPage() {
   if (state.linkedinToolsPage && !state.linkedinToolsPage.isClosed()) return state.linkedinToolsPage;
   const pages = context.pages();
@@ -125,6 +137,8 @@ async function captureRow(row, index, globalIndex, pageNumber) {
     (await profile.count().catch(() => 0)) > 0
       ? absoluteLinkedinUrl(await profile.getAttribute("href").catch(() => null))
       : null;
+  const publicProfileUrl =
+    rowEvidence.links.map((link) => normalizePublicProfileUrl(link.href)).find(Boolean) || null;
   const nameLocator = row.locator("[data-anonymize='person-name']").first();
   let name =
     (await nameLocator.count().catch(() => 0)) > 0
@@ -150,6 +164,7 @@ async function captureRow(row, index, globalIndex, pageNumber) {
     name,
     text: rowEvidence.text,
     profileUrl,
+    publicProfileUrl,
     scrollUrn,
     visibleState: {
       hasMessage: (await row.getByRole("button", { name: /^Message\b/i }).first().count().catch(() => 0)) > 0,

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import shlex
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .browser import BrowserClient
 from .models import (
@@ -15,13 +17,24 @@ from .models import (
     AcceptanceOutcomeArtifact,
     AcceptanceStatus,
     AcceptedDraftCandidate,
+    AcceptedFollowupReviewItem,
+    AcceptedFollowupReviewPacket,
     AcceptedResearchArtifact,
+    AcceptedResearchRow,
     CandidateEvent,
+    CandidateObservation,
     CandidateStatus,
+    DraftReport,
     DraftStrategy,
+    LeadLedger,
+    LeadReviewCandidate,
+    LeadReviewDecisionArtifact,
+    LeadReviewPacket,
+    LeadStatus,
     PendingCapture,
     PendingCleanupState,
     PendingWithdrawResult,
+    Run,
     RunState,
     SalesNavAudit,
     SalesNavCapture,
@@ -30,6 +43,7 @@ from .models import (
     SourceCaptureCursor,
     SourceScanProgress,
     acceptance_followup_id,
+    accepted_followup_candidate_key,
     apply_acceptance_followup_send_result,
     apply_audit,
     apply_pending_audit,
@@ -43,6 +57,8 @@ from .models import (
     import_pending_capture,
     is_send_noop_status,
     is_uncertain_send_status,
+    lead_key_for_observation,
+    lead_key_for_values,
     low_yield_source_names,
     new_pending_cleanup_run,
     new_run,
@@ -52,6 +68,8 @@ from .models import (
     record_top_up_send_result,
     render_draft_markdown,
     source_repeated_send_noop,
+    sources_for_per_source_target,
+    target_for_per_source_target,
     validate_acceptance_followup_can_send,
 )
 from .reports import (
@@ -73,15 +91,41 @@ def start_run(
     run_date: object | None = None,
     force: bool = False,
     max_real_sends: int | None = None,
+    per_source_target: int | None = None,
+    allow_fallback_sources: bool = True,
 ) -> str:
     if store.active_path.exists() and not force:
         raise RuntimeError("an active run already exists; use --force to replace it")
     from datetime import date
 
     parsed_date = run_date if isinstance(run_date, date) else None
-    run = new_run(target, parsed_date, max_real_sends)
+    sources = None
+    carry_over_shortfall = True
+    if per_source_target is not None:
+        if per_source_target < 0:
+            raise ValueError("--per-source-target must be >= 0")
+        target = target_for_per_source_target(per_source_target)
+        sources = sources_for_per_source_target(per_source_target)
+        carry_over_shortfall = False
+    run = new_run(
+        target,
+        parsed_date,
+        max_real_sends,
+        sources=sources,
+        allow_fallback_sources=allow_fallback_sources,
+        carry_over_shortfall=carry_over_shortfall,
+    )
     store.save_run(run)
-    store.append_event(run, "start", {"target": target})
+    store.append_event(
+        run,
+        "start",
+        {
+            "target": target,
+            "per_source_target": per_source_target,
+            "allow_fallback_sources": allow_fallback_sources,
+            "carry_over_shortfall": carry_over_shortfall,
+        },
+    )
     next_source = run.next_source()
     suffix = f"; next source: {next_source.name}" if next_source else ""
     return f"started run {run.id} for {run.date.isoformat()} with target {target}{suffix}"
@@ -220,6 +264,615 @@ def update_source_progress_after_capture(
     store.save_source_progress(progress)
 
 
+def sync_lead_ledger_from_observations(
+    ledger: LeadLedger, observations: list[CandidateObservation]
+) -> int:
+    synced = 0
+    for observation in observations:
+        ledger.upsert_observation(observation)
+        synced += 1
+    return synced
+
+
+def sync_lead_ledger_from_run(store: Store, run: Run) -> tuple[LeadLedger, int]:
+    ledger = store.load_lead_ledger()
+    synced = sync_lead_ledger_from_observations(ledger, run.observations)
+    store.save_lead_ledger(ledger)
+    return ledger, synced
+
+
+def _lead_ledger_suppression_status(record_status: LeadStatus) -> CandidateStatus | None:
+    if record_status == LeadStatus.PENDING:
+        return CandidateStatus.ALREADY_PENDING
+    if record_status in {
+        LeadStatus.SKIPPED,
+        LeadStatus.SENT,
+        LeadStatus.CONNECTED,
+        LeadStatus.BLOCKED,
+    }:
+        return CandidateStatus.SKIPPED
+    return None
+
+
+def apply_lead_ledger_suppression(run: Run, ledger: LeadLedger) -> list[CandidateEvent]:
+    events: list[CandidateEvent] = []
+    for observation in run.observations:
+        if observation.menu_state != "connectable":
+            continue
+        if run.has_candidate_event_for_observation(observation):
+            continue
+        record = ledger.get_for_observation(observation)
+        if record is None:
+            continue
+        status = _lead_ledger_suppression_status(record.status)
+        if status is None:
+            continue
+        reason = f"lead ledger suppression: status={record.status.value}"
+        if record.status_reason:
+            reason += f"; reason={record.status_reason}"
+        event = CandidateEvent(
+            at=now_utc(),
+            source=observation.source,
+            name=observation.name,
+            profile_url=observation.profile_url,
+            status=status,
+            note=reason,
+        )
+        run.candidates.append(event)
+        events.append(event)
+    if events:
+        run.mark_updated()
+    return events
+
+
+def _is_public_linkedin_profile_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value.strip())
+    host = parsed.netloc.casefold()
+    parts = [part for part in parsed.path.split("/") if part]
+    return (
+        parsed.scheme in {"http", "https"}
+        and host in {"linkedin.com", "www.linkedin.com"}
+        and len(parts) >= 2
+        and parts[0] == "in"
+    )
+
+
+def _lead_send_blockers(
+    record: Any | None, observation: CandidateObservation | None = None
+) -> list[str]:
+    public_profile_url = None
+    if record is not None:
+        public_profile_url = record.public_profile_url
+    if not public_profile_url and observation is not None:
+        public_profile_url = observation.public_profile_url
+    if _is_public_linkedin_profile_url(public_profile_url):
+        return []
+    return [
+        "missing exact public LinkedIn /in/ URL; capture or backfill public_profile_url "
+        "before approval/send"
+    ]
+
+
+def _lead_is_approved_for_send(ledger: LeadLedger, observation: CandidateObservation) -> bool:
+    record = ledger.get_for_observation(observation)
+    return (
+        record is not None
+        and record.status == LeadStatus.APPROVED
+        and not _lead_send_blockers(record, observation)
+    )
+
+
+def next_approved_connectable_observation(
+    run: Run, ledger: LeadLedger, source: str | None = None
+) -> CandidateObservation | None:
+    target_source = source
+    if target_source is None:
+        next_source = run.next_source()
+        if next_source is None:
+            return None
+        target_source = next_source.name
+    if run.source_is_filled_or_closed(target_source):
+        return None
+    for observation in run.observations:
+        if (
+            observation.source == target_source
+            and observation.menu_state == "connectable"
+            and not run.has_candidate_event_for_observation(observation)
+            and _lead_is_approved_for_send(ledger, observation)
+        ):
+            return observation
+    return None
+
+
+def next_approved_top_up_observation(
+    run: Run, ledger: LeadLedger
+) -> CandidateObservation | None:
+    for observation in run.observations:
+        if (
+            run.source_is_fallback(observation.source)
+            and observation.menu_state == "connectable"
+            and not run.has_top_up_blocking_event_for_observation(observation)
+            and _lead_is_approved_for_send(ledger, observation)
+        ):
+            return observation
+    for observation in run.observations:
+        if (
+            observation.menu_state == "connectable"
+            and not run.has_top_up_blocking_event_for_observation(observation)
+            and _lead_is_approved_for_send(ledger, observation)
+        ):
+            return observation
+    return None
+
+
+def reviewable_observations(
+    run: Run, ledger: LeadLedger, source: str | None = None
+) -> list[CandidateObservation]:
+    reviewable: list[CandidateObservation] = []
+    for observation in run.observations:
+        if source is not None and observation.source != source:
+            continue
+        if observation.menu_state != "connectable":
+            continue
+        if run.has_candidate_event_for_observation(observation):
+            continue
+        record = ledger.get_for_observation(observation)
+        if record is None:
+            record = ledger.upsert_observation(observation)
+        if record.status == LeadStatus.NEW:
+            reviewable.append(observation)
+    return reviewable
+
+
+def public_profile_url_blocked_observations(
+    run: Run, ledger: LeadLedger, source: str | None = None
+) -> list[CandidateObservation]:
+    blocked: list[CandidateObservation] = []
+    for observation in run.observations:
+        if source is not None and observation.source != source:
+            continue
+        if observation.menu_state != "connectable":
+            continue
+        if run.has_candidate_event_for_observation(observation):
+            continue
+        record = ledger.get_for_observation(observation)
+        if record is None or record.status != LeadStatus.APPROVED:
+            continue
+        if _lead_send_blockers(record, observation):
+            blocked.append(observation)
+    return blocked
+
+
+def build_lead_review_packet(
+    run: Run, ledger: LeadLedger, source: str | None = None
+) -> LeadReviewPacket:
+    candidates: list[LeadReviewCandidate] = []
+    for observation in reviewable_observations(run, ledger, source):
+        record = ledger.get_for_observation(observation)
+        if record is None:
+            record = ledger.upsert_observation(observation)
+        candidates.append(
+            LeadReviewCandidate(
+                lead_key=lead_key_for_observation(observation),
+                source=observation.source,
+                name=observation.name,
+                profile_url=observation.profile_url,
+                public_profile_url=record.public_profile_url,
+                send_blockers=_lead_send_blockers(record, observation),
+                captured_at=observation.captured_at,
+                menu_state=observation.menu_state,
+                menu_labels=list(observation.menu_labels),
+                text=observation.text,
+                links=list(observation.links),
+                current_status=record.status,
+                status_reason=record.status_reason,
+                approved_reason=record.approved_reason,
+            )
+        )
+    return LeadReviewPacket(source=source, candidates=candidates)
+
+
+def render_lead_review_markdown(packet: LeadReviewPacket) -> str:
+    lines = [
+        "# LinkedIn Candidate Review",
+        "",
+        f"- Generated: `{packet.generated_at.isoformat()}`",
+        f"- Source: `{packet.source or 'all sources'}`",
+        f"- Candidates: `{len(packet.candidates)}`",
+        "",
+        "Decision artifact shape:",
+        "",
+        "```json",
+        '{ "decisions": [',
+        '  { "lead_key": "<lead key>", "status": "approved", "reason": "<why>" },',
+        '  { "lead_key": "<lead key>", "status": "skipped", "reason": "<why>" }',
+        "] }",
+        "```",
+        "",
+    ]
+    for index, candidate in enumerate(packet.candidates, start=1):
+        lines.extend(
+            [
+                f"## {index}. {candidate.name}",
+                "",
+                f"- Lead key: `{candidate.lead_key}`",
+                f"- Source: `{candidate.source}`",
+                f"- Status: `{candidate.current_status.value}`",
+                f"- Profile URL: `{candidate.profile_url or ''}`",
+                f"- Public profile URL: `{candidate.public_profile_url or ''}`",
+                f"- Menu: `{candidate.menu_state}`",
+            ]
+        )
+        if candidate.send_blockers:
+            lines.append("- Send blockers: " + "; ".join(candidate.send_blockers))
+        if candidate.menu_labels:
+            labels = ", ".join(f"`{label}`" for label in candidate.menu_labels)
+            lines.append("- Menu labels: " + labels)
+        if candidate.status_reason:
+            lines.append(f"- Status reason: {candidate.status_reason}")
+        if candidate.text:
+            readable_text = "\n".join(
+                line.strip() for line in candidate.text.splitlines() if line.strip()
+            )
+            lines.extend(
+                ["", "Readable row text:", "", "```text", readable_text, "```"]
+            )
+        if candidate.links:
+            lines.extend(["", "Links:"])
+            for link in candidate.links:
+                if isinstance(link, dict):
+                    text = link.get("text") or link.get("aria") or ""
+                    href = link.get("href") or ""
+                    lines.append(f"- {text}: {href}".strip())
+                else:
+                    lines.append(f"- {link}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_lead_review_packet(packet: LeadReviewPacket, out: Path) -> Path:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
+    markdown_path = out.with_suffix(".md")
+    markdown_path.write_text(render_lead_review_markdown(packet), encoding="utf-8")
+    return markdown_path
+
+
+def lead_review_decisions_path(packet_path: Path) -> Path:
+    return packet_path.with_name(packet_path.stem + "-decisions.json")
+
+
+def _shell_command(parts: list[str | Path]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def lead_review_next_commands(
+    store: Store,
+    review_out: Path,
+    *,
+    saved_searches: Path | None = None,
+    allow_fallback_sources: bool = True,
+) -> list[str]:
+    decisions_path = lead_review_decisions_path(review_out)
+    resume_parts: list[str | Path] = [
+        "uv",
+        "run",
+        "linkedin-tools",
+        "network",
+        "--state-dir",
+        store.dir,
+        "run-session",
+        "--resume",
+        "--out-dir",
+        review_out.parent,
+    ]
+    if saved_searches is not None:
+        resume_parts.extend(["--saved-searches", saved_searches])
+    if not allow_fallback_sources:
+        resume_parts.append("--no-fallback")
+    resume_parts.append("--allow-send")
+    return [
+        f"edit decisions: {decisions_path}",
+        _shell_command(
+            [
+                "uv",
+                "run",
+                "linkedin-tools",
+                "network",
+                "--state-dir",
+                store.dir,
+                "apply-lead-decisions",
+                decisions_path,
+            ]
+        ),
+        _shell_command(resume_parts),
+    ]
+
+
+def render_next_command_block(commands: list[str]) -> str:
+    lines = ["next commands:"]
+    lines.extend(f"{index}. {command}" for index, command in enumerate(commands, start=1))
+    return "\n".join(lines)
+
+
+def review_candidates(
+    store: Store,
+    *,
+    source: str | None,
+    out: Path,
+    as_json: bool = False,
+    next_commands: list[str] | None = None,
+) -> str:
+    run = store.load_run()
+    ledger, synced = sync_lead_ledger_from_run(store, run)
+    suppressed = apply_lead_ledger_suppression(run, ledger)
+    if suppressed:
+        store.save_run(run)
+    packet = build_lead_review_packet(run, ledger, source)
+    store.save_lead_ledger(ledger)
+    markdown_path = write_lead_review_packet(packet, out)
+    decisions_path = lead_review_decisions_path(out)
+    next_commands = next_commands or lead_review_next_commands(store, out)
+    store.append_event(
+        run,
+        "lead-review-packet",
+        {
+            "source": source,
+            "out": str(out),
+            "markdown": str(markdown_path),
+            "decisions": str(decisions_path),
+            "candidates": len(packet.candidates),
+            "synced": synced,
+            "suppressed": len(suppressed),
+        },
+    )
+    payload = {
+        "packet_path": str(out),
+        "markdown_path": str(markdown_path),
+        "decisions_path": str(decisions_path),
+        "candidate_count": len(packet.candidates),
+        "synced": synced,
+        "suppressed": len(suppressed),
+        "next_commands": next_commands,
+        "apply_command": next_commands[1],
+        "send_command": next_commands[2],
+    }
+    if as_json:
+        return json.dumps(payload, indent=2)
+    return (
+        f"lead review packet: {len(packet.candidates)} candidate(s) written to {out}; "
+        f"markdown={markdown_path}; decisions={decisions_path}; "
+        f"synced={synced}; suppressed={len(suppressed)}\n"
+        f"{render_next_command_block(next_commands)}"
+    )
+
+
+def apply_lead_review_decisions(store: Store, path: Path) -> str:
+    artifact = read_model(path, LeadReviewDecisionArtifact)
+    run = store.load_run()
+    ledger, synced = sync_lead_ledger_from_run(store, run)
+    changed: list[str] = []
+    for decision in artifact.decisions:
+        record = ledger.require(decision.lead_key)
+        if decision.status == LeadStatus.APPROVED:
+            blockers = _lead_send_blockers(record)
+            if blockers:
+                raise ValueError(
+                    f"cannot approve {record.name}: " + "; ".join(blockers)
+                )
+            record = ledger.approve(decision.lead_key, decision.reason)
+        elif decision.status == LeadStatus.SKIPPED:
+            record = ledger.skip(decision.lead_key, decision.reason)
+        elif decision.status == LeadStatus.BLOCKED:
+            record = ledger.block(decision.lead_key, decision.reason)
+        else:
+            raise ValueError(
+                "lead review decisions only support approved, skipped, or blocked; "
+                f"got {decision.status.value}"
+            )
+        changed.append(f"{record.name}:{record.status.value}")
+    suppressed = apply_lead_ledger_suppression(run, ledger)
+    store.save_lead_ledger(ledger)
+    store.save_run(run)
+    store.append_event(
+        run,
+        "lead-review-decisions",
+        {
+            "path": str(path),
+            "decisions": len(artifact.decisions),
+            "changed": changed,
+            "synced": synced,
+            "suppressed": len(suppressed),
+        },
+    )
+    return (
+        f"applied {len(artifact.decisions)} lead review decision(s); "
+        f"synced={synced}; suppressed={len(suppressed)}"
+    )
+
+
+def apply_candidate_event_to_lead_ledger(store: Store, event: CandidateEvent) -> None:
+    ledger = store.load_lead_ledger()
+    ledger.apply_candidate_event(event)
+    store.save_lead_ledger(ledger)
+
+
+def apply_candidate_events_to_lead_ledger(store: Store, events: list[CandidateEvent]) -> None:
+    if not events:
+        return
+    ledger = store.load_lead_ledger()
+    for event in events:
+        ledger.apply_candidate_event(event)
+    store.save_lead_ledger(ledger)
+
+
+def add_lead_review_context_to_draft_report(
+    report: DraftReport, lead_ledger: LeadLedger
+) -> None:
+    for item in report.items:
+        candidate = item.candidate
+        lead_key = lead_key_for_values(
+            candidate.sales_nav_profile_url or candidate.profile_url,
+            None,
+            candidate.name,
+        )
+        record = lead_ledger.leads.get(lead_key)
+        if record is None:
+            continue
+        if record.first_source:
+            item.evidence.append(f"Original connection source: {record.first_source}")
+        if record.approved_reason:
+            item.evidence.append(
+                f"Original connection approval: {record.approved_reason}"
+            )
+
+
+def accepted_research_by_key(
+    artifact: AcceptedResearchArtifact | None,
+) -> dict[str, AcceptedResearchRow]:
+    if artifact is None:
+        return {}
+    return {
+        candidate_key(row.source, row.name, row.sales_nav_profile_url or row.profile_url): row
+        for row in artifact.rows
+    }
+
+
+def build_accepted_followup_review_packet(
+    report: DraftReport,
+    artifact: AcceptedResearchArtifact | None,
+    *,
+    report_path: Path,
+    research_path: Path | None,
+) -> AcceptedFollowupReviewPacket:
+    research_rows = accepted_research_by_key(artifact)
+    items: list[AcceptedFollowupReviewItem] = []
+    for item in report.items:
+        key = accepted_followup_candidate_key(item.candidate)
+        items.append(
+            AcceptedFollowupReviewItem(
+                followup_id=acceptance_followup_id(key),
+                candidate=item.candidate,
+                template_key=item.template_key,
+                angle=item.angle,
+                draft=item.draft,
+                person_does=item.person_does,
+                company_does=item.company_does,
+                message_fit=item.message_fit,
+                company_profile_url=item.company_profile_url,
+                company_website_url=item.company_website_url,
+                evidence=list(item.evidence),
+                warnings=list(item.warnings),
+                research=research_rows.get(key),
+            )
+        )
+    return AcceptedFollowupReviewPacket(
+        report_path=str(report_path),
+        research_path=str(research_path) if research_path else None,
+        items=items,
+    )
+
+
+def render_accepted_followup_review_markdown(packet: AcceptedFollowupReviewPacket) -> str:
+    lines = [
+        "# Accepted Follow-Up Draft Review",
+        "",
+        f"- Generated: `{packet.generated_at.isoformat()}`",
+        f"- Report: `{packet.report_path}`",
+        f"- Research: `{packet.research_path or ''}`",
+        f"- Drafts: `{len(packet.items)}`",
+        "",
+        "Review these drafts before running any dry-run or send command.",
+    ]
+    for item in packet.items:
+        lines.extend(
+            [
+                "",
+                "## " + item.candidate.name,
+                f"- Follow-up ID: `{item.followup_id}`",
+                f"- Source: `{item.candidate.source}`",
+                f"- Template: `{item.template_key.value}`",
+                "- Best angle: " + item.angle,
+            ]
+        )
+        if item.person_does:
+            lines.append("- Person does: " + item.person_does)
+        if item.company_does:
+            lines.append("- Company does: " + item.company_does)
+        if item.message_fit:
+            lines.append("- Why this draft fits: " + item.message_fit)
+        if item.company_profile_url:
+            lines.append("- Company profile: " + item.company_profile_url)
+        if item.company_website_url:
+            lines.append("- Company website: " + item.company_website_url)
+        if item.evidence:
+            lines.append("- Evidence:")
+            lines.extend("  - " + evidence for evidence in item.evidence)
+        if item.warnings:
+            lines.append("- Warnings:")
+            lines.extend("  - " + warning for warning in item.warnings)
+        lines.extend(["", "Draft:", ""])
+        lines.extend("> " + line if line else ">" for line in item.draft.splitlines())
+    return "\n".join(lines) + "\n"
+
+
+def write_accepted_followup_review_packet(
+    packet: AcceptedFollowupReviewPacket, out: Path
+) -> Path:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
+    markdown_path = out.with_suffix(".md")
+    markdown_path.write_text(render_accepted_followup_review_markdown(packet), encoding="utf-8")
+    return markdown_path
+
+
+def _review_needed_message(run: Run, ledger: LeadLedger) -> str:
+    public_url_blocked = public_profile_url_blocked_observations(run, ledger)
+    if public_url_blocked:
+        names = ", ".join(observation.name for observation in public_url_blocked[:5])
+        suffix = "..." if len(public_url_blocked) > 5 else ""
+        return (
+            f"{len(public_url_blocked)} approved candidate(s) are blocked from send "
+            f"because public_profile_url is missing or invalid: {names}{suffix}"
+        )
+    reviewable = reviewable_observations(run, ledger)
+    if reviewable:
+        return (
+            f"no approved connectable candidate available; {len(reviewable)} candidate(s) "
+            "need review via review-candidates and apply-lead-decisions"
+        )
+    return "no approved connectable candidate available"
+
+
+def require_saved_search_coverage(store: Store, saved_searches: Path) -> str:
+    run = store.load_run()
+    missing: list[str] = []
+    checked = 0
+    for source in run.sources:
+        if source.fallback or source.exhausted or source.target <= 0:
+            continue
+        checked += 1
+        cursor = run.capture_cursors.get(source.name)
+        if cursor and cursor.resume_url:
+            continue
+        if resolve_network_source_url(saved_searches, source.name) is None:
+            missing.append(source.name)
+    if missing:
+        note = (
+            "saved-search coverage missing for targeted source(s): "
+            + ", ".join(missing)
+        )
+        run.state = RunState.BLOCKED
+        run.notes.append(note)
+        run.mark_updated()
+        store.save_run(run)
+        store.append_event(run, "saved-search-coverage-blocked", {"missing": missing})
+        raise RuntimeError(note)
+    return f"saved-search coverage ok for {checked} targeted source(s)"
+
+
 def network_run_session(
     store: Store,
     browser: BrowserClient,
@@ -227,6 +880,9 @@ def network_run_session(
     target: int,
     max_real_sends: int | None,
     force: bool,
+    resume: bool,
+    per_source_target: int | None,
+    allow_fallback_sources: bool,
     saved_searches_url: str,
     saved_searches_out: Path,
     audit_attempts: int,
@@ -236,21 +892,62 @@ def network_run_session(
     finish: bool,
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
+    review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
 ) -> str:
-    messages = [
-        start_run(store, target=target, force=force, max_real_sends=max_real_sends),
-        reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False),
-        capture_saved_searches(
-            browser,
-            url=saved_searches_url,
-            out=saved_searches_out,
-        ),
-        seed_run_source_progress(store, saved_searches_out),
-    ]
+    messages: list[str] = []
+    if resume:
+        run = store.load_run()
+        if not allow_fallback_sources and run.allow_fallback_sources:
+            run.allow_fallback_sources = False
+            run.mark_updated()
+            store.save_run(run)
+            store.append_event(run, "disable-fallback-sources", {})
+        messages.append(f"resumed run {run.id} for {run.date.isoformat()}")
+        if not saved_searches_out.exists():
+            messages.append(
+                capture_saved_searches(
+                    browser,
+                    url=saved_searches_url,
+                    out=saved_searches_out,
+                )
+            )
+            messages.append(seed_run_source_progress(store, saved_searches_out))
+    else:
+        messages.extend(
+            [
+                start_run(
+                    store,
+                    target=target,
+                    force=force,
+                    max_real_sends=max_real_sends,
+                    per_source_target=per_source_target,
+                    allow_fallback_sources=allow_fallback_sources,
+                ),
+                reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False),
+                capture_saved_searches(
+                    browser,
+                    url=saved_searches_url,
+                    out=saved_searches_out,
+                ),
+                seed_run_source_progress(store, saved_searches_out),
+            ]
+        )
+    messages.append(require_saved_search_coverage(store, saved_searches_out))
     zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):
         plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
         messages.append(f"plan: {plan.action}")
+        if plan.action == "source-exhausted":
+            if not plan.source:
+                raise RuntimeError("source-exhausted plan did not include source")
+            messages.append(
+                source_exhausted(
+                    store,
+                    plan.source,
+                    note=plan.reason or "source cursor is already at end of results",
+                )
+            )
+            continue
         if plan.action == "use-reservoir":
             if not plan.source:
                 raise RuntimeError("use-reservoir plan did not include source")
@@ -282,6 +979,25 @@ def network_run_session(
             imported = len(after_run.observations) - before_imported
             if imported > 0:
                 zero_capture_streaks[plan.source] = 0
+                run_after_capture = store.load_run()
+                ledger_after_capture = store.load_lead_ledger()
+                if reviewable_observations(run_after_capture, ledger_after_capture, plan.source):
+                    commands = lead_review_next_commands(
+                        store,
+                        review_out,
+                        saved_searches=saved_searches_out,
+                        allow_fallback_sources=allow_fallback_sources,
+                    )
+                    messages.append(
+                        review_candidates(
+                            store,
+                            source=plan.source,
+                            out=review_out,
+                            next_commands=commands,
+                        )
+                    )
+                    messages.append("stopped: lead review required before connection requests")
+                    break
             else:
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
                 zero_capture_streaks[plan.source] = streak
@@ -294,6 +1010,29 @@ def network_run_session(
                     messages.append(source_exhausted(store, plan.source, note=note))
             continue
         if plan.action == "send-candidate":
+            run_for_send = store.load_run()
+            ledger_for_send = store.load_lead_ledger()
+            if (
+                next_approved_connectable_observation(run_for_send, ledger_for_send)
+                is None
+                and reviewable_observations(run_for_send, ledger_for_send)
+            ):
+                commands = lead_review_next_commands(
+                    store,
+                    review_out,
+                    saved_searches=saved_searches_out,
+                    allow_fallback_sources=allow_fallback_sources,
+                )
+                messages.append(
+                    review_candidates(
+                        store,
+                        source=None,
+                        out=review_out,
+                        next_commands=commands,
+                    )
+                )
+                messages.append("stopped: lead review required before connection requests")
+                break
             if not allow_send:
                 messages.append("stopped: pass --allow-send for real network sends")
                 break
@@ -411,6 +1150,7 @@ def record_candidate(
     drained = drain_stale_connectable_candidates(run)
     run.mark_updated()
     store.save_run(run)
+    apply_candidate_events_to_lead_ledger(store, [event, *drained])
     store.append_event(run, "record", event)
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
@@ -425,6 +1165,7 @@ def record_send_result_from_path(store: Store, path: Path) -> str:
     event = record_send_result(run, result, str(path))
     drained = drain_stale_connectable_candidates(run)
     store.save_run(run)
+    apply_candidate_events_to_lead_ledger(store, [event, *drained])
     store.append_event(run, "record-send-result", {"path": str(path), "event": event})
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
@@ -494,6 +1235,7 @@ def confirm_provisional_send(
         )
     run.mark_updated()
     store.save_run(run)
+    apply_candidate_event_to_lead_ledger(store, candidate)
     store.append_event(
         run,
         "confirm-send-result",
@@ -578,13 +1320,21 @@ def send_next(
             f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
             "real send attempts"
         )
+    ledger, _synced = sync_lead_ledger_from_run(store, run)
+    lead_suppressed = apply_lead_ledger_suppression(run, ledger)
     suppressed = skip_outreach_suppressed_observations(run)
-    if suppressed:
+    for event in suppressed:
+        ledger.apply_candidate_event(event)
+    if lead_suppressed or suppressed:
+        store.save_lead_ledger(ledger)
         store.save_run(run)
+    if lead_suppressed:
+        store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
+    if suppressed:
         store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
-    candidate = run.next_connectable_observation()
+    candidate = next_approved_connectable_observation(run, ledger)
     if candidate is None:
-        raise RuntimeError("no unrecorded connectable candidate available")
+        raise RuntimeError(_review_needed_message(run, ledger))
     result, path = browser.send_connection(
         candidate, dry_run=dry_run or not allow_send, allow_send=allow_send
     )
@@ -593,6 +1343,7 @@ def send_next(
         event = record_send_result(run, result, path)
         drained = drain_stale_connectable_candidates(run)
         store.save_run(run)
+        apply_candidate_events_to_lead_ledger(store, [event, *drained])
         store.append_event(run, "record-send-result", {"path": path, "event": event})
         if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
@@ -638,10 +1389,17 @@ def send_guarded(
         run = store.load_run()
         if run.state == RunState.NEEDS_REAUDIT:
             raise RuntimeError("run entered NEEDS_REAUDIT; import a fresh audit before continuing")
+        ledger, _synced = sync_lead_ledger_from_run(store, run)
+        lead_suppressed = apply_lead_ledger_suppression(run, ledger)
         drained = drain_stale_connectable_candidates(run)
         suppressed = skip_outreach_suppressed_observations(run)
-        if drained or suppressed:
+        for event in [*drained, *suppressed]:
+            ledger.apply_candidate_event(event)
+        if lead_suppressed or drained or suppressed:
+            store.save_lead_ledger(ledger)
             store.save_run(run)
+        if lead_suppressed:
+            store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
         if drained:
             store.append_event(run, "drain-stale-candidates", {"events": drained})
         if suppressed:
@@ -654,8 +1412,10 @@ def send_guarded(
                 f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
                 "real send attempts"
             )
-        candidate = run.next_connectable_observation_for_source(source)
+        candidate = next_approved_connectable_observation(run, ledger, source)
         if candidate is None:
+            if reviewable_observations(run, ledger, source):
+                raise RuntimeError(_review_needed_message(run, ledger))
             break
         attempts += 1
         if dry_run or not single_pass:
@@ -668,6 +1428,7 @@ def send_guarded(
                     run = store.load_run()
                     event = record_send_result(run, dry_result, dry_path)
                     store.save_run(run)
+                    apply_candidate_event_to_lead_ledger(store, event)
                     store.append_event(
                         run, "record-send-result", {"path": dry_path, "event": event}
                     )
@@ -680,7 +1441,7 @@ def send_guarded(
         if no_record:
             break
         event = record_send_result(run, result, path)
-        drain_stale_connectable_candidates(run)
+        drained = drain_stale_connectable_candidates(run)
         if result.status == "blocked":
             run.state = RunState.BLOCKED
             run.notes.append(f"guarded send blocked for {event.name}: {result.status}")
@@ -702,7 +1463,10 @@ def send_guarded(
                     {"source": event.source, "via": "send-guarded-clicked-send-noop"},
                 )
         store.save_run(run)
+        apply_candidate_events_to_lead_ledger(store, [event, *drained])
         store.append_event(run, "record-send-result", {"path": path, "event": event})
+        if drained:
+            store.append_event(run, "drain-stale-candidates", {"events": drained})
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             messages.append(
                 confirm_provisional_send(
@@ -755,11 +1519,19 @@ def top_up_reconcile(
                 f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
                 "real send attempts"
             )
+        ledger, _synced = sync_lead_ledger_from_run(store, run)
+        lead_suppressed = apply_lead_ledger_suppression(run, ledger)
         suppressed = skip_outreach_suppressed_observations(run)
-        if suppressed:
+        for event in suppressed:
+            ledger.apply_candidate_event(event)
+        if lead_suppressed or suppressed:
+            store.save_lead_ledger(ledger)
             store.save_run(run)
+        if lead_suppressed:
+            store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
+        if suppressed:
             store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
-        candidate = run.next_top_up_observation()
+        candidate = next_approved_top_up_observation(run, ledger)
         if candidate is None and not no_fallback_capture:
             messages.append(
                 capture_source(
@@ -775,9 +1547,11 @@ def top_up_reconcile(
                     row_scroll_delay_ms=fallback_row_scroll_delay_ms,
                 )
             )
-            candidate = store.load_run().next_top_up_observation()
+            run = store.load_run()
+            ledger = store.load_lead_ledger()
+            candidate = next_approved_top_up_observation(run, ledger)
         if candidate is None:
-            raise RuntimeError("no distinct connectable candidate available for top-up")
+            raise RuntimeError(_review_needed_message(store.load_run(), ledger))
         messages.append(
             f"top-up attempt {attempt}/{attempts}: {candidate.name} ({candidate.source})"
         )
@@ -789,6 +1563,7 @@ def top_up_reconcile(
         run = store.load_run()
         event = record_send_result(run, result, result_path)
         store.save_run(run)
+        apply_candidate_event_to_lead_ledger(store, event)
         store.append_event(
             run,
             "record-send-result",
@@ -824,19 +1599,35 @@ def import_capture_path(store: Store, path: Path, only_connectable: bool = False
     run = store.load_run()
     capture = read_model(path, SalesNavCapture)
     imported = import_capture(run, capture, only_connectable)
+    ledger, synced = sync_lead_ledger_from_run(store, run)
     suppressed = skip_outreach_suppressed_observations(run)
+    for event in suppressed:
+        ledger.apply_candidate_event(event)
+    lead_suppressed = apply_lead_ledger_suppression(run, ledger)
     drained = drain_stale_connectable_candidates(run)
+    for event in drained:
+        ledger.apply_candidate_event(event)
+    store.save_lead_ledger(ledger)
     store.save_run(run)
     store.append_event(
         run,
         "import-capture",
-        {"path": str(path), "imported": imported, "only_connectable": only_connectable},
+        {
+            "path": str(path),
+            "imported": imported,
+            "only_connectable": only_connectable,
+            "lead_synced": synced,
+            "lead_suppressed": len(lead_suppressed),
+        },
     )
     if suppressed:
         store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
+    if lead_suppressed:
+        store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
-    suffix = f"; suppressed {len(suppressed)}" if suppressed else ""
+    total_suppressed = len(suppressed) + len(lead_suppressed)
+    suffix = f"; suppressed {total_suppressed}" if total_suppressed else ""
     return f"imported {imported} candidate observations{suffix}"
 
 
@@ -876,8 +1667,15 @@ def capture_source(
     )
     run = store.load_run()
     imported = import_capture(run, capture, only_connectable)
+    ledger, synced = sync_lead_ledger_from_run(store, run)
     suppressed = skip_outreach_suppressed_observations(run)
+    for event in suppressed:
+        ledger.apply_candidate_event(event)
+    lead_suppressed = apply_lead_ledger_suppression(run, ledger)
     drained = drain_stale_connectable_candidates(run)
+    for event in drained:
+        ledger.apply_candidate_event(event)
+    store.save_lead_ledger(ledger)
     store.save_run(run)
     update_source_progress_after_capture(
         store,
@@ -894,15 +1692,20 @@ def capture_source(
             "source": capture_source_name,
             "imported": imported,
             "only_connectable": only_connectable,
+            "lead_synced": synced,
+            "lead_suppressed": len(lead_suppressed),
         },
     )
     if suppressed:
         store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
+    if lead_suppressed:
+        store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
     if drained:
         store.append_event(run, "drain-stale-candidates", {"events": drained})
+    total_suppressed = len(suppressed) + len(lead_suppressed)
     return (
         f"captured {imported} candidate observations from {capture_source_name}"
-        f"{f'; suppressed {len(suppressed)}' if suppressed else ''}; out={path}"
+        f"{f'; suppressed {total_suppressed}' if total_suppressed else ''}; out={path}"
     )
 
 
@@ -950,6 +1753,11 @@ def finish_run(store: Store, *, force: bool = False) -> str:
         raise RuntimeError(
             f"durable confirmed sends are {run.verified_count()}/{run.target}; "
             "continue normal guarded sends before finishing"
+        )
+    if force and run.verified_count() < run.target:
+        run.notes.append(
+            f"force-finished incomplete run with durable confirmed sends "
+            f"{run.verified_count()}/{run.target}"
         )
     run.state = RunState.DONE
     run.mark_updated()
@@ -1059,17 +1867,31 @@ def reservoir_fill_run(store: Store, *, source: str | None = None, limit: int | 
         else quota - min(quota, run.source_verified_count(fill_source)) + 3
     )
     imported = fill_run_from_reservoir(run, reservoir, fill_source, fill_limit)
+    ledger, synced = sync_lead_ledger_from_run(store, run)
     suppressed = skip_outreach_suppressed_observations(run)
+    for event in suppressed:
+        ledger.apply_candidate_event(event)
+    lead_suppressed = apply_lead_ledger_suppression(run, ledger)
+    store.save_lead_ledger(ledger)
     store.save_run(run)
     store.save_reservoir(reservoir)
     store.append_event(
         run,
         "reservoir-fill-run",
-        {"source": fill_source, "imported": imported, "suppressed": len(suppressed)},
+        {
+            "source": fill_source,
+            "imported": imported,
+            "suppressed": len(suppressed),
+            "lead_synced": synced,
+            "lead_suppressed": len(lead_suppressed),
+        },
     )
     if suppressed:
         store.append_event(run, "cross-workflow-suppression", {"events": suppressed})
-    suffix = f"; suppressed {len(suppressed)}" if suppressed else ""
+    if lead_suppressed:
+        store.append_event(run, "lead-ledger-suppression", {"events": lead_suppressed})
+    total_suppressed = len(suppressed) + len(lead_suppressed)
+    suffix = f"; suppressed {total_suppressed}" if total_suppressed else ""
     return f"filled active run with {imported} reservoir candidates{suffix}"
 
 
@@ -1322,6 +2144,7 @@ def acceptance_run_daily_session(
     check_delay_ms: int,
     draft_followups: bool,
     followup_out: Path | None,
+    followup_review_out: Path | None,
     followup_research_out_dir: Path | None,
     include_drafted: bool,
     strategy: DraftStrategy,
@@ -1383,6 +2206,7 @@ def acceptance_run_daily_session(
                     browser=browser,
                     research_out_dir=followup_research_out_dir,
                     delay_ms=research_delay_ms,
+                    review_out=followup_review_out,
                 )
             )
     finally:
@@ -1567,6 +2391,7 @@ def acceptance_draft_followups(
     delay_ms: int = 500,
     research_offset: int = 0,
     research_limit: int = 0,
+    review_out: Path | None = None,
 ) -> str:
     ledger = store.load_acceptance_ledger()
     followups = store.load_acceptance_followup_ledger()
@@ -1603,8 +2428,17 @@ def acceptance_draft_followups(
     report = build_draft_report(
         report_candidates, artifact, strategy, str(research) if research is not None else None
     )
+    add_lead_review_context_to_draft_report(report, store.load_lead_ledger())
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(render_draft_markdown(report))
+    review_path = review_out or report_path.with_suffix(".review.json")
+    review_packet = build_accepted_followup_review_packet(
+        report,
+        artifact,
+        report_path=report_path,
+        research_path=research,
+    )
+    review_markdown_path = write_accepted_followup_review_packet(review_packet, review_path)
     recorded = followups.record_report(
         report, str(report_path), str(research) if research else None
     )
@@ -1619,15 +2453,22 @@ def acceptance_draft_followups(
             "strategy": strategy.value,
             "include_drafted": include_drafted,
             "generated_research": str(generated_research) if generated_research else None,
+            "review_path": str(review_path),
+            "review_markdown_path": str(review_markdown_path),
         },
     )
     suffix = f"; research artifact: {research}" if research else ""
+    suffix += f"; review packet: {review_path}"
     if not report.items:
         return (
             f"accepted follow-up drafts: 0 written to {report_path}; "
-            "no newly accepted connections need first-message drafts"
+            "no newly accepted connections need first-message drafts; "
+            f"review packet: {review_path}"
         )
-    return f"accepted follow-up drafts: {len(report.items)} written to {report_path}{suffix}"
+    return (
+        f"accepted follow-up drafts: {len(report.items)} written to {report_path}{suffix}; "
+        "stopped before dry-run/send for review"
+    )
 
 
 def acceptance_research(
@@ -2042,6 +2883,7 @@ def record_top_up_result_from_path(store: Store, path: Path, note: str | None = 
     result = read_model(path, SalesNavSendResult)
     event = record_top_up_send_result(run, result, str(path), note)
     store.save_run(run)
+    apply_candidate_event_to_lead_ledger(store, event)
     store.append_event(run, "record-top-up-result", {"path": str(path), "event": event})
     return (
         f"recorded top-up result as {event.status.value}; "

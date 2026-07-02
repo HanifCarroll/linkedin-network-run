@@ -14,6 +14,32 @@
         "location": "New York, NY",
         "url": "https://www.linkedin.com/sales/lead/dup"
       },
+      "companyProfile": {
+        "name": "Acme AI",
+        "url": "https://www.linkedin.com/sales/company/acme-ai",
+        "websiteUrl": "https://www.acme-ai.example",
+        "description": "Acme AI builds workflow automation products for service teams.",
+        "industry": "Software",
+        "size": "11-50",
+        "warnings": []
+      },
+      "companyWebsite": {
+        "url": "https://www.acme-ai.example",
+        "title": "Acme AI",
+        "description": "Workflow automation software for service operations.",
+        "warnings": []
+      },
+      "web": {
+        "query": "Duplicate Lead AI Product Leader Acme AI",
+        "results": [
+          {
+            "title": "Acme AI",
+            "url": "https://www.acme-ai.example",
+            "snippet": "Acme AI builds workflow automation products for service teams."
+          }
+        ],
+        "warnings": []
+      },
       "warnings": []
     }
   ]

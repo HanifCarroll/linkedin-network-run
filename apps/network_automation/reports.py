@@ -98,6 +98,11 @@ def render_report(run: Run) -> str:
             )
     if audited_delta != run.target:
         lines.extend(["", "## Reconciliation"])
+        if run.state == RunState.DONE and run.verified_count() < run.target:
+            lines.append(
+                "- Completion status: run is closed incomplete; do not treat this as a "
+                "successful target-complete send run."
+            )
         if run.start_audit is not None:
             lines.append(f"- Expected final audit: People ({run.start_audit + run.target})")
         if audited_delta is None:
@@ -116,7 +121,9 @@ def render_report(run: Run) -> str:
                     "clicked-send artifact and a fresh sent-page audit prove whether the "
                     "clicked invitation landed."
                 )
-        if audited_delta is None or audited_delta < run.target:
+        if (
+            audited_delta is None or audited_delta < run.target
+        ) and not (run.state == RunState.DONE and run.verified_count() < run.target):
             lines.append(
                 "- Finish guidance: Sent-page delta is now a pending-queue sanity check, not "
                 "the completion source of truth. Finish only after durable confirmed sends "

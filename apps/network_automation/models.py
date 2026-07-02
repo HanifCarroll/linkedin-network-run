@@ -47,6 +47,16 @@ class CandidateStatus(StrEnum):
     FAILED = "failed"
 
 
+class LeadStatus(StrEnum):
+    NEW = "new"
+    APPROVED = "approved"
+    SENT = "sent"
+    SKIPPED = "skipped"
+    PENDING = "pending"
+    CONNECTED = "connected"
+    BLOCKED = "blocked"
+
+
 TARGET_COUNTED_SEND_STATUSES = frozenset({CandidateStatus.PENDING, CandidateStatus.ACCEPTED})
 REAL_SEND_ATTEMPT_STATUSES = frozenset(
     {
@@ -143,11 +153,183 @@ class CandidateObservation(AppModel):
     index: int
     name: str
     profile_url: str | None = None
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
     sales_profile_urn: str | None = None
+    text: str | None = None
     visible_state: Any = None
     menu_state: str = "unknown"
     menu_labels: list[str] = Field(default_factory=list)
+    links: list[Any] = Field(default_factory=list)
     row_html_path: str | None = None
+
+
+class LeadRecord(AppModel):
+    lead_key: str
+    name: str
+    profile_url: str | None = None
+    public_profile_url: str | None = None
+    sales_profile_urn: str | None = None
+    first_seen_at: datetime = Field(default_factory=now_utc)
+    last_seen_at: datetime = Field(default_factory=now_utc)
+    first_source: str | None = None
+    last_source: str | None = None
+    status: LeadStatus = LeadStatus.NEW
+    status_reason: str | None = None
+    approved_reason: str | None = None
+    approved_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    last_menu_state: str | None = None
+    last_row_text: str | None = None
+
+
+class LeadLedger(AppModel):
+    leads: dict[str, LeadRecord] = Field(default_factory=dict)
+
+    def upsert_observation(self, observation: CandidateObservation) -> LeadRecord:
+        lead_key = lead_key_for_observation(observation)
+        current = now_utc()
+        record = self.leads.get(lead_key)
+        if record is None:
+            record = LeadRecord(
+                lead_key=lead_key,
+                name=observation.name,
+                profile_url=observation.profile_url,
+                public_profile_url=observation.public_profile_url,
+                sales_profile_urn=observation.sales_profile_urn,
+                first_seen_at=current,
+                last_seen_at=current,
+                first_source=observation.source,
+                last_source=observation.source,
+                last_menu_state=observation.menu_state,
+                last_row_text=observation.text,
+            )
+        else:
+            record.name = observation.name or record.name
+            record.profile_url = observation.profile_url or record.profile_url
+            record.public_profile_url = observation.public_profile_url or record.public_profile_url
+            record.sales_profile_urn = observation.sales_profile_urn or record.sales_profile_urn
+            record.last_seen_at = current
+            record.last_source = observation.source
+            record.last_menu_state = observation.menu_state
+            record.last_row_text = observation.text
+        if observation.menu_state == "already-pending" and record.status in {
+            LeadStatus.NEW,
+            LeadStatus.APPROVED,
+        }:
+            record.status = LeadStatus.PENDING
+            record.status_reason = "capture row showed an existing pending invitation"
+        self.leads[lead_key] = record
+        return record
+
+    def get_for_observation(self, observation: CandidateObservation) -> LeadRecord | None:
+        return self.leads.get(lead_key_for_observation(observation))
+
+    def approve(self, lead_key: str, reason: str | None = None) -> LeadRecord:
+        record = self.require(lead_key)
+        current = now_utc()
+        record.status = LeadStatus.APPROVED
+        record.status_reason = reason
+        record.approved_reason = reason
+        record.approved_at = current
+        record.reviewed_at = current
+        return record
+
+    def skip(self, lead_key: str, reason: str | None = None) -> LeadRecord:
+        record = self.require(lead_key)
+        current = now_utc()
+        record.status = LeadStatus.SKIPPED
+        record.status_reason = reason
+        record.reviewed_at = current
+        return record
+
+    def block(self, lead_key: str, reason: str | None = None) -> LeadRecord:
+        record = self.require(lead_key)
+        current = now_utc()
+        record.status = LeadStatus.BLOCKED
+        record.status_reason = reason
+        record.reviewed_at = current
+        return record
+
+    def apply_candidate_event(self, event: CandidateEvent) -> LeadRecord:
+        lead_key = lead_key_for_values(
+            event.profile_url or event.public_profile_url, None, event.name
+        )
+        record = self.leads.get(lead_key)
+        current = now_utc()
+        if record is None:
+            record = LeadRecord(
+                lead_key=lead_key,
+                name=event.name,
+                profile_url=event.profile_url,
+                public_profile_url=event.public_profile_url,
+                first_seen_at=current,
+                last_seen_at=current,
+                first_source=event.source,
+                last_source=event.source,
+            )
+        else:
+            record.profile_url = event.profile_url or record.profile_url
+            record.public_profile_url = event.public_profile_url or record.public_profile_url
+        if event.status in {
+            CandidateStatus.PENDING_PROVISIONAL,
+            CandidateStatus.PENDING,
+            CandidateStatus.ALREADY_PENDING,
+        }:
+            record.status = LeadStatus.PENDING
+        elif event.status == CandidateStatus.ACCEPTED:
+            record.status = LeadStatus.CONNECTED
+        elif event.status == CandidateStatus.SKIPPED:
+            record.status = LeadStatus.SKIPPED
+        elif event.status in {CandidateStatus.REVERTED_CONNECT, CandidateStatus.FAILED}:
+            record.status = LeadStatus.BLOCKED
+        elif event.status == CandidateStatus.AUDIT_TOP_UP:
+            record.status = LeadStatus.SENT
+        record.status_reason = event.note
+        record.last_seen_at = current
+        record.last_source = event.source
+        self.leads[lead_key] = record
+        return record
+
+    def require(self, lead_key: str) -> LeadRecord:
+        record = self.leads.get(lead_key)
+        if record is None:
+            raise KeyError(f"unknown lead_key {lead_key!r}")
+        return record
+
+
+class LeadReviewCandidate(AppModel):
+    lead_key: str
+    source: str
+    name: str
+    profile_url: str | None = None
+    public_profile_url: str | None = None
+    send_blockers: list[str] = Field(default_factory=list)
+    captured_at: str | None = None
+    menu_state: str
+    menu_labels: list[str] = Field(default_factory=list)
+    text: str | None = None
+    links: list[Any] = Field(default_factory=list)
+    current_status: LeadStatus = LeadStatus.NEW
+    status_reason: str | None = None
+    approved_reason: str | None = None
+
+
+class LeadReviewPacket(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    source: str | None = None
+    candidates: list[LeadReviewCandidate] = Field(default_factory=list)
+
+
+class LeadReviewDecision(AppModel):
+    lead_key: str
+    status: LeadStatus
+    reason: str | None = None
+
+
+class LeadReviewDecisionArtifact(AppModel):
+    decisions: list[LeadReviewDecision] = Field(default_factory=list)
 
 
 class SourceCaptureCursor(AppModel):
@@ -280,6 +462,8 @@ class Run(AppModel):
     timings: list[RunTimingEvent] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     blocked_resume_at: datetime | None = None
+    allow_fallback_sources: bool = True
+    carry_over_shortfall: bool = True
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -355,6 +539,8 @@ class Run(AppModel):
         if source.fallback:
             remaining = self.target - min(self.target, self.verified_count())
             return max(remaining, source.target)
+        if not self.carry_over_shortfall:
+            return source.target
         return source.target + self.primary_shortfall_before(source_index)
 
     def next_source(self) -> NextSource | None:
@@ -365,6 +551,8 @@ class Run(AppModel):
             return None
         for index, source in enumerate(self.sources):
             if source.exhausted:
+                continue
+            if source.fallback and not self.allow_fallback_sources:
                 continue
             quota = self.source_quota_with_carryover(index)
             verified = self.source_verified_count(source.name)
@@ -528,6 +716,14 @@ class Run(AppModel):
                         available=available,
                     )
             cursor = self.capture_cursors.get(next_source.name)
+            if cursor and cursor.end_of_results:
+                return OperatorPlan(
+                    action="source-exhausted",
+                    source=next_source.name,
+                    remaining=next_source.remaining_for_source,
+                    cursor=cursor,
+                    reason="source cursor is already at end of results",
+                )
             return OperatorPlan(
                 action="capture-source",
                 source=next_source.name,
@@ -589,13 +785,34 @@ def default_sources(target: int) -> list[SourcePlan]:
     return sources
 
 
-def new_run(target: int, run_date: Date | None = None, max_real_sends: int | None = None) -> Run:
+def sources_for_per_source_target(per_source_target: int) -> list[SourcePlan]:
+    return [
+        SourcePlan(name=name, target=per_source_target)
+        for name, _weight in DEFAULT_SOURCE_MIX
+    ] + [SourcePlan(name="FO - Founders - Urgent", target=0, fallback=True)]
+
+
+def target_for_per_source_target(per_source_target: int) -> int:
+    return per_source_target * len(DEFAULT_SOURCE_MIX)
+
+
+def new_run(
+    target: int,
+    run_date: Date | None = None,
+    max_real_sends: int | None = None,
+    *,
+    sources: list[SourcePlan] | None = None,
+    allow_fallback_sources: bool = True,
+    carry_over_shortfall: bool = True,
+) -> Run:
     effective_date = run_date or today()
     return Run(
         date=effective_date,
         target=target,
         max_real_sends=target if max_real_sends is None else max_real_sends,
-        sources=default_sources(target),
+        sources=sources or default_sources(target),
+        allow_fallback_sources=allow_fallback_sources,
+        carry_over_shortfall=carry_over_shortfall,
     )
 
 
@@ -630,6 +847,32 @@ def normalize_linkedin_url(value: str) -> str:
 def candidate_key(source: str, name: str, profile_url: str | None) -> str:
     normalized = normalize_linkedin_url(profile_url) if profile_url else ""
     return f"{source.strip()}|{name.strip()}|{normalized}"
+
+
+def lead_key_for_values(
+    profile_url: str | None, sales_profile_urn: str | None, name: str
+) -> str:
+    sales_profile_url = ""
+    if profile_url:
+        normalized = normalize_linkedin_url(profile_url)
+        if "/sales/lead/" in normalized:
+            sales_profile_url = normalized
+        else:
+            return f"linkedin:{normalized}"
+    if not sales_profile_url and sales_profile_urn:
+        derived = sales_profile_urn_to_lead_url(sales_profile_urn)
+        if derived:
+            sales_profile_url = normalize_linkedin_url(derived)
+    if sales_profile_url:
+        return f"linkedin:{sales_profile_url}"
+    name_key = re.sub(r"\s+", " ", name.strip().casefold())
+    return f"name:{name_key}"
+
+
+def lead_key_for_observation(observation: CandidateObservation) -> str:
+    return lead_key_for_values(
+        observation.profile_url, observation.sales_profile_urn, observation.name
+    )
 
 
 def candidate_matches_observation(
@@ -770,6 +1013,9 @@ class SalesNavCaptureRow(AppModel):
     text: str | None = None
     profile_url: str | None = Field(
         default=None, validation_alias=AliasChoices("profile_url", "profileUrl")
+    )
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
     )
     scroll_urn: str | None = Field(
         default=None, validation_alias=AliasChoices("scroll_urn", "scrollUrn")
@@ -926,10 +1172,13 @@ def capture_to_observations(
                 index=row.index,
                 name=row.name.strip(),
                 profile_url=profile_url,
+                public_profile_url=row.public_profile_url,
                 sales_profile_urn=row.scroll_urn,
+                text=row.text,
                 visible_state=row.visible_state,
                 menu_state=menu_state,
                 menu_labels=labels,
+                links=[link.model_dump(mode="json") for link in row.links],
                 row_html_path=row.row_html_path,
             )
         )
@@ -1705,6 +1954,25 @@ class WebResearch(AppModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CompanyProfileResearch(AppModel):
+    name: str | None = None
+    url: str | None = None
+    website_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("website_url", "websiteUrl")
+    )
+    description: str | None = None
+    industry: str | None = None
+    size: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WebsiteResearch(AppModel):
+    url: str | None = None
+    title: str | None = None
+    description: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AcceptedResearchRow(AppModel):
     source: str
     name: str
@@ -1719,6 +1987,12 @@ class AcceptedResearchRow(AppModel):
     )
     sales_nav: SalesNavResearch | None = Field(
         default=None, validation_alias=AliasChoices("sales_nav", "salesNav")
+    )
+    company_profile: CompanyProfileResearch | None = Field(
+        default=None, validation_alias=AliasChoices("company_profile", "companyProfile")
+    )
+    company_website: WebsiteResearch | None = Field(
+        default=None, validation_alias=AliasChoices("company_website", "companyWebsite")
     )
     web: WebResearch | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -1736,6 +2010,11 @@ class DraftItem(AppModel):
     template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
     angle: str
     draft: str
+    person_does: str | None = None
+    company_does: str | None = None
+    message_fit: str | None = None
+    company_profile_url: str | None = None
+    company_website_url: str | None = None
     evidence: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -1747,6 +2026,29 @@ class DraftReport(AppModel):
     research_captured_at: str | None = None
     items: list[DraftItem] = Field(default_factory=list)
     skipped_names: list[str] = Field(default_factory=list)
+
+
+class AcceptedFollowupReviewItem(AppModel):
+    followup_id: str
+    candidate: AcceptedDraftCandidate
+    template_key: AcceptedFollowupTemplateKey
+    angle: str
+    draft: str
+    person_does: str | None = None
+    company_does: str | None = None
+    message_fit: str | None = None
+    company_profile_url: str | None = None
+    company_website_url: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    research: AcceptedResearchRow | None = None
+
+
+class AcceptedFollowupReviewPacket(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    report_path: str
+    research_path: str | None = None
+    items: list[AcceptedFollowupReviewItem] = Field(default_factory=list)
 
 
 class AcceptanceFollowupAttempt(AppModel):
@@ -1775,6 +2077,11 @@ class AcceptanceFollowupRecord(AppModel):
     template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
     angle: str
     draft: str
+    person_does: str | None = None
+    company_does: str | None = None
+    message_fit: str | None = None
+    company_profile_url: str | None = None
+    company_website_url: str | None = None
     evidence: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     status: AcceptanceFollowupStatus = AcceptanceFollowupStatus.DRAFTED
@@ -1911,6 +2218,11 @@ class AcceptanceFollowupLedger(AppModel):
                             "draft": item.draft,
                             "profile_url": item.candidate.profile_url,
                             "sales_nav_profile_url": item.candidate.sales_nav_profile_url,
+                            "person_does": item.person_does,
+                            "company_does": item.company_does,
+                            "message_fit": item.message_fit,
+                            "company_profile_url": item.company_profile_url,
+                            "company_website_url": item.company_website_url,
                             "evidence": list(item.evidence),
                             "warnings": list(item.warnings),
                             "report_path": report_path,
@@ -1933,6 +2245,11 @@ class AcceptanceFollowupLedger(AppModel):
                     template_key=item.template_key,
                     angle=item.angle,
                     draft=item.draft,
+                    person_does=item.person_does,
+                    company_does=item.company_does,
+                    message_fit=item.message_fit,
+                    company_profile_url=item.company_profile_url,
+                    company_website_url=item.company_website_url,
                     evidence=list(item.evidence),
                     warnings=list(item.warnings),
                     report_path=report_path,
@@ -1995,6 +2312,8 @@ def build_draft_item(
 ) -> DraftItem:
     _ = strategy
     sales_nav = research.sales_nav if research else None
+    company_profile = research.company_profile if research else None
+    company_website = research.company_website if research else None
     sales_nav_profile_url = (
         (research.sales_nav_profile_url if research else None)
         or candidate.sales_nav_profile_url
@@ -2049,6 +2368,24 @@ def build_draft_item(
             evidence.append(f"Public web URL: {web_result.url}")
         if web_result.snippet:
             evidence.append(f"Public web snippet: {web_result.snippet}")
+    if company_profile is not None:
+        if company_profile.url:
+            evidence.append(f"Company profile URL: {company_profile.url}")
+        if company_profile.website_url:
+            evidence.append(f"Company website URL: {company_profile.website_url}")
+        if company_profile.description:
+            evidence.append(f"Company profile description: {company_profile.description}")
+        if company_profile.industry:
+            evidence.append(f"Company profile industry: {company_profile.industry}")
+        if company_profile.size:
+            evidence.append(f"Company profile size: {company_profile.size}")
+    if company_website is not None:
+        if company_website.url:
+            evidence.append(f"Company website inspected: {company_website.url}")
+        if company_website.title:
+            evidence.append(f"Company website title: {company_website.title}")
+        if company_website.description:
+            evidence.append(f"Company website description: {company_website.description}")
     if research and research.web and research.web.query:
         evidence.append(f"Public web query: {research.web.query}")
     warnings: list[str] = []
@@ -2061,6 +2398,10 @@ def build_draft_item(
         warnings.extend(research.warnings)
         if research.sales_nav:
             warnings.extend(research.sales_nav.warnings)
+        if research.company_profile:
+            warnings.extend(research.company_profile.warnings)
+        if research.company_website:
+            warnings.extend(research.company_website.warnings)
         if research.web:
             warnings.extend(research.web.warnings)
     if not title and not company:
@@ -2069,14 +2410,81 @@ def build_draft_item(
         warnings.append(
             "Public LinkedIn profile URL was not extracted; follow-up send may use Sales Nav URL."
         )
+    person_does = accepted_followup_person_summary(candidate.name, title, company)
+    company_does = accepted_followup_company_summary(
+        company, company_profile, company_website, web_result
+    )
+    message_fit = accepted_followup_message_fit(
+        template_key, angle_label, person_does, company_does
+    )
     return DraftItem(
         candidate=draft_candidate,
         template_key=template_key,
         angle=angle_label,
         draft=draft,
+        person_does=person_does,
+        company_does=company_does,
+        message_fit=message_fit,
+        company_profile_url=company_profile.url if company_profile else None,
+        company_website_url=(
+            company_website.url
+            if company_website and company_website.url
+            else company_profile.website_url
+            if company_profile
+            else None
+        ),
         evidence=evidence,
         warnings=warnings,
     )
+
+
+def accepted_followup_person_summary(
+    name: str, title: str | None, company: str | None
+) -> str | None:
+    if title and company:
+        return (
+            f"{clean_inline(name)} is listed as {clean_inline(title)} "
+            f"at {clean_inline(company)}."
+        )
+    if title:
+        return f"{clean_inline(name)} is listed as {clean_inline(title)}."
+    if company:
+        return f"{clean_inline(name)} is listed at {clean_inline(company)}."
+    return None
+
+
+def accepted_followup_company_summary(
+    company: str | None,
+    company_profile: CompanyProfileResearch | None,
+    company_website: WebsiteResearch | None,
+    web_result: WebResult | None,
+) -> str | None:
+    if company_profile and company_profile.description:
+        prefix = f"{clean_inline(company)}: " if company else ""
+        return prefix + clean_inline(company_profile.description)
+    if company_website and company_website.description:
+        prefix = f"{clean_inline(company)}: " if company else ""
+        return prefix + clean_inline(company_website.description)
+    if web_result and web_result.snippet:
+        prefix = f"{clean_inline(company)}: " if company else ""
+        return prefix + clean_inline(web_result.snippet)
+    if company:
+        return f"{clean_inline(company)} is the company shown on the accepted profile."
+    return None
+
+
+def accepted_followup_message_fit(
+    template_key: AcceptedFollowupTemplateKey,
+    angle: str,
+    person_does: str | None,
+    company_does: str | None,
+) -> str | None:
+    parts = [f"Selected `{template_key.value}` because the best sourced angle is {angle}."]
+    if person_does:
+        parts.append(person_does)
+    if company_does:
+        parts.append(company_does)
+    return " ".join(parts)
 
 
 def general_accepted_followup_draft(first: str, company: str | None) -> str:
@@ -2226,6 +2634,16 @@ def render_draft_markdown(report: DraftReport) -> str:
         lines.append(f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`")
         lines.append(f"- Template: `{item.template_key.value}`")
         lines.append("- Best angle: " + clean_inline(item.angle))
+        if item.person_does:
+            lines.append("- Person does: " + clean_inline(item.person_does))
+        if item.company_does:
+            lines.append("- Company does: " + clean_inline(item.company_does))
+        if item.message_fit:
+            lines.append("- Why this draft fits: " + clean_inline(item.message_fit))
+        if item.company_profile_url:
+            lines.append("- Company profile: " + clean_inline(item.company_profile_url))
+        if item.company_website_url:
+            lines.append("- Company website: " + clean_inline(item.company_website_url))
         if item.evidence:
             lines.append("- Evidence used:")
             lines.extend("  - " + clean_inline(evidence) for evidence in item.evidence)

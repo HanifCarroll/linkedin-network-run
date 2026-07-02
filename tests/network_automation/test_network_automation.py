@@ -41,6 +41,7 @@ from apps.network_automation.models import (
     DraftItem,
     DraftReport,
     DraftStrategy,
+    LeadStatus,
     PendingCandidateObservation,
     PendingCapture,
     PendingWithdrawResult,
@@ -62,6 +63,8 @@ from apps.network_automation.models import (
     recruiter_accepted_followup_draft,
     render_draft_markdown,
     source_yield_report,
+    sources_for_per_source_target,
+    target_for_per_source_target,
 )
 from apps.network_automation.old_state import inspect_old_state
 from apps.network_automation.reports import render_acceptance_report, render_report
@@ -69,6 +72,7 @@ from apps.network_automation.service import (
     acceptance_draft_followups,
     acceptance_import,
     acceptance_send_followup,
+    apply_lead_review_decisions,
     finish_run,
     import_audit,
     import_capture_path,
@@ -81,6 +85,7 @@ from apps.network_automation.service import (
     record_audit,
     record_candidate,
     resolve_network_source_url,
+    review_candidates,
     send_guarded,
     send_next,
     start_run,
@@ -273,7 +278,30 @@ class FakeLiveBrowserClient:
                             "company": "Example Co",
                             "url": candidate.profile_url,
                         },
-                        "web": {"query": candidate.name, "results": [], "warnings": []},
+                        "companyProfile": {
+                            "name": "Example Co",
+                            "url": "https://www.linkedin.com/sales/company/example-co",
+                            "websiteUrl": "https://example.com",
+                            "description": "Example Co builds software products for clients.",
+                            "warnings": [],
+                        },
+                        "companyWebsite": {
+                            "url": "https://example.com",
+                            "title": "Example Co",
+                            "description": "Software product services for teams.",
+                            "warnings": [],
+                        },
+                        "web": {
+                            "query": candidate.name,
+                            "results": [
+                                {
+                                    "title": "Example Co",
+                                    "url": "https://example.com",
+                                    "snippet": "Example Co builds software products for clients.",
+                                }
+                            ],
+                            "warnings": [],
+                        },
                     }
                     for candidate in selected
                 ],
@@ -475,6 +503,19 @@ def _make_source_current(store: Store, source: str) -> None:
     raise AssertionError(f"unknown source: {source}")
 
 
+def _approve_all_observed_leads(store: Store, reason: str = "test approved") -> None:
+    run = store.load_run()
+    ledger = store.load_lead_ledger()
+    for observation in run.observations:
+        if observation.public_profile_url is None:
+            slug = _safe_file_stem(f"{observation.name}-{observation.index}")
+            observation.public_profile_url = f"https://www.linkedin.com/in/{slug}"
+        record = ledger.upsert_observation(observation)
+        ledger.approve(record.lead_key, reason)
+    store.save_run(run)
+    store.save_lead_ledger(ledger)
+
+
 def test_default_source_mix_matches_current_contract() -> None:
     sources = default_sources(30)
     assert [(source.name, source.target) for source in sources[:3]] == [
@@ -484,6 +525,43 @@ def test_default_source_mix_matches_current_contract() -> None:
     ]
     assert sources[3].name == "FO - Founders - Urgent"
     assert sources[3].fallback is True
+
+
+def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallback(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+
+    output = start_run(
+        store,
+        per_source_target=2,
+        run_date=date(2026, 7, 2),
+        force=True,
+        allow_fallback_sources=False,
+    )
+
+    run = store.load_run()
+    assert "target 6" in output
+    assert target_for_per_source_target(2) == 6
+    assert [source.target for source in sources_for_per_source_target(2)[:3]] == [2, 2, 2]
+    assert run.target == 6
+    assert run.max_real_sends == 6
+    assert run.carry_over_shortfall is False
+    assert run.allow_fallback_sources is False
+    assert [(source.name, source.target) for source in run.sources[:3]] == [
+        ("ASAP - Contract Recruiters Staffing", 2),
+        ("ASAP - Agency Owners Delivery", 2),
+        ("ASAP - AI Advisors Implementation Partners", 2),
+    ]
+
+    run.sources[0].exhausted = True
+    run.sources[1].exhausted = True
+    run.sources[2].exhausted = True
+    store.save_run(run)
+
+    exhausted = store.load_run()
+    assert exhausted.source_quota("ASAP - AI Advisors Implementation Partners") == 2
+    assert exhausted.next_source() is None
 
 
 def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Path) -> None:
@@ -616,12 +694,207 @@ def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path)
         "https://www.linkedin.com/sales/lead/"
         "ACwAAACZuNoBDnWZnoEzJVGp-uptyWQSfIw87UM,NAME_SEARCH,HDgt"
     )
+    ledger = store.load_lead_ledger()
+    assert len(ledger.leads) == 2
+    assert {record.status for record in ledger.leads.values()} == {LeadStatus.NEW}
     plan = run.operator_plan()
     assert plan.action == "send-candidate"
     assert plan.name == "Duplicate Lead"
     resume_url = run.capture_cursors["ASAP - Agency Owners Delivery"].resume_url
     assert resume_url is not None
     assert resume_url.endswith("page=2")
+
+
+def test_capture_import_preserves_public_profile_url_for_normal_profile_fallback(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    capture_path = tmp_path / "capture-public-profile.json"
+    capture_path.write_text(
+        json.dumps(
+            {
+                "source": "ASAP - Agency Owners Delivery",
+                "rows": [
+                    {
+                        "index": 1,
+                        "name": "Public Lead",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x",
+                        "publicProfileUrl": "https://www.linkedin.com/in/public-lead",
+                        "menuState": "connectable",
+                        "menuLabels": [{"text": "Connect"}],
+                        "rowText": "Public Lead Founder Example Co",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import_capture_path(store, capture_path, only_connectable=True)
+
+    run = store.load_run()
+    ledger = store.load_lead_ledger()
+    assert run.observations[0].public_profile_url == "https://www.linkedin.com/in/public-lead"
+    assert next(iter(ledger.leads.values())).public_profile_url == (
+        "https://www.linkedin.com/in/public-lead"
+    )
+
+
+def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    run = store.load_run()
+    run.observations[0].public_profile_url = "https://www.linkedin.com/in/duplicate-lead"
+    run.observations[0].text = "Duplicate Lead Founder at Example Agency New York"
+    run.observations[0].links = [
+        {"text": "Duplicate Lead", "href": run.observations[0].profile_url}
+    ]
+    store.save_run(run)
+
+    review_path = tmp_path / "review.json"
+    output = review_candidates(store, source="ASAP - Agency Owners Delivery", out=review_path)
+
+    packet = json.loads(review_path.read_text())
+    assert "lead review packet: 2 candidate(s)" in output
+    assert (tmp_path / "review.md").exists()
+    assert [candidate["name"] for candidate in packet["candidates"]] == [
+        "Duplicate Lead",
+        "URN Lead",
+    ]
+    assert packet["candidates"][0]["text"] == (
+        "Duplicate Lead Founder at Example Agency New York"
+    )
+    assert packet["candidates"][0]["public_profile_url"] == (
+        "https://www.linkedin.com/in/duplicate-lead"
+    )
+    assert packet["candidates"][0]["send_blockers"] == []
+    assert packet["candidates"][1]["send_blockers"] == [
+        "missing exact public LinkedIn /in/ URL; capture or backfill public_profile_url "
+        "before approval/send"
+    ]
+    assert packet["candidates"][0]["links"][0]["text"] == "Duplicate Lead"
+
+    with pytest.raises(RuntimeError, match="need review"):
+        send_next(
+            store,
+            FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+            dry_run=False,
+            allow_send=True,
+        )
+
+    decisions_path = tmp_path / "decisions.json"
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "lead_key": packet["candidates"][0]["lead_key"],
+                        "status": "approved",
+                        "reason": "agency owner with delivery work",
+                    },
+                    {
+                        "lead_key": packet["candidates"][1]["lead_key"],
+                        "status": "skipped",
+                        "reason": "not a fit",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    apply_output = apply_lead_review_decisions(store, decisions_path)
+
+    ledger = store.load_lead_ledger()
+    statuses = {record.name: record.status for record in ledger.leads.values()}
+    skipped = [event for event in store.load_run().candidates if event.name == "URN Lead"]
+    assert "applied 2 lead review decision(s)" in apply_output
+    assert statuses == {
+        "Duplicate Lead": LeadStatus.APPROVED,
+        "URN Lead": LeadStatus.SKIPPED,
+    }
+    assert skipped[0].status == CandidateStatus.SKIPPED
+
+    send_output = send_next(
+        store,
+        FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+        dry_run=False,
+        allow_send=True,
+        confirm_delay_ms=0,
+    )
+
+    assert "recorded pending" in send_output
+    assert store.load_lead_ledger().leads[packet["candidates"][0]["lead_key"]].status == (
+        LeadStatus.PENDING
+    )
+
+
+def test_lead_review_blocks_approval_without_public_profile_url(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    review_path = tmp_path / "review.json"
+    review_candidates(store, source="ASAP - Agency Owners Delivery", out=review_path)
+    packet = json.loads(review_path.read_text())
+    decisions_path = tmp_path / "decisions.json"
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "lead_key": packet["candidates"][0]["lead_key"],
+                        "status": "approved",
+                        "reason": "looks relevant",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="cannot approve Duplicate Lead"):
+        apply_lead_review_decisions(store, decisions_path)
+
+    ledger = store.load_lead_ledger()
+    record = ledger.leads[packet["candidates"][0]["lead_key"]]
+    record.status = LeadStatus.APPROVED
+    ledger.leads[record.lead_key] = record
+    store.save_lead_ledger(ledger)
+
+    with pytest.raises(RuntimeError, match="public_profile_url is missing or invalid"):
+        send_next(
+            store,
+            FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+            dry_run=False,
+            allow_send=True,
+        )
+
+
+def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    ledger = store.load_lead_ledger()
+    urn_record = next(record for record in ledger.leads.values() if record.name == "URN Lead")
+    ledger.block(urn_record.lead_key, "not a fit")
+    store.save_lead_ledger(ledger)
+
+    review_candidates(store, source="ASAP - Agency Owners Delivery", out=tmp_path / "review.json")
+
+    updated = store.load_lead_ledger().leads[urn_record.lead_key]
+    suppressed = [
+        event
+        for event in store.load_run().candidates
+        if event.name == "URN Lead" and event.status == CandidateStatus.SKIPPED
+    ]
+    assert updated.status == LeadStatus.BLOCKED
+    assert suppressed
 
 
 def test_capture_import_skips_outreach_messaged_profile(
@@ -729,6 +1002,7 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
         )
     )
     store.save_run(run)
+    _approve_all_observed_leads(store)
     send_result = tmp_path / "top-up-send.json"
     send_result.write_text(
         json.dumps(
@@ -862,12 +1136,13 @@ def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> Non
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
     browser = FixtureBrowserClient(send_result=FIXTURES / "send_pending.json")
 
     with pytest.raises(RuntimeError, match="real guarded sends require --allow-send"):
         send_guarded(store, browser, dry_run=False, allow_send=False)
 
-    output = send_next(store, browser, dry_run=False, allow_send=True)
+    output = send_next(store, browser, dry_run=False, allow_send=True, confirm_delay_ms=0)
 
     run = store.load_run()
     assert "recorded pending" in output
@@ -882,6 +1157,7 @@ def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) 
     start_run(store, target=1, run_date=date(2026, 6, 29), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
     browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
 
     output = send_next(
@@ -951,11 +1227,13 @@ def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
     send_next(
         store,
         FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
         dry_run=False,
         allow_send=True,
+        confirm_delay_ms=0,
     )
     import_audit(store, FIXTURES / "audit_100.json")
 
@@ -965,6 +1243,17 @@ def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -
     ledger = store.load_acceptance_ledger()
     assert len(ledger.invitations) == 1
     assert ledger.invitations[0].name == "Duplicate Lead"
+
+
+def test_force_finished_incomplete_report_is_explicit(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 7, 2), force=True)
+    record_audit(store, 100)
+
+    report = finish_run(store, force=True)
+
+    assert "Completion status: run is closed incomplete" in report
+    assert "force-finished incomplete run with durable confirmed sends 0/2" in report
 
 
 def test_acceptance_report_marks_current_daily_reconciliation() -> None:
@@ -1358,6 +1647,18 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     )
     store.save_acceptance_ledger(ledger)
     acceptance_import(store, FIXTURES / "acceptance_outcomes.json")
+    lead_ledger = store.load_lead_ledger()
+    lead_record = lead_ledger.upsert_observation(
+        CandidateObservation(
+            source="ASAP - Agency Owners Delivery",
+            index=1,
+            name="Duplicate Lead",
+            profile_url="https://www.linkedin.com/sales/lead/dup",
+            menu_state="connectable",
+        )
+    )
+    lead_ledger.approve(lead_record.lead_key, "agency owner with delivery work")
+    store.save_lead_ledger(lead_ledger)
     report_path = tmp_path / "followups.md"
 
     output = acceptance_draft_followups(
@@ -1376,9 +1677,26 @@ def test_acceptance_drafts_and_followup_send_guards(tmp_path: Path) -> None:
     assert "Are you the right person to ask about this kind of project support?" in rendered
     assert "HC Studio LLC" not in rendered
     assert "- Template: `agency`" in rendered
+    assert "Person does: Duplicate Lead is listed as AI Product Leader at Acme AI." in rendered
+    assert (
+        "Company does: Acme AI: Acme AI builds workflow automation products for service teams."
+        in rendered
+    )
+    assert "Why this draft fits:" in rendered
+    assert "Company website: https://www.acme-ai.example" in rendered
+    assert "Original connection source: ASAP - Agency Owners Delivery" in rendered
+    assert "Original connection approval: agency owner with delivery work" in rendered
+    review_packet = json.loads(report_path.with_suffix(".review.json").read_text())
+    assert review_packet["items"][0]["person_does"] == (
+        "Duplicate Lead is listed as AI Product Leader at Acme AI."
+    )
+    assert review_packet["items"][0]["company_website_url"] == "https://www.acme-ai.example"
+    assert review_packet["items"][0]["research"]["company_profile"]["name"] == "Acme AI"
     followups = store.load_acceptance_followup_ledger()
     record = followups.drafts[0]
     assert record.template_key == AcceptedFollowupTemplateKey.AGENCY
+    assert record.person_does == "Duplicate Lead is listed as AI Product Leader at Acme AI."
+    assert record.company_website_url == "https://www.acme-ai.example"
     assert record.profile_url == "https://www.linkedin.com/in/duplicate-lead"
     assert record.sales_nav_profile_url == "https://www.linkedin.com/sales/lead/dup"
     with pytest.raises(ValueError, match="real sends require dry_run_ready"):
@@ -1911,6 +2229,7 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
     import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
     out_dir = tmp_path / "send-browser"
 
     exit_code = network_main(
@@ -2256,12 +2575,161 @@ def test_cli_network_run_session_reuses_one_live_browser(
             "capture:ASAP - Contract Recruiters Staffing:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=def"
         ),
-        "send:Duplicate Lead:dry=False:allow=True",
-        "acceptance-check:1:offset=0:limit=1:delay=0",
-        "audit:load_more=0",
     ]
     store = Store(tmp_path)
-    assert store.load_run().verified_count() == 1
+    assert store.load_run().verified_count() == 0
+    review_packet = out_dir / "lead-review-candidates.json"
+    assert review_packet.exists()
+    assert json.loads(review_packet.read_text())["candidates"][0]["name"] == "Duplicate Lead"
+
+
+def test_cli_network_run_session_resume_sends_after_review_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    saved_searches = tmp_path / "saved-searches.json"
+    out_dir = tmp_path / "network-session"
+
+    first_exit = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--target",
+            "1",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(saved_searches),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+
+    assert first_exit == 0
+    packet_path = out_dir / "lead-review-candidates.json"
+    packet = json.loads(packet_path.read_text())
+    store = Store(tmp_path)
+    ledger = store.load_lead_ledger()
+    ledger.leads[packet["candidates"][0]["lead_key"]].public_profile_url = (
+        "https://www.linkedin.com/in/duplicate-lead"
+    )
+    store.save_lead_ledger(ledger)
+    decisions_path = out_dir / "lead-review-candidates-decisions.json"
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "lead_key": candidate["lead_key"],
+                        "status": "approved" if index == 0 else "skipped",
+                        "reason": "fixture decision",
+                    }
+                    for index, candidate in enumerate(packet["candidates"])
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert "applied" in apply_lead_review_decisions(store, decisions_path)
+    FakeLiveBrowserClient.instances.clear()
+
+    resume_exit = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--resume",
+            "--saved-searches",
+            str(saved_searches),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(out_dir),
+            "--max-steps",
+            "4",
+        ]
+    )
+
+    assert resume_exit == 0
+    calls = FakeLiveBrowserClient.instances[0].calls
+    assert calls[0] == "send:Duplicate Lead:dry=False:allow=True"
+    assert "audit:load_more=0" in calls
+    assert Store(tmp_path).load_run().verified_count() == 1
+
+
+def test_cli_network_run_session_blocks_when_targeted_saved_search_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--target",
+            "30",
+            "--max-real-sends",
+            "30",
+            "--force",
+            "--saved-searches",
+            str(tmp_path / "saved-searches.json"),
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    run = Store(tmp_path).load_run()
+    assert exit_code == 1
+    assert run.state == RunState.BLOCKED
+    assert "saved-search coverage missing" in captured.err
+    assert "ASAP - AI Advisors Implementation Partners" in captured.err
+
+
+def test_cli_review_candidates_json_reports_decision_and_next_commands(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    review_out = tmp_path / "review.json"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "review-candidates",
+            "--out",
+            str(review_out),
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["packet_path"] == str(review_out)
+    assert payload["markdown_path"] == str(review_out.with_suffix(".md"))
+    assert payload["decisions_path"] == str(tmp_path / "review-decisions.json")
+    assert "apply-lead-decisions" in payload["apply_command"]
+    assert "run-session --resume" in payload["send_command"]
+    assert payload["next_commands"][0] == f"edit decisions: {tmp_path / 'review-decisions.json'}"
 
 
 def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
@@ -2356,13 +2824,14 @@ def test_cli_network_run_session_exhausts_source_at_end_of_results(
         "reached end of saved-search results with no usable candidates" in note
         for note in run.notes
     )
-    assert run.verified_count() == 1
+    assert run.verified_count() == 0
+    assert (tmp_path / "network-session" / "lead-review-candidates.json").exists()
     calls = ZeroThenNextSourceBrowserClient.instances[0].calls
     assert sum(
         call.startswith("capture:ASAP - Contract Recruiters Staffing") for call in calls
     ) == 1
     assert any(call.startswith("capture:ASAP - Agency Owners Delivery") for call in calls)
-    assert any(call.startswith("send:ASAP - Agency Owners Delivery Lead") for call in calls)
+    assert not any(call.startswith("send:ASAP - Agency Owners Delivery Lead") for call in calls)
 
 
 def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
@@ -2422,6 +2891,7 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
     ]
     assert json.loads(outcomes.read_text())["rows"][0]["status"] == "accepted"
     assert draft_report.exists()
+    assert draft_report.with_suffix(".review.json").exists()
     assert (draft_out_dir / "accepted-candidates.json").exists()
     assert (draft_out_dir / "accepted-research.json").exists()
     assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"

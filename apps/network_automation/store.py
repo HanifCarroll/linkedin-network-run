@@ -21,6 +21,7 @@ from .models import (
     AcceptanceLedger,
     CandidateEvent,
     CandidateReservoir,
+    LeadLedger,
     PendingCleanupRun,
     Run,
     SourceScanProgressLedger,
@@ -74,6 +75,10 @@ class Store:
     @property
     def source_progress_path(self) -> Path:
         return self.dir / "source-progress.json"
+
+    @property
+    def lead_ledger_path(self) -> Path:
+        return self.dir / "lead-ledger.json"
 
     def default_acceptance_followup_report_path(self) -> Path:
         from .models import today
@@ -135,6 +140,14 @@ class Store:
 
     def save_source_progress(self, progress: SourceScanProgressLedger) -> None:
         write_model_atomic(self.source_progress_path, progress)
+
+    def load_lead_ledger(self) -> LeadLedger:
+        if not self.lead_ledger_path.exists():
+            return LeadLedger()
+        return read_model(self.lead_ledger_path, LeadLedger)
+
+    def save_lead_ledger(self, ledger: LeadLedger) -> None:
+        write_model_atomic(self.lead_ledger_path, ledger)
 
     def append_event(self, run: Run, kind: str, payload: object) -> None:
         append_jsonl(

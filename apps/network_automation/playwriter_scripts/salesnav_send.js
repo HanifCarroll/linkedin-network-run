@@ -43,6 +43,7 @@ function basePayload(url) {
     dryRun,
     url,
     status: "unknown",
+    publicProfileUrl: candidate.public_profile_url || candidate.publicProfileUrl || null,
   };
 }
 
@@ -154,6 +155,53 @@ async function findMenuItem(page, menuId, label) {
   return null;
 }
 
+async function openNormalProfileMoreMenu(page) {
+  const buttons = await page.getByRole("button", { name: /^More$/i }).all();
+  for (const button of buttons) {
+    if (!(await button.isVisible().catch(() => false))) continue;
+    await clickReadonly(button, 8000);
+    await page.waitForTimeout(500);
+    const labels = await normalProfileMenuLabels(page);
+    if (labels.length > 0) return { state: classifyMenuLabels(labels), labels };
+    await page.keyboard.press("Escape").catch(() => null);
+  }
+  return { state: "missing-trigger", labels: [] };
+}
+
+async function normalProfileMenuLabels(page) {
+  const items = await page
+    .locator("[role='menu'] button,[role='menu'] a,[role='menuitem'],.artdeco-dropdown__content button,.artdeco-dropdown__content a")
+    .all();
+  const labels = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const text = clean(await item.textContent().catch(() => ""));
+    const aria = await item.getAttribute("aria-label").catch(() => null);
+    const href = await item.getAttribute("href").catch(() => null);
+    const disabled =
+      (await item.isDisabled().catch(() => false)) ||
+      ((await item.getAttribute("aria-disabled").catch(() => null)) === "true");
+    if (text || aria || href) labels.push({ index, text: text || null, aria, href, disabled });
+  }
+  return labels;
+}
+
+async function findNormalProfileMenuItem(page, label) {
+  const items = await page
+    .locator("[role='menu'] button,[role='menu'] a,[role='menuitem'],.artdeco-dropdown__content button,.artdeco-dropdown__content a")
+    .all();
+  for (const item of items) {
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const text = clean(await item.textContent().catch(() => ""));
+    const aria = clean(await item.getAttribute("aria-label").catch(() => ""));
+    if (new RegExp(`^${label}$`, "i").test(text) || new RegExp(`^${label}$`, "i").test(aria)) {
+      return item;
+    }
+  }
+  return null;
+}
+
 async function publicProfileUrlFromMenuItemHrefs(page, menuId) {
   const menu = menuId ? page.locator(`#${menuId}`).first() : page.locator("[data-popper-placement]").last();
   const items = await menu.locator("button,a,[role=menuitem]").all();
@@ -194,7 +242,9 @@ async function clickSendInvitation(page) {
   for (const button of buttons) {
     const text = clean(await button.textContent().catch(() => ""));
     const aria = clean(await button.getAttribute("aria-label").catch(() => ""));
-    if (/^(Send Invitation|Send invite|Send now|Send)$/i.test(text || aria)) sendButton = button;
+    if (/^(Send Invitation|Send invite|Send now|Send without a note|Send)$/i.test(text || aria)) {
+      sendButton = button;
+    }
   }
   if (!sendButton) return { status: "send-button-missing" };
   if (await sendButton.isDisabled().catch(() => false)) return { status: "send-button-disabled" };
@@ -218,11 +268,15 @@ async function sendFromCurrentPage(page) {
   }
   const menu = await openProfileActionsMenu(page);
   payload.before = menu;
-  payload.publicProfileUrl = await capturePublicProfileUrl(page, menu.menu_id).catch(() => null);
+  payload.publicProfileUrl =
+    payload.publicProfileUrl || (await capturePublicProfileUrl(page, menu.menu_id).catch(() => null));
   const menuState = classifyMenuLabels(menu.labels || []);
   if (menuState === "already-pending") {
     payload.status = "already-pending";
   } else if (menuState !== "connectable") {
+    if (payload.publicProfileUrl) {
+      return sendFromPublicProfile(page, payload, `sales-nav:${menuState}`);
+    }
     payload.status = `not-connectable:${menuState}`;
   } else if (dryRun) {
     payload.status = "dry-run-connectable";
@@ -251,6 +305,64 @@ async function sendFromCurrentPage(page) {
           ? "pending-provisional"
           : "unverified:clicked-send";
     }
+  }
+  await page.keyboard.press("Escape").catch(() => null);
+  return payload;
+}
+
+async function sendFromPublicProfile(page, salesPayload, reason) {
+  const publicUrl = normalizePublicProfileUrl(salesPayload.publicProfileUrl);
+  const payload = {
+    ...salesPayload,
+    status: "unknown",
+    salesNavUrl: salesPayload.url,
+    url: publicUrl || salesPayload.publicProfileUrl,
+    fallback: { type: "linkedin-profile", reason },
+  };
+  if (!publicUrl) {
+    payload.status = "not-connectable:linkedin-profile-url-invalid";
+    return payload;
+  }
+  await page.goto(publicUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await waitForPageLoad({ page, timeout: 10000 }).catch(() => null);
+  await page.waitForTimeout(1500);
+  payload.url = page.url();
+  const block = await classifyPage(page);
+  if (block.blocked) {
+    payload.status = "blocked";
+    payload.reason = block.reason;
+    return payload;
+  }
+  const menu = await openNormalProfileMoreMenu(page);
+  payload.fallback.before = menu;
+  const connect = await findNormalProfileMenuItem(page, "Connect");
+  if (!connect) {
+    payload.status =
+      classifyMenuLabels(menu.labels || []) === "already-pending"
+        ? "already-pending"
+        : "not-connectable:linkedin-profile-missing-connect";
+    return payload;
+  }
+  if (dryRun) {
+    payload.status = "dry-run-connectable";
+    await page.keyboard.press("Escape").catch(() => null);
+    return payload;
+  }
+  if (!allowSend) {
+    payload.status = "blocked";
+    payload.reason = "real send requires allowSend";
+    return payload;
+  }
+  await connect.click({ timeout: 8000 }).catch(async () => connect.evaluate((element) => element.click()));
+  await page.waitForTimeout(750);
+  const send = await clickSendInvitation(page);
+  payload.send = { ...send, guard: { action: "send_connection", allowed: allowSend } };
+  if (send.status !== "clicked-send") {
+    payload.status = statusFromSend(send.status);
+    payload.after = { state: send.status };
+  } else {
+    payload.status = "pending-provisional";
+    payload.after = { state: "clicked-send-from-linkedin-profile" };
   }
   await page.keyboard.press("Escape").catch(() => null);
   return payload;
