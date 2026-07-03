@@ -238,6 +238,7 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
         if row is None:
             continue
         existing = progress.sources.get(source.name)
+        fresh_url = row.fresh_url
         if (
             existing is None
             or existing.saved_search_id != row.saved_search_id
@@ -249,6 +250,26 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
                 saved_search_url=row.view_url,
                 last_note="saved search initialized or changed",
             )
+            continue
+        if existing.end_of_results and fresh_url:
+            source.exhausted = False
+            progress.sources[source.name] = SourceScanProgress(
+                source=source.name,
+                saved_search_id=row.saved_search_id,
+                saved_search_url=row.view_url,
+                next_url=fresh_url,
+                end_of_results=False,
+                last_note="fresh saved-search results reset end cursor",
+            )
+            run.capture_cursors[source.name] = SourceCaptureCursor(
+                source=source.name,
+                saved_search_id=row.saved_search_id,
+                saved_search_url=row.view_url,
+                resume_url=fresh_url,
+                next_url=fresh_url,
+                end_of_results=False,
+            )
+            seeded.append(source.name)
             continue
         if existing.end_of_results:
             source.exhausted = True

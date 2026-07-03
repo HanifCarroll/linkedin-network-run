@@ -62,6 +62,7 @@ from apps.network_automation.service import (
     resolve_network_source_url,
     retry_failed_lead,
     review_candidates,
+    seed_run_source_progress,
     send_guarded,
     send_next,
     set_lead_public_profile_url,
@@ -283,6 +284,70 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
     assert contract_url == "https://www.linkedin.com/sales/search/people?savedSearchId=def"
     assert agency_url == "https://www.linkedin.com/sales/search/people?savedSearchId=abc"
     assert advisor_url == "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
+
+
+def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 3),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=["ASAP - Agency Owners Delivery"],
+    )
+    run = store.load_run()
+    run.sources[0].exhausted = True
+    store.save_run(run)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                "ASAP - Agency Owners Delivery": SourceScanProgress(
+                    source="ASAP - Agency Owners Delivery",
+                    saved_search_id="abc",
+                    saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    next_url="https://www.linkedin.com/sales/search/people?page=2&savedSearchId=abc",
+                    end_of_results=True,
+                    last_note="end of results",
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                        "freshUrl": (
+                            "https://www.linkedin.com/sales/search/people?"
+                            "lastViewedAt=1781957710070&savedSearchId=abc"
+                        ),
+                        "freshText": "503 new results since 6/20/2026",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = seed_run_source_progress(store, saved_searches)
+
+    run = store.load_run()
+    progress = store.load_source_progress().sources["ASAP - Agency Owners Delivery"]
+    cursor = run.capture_cursors["ASAP - Agency Owners Delivery"]
+    assert output == "source progress seeded; resumed=1; ended=0"
+    assert run.sources[0].exhausted is False
+    assert progress.end_of_results is False
+    assert progress.next_url == cursor.resume_url
+    assert cursor.resume_url is not None
+    assert "lastViewedAt=1781957710070" in cursor.resume_url
+    assert run.operator_plan().action == "capture-source"
 
 
 class _TransientSavedSearchBrowser(FakeLiveBrowserClient):
