@@ -9,6 +9,7 @@ from .models import (
     PendingWithdrawStatus,
     Run,
     RunState,
+    SendLedgerSummary,
     source_yield_report,
 )
 
@@ -27,7 +28,7 @@ def percentage_suffix(numerator: int, denominator: int) -> str:
     return f" ({numerator * 100.0 / denominator:.1f}%)"
 
 
-def render_report(run: Run) -> str:
+def render_report(run: Run, send_summary: SendLedgerSummary | None = None) -> str:
     audited_delta = run.audited_delta()
     plan = run.operator_plan()
     audit_top_up_count = sum(
@@ -73,6 +74,21 @@ def render_report(run: Run) -> str:
         target_text = f" / target {source.target}" if source.target > 0 else ""
         exhausted_text = " (exhausted)" if source.exhausted else ""
         lines.append(f"- {source.name}: {verified} durable{target_text}{exhausted_text}")
+    if send_summary is not None:
+        lines.extend(["", "## Daily Send Ledger"])
+        lines.append(f"- Date: {send_summary.date.isoformat()} ({send_summary.timezone})")
+        lines.append(f"- Durable sends: {send_summary.durable_sent_count}")
+        lines.append(f"- Provisional sends: {send_summary.provisional_count}")
+        lines.append(f"- Failed attempts: {send_summary.failed_count}")
+        lines.append(f"- Reverted to Connect: {send_summary.reverted_count}")
+        lines.append(f"- Audit top-ups: {send_summary.top_up_count}")
+        lines.append(f"- Ledger path: {send_summary.ledger_path}")
+        lines.append("- Durable sends by source:")
+        if send_summary.by_source:
+            for source_name, count in send_summary.by_source.items():
+                lines.append(f"  - {source_name}: {count}")
+        else:
+            lines.append("  - None recorded")
     lines.extend(["", "## Source Yield"])
     for stats in source_yield_report(run):
         yield_text = (
@@ -170,6 +186,50 @@ def render_report(run: Run) -> str:
     if top_up_names:
         lines.extend(["", "## Audit Top-Up Names"])
         lines.extend("- " + name for name in top_up_names)
+    return "\n".join(lines)
+
+
+def render_send_summary(summary: SendLedgerSummary) -> str:
+    lines = [
+        f"# LinkedIn Network Sends {summary.date.isoformat()}",
+        "",
+        f"- Timezone: {summary.timezone}",
+        f"- Ledger path: {summary.ledger_path}",
+        f"- Durable sent count: {summary.durable_sent_count}",
+        f"- Provisional sends: {summary.provisional_count}",
+        f"- Failed attempts: {summary.failed_count}",
+        f"- Reverted to Connect: {summary.reverted_count}",
+        f"- Audit top-ups: {summary.top_up_count}",
+    ]
+    if summary.history_logs_scanned or summary.synced_entries:
+        lines.append(
+            f"- History sync: {summary.synced_entries} new entr"
+            f"{'y' if summary.synced_entries == 1 else 'ies'} from "
+            f"{summary.history_logs_scanned} run log"
+            f"{'' if summary.history_logs_scanned == 1 else 's'}"
+        )
+    lines.extend(["", "## Durable Sends By Source"])
+    if summary.by_source:
+        for source, count in summary.by_source.items():
+            lines.append(f"- {source}: {count}")
+    else:
+        lines.append("- None recorded")
+    lines.extend(["", "## Latest Attempt Statuses"])
+    if summary.by_status:
+        for status, count in summary.by_status.items():
+            lines.append(f"- {status}: {count}")
+    else:
+        lines.append("- None recorded")
+    lines.extend(["", "## Entries"])
+    if summary.entries:
+        for entry in summary.entries:
+            durable = "durable" if entry.durable else "not durable"
+            lines.append(
+                f"- {entry.attempted_at.isoformat()} | {entry.source} | "
+                f"{entry.name} | {entry.status.value} ({durable})"
+            )
+    else:
+        lines.append("- None recorded")
     return "\n".join(lines)
 
 

@@ -210,7 +210,7 @@ def agency_project_draft(first_name: str, agency_name: str) -> str:
 def advisor_draft(lead: Lead) -> str:
     return (
         f"Hi {lead.first_name},\n\n"
-        "I'm a full-stack product engineer who builds AI tools, internal systems, and "
+        "I'm a full-stack product engineer who builds AI, automation, internal systems, and "
         "workflow automation. I'm reaching out in case you need extra implementation "
         "support for your projects.\n\n"
         "Recent work:\n\n"
@@ -292,7 +292,7 @@ def is_likely_location(value: str) -> bool:
 
 def message_subject(lead: Lead) -> str:
     if lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER:
-        return "Implementation partner for AI and workflow systems"
+        return "Implementation partner for strategy and workflow systems"
     if lead.lead_type in {
         LeadType.AGENCY_RESOURCE,
         LeadType.AGENCY_DELIVERY,

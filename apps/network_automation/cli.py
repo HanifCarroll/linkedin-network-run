@@ -22,7 +22,7 @@ from .browser import (
 )
 from .models import CandidateStatus, DraftStrategy
 from .old_state import inspect_old_state
-from .reports import render_pending_report, render_report
+from .reports import render_pending_report, render_report, render_send_summary
 from .service import (
     acceptance_check,
     acceptance_draft_followups,
@@ -47,6 +47,7 @@ from .service import (
     import_capture_path,
     needs_reaudit,
     network_run_session,
+    network_sends_summary,
     pending_cleanup_audit,
     pending_cleanup_capture,
     pending_cleanup_finish,
@@ -145,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--no-fallback", action="store_true")
     run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
     run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
+    run_session.add_argument(
+        "--refresh-saved-searches",
+        action="store_true",
+        help="recapture the Sales Navigator saved-search index before resolving sources",
+    )
     run_session.add_argument("--out-dir", default=str(DEFAULT_NETWORK_SESSION_OUT_DIR))
     run_session.add_argument("--review-out", default=None)
     run_session.add_argument("--allow-send", action="store_true")
@@ -299,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--json", action="store_true")
     status = subparsers.add_parser("status")
     status.add_argument("--json", action="store_true")
+    sends = subparsers.add_parser("sends")
+    sends.add_argument("--date", default="today")
+    sends.add_argument("--timezone", default="local")
+    sends.add_argument("--sync-history", action="store_true")
+    sends.add_argument("--json", action="store_true")
     subparsers.add_parser("report")
     finish = subparsers.add_parser("finish")
     finish.add_argument("--force", action="store_true")
@@ -544,6 +555,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                 allow_fallback_sources=not args.no_fallback,
                 saved_searches_url=args.saved_searches_url,
                 saved_searches_out=Path(args.saved_searches),
+                refresh_saved_searches=args.refresh_saved_searches,
                 audit_attempts=args.audit_attempts,
                 audit_delay_ms=args.audit_delay_ms,
                 allow_send=args.allow_send,
@@ -692,8 +704,24 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "status":
         run = store.load_run()
         return json_model_or_text(run, as_json=args.json)
+    if command == "sends":
+        summary = network_sends_summary(
+            store,
+            date_arg=args.date,
+            timezone_name=args.timezone,
+            sync_history=args.sync_history,
+        )
+        if args.json:
+            return json_model_or_text(summary, as_json=True)
+        return render_send_summary(summary)
     if command == "report":
-        return render_report(store.load_run())
+        run = store.load_run()
+        summary = network_sends_summary(
+            store,
+            date_arg=run.date.isoformat(),
+            timezone_name="local",
+        )
+        return render_report(run, send_summary=summary)
     if command == "finish":
         return finish_run(store, force=args.force)
     if command == "tune-sources":

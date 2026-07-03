@@ -78,9 +78,15 @@ def classify_lead(
         "president",
         "managing director",
     )
-    source_advisor = contains_any(source.lower(), "ai advisors", "implementation partners")
+    source_advisor = contains_any(
+        source.lower(), "strategy consultants", "ai advisors", "implementation partners"
+    )
     advisor_signal = contains_any(
         profile_text,
+        "strategy consultant",
+        "management consultant",
+        "strategy advisor",
+        "digital transformation",
         "ai consultant",
         "ai advisor",
         "business consultant",
@@ -153,7 +159,7 @@ def classify_lead(
     elif source_advisor or advisor_signal:
         lead_type = LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
         score += 40
-        reasons.append("AI advisor/implementation partner signal")
+        reasons.append("advisor/implementation partner signal")
     elif company_agency and (title_resource or title_delivery or title_founder):
         if title_resource:
             lead_type = LeadType.AGENCY_RESOURCE

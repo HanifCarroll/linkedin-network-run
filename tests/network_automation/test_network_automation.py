@@ -79,6 +79,7 @@ from apps.network_automation.service import (
     finish_run,
     import_audit,
     import_capture_path,
+    network_sends_summary,
     pending_cleanup_finish,
     pending_cleanup_import_audit,
     pending_cleanup_import_capture,
@@ -568,7 +569,7 @@ def test_default_source_mix_matches_current_contract() -> None:
     assert [(source.name, source.target) for source in sources[:3]] == [
         ("ASAP - Contract Recruiters Staffing", 10),
         ("ASAP - Agency Owners Delivery", 10),
-        ("ASAP - AI Advisors Implementation Partners", 10),
+        ("ASAP - Strategy Consultants Implementation Partners", 10),
     ]
     assert sources[3].name == "FO - Founders - Urgent"
     assert sources[3].fallback is True
@@ -598,7 +599,7 @@ def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallba
     assert [(source.name, source.target) for source in run.sources[:3]] == [
         ("ASAP - Contract Recruiters Staffing", 2),
         ("ASAP - Agency Owners Delivery", 2),
-        ("ASAP - AI Advisors Implementation Partners", 2),
+        ("ASAP - Strategy Consultants Implementation Partners", 2),
     ]
 
     run.sources[0].exhausted = True
@@ -607,7 +608,7 @@ def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallba
     store.save_run(run)
 
     exhausted = store.load_run()
-    assert exhausted.source_quota("ASAP - AI Advisors Implementation Partners") == 2
+    assert exhausted.source_quota("ASAP - Strategy Consultants Implementation Partners") == 2
     assert exhausted.next_source() is None
 
 
@@ -654,7 +655,7 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     },
                     {
-                        "name": "ASAP - AI Advisors Implementation Partners",
+                        "name": "ASAP - Strategy Consultants Implementation Partners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     },
                 ]
@@ -666,7 +667,7 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
     contract_url = resolve_network_source_url(saved_searches, "ASAP - Contract Recruiters Staffing")
     agency_url = resolve_network_source_url(saved_searches, "ASAP - Agency Owners Delivery")
     advisor_url = resolve_network_source_url(
-        saved_searches, "ASAP - AI Advisors Implementation Partners"
+        saved_searches, "ASAP - Strategy Consultants Implementation Partners"
     )
 
     assert contract_url == "https://www.linkedin.com/sales/search/people?savedSearchId=def"
@@ -904,6 +905,125 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     assert store.load_lead_ledger().leads[packet["candidates"][0]["lead_key"]].status == (
         LeadStatus.PENDING
     )
+
+
+def test_manual_durable_record_writes_send_ledger_summary(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+
+    record_candidate(
+        store,
+        source="ASAP - Agency Owners Delivery",
+        name="Manual Lead",
+        profile_url="https://www.linkedin.com/in/manual-lead",
+        status=CandidateStatus.PENDING,
+        note="manual reconciliation",
+    )
+
+    event_date = store.load_send_ledger_entries()[0].attempted_at.date().isoformat()
+    summary = network_sends_summary(store, date_arg=event_date, timezone_name="UTC")
+
+    assert summary.durable_sent_count == 1
+    assert summary.by_source == {"ASAP - Agency Owners Delivery": 1}
+    assert summary.entries[0].name == "Manual Lead"
+    assert summary.entries[0].durable is True
+
+
+def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+
+    send_next(
+        store,
+        FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+        dry_run=False,
+        allow_send=True,
+        confirm_delay_ms=0,
+        confirm_out_dir=tmp_path / "confirm",
+    )
+
+    entries = store.load_send_ledger_entries()
+    event_date = entries[0].attempted_at.date().isoformat()
+    summary = network_sends_summary(store, date_arg=event_date, timezone_name="UTC")
+
+    assert {entry.status for entry in entries} == {
+        CandidateStatus.PENDING_PROVISIONAL,
+        CandidateStatus.PENDING,
+    }
+    assert summary.durable_sent_count == 1
+    assert summary.provisional_count == 0
+    assert summary.entries[0].status == CandidateStatus.PENDING
+
+
+def test_send_ledger_history_sync_counts_confirmed_sends(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    run_id = str(uuid.uuid4())
+    attempted_at = datetime(2026, 7, 2, 10, 0, tzinfo=UTC)
+    provisional = CandidateEvent(
+        at=attempted_at,
+        source="ASAP - Agency Owners Delivery",
+        name="Synced Lead",
+        profile_url="https://www.linkedin.com/in/synced-lead",
+        status=CandidateStatus.PENDING_PROVISIONAL,
+        note="salesnav-send-one saw immediate Connect - Pending",
+    )
+    confirmed = provisional.model_copy(
+        update={
+            "status": CandidateStatus.ACCEPTED,
+            "note": (
+                "salesnav-send-one saw immediate Connect - Pending; "
+                "durable confirmation accepted"
+            ),
+        }
+    )
+    log_path = tmp_path / f"{run_id}.jsonl"
+    log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "at": "2026-07-02T10:00:00+00:00",
+                        "run_id": run_id,
+                        "kind": "record-send-result",
+                        "payload": {
+                            "path": "/tmp/send.json",
+                            "event": provisional.model_dump(mode="json"),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "at": "2026-07-02T10:01:00+00:00",
+                        "run_id": run_id,
+                        "kind": "confirm-send-result",
+                        "payload": {
+                            "out": "/tmp/confirm.json",
+                            "event": confirmed.model_dump(mode="json"),
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = network_sends_summary(
+        store,
+        date_arg="2026-07-02",
+        timezone_name="UTC",
+        sync_history=True,
+    )
+
+    assert summary.synced_entries == 2
+    assert summary.history_logs_scanned == 1
+    assert summary.durable_sent_count == 1
+    assert summary.entries[0].status == CandidateStatus.ACCEPTED
 
 
 def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
@@ -2065,10 +2185,18 @@ def test_acceptance_followup_template_routing_is_source_first() -> None:
         "ASAP - Contract Recruiters Staffing", "Founder", "Hiring Co"
     ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Hiring Co")
     assert choose_angle(
-        "ASAP - AI Advisors Implementation Partners", "AI Advisor", "Strategy Co"
+        "ASAP - Strategy Consultants Implementation Partners",
+        "Strategy Advisor",
+        "Strategy Co",
     ) == (
         AcceptedFollowupTemplateKey.ADVISOR,
         "AI and workflow implementation support ask for Strategy Co",
+    )
+    assert choose_angle(
+        "ASAP - AI Advisors Implementation Partners", "AI Advisor", "Old Strategy Co"
+    ) == (
+        AcceptedFollowupTemplateKey.ADVISOR,
+        "AI and workflow implementation support ask for Old Strategy Co",
     )
     assert choose_angle(
         "ASAP - Vertical Proof Buyers", "Founder", "Proof Co"
@@ -2882,6 +3010,64 @@ def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
     ]
 
 
+def test_cli_network_run_session_can_refresh_existing_saved_searches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    saved_searches = tmp_path / "saved-searches.json"
+    _write_fake_artifact(
+        saved_searches,
+        SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-06-20T12:00:00Z",
+                "url": "https://www.linkedin.com/sales/search/people",
+                "searches": [
+                    {
+                        "savedSearchId": "stale",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=stale",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--per-source-target",
+            "1",
+            "--source",
+            "ASAP - Agency Owners Delivery",
+            "--max-real-sends",
+            "1",
+            "--force",
+            "--saved-searches",
+            str(saved_searches),
+            "--refresh-saved-searches",
+            "--allow-send",
+            "--audit-attempts",
+            "1",
+            "--audit-delay-ms",
+            "0",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        "saved-searches:https://www.linkedin.com/sales/search/people",
+        (
+            "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
+            "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
+        ),
+    ]
+
+
 def test_cli_network_run_session_resume_sends_after_review_decisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2998,7 +3184,7 @@ def test_cli_network_run_session_blocks_when_targeted_saved_search_is_missing(
     assert exit_code == 1
     assert run.state == RunState.BLOCKED
     assert "saved-search coverage missing" in captured.err
-    assert "ASAP - AI Advisors Implementation Partners" in captured.err
+    assert "ASAP - Strategy Consultants Implementation Partners" in captured.err
 
 
 def test_cli_review_candidates_json_reports_decision_and_next_commands(

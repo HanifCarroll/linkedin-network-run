@@ -72,6 +72,7 @@ and pending-invitation cleanup.
 uv run linkedin-tools network --state-dir "$state_root/network-automation" status --json
 uv run linkedin-tools network --state-dir "$state_root/network-automation" plan --json
 uv run linkedin-tools network --state-dir "$state_root/network-automation" report
+uv run linkedin-tools network --state-dir "$state_root/network-automation" sends --date today --timezone local --json
 uv run linkedin-tools network --state-dir "$state_root/network-automation" saved-searches --session auto
 uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance check --session auto
 uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance draft-followups --session auto
@@ -89,7 +90,8 @@ Scheduled browser automations run directly through the controller command:
 ```sh
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  run-session --session auto --target 30 --max-real-sends 30 --force --allow-send --finish
+  run-session --session auto --target 30 --max-real-sends 30 --force \
+  --refresh-saved-searches --no-fallback --allow-send --finish
 
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
@@ -103,6 +105,12 @@ saved-search id still matches. That makes daily runs continue forward through a
 stable saved search instead of restarting at page 1. A source is exhausted only
 when capture reaches the end of results, not merely because a few captures
 returned zero connectable rows.
+
+Connection-request counts are projected into `send-ledger.jsonl` as soon as a
+send attempt is recorded or a provisional send is confirmed. Use
+`network sends --date today --timezone local --json` to answer daily send
+counts across replaced active runs. `--sync-history` backfills the ledger from
+older per-run JSONL logs.
 
 If a large accepted-followup draft batch times out during profile research,
 retry it in smaller draft chunks. Completed drafts are recorded in the

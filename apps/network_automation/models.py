@@ -67,6 +67,23 @@ REAL_SEND_ATTEMPT_STATUSES = frozenset(
         CandidateStatus.AUDIT_TOP_UP,
     }
 )
+SEND_LEDGER_STATUSES = frozenset(
+    {
+        CandidateStatus.PENDING_PROVISIONAL,
+        CandidateStatus.PENDING,
+        CandidateStatus.ACCEPTED,
+        CandidateStatus.REVERTED_CONNECT,
+        CandidateStatus.AUDIT_TOP_UP,
+        CandidateStatus.FAILED,
+    }
+)
+DURABLE_SEND_LEDGER_STATUSES = frozenset(
+    {
+        CandidateStatus.PENDING,
+        CandidateStatus.ACCEPTED,
+        CandidateStatus.AUDIT_TOP_UP,
+    }
+)
 
 
 class AcceptanceStatus(StrEnum):
@@ -144,6 +161,63 @@ class CandidateEvent(AppModel):
     )
     status: CandidateStatus
     note: str | None = None
+
+
+class SendLedgerEntry(AppModel):
+    entry_id: str
+    attempt_key: str
+    run_id: str
+    run_date: Date | None = None
+    source: str
+    name: str
+    profile_url: str | None = None
+    public_profile_url: str | None = None
+    attempted_at: datetime
+    confirmed_at: datetime | None = None
+    status: CandidateStatus
+    durable: bool
+    reason: str | None = None
+    event_kind: str
+    result_path: str | None = None
+
+
+class SendLedgerSummary(AppModel):
+    date: Date
+    timezone: str
+    ledger_path: str
+    durable_sent_count: int
+    by_source: dict[str, int] = Field(default_factory=dict)
+    by_status: dict[str, int] = Field(default_factory=dict)
+    provisional_count: int = 0
+    failed_count: int = 0
+    reverted_count: int = 0
+    top_up_count: int = 0
+    synced_entries: int = 0
+    history_logs_scanned: int = 0
+    entries: list[SendLedgerEntry] = Field(default_factory=list)
+
+
+def send_ledger_attempt_key(run_id: str, event: CandidateEvent) -> str:
+    return stable_hash(
+        "send-ledger-attempt",
+        run_id,
+        event.source,
+        event.name,
+        event.profile_url or "",
+        event.at.isoformat(),
+    )
+
+
+def send_ledger_entry_id(attempt_key: str, status: CandidateStatus, event_kind: str) -> str:
+    return stable_hash("send-ledger-entry", attempt_key, status.value, event_kind)
+
+
+def stable_hash(*parts: str) -> str:
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 class CandidateObservation(AppModel):
@@ -761,10 +835,16 @@ class Run(AppModel):
         ]
 
 
+CONTRACT_RECRUITERS_SOURCE = "ASAP - Contract Recruiters Staffing"
+AGENCY_OWNERS_SOURCE = "ASAP - Agency Owners Delivery"
+STRATEGY_CONSULTANTS_SOURCE = "ASAP - Strategy Consultants Implementation Partners"
+AI_ADVISORS_SOURCE = "ASAP - AI Advisors Implementation Partners"
+
+
 DEFAULT_SOURCE_MIX: list[tuple[str, int]] = [
-    ("ASAP - Contract Recruiters Staffing", 10),
-    ("ASAP - Agency Owners Delivery", 10),
-    ("ASAP - AI Advisors Implementation Partners", 10),
+    (CONTRACT_RECRUITERS_SOURCE, 10),
+    (AGENCY_OWNERS_SOURCE, 10),
+    (STRATEGY_CONSULTANTS_SOURCE, 10),
 ]
 
 
@@ -2545,9 +2625,10 @@ def advisor_accepted_followup_draft(first: str) -> str:
 
 
 ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES: dict[str, AcceptedFollowupTemplateKey] = {
-    "ASAP - Agency Owners Delivery": AcceptedFollowupTemplateKey.AGENCY,
-    "ASAP - Contract Recruiters Staffing": AcceptedFollowupTemplateKey.RECRUITER,
-    "ASAP - AI Advisors Implementation Partners": AcceptedFollowupTemplateKey.ADVISOR,
+    AGENCY_OWNERS_SOURCE: AcceptedFollowupTemplateKey.AGENCY,
+    CONTRACT_RECRUITERS_SOURCE: AcceptedFollowupTemplateKey.RECRUITER,
+    STRATEGY_CONSULTANTS_SOURCE: AcceptedFollowupTemplateKey.ADVISOR,
+    AI_ADVISORS_SOURCE: AcceptedFollowupTemplateKey.ADVISOR,
     "ASAP - Startup CTO Eng Leaders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - High-Intent SaaS AI Founders": AcceptedFollowupTemplateKey.GENERAL,
     "ASAP - Vertical Proof Buyers": AcceptedFollowupTemplateKey.GENERAL,

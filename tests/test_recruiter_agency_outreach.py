@@ -103,10 +103,10 @@ def test_import_capture_classifies_contract_recruiter_and_drafts() -> None:
     assert "Are you the right person to ask about contract roles" in state.leads[0].draft.body
 
 
-def test_import_capture_classifies_ai_advisor_and_drafts() -> None:
+def test_import_capture_classifies_strategy_consultant_and_drafts() -> None:
     state = OutreachState()
     capture = {
-        "source": "ASAP - AI Advisors Implementation Partners",
+        "source": "ASAP - Strategy Consultants Implementation Partners",
         "rows": [
             {
                 "index": 0,
@@ -127,14 +127,14 @@ def test_import_capture_classifies_ai_advisor_and_drafts() -> None:
     lead = state.leads[0]
     assert lead.lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
     assert lead.status == LeadStatus.ELIGIBLE
-    assert "AI advisor/implementation partner signal" in lead.fit_reasons
+    assert "advisor/implementation partner signal" in lead.fit_reasons
 
     report = draft_messages(state, 10)
     assert len(report.items) == 1
     draft = state.leads[0].draft
     assert draft is not None
-    assert draft.subject == "Implementation partner for AI and workflow systems"
-    assert "I'm a full-stack product engineer who builds AI tools" in draft.body
+    assert draft.subject == "Implementation partner for strategy and workflow systems"
+    assert "I'm a full-stack product engineer who builds AI, automation" in draft.body
     assert "with support for AI agents" in draft.body
     assert "LinkedIn Tools: built a workflow system" in draft.body
     assert "Would this kind of implementation support be useful for you?" in draft.body
@@ -800,7 +800,11 @@ def test_run_daily_is_no_send_and_agency_bucket_is_account_first(tmp_path: Path)
     buckets = daily_buckets(target_agencies=5, target_recruiters=5, target_advisors=5)
     assert buckets[0] == ("agency", [], 5)
     assert buckets[1][0] == "recruiter"
-    assert buckets[2] == ("advisor", ["ASAP - AI Advisors Implementation Partners"], 5)
+    assert buckets[2] == (
+        "advisor",
+        ["ASAP - Strategy Consultants Implementation Partners"],
+        5,
+    )
 
 
 def test_run_daily_browser_helpers_pass_explicit_session(
@@ -1161,13 +1165,19 @@ def test_run_daily_captures_advisors_and_validates_messages(
 
     assert len(capture_instances) == 1
     assert capture_instances[0].closed is True
-    assert capture_instances[0].call["source"] == "ASAP - AI Advisors Implementation Partners"
-    assert "AI%2520consultant" in str(capture_instances[0].call["url"])
+    assert (
+        capture_instances[0].call["source"]
+        == "ASAP - Strategy Consultants Implementation Partners"
+    )
+    assert "strategy%2520consultant" in str(capture_instances[0].call["url"])
     state = Store(tmp_path).load()
     assert state.leads[0].name == "Avery Advisor"
     assert state.leads[0].lead_type == LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER
     assert state.leads[0].draft is not None
-    assert state.leads[0].draft.subject == "Implementation partner for AI and workflow systems"
+    assert (
+        state.leads[0].draft.subject
+        == "Implementation partner for strategy and workflow systems"
+    )
     assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
     assert state.run_events[-1].result == "completed"
 

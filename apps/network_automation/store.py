@@ -24,6 +24,7 @@ from .models import (
     LeadLedger,
     PendingCleanupRun,
     Run,
+    SendLedgerEntry,
     SourceScanProgressLedger,
 )
 
@@ -79,6 +80,10 @@ class Store:
     @property
     def lead_ledger_path(self) -> Path:
         return self.dir / "lead-ledger.json"
+
+    @property
+    def send_ledger_path(self) -> Path:
+        return self.dir / "send-ledger.jsonl"
 
     def default_acceptance_followup_report_path(self) -> Path:
         from .models import today
@@ -148,6 +153,34 @@ class Store:
 
     def save_lead_ledger(self, ledger: LeadLedger) -> None:
         write_model_atomic(self.lead_ledger_path, ledger)
+
+    def load_send_ledger_entries(self) -> list[SendLedgerEntry]:
+        if not self.send_ledger_path.exists():
+            return []
+        entries: list[SendLedgerEntry] = []
+        for line_number, raw_line in enumerate(
+            self.send_ledger_path.read_text().splitlines(), start=1
+        ):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(SendLedgerEntry.model_validate_json(line))
+            except ValueError as exc:
+                raise ValueError(
+                    f"parsing {self.send_ledger_path} line {line_number}: {exc}"
+                ) from exc
+        return entries
+
+    def append_send_ledger_entry(self, entry: SendLedgerEntry) -> bool:
+        existing_ids = self.send_ledger_entry_ids()
+        if entry.entry_id in existing_ids:
+            return False
+        append_jsonl(self.send_ledger_path, entry.model_dump(mode="json", by_alias=False))
+        return True
+
+    def send_ledger_entry_ids(self) -> set[str]:
+        return {entry.entry_id for entry in self.load_send_ledger_entries()}
 
     def append_event(self, run: Run, kind: str, payload: object) -> None:
         append_jsonl(

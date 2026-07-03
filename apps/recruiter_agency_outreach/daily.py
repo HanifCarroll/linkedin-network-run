@@ -47,7 +47,7 @@ AGENCY_ACCOUNT_SOURCE = "ASAP - Agency Accounts Digital Agency"
 AGENCY_ACCOUNT_DEVELOPMENT_SOURCE = "ASAP - Agency Accounts Development Agency"
 AGENCY_ACCOUNT_PRODUCT_SOURCE = "ASAP - Agency Accounts Product Studio"
 AGENCY_ACCOUNT_CONTACTS_SOURCE = "ASAP - Agency Account Contacts"
-ADVISOR_IMPLEMENTATION_SOURCE = "ASAP - AI Advisors Implementation Partners"
+ADVISOR_IMPLEMENTATION_SOURCE = "ASAP - Strategy Consultants Implementation Partners"
 RECRUITER_AGENCY_CAPTURE_TIMEOUT_SECONDS = 90.0
 
 
@@ -805,10 +805,9 @@ def _default_people_source_url(source: str) -> str:
         return _sales_nav_people_search_url(
             _base_people_filters(),
             (
-                "AI consultant OR AI advisor OR business consultant OR operations consultant OR "
-                "fractional COO OR fractional CTO OR growth consultant OR automation consultant OR "
-                "AI strategy OR workflow automation OR AI implementation OR AI diagnostic OR "
-                "back office automation OR decision support"
+                "strategy consultant OR management consultant OR operations consultant OR "
+                "digital transformation OR AI strategy OR automation consultant OR "
+                "workflow automation OR business consultant OR fractional COO OR strategy advisor"
             ),
         )
     return ""
