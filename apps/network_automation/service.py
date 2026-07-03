@@ -1204,13 +1204,13 @@ def network_run_session(
                     continue
                 cursor_stalled = (
                     cursor is not None
-                    and cursor.next_page_available is True
                     and cursor.next_url is None
                     and cursor.cursor_status
                     in {
                         SourceCursorStatus.PARTIAL_PAGE.value,
                         SourceCursorStatus.STALLED_NAVIGATION.value,
                         SourceCursorStatus.ROW_LOAD_TIMEOUT.value,
+                        SourceCursorStatus.WRONG_PAGE.value,
                     }
                 )
                 if cursor and (cursor_stalled or streak >= 2):

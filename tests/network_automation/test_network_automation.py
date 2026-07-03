@@ -434,6 +434,44 @@ class StalledCursorBrowserClient(FakeLiveBrowserClient):
         return artifact, str(self.out_dir / "stalled-capture.json")
 
 
+class WrongPageCaptureBrowserClient(FakeLiveBrowserClient):
+    def capture_salesnav(
+        self,
+        *,
+        source: str,
+        url: str | None = None,
+        pages: int = 1,
+        limit: int = 25,
+        stop_after_connectable: int = 0,
+        only_connectable: bool = False,
+        row_scroll_delay_ms: int = 250,
+    ) -> tuple[SalesNavCapture, str]:
+        self.calls.append(
+            f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
+        )
+        _ = stop_after_connectable, row_scroll_delay_ms
+        artifact = SalesNavCapture.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "source": source,
+                "url": "https://www.linkedin.com/sales/lead/not-a-search",
+                "resumeUrl": url or "",
+                "startUrl": url or "",
+                "lastScannedUrl": "https://www.linkedin.com/sales/lead/not-a-search",
+                "nextUrl": None,
+                "nextPageAvailable": None,
+                "endOfResults": False,
+                "cursorStatus": SourceCursorStatus.WRONG_PAGE.value,
+                "cursorReason": "expected Sales Navigator people search but reached lead page",
+                "rawRowCount": 0,
+                "outputRowCount": 0,
+                "stateCounts": {},
+                "rows": [],
+            }
+        )
+        return artifact, str(self.out_dir / "wrong-page-capture.json")
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -2564,6 +2602,69 @@ def test_cli_network_run_session_defers_stalled_zero_import_cursor(
     assert "deferred for this run" in (run.operator_plan().reason or "")
     stalled_calls = StalledCursorBrowserClient.instances[0].calls
     assert sum(call.startswith(f"capture:{source}") for call in stalled_calls) == 1
+
+
+def test_cli_network_run_session_defers_wrong_page_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    WrongPageCaptureBrowserClient.instances.clear()
+    monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", WrongPageCaptureBrowserClient)
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 3),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.state = RunState.SENDING
+    store.save_run(run)
+    saved_searches = tmp_path / "saved-searches.json"
+    _write_fake_artifact(
+        saved_searches,
+        SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "url": "https://www.linkedin.com/sales/search/people",
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": source,
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--resume",
+            "--saved-searches",
+            str(saved_searches),
+            "--no-fallback",
+            "--allow-send",
+            "--max-steps",
+            "3",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    run = store.load_run()
+    cursor = run.capture_cursors[source]
+    assert run.sources[0].exhausted is False
+    assert cursor.deferred_for_run is True
+    assert cursor.cursor_status == SourceCursorStatus.WRONG_PAGE.value
+    assert "people search" in (cursor.deferred_reason or "")
 
 
 def test_cli_network_run_session_exhausts_source_at_end_of_results(

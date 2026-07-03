@@ -53,6 +53,7 @@ class SourceCursorStatus(StrEnum):
     END_OF_RESULTS = "end_of_results"
     STALLED_NAVIGATION = "stalled_navigation"
     ROW_LOAD_TIMEOUT = "row_load_timeout"
+    WRONG_PAGE = "wrong_page"
     NO_NEXT_URL = "no_next_url"
 
 

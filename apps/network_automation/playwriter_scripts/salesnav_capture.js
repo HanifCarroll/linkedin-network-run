@@ -297,6 +297,46 @@ async function nextPageIsAvailable(page) {
   return !(await button.isDisabled().catch(() => true));
 }
 
+function emptyCapturePayload({ page, startUrl, cursorStatus, cursorReason, warnings }) {
+  return {
+    schemaVersion: 1,
+    capturedAt: nowIso(),
+    url: page.url(),
+    startUrl,
+    lastScannedUrl: page.url(),
+    nextUrl: null,
+    resumeUrl: startUrl,
+    nextPageAvailable: null,
+    endOfResults: false,
+    cursorStatus,
+    cursorReason,
+    warnings,
+    source: config.source,
+    page: { url: page.url(), pageLabel: null },
+    pages: [{ url: page.url(), pageLabel: null }],
+    menuInspection: "menu",
+    filters: { onlyConnectable: Boolean(config.onlyConnectable) },
+    captureOptions: {
+      limit: Math.max(0, Number(config.limit || 0)),
+      pages: Math.max(1, Number(config.pages || 1)),
+      stopAfterConnectable: Math.max(0, Number(config.stopAfterConnectable || 0)),
+      rowScrollDelayMs: Number(config.rowScrollDelayMs || 0),
+      openMenus: Boolean(config.onlyConnectable) || Number(config.stopAfterConnectable || 0) > 0,
+      apiState: false,
+    },
+    apiState: { enabled: false, responses: 0, rows: 0, errors: [cursorReason] },
+    stateCounts: {},
+    rawRowCount: 0,
+    outputRowCount: 0,
+    rows: [],
+  };
+}
+
+function writePayload(payload) {
+  fs.writeFileSync(config.out, `${JSON.stringify(payload, null, 2)}\n`);
+  console.log(`wrote Sales Navigator capture to ${config.out}`);
+}
+
 async function main() {
   const activePage = await getPage();
   if (config.url) {
@@ -308,42 +348,41 @@ async function main() {
   if (blockReason) {
     throw new Error(`Sales Navigator capture blocked: ${blockReason}`);
   }
+  if (!activePage.url().includes("/sales/search/people")) {
+    writePayload(
+      emptyCapturePayload({
+        page: activePage,
+        startUrl,
+        cursorStatus: "wrong_page",
+        cursorReason: `expected Sales Navigator people search but reached ${activePage.url()}`,
+        warnings: ["wrong-page"],
+      })
+    );
+    return;
+  }
   const initialRowCount = await waitForRows(activePage);
+  if (!activePage.url().includes("/sales/search/people")) {
+    writePayload(
+      emptyCapturePayload({
+        page: activePage,
+        startUrl,
+        cursorStatus: "wrong_page",
+        cursorReason: `expected Sales Navigator people search but reached ${activePage.url()}`,
+        warnings: ["wrong-page"],
+      })
+    );
+    return;
+  }
   if (initialRowCount === 0) {
-    const payload = {
-      schemaVersion: 1,
-      capturedAt: nowIso(),
-      url: activePage.url(),
-      startUrl,
-      lastScannedUrl: activePage.url(),
-      nextUrl: null,
-      resumeUrl: activePage.url(),
-      nextPageAvailable: null,
-      endOfResults: false,
-      cursorStatus: "row_load_timeout",
-      cursorReason: "no Sales Navigator result rows loaded before timeout",
-      warnings: ["row-load-timeout"],
-      source: config.source,
-      page: { url: activePage.url(), pageLabel: null },
-      pages: [{ url: activePage.url(), pageLabel: null }],
-      menuInspection: "menu",
-      filters: { onlyConnectable: Boolean(config.onlyConnectable) },
-      captureOptions: {
-        limit: Math.max(0, Number(config.limit || 0)),
-        pages: Math.max(1, Number(config.pages || 1)),
-        stopAfterConnectable: Math.max(0, Number(config.stopAfterConnectable || 0)),
-        rowScrollDelayMs: Number(config.rowScrollDelayMs || 0),
-        openMenus: Boolean(config.onlyConnectable) || Number(config.stopAfterConnectable || 0) > 0,
-        apiState: false,
-      },
-      apiState: { enabled: false, responses: 0, rows: 0, errors: ["result rows did not load"] },
-      stateCounts: {},
-      rawRowCount: 0,
-      outputRowCount: 0,
-      rows: [],
-    };
-    fs.writeFileSync(config.out, `${JSON.stringify(payload, null, 2)}\n`);
-    console.log(`wrote Sales Navigator capture to ${config.out}`);
+    writePayload(
+      emptyCapturePayload({
+        page: activePage,
+        startUrl,
+        cursorStatus: "row_load_timeout",
+        cursorReason: "no Sales Navigator result rows loaded before timeout",
+        warnings: ["row-load-timeout"],
+      })
+    );
     return;
   }
   const allRows = [];
@@ -361,6 +400,13 @@ async function main() {
   const warnings = [];
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     await activePage.waitForTimeout(500);
+    if (!activePage.url().includes("/sales/search/people")) {
+      lastScannedUrl = activePage.url();
+      cursorStatus = "wrong_page";
+      cursorReason = `expected Sales Navigator people search but reached ${activePage.url()}`;
+      warnings.push("wrong-page");
+      break;
+    }
     pageSummaries.push({ url: activePage.url(), pageLabel: null });
     const pageCapture = await captureCurrentPageRows({
       page: activePage,
