@@ -2360,6 +2360,85 @@ def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
     assert any("seeded source progress" in note for note in run.notes)
 
 
+def test_cli_network_run_session_resume_seeds_existing_saved_searches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 3),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.state = RunState.SENDING
+    run.sources[0].exhausted = True
+    store.save_run(run)
+    page_url = "https://www.linkedin.com/sales/search/people?page=2&savedSearchId=abc"
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    saved_search_id="abc",
+                    saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    next_url=page_url,
+                    last_scanned_url=page_url,
+                    end_of_results=False,
+                    cursor_status=SourceCursorStatus.STALLED_NAVIGATION.value,
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    _write_fake_artifact(
+        saved_searches,
+        SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "url": "https://www.linkedin.com/sales/search/people",
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": source,
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--resume",
+            "--saved-searches",
+            str(saved_searches),
+            "--no-fallback",
+            "--allow-send",
+            "--max-steps",
+            "1",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    run = store.load_run()
+    assert run.sources[0].exhausted is False
+    assert any("seeded source progress" in note for note in run.notes)
+    assert any(
+        call.startswith(f"capture:{source}") and call.endswith(f"url={page_url}")
+        for call in FakeLiveBrowserClient.instances[0].calls
+    )
+
+
 def test_reset_source_progress_reopens_active_source(tmp_path: Path) -> None:
     source = "ASAP - Vertical Proof Buyers"
     store = Store(tmp_path)

@@ -1084,6 +1084,7 @@ def network_run_session(
                     out=saved_searches_out,
                 )
             )
+        if saved_searches_out.exists():
             add(seed_run_source_progress(store, saved_searches_out))
     else:
         add(
