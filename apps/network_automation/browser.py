@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Awaitable
@@ -575,8 +576,13 @@ class PlaywriterBrowserClient:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         config_path, staged_out, final_out = _stage_playwriter_config(config)
         script_config = dict(config)
+        progress_out = _progress_path(final_out)
         if staged_out is not None:
             script_config["out"] = str(staged_out)
+        if progress_out is not None:
+            progress_out.parent.mkdir(parents=True, exist_ok=True)
+            progress_out.unlink(missing_ok=True)
+            script_config["progressOut"] = str(progress_out)
         write_json_atomic(config_path, script_config)
         command = [
             self._playwriter_bin,
@@ -587,7 +593,8 @@ class PlaywriterBrowserClient:
         ]
         _run_playwriter_command(command)
         _run_playwriter_command(
-            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"]
+            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
+            progress_path=progress_out,
         )
         if staged_out is not None and final_out is not None:
             if not _wait_for_path(staged_out):
@@ -668,6 +675,10 @@ def _stage_playwriter_config(config: dict[str, Any]) -> tuple[Path, Path | None,
     return config_path, staged_out, final_out
 
 
+def _progress_path(final_out: Path | None) -> Path | None:
+    return Path(f"{final_out}.progress.jsonl") if final_out is not None else None
+
+
 def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -677,8 +688,11 @@ def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
     return path.exists()
 
 
-def _run_playwriter_command(command: list[str]) -> None:
-    result = subprocess.run(command, capture_output=True, text=True)
+def _run_playwriter_command(command: list[str], *, progress_path: Path | None = None) -> None:
+    if progress_path is None:
+        result = subprocess.run(command, capture_output=True, text=True)
+    else:
+        result = _run_playwriter_command_with_progress(command, progress_path)
     if result.returncode != 0:
         detail = "\n".join(
             part
@@ -692,6 +706,61 @@ def _run_playwriter_command(command: list[str]) -> None:
             f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
             + (f"\n{detail}" if detail else "")
         )
+
+
+def _run_playwriter_command_with_progress(
+    command: list[str], progress_path: Path
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout:
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
+            process = subprocess.Popen(command, stdout=stdout, stderr=stderr, text=True)
+            progress_position = 0
+            while process.poll() is None:
+                progress_position = _emit_progress_events(progress_path, progress_position)
+                time.sleep(0.25)
+            progress_position = _emit_progress_events(progress_path, progress_position)
+            stdout.seek(0)
+            stderr.seek(0)
+            return subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout.read(),
+                stderr.read(),
+            )
+
+
+def _emit_progress_events(progress_path: Path, position: int) -> int:
+    if not progress_path.exists():
+        return position
+    with progress_path.open(encoding="utf-8") as handle:
+        handle.seek(position)
+        while line := handle.readline():
+            line = line.strip()
+            if not line:
+                continue
+            print(_format_progress_event(line), file=sys.stderr, flush=True)
+        return handle.tell()
+
+
+def _format_progress_event(line: str) -> str:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return f"browser progress: {line}"
+    step = str(event.get("step") or "progress")
+    details = []
+    for key, value in event.items():
+        if key in {"at", "step"} or value is None or value == "" or value is False:
+            continue
+        if isinstance(value, bool):
+            details.append(f"{key}=true")
+        elif isinstance(value, int | float | str):
+            details.append(f"{key}={value}")
+        elif isinstance(value, list | dict):
+            compact = json.dumps(value, separators=(",", ":"), sort_keys=True)[:180]
+            details.append(f"{key}={compact}")
+    suffix = " " + " ".join(details) if details else ""
+    return f"browser progress: {step}{suffix}"
 
 
 def _send_result_base(

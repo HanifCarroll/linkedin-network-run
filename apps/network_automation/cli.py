@@ -33,6 +33,7 @@ from .service import (
     acceptance_invalidate_weak_message_acceptances,
     acceptance_report,
     acceptance_research,
+    acceptance_retry_send_followup,
     acceptance_run_daily_session,
     acceptance_seed,
     acceptance_seed_history,
@@ -400,6 +401,12 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_send.add_argument("--allow-send", action="store_true")
     acceptance_send.add_argument("--fixture-result", default=None)
     acceptance_send.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
+    acceptance_retry = acceptance_sub.add_parser("retry-send-followup")
+    acceptance_retry.add_argument("--id", required=True)
+    acceptance_retry.add_argument("--session", default="auto")
+    acceptance_retry.add_argument("--allow-send", action="store_true")
+    acceptance_retry.add_argument("--fixture-result", default=None)
+    acceptance_retry.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
     acceptance_dry = acceptance_sub.add_parser("dry-run-followups")
     acceptance_dry.add_argument("--session", default="auto")
     acceptance_dry.add_argument("--limit", type=int, default=5)
@@ -838,6 +845,13 @@ def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
             record_id=args.id,
             dry_run=args.dry_run,
             preview_fill=args.preview_fill,
+            allow_send=args.allow_send,
+        )
+    if command == "retry-send-followup":
+        return acceptance_retry_send_followup(
+            store,
+            browser_from_args(args, followup=True),
+            record_id=args.id,
             allow_send=args.allow_send,
         )
     if command == "dry-run-followups":

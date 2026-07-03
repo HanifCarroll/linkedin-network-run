@@ -2787,6 +2787,12 @@ class AcceptanceFollowupSendResult(AppModel):
     conversation_check: Any = Field(
         default=None, validation_alias=AliasChoices("conversation_check", "conversationCheck")
     )
+    conversation_cleanup: Any = Field(
+        default=None, validation_alias=AliasChoices("conversation_cleanup", "conversationCleanup")
+    )
+    message_containers: Any = Field(
+        default=None, validation_alias=AliasChoices("message_containers", "messageContainers")
+    )
     subject_fill: Any = Field(
         default=None, validation_alias=AliasChoices("subject_fill", "subjectFill")
     )
@@ -2897,6 +2903,8 @@ def acceptance_followup_diagnostics(result: AcceptanceFollowupSendResult) -> dic
         "send": result.send,
         "send_buttons": result.send_buttons,
         "conversation": result.conversation_check,
+        "conversation_cleanup": result.conversation_cleanup,
+        "message_containers": result.message_containers,
         "action": result.action,
         "visible_actions": result.visible_actions,
     }.items():
@@ -2911,6 +2919,10 @@ def acceptance_followup_result_note(result: AcceptanceFollowupSendResult) -> str
         parts.append(result.reason.strip())
     if result.visible_actions is not None:
         parts.append("visible_actions " + compact_json(result.visible_actions))
+    if result.conversation_check is not None:
+        parts.append("conversation " + compact_json(result.conversation_check))
+    if result.message_containers is not None:
+        parts.append("message_containers " + compact_json(result.message_containers))
     if result.composer_selector and result.composer_selector.strip():
         parts.append("composer " + result.composer_selector.strip())
     if result.body_fill is not None:

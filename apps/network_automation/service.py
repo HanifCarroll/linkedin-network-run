@@ -18,6 +18,8 @@ from .models import (
     SEND_LEDGER_STATUSES,
     WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
     AcceptanceCheckCandidate,
+    AcceptanceFollowupRecord,
+    AcceptanceFollowupStatus,
     AcceptanceOutcomeArtifact,
     AcceptanceStatus,
     AcceptedDraftCandidate,
@@ -3095,6 +3097,54 @@ def acceptance_send_followup(
     )
 
 
+def acceptance_retry_send_followup(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    record_id: str,
+    allow_send: bool,
+) -> str:
+    if not allow_send:
+        raise RuntimeError("retry-send-followup requires --allow-send")
+    messages = [
+        acceptance_send_followup(
+            store,
+            browser,
+            record_id=record_id,
+            dry_run=True,
+            preview_fill=False,
+            allow_send=False,
+        )
+    ]
+    ledger = store.load_acceptance_followup_ledger()
+    index = ledger.find_by_id(record_id)
+    if index is None:
+        raise RuntimeError(f"unknown acceptance follow-up id {record_id!r}")
+    record = ledger.drafts[index]
+    if record.status != AcceptanceFollowupStatus.DRY_RUN_READY:
+        return "\n".join(
+            messages
+            + [
+                "retry-send-followup stopped: dry-run did not make the follow-up ready",
+                _render_acceptance_followup_send_table([record]),
+            ]
+        )
+    messages.append(
+        acceptance_send_followup(
+            store,
+            browser,
+            record_id=record_id,
+            dry_run=False,
+            preview_fill=False,
+            allow_send=True,
+        )
+    )
+    final_ledger = store.load_acceptance_followup_ledger()
+    final_index = final_ledger.find_by_id(record_id)
+    final_record = final_ledger.drafts[final_index] if final_index is not None else record
+    return "\n".join(messages + ["", _render_acceptance_followup_send_table([final_record])])
+
+
 def acceptance_send_ready_followups(
     store: Store, browser: BrowserClient, *, limit: int, allow_send: bool
 ) -> str:
@@ -3104,18 +3154,51 @@ def acceptance_send_ready_followups(
     ready = ledger.ready(limit)
     if not ready:
         return "no accepted follow-ups are ready to send"
-    messages = [
-        acceptance_send_followup(
-            store,
-            browser,
-            record_id=record.id,
-            dry_run=False,
-            preview_fill=False,
-            allow_send=True,
+    messages = []
+    sent_records: list[AcceptanceFollowupRecord] = []
+    for record in ready:
+        messages.append(
+            acceptance_send_followup(
+                store,
+                browser,
+                record_id=record.id,
+                dry_run=False,
+                preview_fill=False,
+                allow_send=True,
+            )
         )
-        for record in ready
+        current_ledger = store.load_acceptance_followup_ledger()
+        current_index = current_ledger.find_by_id(record.id)
+        if current_index is not None:
+            sent_records.append(current_ledger.drafts[current_index])
+    return "\n".join(messages + ["", _render_acceptance_followup_send_table(sent_records)])
+
+
+def _render_acceptance_followup_send_table(records: Sequence[AcceptanceFollowupRecord]) -> str:
+    if not records:
+        return "No accepted follow-ups were processed."
+    rows = [
+        [
+            record.name,
+            record.id,
+            record.status.value,
+            record.sent_at.isoformat() if record.sent_at else "",
+        ]
+        for record in records
     ]
-    return "\n".join(messages)
+    headers = ["Name", "ID", "Status", "Sent at"]
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+
+    def render_row(values: Sequence[str]) -> str:
+        return " | ".join(value.ljust(widths[index]) for index, value in enumerate(values))
+
+    divider = "-+-".join("-" * width for width in widths)
+    return "\n".join(["Accepted follow-up send summary", render_row(headers), divider] + [
+        render_row(row) for row in rows
+    ])
 
 
 def acceptance_dry_run_followups(

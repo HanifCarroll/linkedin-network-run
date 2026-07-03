@@ -55,6 +55,7 @@ from apps.network_automation.models import (
     SourceScanProgressLedger,
     acceptance_followup_diagnostics,
     acceptance_followup_result_note,
+    acceptance_followup_status_for_result,
     advisor_accepted_followup_draft,
     agency_accepted_followup_draft,
     choose_angle,
@@ -73,7 +74,9 @@ from apps.network_automation.reports import render_acceptance_report, render_rep
 from apps.network_automation.service import (
     acceptance_draft_followups,
     acceptance_import,
+    acceptance_retry_send_followup,
     acceptance_send_followup,
+    acceptance_send_ready_followups,
     apply_lead_review_decisions,
     confirm_provisional_send,
     finish_run,
@@ -369,6 +372,37 @@ class FakeLiveBrowserClient:
         return (
             read_model(FIXTURES / "withdraw_result.json", PendingWithdrawResult),
             str(self.out_dir / "withdraw-result.json"),
+        )
+
+
+class SequenceFollowupBrowser:
+    def __init__(self, out_dir: Path, results: list[Path]) -> None:
+        self.out_dir = out_dir
+        self.results = list(results)
+        self.calls: list[dict[str, object]] = []
+
+    def send_acceptance_followup(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        dry_run: bool,
+        preview_fill: bool,
+        allow_send: bool,
+    ) -> tuple[AcceptanceFollowupSendResult, str]:
+        self.calls.append(
+            {
+                "record_id": record.id,
+                "dry_run": dry_run,
+                "preview_fill": preview_fill,
+                "allow_send": allow_send,
+            }
+        )
+        if not self.results:
+            raise RuntimeError("no follow-up fixture results remain")
+        fixture = self.results.pop(0)
+        return (
+            read_model(fixture, AcceptanceFollowupSendResult),
+            str(self.out_dir / f"{len(self.calls):03d}-{record.id}.json"),
         )
 
 
@@ -2082,6 +2116,78 @@ def test_acceptance_dry_run_selection_skips_already_classified_records() -> None
     ]
 
 
+def _followup_record(
+    record_id: str, name: str, status: AcceptanceFollowupStatus
+) -> AcceptanceFollowupRecord:
+    return AcceptanceFollowupRecord(
+        key=f"source|{name}|https://www.linkedin.com/in/{record_id}",
+        id=record_id,
+        source="source",
+        name=name,
+        profile_url=f"https://www.linkedin.com/in/{record_id}",
+        accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
+        angle="general",
+        draft=f"Hey, {name}. Thanks for connecting.",
+        status=status,
+        report_path="followups.md",
+    )
+
+
+def test_acceptance_send_ready_followups_prints_summary_table(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    records = [
+        _followup_record("afu_one", "Ready One", AcceptanceFollowupStatus.DRY_RUN_READY),
+        _followup_record("afu_two", "Ready Two", AcceptanceFollowupStatus.DRY_RUN_READY),
+    ]
+    store.save_acceptance_followup_ledger(AcceptanceFollowupLedger(drafts=records))
+    browser = SequenceFollowupBrowser(
+        tmp_path,
+        [FIXTURES / "followup_sent.json", FIXTURES / "followup_sent.json"],
+    )
+
+    output = acceptance_send_ready_followups(store, browser, limit=2, allow_send=True)
+
+    assert "Accepted follow-up send summary" in output
+    assert "Ready One" in output
+    assert "Ready Two" in output
+    assert "sent" in output
+    assert [call["allow_send"] for call in browser.calls] == [True, True]
+    assert [record.status for record in store.load_acceptance_followup_ledger().drafts] == [
+        AcceptanceFollowupStatus.SENT,
+        AcceptanceFollowupStatus.SENT,
+    ]
+
+
+def test_acceptance_retry_send_followup_dry_runs_then_sends(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    record = _followup_record("afu_retry", "Retry Lead", AcceptanceFollowupStatus.SEND_FAILED)
+    store.save_acceptance_followup_ledger(AcceptanceFollowupLedger(drafts=[record]))
+    browser = SequenceFollowupBrowser(
+        tmp_path,
+        [FIXTURES / "followup_preview.json", FIXTURES / "followup_sent.json"],
+    )
+
+    output = acceptance_retry_send_followup(
+        store,
+        browser,
+        record_id="afu_retry",
+        allow_send=True,
+    )
+
+    assert "status=preview-filled dry_run=True" in output
+    assert "status=sent-clicked dry_run=False" in output
+    assert "Accepted follow-up send summary" in output
+    assert "Retry Lead" in output
+    calls = browser.calls
+    assert [(call["dry_run"], call["allow_send"]) for call in calls] == [
+        (True, False),
+        (False, True),
+    ]
+    assert store.load_acceptance_followup_ledger().drafts[0].status == (
+        AcceptanceFollowupStatus.SENT
+    )
+
+
 def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None:
     result = AcceptanceFollowupSendResult.model_validate(
         {
@@ -2120,6 +2226,62 @@ def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None
     assert note is not None
     assert "no visible Message or InMail action" in note
     assert '"label":"Connect"' in note
+
+
+def test_acceptance_followup_conversation_exists_is_terminal() -> None:
+    result = AcceptanceFollowupSendResult.model_validate(
+        {
+            "dryRun": True,
+            "url": "https://www.linkedin.com/in/existing-thread",
+            "messageLength": 128,
+            "status": "conversation-exists",
+            "reason": "existing LinkedIn conversation history is visible",
+            "conversationCheck": {
+                "exists": True,
+                "selector": ".msg-s-message-list__event",
+                "visibleCount": 1,
+            },
+        }
+    )
+
+    assert acceptance_followup_status_for_result(result) == (
+        AcceptanceFollowupStatus.CONVERSATION_EXISTS
+    )
+    diagnostics = acceptance_followup_diagnostics(result)
+    note = acceptance_followup_result_note(result)
+    assert diagnostics["conversation"] == (
+        '{"exists":true,"selector":".msg-s-message-list__event","visibleCount":1}'
+    )
+    assert note is not None
+    assert "existing LinkedIn conversation history is visible" in note
+
+
+def test_acceptance_followup_composer_missing_preserves_message_container_diagnostics() -> None:
+    result = AcceptanceFollowupSendResult.model_validate(
+        {
+            "dryRun": False,
+            "url": "https://www.linkedin.com/in/missing-composer",
+            "messageLength": 128,
+            "status": "composer-missing",
+            "messageContainers": {
+                "targetName": "Missing Composer",
+                "composerCount": 1,
+                "containers": [
+                    {
+                        "textPreview": "New message Missing Composer",
+                        "hasTargetName": True,
+                        "actions": [{"label": "Send", "disabled": True}],
+                    }
+                ],
+            },
+        }
+    )
+
+    diagnostics = acceptance_followup_diagnostics(result)
+    note = acceptance_followup_result_note(result)
+    assert '"composerCount":1' in diagnostics["message_containers"]
+    assert note is not None
+    assert "message_containers" in note
 
 
 def test_acceptance_draft_markdown_labels_public_and_sales_nav_profiles() -> None:
