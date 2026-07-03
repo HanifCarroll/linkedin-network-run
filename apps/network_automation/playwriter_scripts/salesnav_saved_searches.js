@@ -70,17 +70,25 @@ async function main() {
   const block = await blockedReason(activePage);
   if (block) throw new Error(`saved searches blocked: ${block}`);
   const control = await savedSearchesControl(activePage);
-  if (!control) {
-    throw new Error(
-      "saved-searches control missing; verify the automation browser is logged into Sales Navigator with the expected LinkedIn profile"
-    );
+  if (control) {
+    try {
+      await control.click({ timeout: 10000 });
+    } catch {
+      await control.evaluate((element) => element.click());
+    }
+    await activePage.waitForTimeout(1500);
+  } else {
+    await activePage.waitForTimeout(1500);
+    const existingSearchLinks = await activePage
+      .locator("a[href*='savedSearchId=']")
+      .count()
+      .catch(() => 0);
+    if (existingSearchLinks === 0) {
+      throw new Error(
+        "saved-searches control missing; verify the automation browser is logged into Sales Navigator with the expected LinkedIn profile"
+      );
+    }
   }
-  try {
-    await control.click({ timeout: 10000 });
-  } catch {
-    await control.evaluate((element) => element.click());
-  }
-  await activePage.waitForTimeout(1500);
   const anchors = await activePage.locator("a[href*='savedSearchId=']").all();
   const byId = new Map();
   for (const anchor of anchors) {
