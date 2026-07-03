@@ -106,11 +106,12 @@ stable saved search instead of restarting at page 1. A source is exhausted only
 when capture reaches the end of results, not merely because a few captures
 returned zero connectable rows.
 
-Connection-request counts are projected into `send-ledger.jsonl` as soon as a
+Connection-request counts are stored in `$STATE/network.sqlite` as soon as a
 send attempt is recorded or a provisional send is confirmed. Use
 `network sends --date today --timezone local --json` to answer daily send
-counts across replaced active runs. `--sync-history` backfills the ledger from
-older per-run JSONL logs.
+counts across replaced active runs. `--sync-history` backfills the SQLite
+ledger from older per-run JSONL logs. Existing `send-ledger.jsonl` files remain
+readable migration sources.
 
 If a large accepted-followup draft batch times out during profile research,
 retry it in smaller draft chunks. Completed drafts are recorded in the

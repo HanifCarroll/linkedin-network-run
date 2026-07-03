@@ -27,6 +27,7 @@ from .models import (
     SendLedgerEntry,
     SourceScanProgressLedger,
 )
+from .state_db import NetworkStateDb
 
 NETWORK_STATE_DIRNAME = "network-automation"
 OLD_NETWORK_STATE_DIRNAME = "linkedin-network-run"
@@ -44,6 +45,7 @@ class Store:
     def __init__(self, state_dir: Path | str | None = None) -> None:
         self.dir = Path(state_dir) if state_dir is not None else default_state_dir()
         self.dir.mkdir(parents=True, exist_ok=True)
+        self.state_db = NetworkStateDb(self.dir)
 
     @property
     def active_path(self) -> Path:
@@ -85,6 +87,10 @@ class Store:
     def send_ledger_path(self) -> Path:
         return self.dir / "send-ledger.jsonl"
 
+    @property
+    def database_path(self) -> Path:
+        return self.state_db.path
+
     def default_acceptance_followup_report_path(self) -> Path:
         from .models import today
 
@@ -115,20 +121,24 @@ class Store:
         write_model_atomic(self.pending_active_path, run)
 
     def load_acceptance_ledger(self) -> AcceptanceLedger:
+        if self.state_db.has_acceptance_ledger():
+            return self.state_db.load_acceptance_ledger()
         if not self.acceptance_ledger_path.exists():
             return AcceptanceLedger()
         return read_model(self.acceptance_ledger_path, AcceptanceLedger)
 
     def save_acceptance_ledger(self, ledger: AcceptanceLedger) -> None:
-        write_model_atomic(self.acceptance_ledger_path, ledger)
+        self.state_db.replace_acceptance_ledger(ledger)
 
     def load_acceptance_followup_ledger(self) -> AcceptanceFollowupLedger:
+        if self.state_db.has_acceptance_followups():
+            return self.state_db.load_acceptance_followup_ledger()
         if not self.acceptance_followup_ledger_path.exists():
             return AcceptanceFollowupLedger()
         return read_model(self.acceptance_followup_ledger_path, AcceptanceFollowupLedger)
 
     def save_acceptance_followup_ledger(self, ledger: AcceptanceFollowupLedger) -> None:
-        write_model_atomic(self.acceptance_followup_ledger_path, ledger)
+        self.state_db.replace_acceptance_followup_ledger(ledger)
 
     def load_reservoir(self) -> CandidateReservoir:
         if not self.reservoir_path.exists():
@@ -155,6 +165,11 @@ class Store:
         write_model_atomic(self.lead_ledger_path, ledger)
 
     def load_send_ledger_entries(self) -> list[SendLedgerEntry]:
+        if self.state_db.has_send_ledger():
+            return self.state_db.load_send_ledger_entries()
+        return self._load_send_ledger_entries_jsonl()
+
+    def _load_send_ledger_entries_jsonl(self) -> list[SendLedgerEntry]:
         if not self.send_ledger_path.exists():
             return []
         entries: list[SendLedgerEntry] = []
@@ -173,11 +188,12 @@ class Store:
         return entries
 
     def append_send_ledger_entry(self, entry: SendLedgerEntry) -> bool:
+        if not self.state_db.has_send_ledger() and self.send_ledger_path.exists():
+            self.state_db.import_send_ledger_entries(self._load_send_ledger_entries_jsonl())
         existing_ids = self.send_ledger_entry_ids()
         if entry.entry_id in existing_ids:
             return False
-        append_jsonl(self.send_ledger_path, entry.model_dump(mode="json", by_alias=False))
-        return True
+        return self.state_db.append_send_ledger_entry(entry)
 
     def send_ledger_entry_ids(self) -> set[str]:
         return {entry.entry_id for entry in self.load_send_ledger_entries()}
@@ -189,6 +205,7 @@ class Store:
 
     def append_acceptance_event(self, kind: str, payload: object) -> None:
         append_jsonl(self.acceptance_event_path, {"kind": kind, "payload": payload})
+        self.state_db.append_event("acceptance", kind, payload)
 
     def append_pending_event(self, run: PendingCleanupRun, kind: str, payload: object) -> None:
         append_jsonl(

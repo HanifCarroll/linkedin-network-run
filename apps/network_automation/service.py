@@ -90,6 +90,12 @@ from .reports import (
     render_pending_report,
     render_report,
 )
+from .state_db import (
+    NetworkStateDbStatus,
+    NetworkStateMigrationSummary,
+    migrate_json_ledgers,
+    preview_json_migration,
+)
 from .store import Store, read_model, write_json_atomic
 from .suppression import skip_outreach_suppressed_observations
 
@@ -1410,7 +1416,11 @@ def network_sends_summary(
     return SendLedgerSummary(
         date=summary_date,
         timezone=timezone_name,
-        ledger_path=str(store.send_ledger_path),
+        ledger_path=(
+            str(store.database_path)
+            if store.state_db.has_send_ledger()
+            else str(store.send_ledger_path)
+        ),
         durable_sent_count=len(durable_entries),
         by_source=dict(sorted(by_source.items())),
         by_status=dict(sorted(by_status.items())),
@@ -1428,6 +1438,74 @@ def network_sends_summary(
         history_logs_scanned=history_logs_scanned,
         entries=entries_for_date,
     )
+
+
+def network_state_db_status(store: Store, *, as_json: bool = False) -> str:
+    status = store.state_db.status()
+    if as_json:
+        return json.dumps(status.to_json_dict(), indent=2)
+    return render_network_state_db_status(status)
+
+
+def network_state_migrate_sqlite(
+    store: Store, *, apply: bool, as_json: bool = False
+) -> str:
+    if apply:
+        summary = migrate_json_ledgers(
+            store.state_db,
+            acceptance_ledger_path=store.acceptance_ledger_path,
+            acceptance_followup_ledger_path=store.acceptance_followup_ledger_path,
+            send_ledger_path=store.send_ledger_path,
+        )
+    else:
+        summary = preview_json_migration(
+            database_path=store.database_path,
+            acceptance_ledger_path=store.acceptance_ledger_path,
+            acceptance_followup_ledger_path=store.acceptance_followup_ledger_path,
+            send_ledger_path=store.send_ledger_path,
+        )
+    if as_json:
+        return json.dumps(summary.to_json_dict(), indent=2)
+    return render_network_state_migration_summary(summary)
+
+
+def render_network_state_db_status(status: NetworkStateDbStatus) -> str:
+    return "\n".join(
+        [
+            "# Network State DB",
+            f"- Path: {status.database_path}",
+            f"- Exists: {'yes' if status.exists else 'no'}",
+            "- Applied migrations: "
+            + (", ".join(str(item) for item in status.applied_migrations) or "none"),
+            f"- Acceptance invitations: {status.acceptance_invitations}",
+            f"- Acceptance outcome events: {status.acceptance_outcome_events}",
+            f"- Acceptance follow-ups: {status.acceptance_followups}",
+            f"- Acceptance follow-up attempts: {status.acceptance_followup_attempts}",
+            f"- Send ledger entries: {status.send_ledger_entries}",
+            "- Canonical ledgers: "
+            f"acceptance={'yes' if status.canonical_acceptance_ledger else 'no'}, "
+            f"followups={'yes' if status.canonical_acceptance_followups else 'no'}, "
+            f"sends={'yes' if status.canonical_send_ledger else 'no'}",
+        ]
+    )
+
+
+def render_network_state_migration_summary(
+    summary: NetworkStateMigrationSummary,
+) -> str:
+    mode = "dry-run" if summary.dry_run else "applied"
+    lines = [
+        f"SQLite migration {mode}: {summary.database_path}",
+        f"- Acceptance invitations: {summary.acceptance_invitations}",
+        f"- Acceptance outcome events: {summary.acceptance_outcome_events}",
+        f"- Acceptance follow-ups: {summary.acceptance_followups}",
+        f"- Acceptance follow-up attempts: {summary.acceptance_followup_attempts}",
+        f"- Send ledger entries: {summary.send_ledger_entries}",
+    ]
+    if summary.warnings:
+        lines.append("- Warnings:")
+        lines.extend(f"  - {warning}" for warning in summary.warnings)
+    return "\n".join(lines)
 
 
 def sync_send_ledger_from_history(store: Store) -> tuple[int, int]:

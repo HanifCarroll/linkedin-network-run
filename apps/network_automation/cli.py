@@ -49,6 +49,8 @@ from .service import (
     needs_reaudit,
     network_run_session,
     network_sends_summary,
+    network_state_db_status,
+    network_state_migrate_sqlite,
     pending_cleanup_audit,
     pending_cleanup_capture,
     pending_cleanup_finish,
@@ -311,6 +313,15 @@ def build_parser() -> argparse.ArgumentParser:
     sends.add_argument("--timezone", default="local")
     sends.add_argument("--sync-history", action="store_true")
     sends.add_argument("--json", action="store_true")
+    state = subparsers.add_parser("state")
+    state_sub = state.add_subparsers(dest="state_command", required=True)
+    state_status = state_sub.add_parser("db-status")
+    state_status.add_argument("--json", action="store_true")
+    state_migrate = state_sub.add_parser("migrate-sqlite")
+    mode = state_migrate.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    state_migrate.add_argument("--json", action="store_true")
     subparsers.add_parser("report")
     finish = subparsers.add_parser("finish")
     finish.add_argument("--force", action="store_true")
@@ -721,6 +732,8 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
         if args.json:
             return json_model_or_text(summary, as_json=True)
         return render_send_summary(summary)
+    if command == "state":
+        return dispatch_state(args, store)
     if command == "report":
         run = store.load_run()
         summary = network_sends_summary(
@@ -747,6 +760,15 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "old-state":
         return dispatch_old_state(args)
     raise RuntimeError(f"unhandled command {command}")
+
+
+def dispatch_state(args: argparse.Namespace, store: Store) -> str:
+    command = str(args.state_command)
+    if command == "db-status":
+        return network_state_db_status(store, as_json=args.json)
+    if command == "migrate-sqlite":
+        return network_state_migrate_sqlite(store, apply=args.apply, as_json=args.json)
+    raise RuntimeError(f"unhandled state command {command}")
 
 
 def dispatch_acceptance(args: argparse.Namespace, store: Store) -> str:
