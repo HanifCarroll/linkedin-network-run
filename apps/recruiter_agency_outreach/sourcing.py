@@ -77,13 +77,6 @@ class AgencySourceImportSummary:
 
 
 @dataclass(slots=True)
-class AgencySourceValidationWarning:
-    message: str
-    row: int = 0
-    field: str = ""
-
-
-@dataclass(slots=True)
 class AgencySourceCapture:
     source: str
     source_type: str
@@ -257,60 +250,6 @@ def load_agency_source_csv(
         url=optional_clean(url),
         rows=rows,
     )
-
-
-def validate_agency_source_capture(
-    capture: AgencySourceCapture,
-) -> list[AgencySourceValidationWarning]:
-    warnings: list[AgencySourceValidationWarning] = []
-    if capture.schema_version != AGENCY_SOURCE_SCHEMA_VERSION:
-        warnings.append(
-            AgencySourceValidationWarning(
-                field="schema_version",
-                message=f"expected schema_version {AGENCY_SOURCE_SCHEMA_VERSION}",
-            )
-        )
-    if not clean_text(capture.source):
-        warnings.append(AgencySourceValidationWarning(field="source", message="source is required"))
-    seen: dict[str, int] = {}
-    for index, row in enumerate(capture.rows, start=1):
-        if not clean_text(row.get("name")):
-            warnings.append(
-                AgencySourceValidationWarning(
-                    row=index,
-                    field="name",
-                    message="name is required",
-                )
-            )
-            continue
-        if not any(
-            clean_text(row.get(key))
-            for key in ("website", "account_url", "linkedin_url", "source_url")
-        ):
-            warnings.append(
-                AgencySourceValidationWarning(
-                    row=index,
-                    field="identity",
-                    message=(
-                        "provide at least one of website, account_url, "
-                        "linkedin_url, or source_url"
-                    ),
-                )
-            )
-        key = agency_source_row_identity_key(row)
-        if key:
-            prior = seen.get(key)
-            if prior:
-                warnings.append(
-                    AgencySourceValidationWarning(
-                        row=index,
-                        field="identity",
-                        message=f"duplicates row {prior} by {key}",
-                    )
-                )
-            else:
-                seen[key] = index
-    return warnings
 
 
 def import_agency_source_capture(

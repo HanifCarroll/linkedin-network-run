@@ -5,12 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from urllib.parse import quote_plus, urlparse, urlunparse
 
-from apps.opportunity_intel.contracts import (
-    CommentEvidence,
-    SourceDefinition,
-    SourceKind,
-    SourceRegistry,
-)
+from apps.opportunity_intel.contracts import SourceDefinition, SourceKind, SourceRegistry
 
 
 @dataclass(frozen=True)
@@ -29,31 +24,6 @@ def discover_posts_from_registry(registry: SourceRegistry) -> tuple[PostCandidat
     candidates: list[PostCandidate] = []
     for source in registry.enabled_sources():
         candidates.extend(_source_candidates(source))
-    return prioritize_posts(tuple(candidates))
-
-
-def discover_posts_from_comments(
-    comments: tuple[CommentEvidence, ...],
-) -> tuple[PostCandidate, ...]:
-    candidates: list[PostCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for comment in comments:
-        key = (comment.source_id, comment.query_id, comment.post_url)
-        if key in seen:
-            continue
-        seen.add(key)
-        candidates.append(
-            PostCandidate(
-                source_id=comment.source_id,
-                source_kind=comment.source_kind,
-                query_id=comment.query_id,
-                post_url=comment.post_url,
-                source_url=comment.source_url,
-                search_query=comment.search_query,
-                priority=0,
-                reason="actual_comment_import",
-            )
-        )
     return prioritize_posts(tuple(candidates))
 
 

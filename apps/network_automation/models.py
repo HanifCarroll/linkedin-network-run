@@ -717,22 +717,6 @@ class Run(AppModel):
             for candidate in self.candidates
         )
 
-    def next_top_up_observation(self) -> CandidateObservation | None:
-        for observation in self.observations:
-            if (
-                self.source_is_fallback(observation.source)
-                and observation.menu_state == "connectable"
-                and not self.has_top_up_blocking_event_for_observation(observation)
-            ):
-                return observation
-        for observation in self.observations:
-            if (
-                observation.menu_state == "connectable"
-                and not self.has_top_up_blocking_event_for_observation(observation)
-            ):
-                return observation
-        return None
-
     def capture_recommendation(self, source: str, remaining: int) -> CaptureRecommendation:
         source_plan = next((plan for plan in self.sources if plan.name == source), None)
         if source_plan is None:
@@ -1417,10 +1401,6 @@ def is_uncertain_send_status(status: str) -> bool:
     return status.startswith("unverified:") or status == "blocked"
 
 
-def is_provisional_send_status(status: str) -> bool:
-    return status in {"pending-provisional", "pending-verified"}
-
-
 def is_send_noop_status(status: str) -> bool:
     return status in {
         "unverified:clicked-send",
@@ -1464,14 +1444,15 @@ def source_repeated_send_noop(run: Run, source: str, threshold: int) -> bool:
 def candidate_counts_as_real_send(candidate: CandidateEvent) -> bool:
     if candidate.status in REAL_SEND_ATTEMPT_STATUSES:
         return True
+    note = candidate.note.casefold() if candidate.note is not None else ""
     return (
         candidate.status == CandidateStatus.FAILED
-        and candidate.note is not None
         and (
-            "clicked-send" in candidate.note
-            or "send-connection-clicked" in candidate.note
-            or "pending-provisional" in candidate.note
-            or "pending-verified" in candidate.note
+            "clicked-send" in note
+            or "send-connection-clicked" in note
+            or "pending-provisional" in note
+            or "pending-verified" in note
+            or "immediate connect - pending" in note
         )
     )
 
@@ -1583,9 +1564,6 @@ DURABLY_CONFIRMED_ACCEPTED_NOTE = "durably confirmed accepted during send"
 WEAK_MESSAGE_ACCEPTED_NOTE = "profile shows first-degree/message evidence"
 WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE = (
     "invalidated weak message-based acceptance; sampled profiles were 2nd-degree"
-)
-SOURCE_EXCLUDED_FOLLOWUP_NOTE = (
-    "excluded from accepted follow-up queue; source is not in current ASAP source mix"
 )
 
 
@@ -2257,32 +2235,6 @@ class AcceptanceFollowupLedger(AppModel):
         updated = 0
         for record in self.invalidatable_for_acceptance_keys(keys):
             record.status = AcceptanceFollowupStatus.INVALID_ACCEPTANCE
-            record.updated_at = current
-            if note not in record.warnings:
-                record.warnings.append(note)
-            updated += 1
-        return updated
-
-    def exclude_sources_not_in(
-        self,
-        allowed_sources: set[str],
-        *,
-        note: str = SOURCE_EXCLUDED_FOLLOWUP_NOTE,
-        at: datetime | None = None,
-    ) -> int:
-        current = at or now_utc()
-        updated = 0
-        mutable_statuses = {
-            AcceptanceFollowupStatus.DRAFTED,
-            AcceptanceFollowupStatus.DRY_RUN_READY,
-            AcceptanceFollowupStatus.NOT_MESSAGEABLE,
-            AcceptanceFollowupStatus.BLOCKED,
-            AcceptanceFollowupStatus.SEND_FAILED,
-        }
-        for record in self.drafts:
-            if record.source in allowed_sources or record.status not in mutable_statuses:
-                continue
-            record.status = AcceptanceFollowupStatus.EXCLUDED
             record.updated_at = current
             if note not in record.warnings:
                 record.warnings.append(note)

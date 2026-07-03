@@ -22,7 +22,6 @@ from packages.linkedin_ui import (
     ActionService,
     GuardedCommandActionService,
     LocalAccessToken,
-    ReviewAction,
     get_review_action,
     list_review_actions,
 )
@@ -332,7 +331,3 @@ def _reject_reason(value: str) -> RejectReason | None:
         return RejectReason(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Unsupported reject reason") from exc
-
-
-def action_is_enabled(action: ReviewAction) -> bool:
-    return action.enabled

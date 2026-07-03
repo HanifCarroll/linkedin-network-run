@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .dashboard import (
-    BucketCounts,
     DailyLeadAction,
     RunCounts,
     bucket_for_lead,
@@ -371,15 +370,3 @@ def _non_zero(value: int, default: int) -> int:
 
 def _positive_or_default(value: int, default: int) -> int:
     return value if value > 0 else default
-
-
-def empty_run_counts() -> RunCounts:
-    return RunCounts(
-        sent=BucketCounts(),
-        dry_run_ready=BucketCounts(),
-        conversation_exists=BucketCounts(),
-        not_messageable=BucketCounts(),
-        blocked=BucketCounts(),
-        suppressed=BucketCounts(),
-        send_failed=BucketCounts(),
-    )

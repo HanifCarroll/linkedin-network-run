@@ -7,7 +7,6 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,14 +26,6 @@ from packages.linkedin_storage.sqlite import connect_sqlite
 
 APP_DIR = "opportunity-intel"
 DATABASE_NAME = "opportunity.sqlite"
-
-
-@dataclass(frozen=True)
-class StoredReviewLabel:
-    label: ReviewLabel
-    reject_reason: RejectReason | None
-    notes: str
-    updated_at: str
 
 
 class OpportunityStore:

@@ -336,11 +336,8 @@ apps/
 packages/
   linkedin_common/
   linkedin_browser/
-  linkedin_salesnav/
   linkedin_storage/
-  linkedin_reports/
   linkedin_ui/
-  linkedin_experiments/
 tests/
 docs/
 ```

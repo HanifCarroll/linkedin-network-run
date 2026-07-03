@@ -10,13 +10,8 @@ import pytest
 
 import apps.network_automation.cli as network_cli
 from apps.network_automation.browser import (
-    SECURITY_VERIFICATION_SELECTOR,
     FixtureBrowserClient,
     PlaywriterBrowserClient,
-    _apply_salesnav_api_state,
-    _capture_salesnav_api_response,
-    _classify_menu_labels,
-    _classify_page,
 )
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
@@ -26,6 +21,7 @@ from apps.network_automation.models import (
     LeadStatus,
     PendingCandidateObservation,
     RunState,
+    SalesNavCapture,
     SalesNavSendResult,
     SavedSearchArtifact,
     SourceCaptureCursor,
@@ -54,6 +50,7 @@ from apps.network_automation.service import (
     pending_cleanup_record_withdraw_result,
     pending_cleanup_start,
     pending_cleanup_withdraw_next,
+    reconcile_audit,
     record_audit,
     record_candidate,
     record_send_result_from_path,
@@ -85,7 +82,6 @@ from apps.recruiter_agency_outreach.models import (
     OutreachState,
 )
 from apps.recruiter_agency_outreach.storage import Store as OutreachStore
-from packages.linkedin_browser import BrowserBlockKind
 
 from .helpers import (
     FIXTURES,
@@ -105,50 +101,6 @@ def test_cli_help_documents_browser_backend_selection() -> None:
     assert "Playwriter only" in help_text
     assert "LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>" in help_text
     assert "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>" in help_text
-
-
-class _ClassifyLocator:
-    def __init__(
-        self,
-        *,
-        count: int = 0,
-        visible: bool = False,
-        box: dict[str, float] | None = None,
-    ) -> None:
-        self._count = count
-        self._visible = visible
-        self._box = box
-
-    async def count(self) -> int:
-        return self._count
-
-    def nth(self, _index: int) -> _ClassifyLocator:
-        return self
-
-    async def is_visible(self) -> bool:
-        return self._visible
-
-    async def bounding_box(self) -> dict[str, float] | None:
-        return self._box
-
-
-class _ClassifyPage:
-    def __init__(self, locator: _ClassifyLocator) -> None:
-        self.url = "https://www.linkedin.com/sales/lead/abc"
-        self._locator = locator
-
-    def locator(self, selector: str) -> _ClassifyLocator:
-        if selector == SECURITY_VERIFICATION_SELECTOR:
-            return self._locator
-        return _ClassifyLocator()
-
-
-class FakeSalesNavApiResponse:
-    def __init__(self, payload: object) -> None:
-        self.payload = payload
-
-    async def json(self) -> object:
-        return self.payload
 
 
 def _make_source_current(store: Store, source: str) -> None:
@@ -377,12 +329,64 @@ class _TransientSavedSearchBrowser(FakeLiveBrowserClient):
         return artifact, str(out)
 
 
-def test_capture_saved_searches_retries_transient_missing_control(tmp_path: Path) -> None:
-    browser = _TransientSavedSearchBrowser(
-        "Playwriter command failed (1): saved-searches control missing; "
-        "verify the automation browser is logged into Sales Navigator",
-        out_dir=tmp_path,
-    )
+class StalledCursorBrowserClient(FakeLiveBrowserClient):
+    def capture_salesnav(
+        self,
+        *,
+        source: str,
+        url: str | None = None,
+        pages: int = 1,
+        limit: int = 25,
+        stop_after_connectable: int = 0,
+        only_connectable: bool = False,
+        row_scroll_delay_ms: int = 250,
+    ) -> tuple[SalesNavCapture, str]:
+        self.calls.append(
+            f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
+        )
+        _ = stop_after_connectable, row_scroll_delay_ms
+        artifact = SalesNavCapture.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "source": source,
+                "url": url or "",
+                "resumeUrl": url or "",
+                "nextUrl": url or "",
+                "lastScannedUrl": url or "",
+                "nextPageAvailable": True,
+                "endOfResults": False,
+                "rawRowCount": 1,
+                "outputRowCount": 1,
+                "stateCounts": {"connectable": 1},
+                "rows": [
+                    {
+                        "index": 1,
+                        "name": "Duplicate Lead",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/dup,SEARCH,y",
+                        "menuState": "connectable",
+                        "menuLabels": [{"text": "Connect"}],
+                    }
+                ],
+            }
+        )
+        return artifact, str(self.out_dir / "stalled-capture.json")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        (
+            "Playwriter command failed (1): saved-searches control missing; "
+            "verify the automation browser is logged into Sales Navigator"
+        ),
+        "page.goto: net::ERR_ABORTED at https://www.linkedin.com/sales/search/people",
+    ],
+)
+def test_capture_saved_searches_retries_transient_load_failures(
+    tmp_path: Path,
+    error: str,
+) -> None:
+    browser = _TransientSavedSearchBrowser(error, out_dir=tmp_path)
 
     output = capture_saved_searches(
         browser,
@@ -413,86 +417,6 @@ def test_capture_saved_searches_does_not_retry_login_blocker(tmp_path: Path) -> 
         )
 
     assert browser.saved_search_calls == 1
-
-
-def test_menu_classifier_handles_linkedin_pending_dash() -> None:
-    assert (
-        _classify_menu_labels([{"text": "Connect — Pending", "disabled": True}])
-        == "already-pending"
-    )
-
-
-@pytest.mark.asyncio
-async def test_page_classifier_ignores_hidden_security_verification_iframe() -> None:
-    classification = await _classify_page(
-        _ClassifyPage(_ClassifyLocator(count=1, visible=False, box=None))
-    )
-
-    assert classification.kind is BrowserBlockKind.CLEAR
-    assert classification.reason == "clear"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("visible", "box"),
-    [
-        (True, None),
-        (False, {"width": 320.0, "height": 240.0}),
-    ],
-)
-async def test_page_classifier_blocks_visible_security_verification_iframe(
-    visible: bool,
-    box: dict[str, float] | None,
-) -> None:
-    classification = await _classify_page(
-        _ClassifyPage(_ClassifyLocator(count=1, visible=visible, box=box))
-    )
-
-    assert classification.kind is BrowserBlockKind.SECURITY_CHALLENGE
-    assert classification.reason == "security-verification-present"
-
-
-@pytest.mark.asyncio
-async def test_salesnav_api_response_enriches_capture_rows() -> None:
-    api_rows_by_urn: dict[str, dict[str, Any]] = {}
-    api_state: dict[str, Any] = {"enabled": True, "responses": 0, "rows": 0, "errors": []}
-    scroll_urn = "urn:li:fs_salesProfile:(abc,NAME_SEARCH,token)"
-
-    await _capture_salesnav_api_response(
-        FakeSalesNavApiResponse(
-            {
-                "elements": [
-                    {
-                        "entityUrn": scroll_urn,
-                        "fullName": "Ada Lovelace",
-                        "pendingInvitation": False,
-                        "degree": 2,
-                        "saved": False,
-                        "viewed": True,
-                        "openLink": "/sales/lead/abc,NAME_SEARCH,token",
-                    }
-                ]
-            }
-        ),
-        api_rows_by_urn=api_rows_by_urn,
-        api_state=api_state,
-    )
-    row: dict[str, Any] = {
-        "scrollUrn": scroll_urn,
-        "profileUrl": None,
-        "menuState": "not-opened",
-        "menuLabels": [],
-    }
-
-    classified = _apply_salesnav_api_state(row, api_rows_by_urn)
-
-    assert classified is True
-    assert api_state["responses"] == 1
-    assert api_state["rows"] == 1
-    assert row["apiState"] == api_rows_by_urn[scroll_urn]
-    assert row["profileUrl"] == "https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
-    assert row["menuState"] == "connectable"
-    assert row["menuLabels"][0]["tag"] == "API"
 
 
 def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path) -> None:
@@ -1301,7 +1225,9 @@ def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> Non
     assert run.state == RunState.FINAL_RECONCILE
 
 
-def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) -> None:
+def test_send_next_pauses_for_audit_when_public_profile_still_connectable(
+    tmp_path: Path,
+) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "connectable"
     store = Store(tmp_path)
@@ -1321,10 +1247,136 @@ def test_send_next_records_reverted_connect_after_durable_check(tmp_path: Path) 
 
     run = store.load_run()
     assert "recorded pending-provisional" in output
-    assert "confirmation status: reverted-connect; verified 0/1" in output
+    assert "confirmation status: pending-provisional; verified 0/1" in output
     assert run.verified_count() == 0
     assert run.real_send_attempt_count() == 1
-    assert run.candidates[-1].status == CandidateStatus.REVERTED_CONNECT
+    assert run.state == RunState.NEEDS_REAUDIT
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+
+
+def test_send_guarded_returns_cleanly_when_confirmation_needs_audit(
+    tmp_path: Path,
+) -> None:
+    FakeLiveBrowserClient.instances.clear()
+    FakeLiveBrowserClient.acceptance_status = "connectable"
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 3), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+    browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
+
+    output = send_guarded(
+        store,
+        browser,
+        dry_run=False,
+        allow_send=True,
+        single_pass=True,
+        confirm_delay_ms=0,
+    )
+
+    assert "confirmation status: pending-provisional; verified 0/1" in output
+    assert "guarded send paused for sent-page audit" in output
+    assert store.load_run().state == RunState.NEEDS_REAUDIT
+
+
+def test_reconcile_audit_promotes_recent_name_false_negatives(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 7, 3), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.candidates.extend(
+        [
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Provisional Lead",
+                profile_url="https://www.linkedin.com/sales/lead/provisional",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+                note="salesnav-send-one saw immediate Connect - Pending",
+            ),
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Reverted Lead",
+                profile_url="https://www.linkedin.com/sales/lead/reverted",
+                status=CandidateStatus.REVERTED_CONNECT,
+                note="connectable on public profile",
+            ),
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Failed Lead",
+                profile_url="https://www.linkedin.com/sales/lead/failed",
+                status=CandidateStatus.FAILED,
+                note="salesnav-send-one saw immediate Connect - Pending; unknown",
+            ),
+        ]
+    )
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "peopleCount": 103,
+                "recentNames": ["Failed Lead", "Reverted Lead", "Provisional Lead"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = reconcile_audit(
+        store,
+        FixtureBrowserClient(audit=audit_path),
+        attempts=1,
+        delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "audit-confirmed 3 send(s)" in output
+    assert run.verified_count() == 3
+    assert run.state == RunState.FINAL_RECONCILE
+    assert {candidate.status for candidate in run.candidates} == {CandidateStatus.PENDING}
+    entries = store.load_send_ledger_entries()
+    assert len(entries) == 3
+    assert all(entry.status == CandidateStatus.PENDING for entry in entries)
+
+
+def test_reconcile_audit_recovers_approved_observation_without_send_event(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 3), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.observations.append(
+        CandidateObservation(
+            source="ASAP - Agency Owners Delivery",
+            index=7,
+            name="Interrupted Lead",
+            profile_url="https://www.linkedin.com/sales/lead/interrupted",
+            menu_state="connectable",
+        )
+    )
+    store.save_run(run)
+    _approve_all_observed_leads(store)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps({"peopleCount": 101, "recentNames": ["Interrupted Lead"]}),
+        encoding="utf-8",
+    )
+
+    output = reconcile_audit(
+        store,
+        FixtureBrowserClient(audit=audit_path),
+        attempts=1,
+        delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "audit-confirmed 1 send(s): Interrupted Lead" in output
+    assert run.verified_count() == 1
+    assert run.candidates[-1].status == CandidateStatus.PENDING
+    assert "no recorded send event" in (run.candidates[-1].note or "")
+    assert store.load_send_ledger_entries()[-1].durable is True
 
 
 def test_source_yield_report_prioritizes_email_required_skips(tmp_path: Path) -> None:
@@ -2285,6 +2337,84 @@ def test_reset_source_progress_reopens_active_source(tmp_path: Path) -> None:
     assert reopened.sources[0].exhausted is False
     assert source not in reopened.capture_cursors
     assert "reset source progress: ASAP - Vertical Proof Buyers" in reopened.notes
+
+
+def test_cli_network_run_session_exhausts_stalled_zero_import_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    StalledCursorBrowserClient.instances.clear()
+    monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", StalledCursorBrowserClient)
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 3),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.state = RunState.SENDING
+    run.observations.append(
+        CandidateObservation(
+            source=source,
+            index=1,
+            name="Duplicate Lead",
+            profile_url="https://www.linkedin.com/sales/lead/dup,SEARCH,y",
+            menu_state="connectable",
+        )
+    )
+    store.save_run(run)
+    record_candidate(
+        store,
+        source=source,
+        name="Duplicate Lead",
+        profile_url="https://www.linkedin.com/sales/lead/dup,SEARCH,y",
+        status=CandidateStatus.SKIPPED,
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    _write_fake_artifact(
+        saved_searches,
+        SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "url": "https://www.linkedin.com/sales/search/people",
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": source,
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        ),
+    )
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "run-session",
+            "--resume",
+            "--saved-searches",
+            str(saved_searches),
+            "--no-fallback",
+            "--allow-send",
+            "--max-steps",
+            "3",
+            "--out-dir",
+            str(tmp_path / "network-session"),
+        ]
+    )
+
+    assert exit_code == 0
+    run = store.load_run()
+    assert run.sources[0].exhausted is True
+    assert any("saved-search cursor did not advance" in note for note in run.notes)
+    stalled_calls = StalledCursorBrowserClient.instances[0].calls
+    assert sum(call.startswith(f"capture:{source}") for call in stalled_calls) == 1
 
 
 def test_cli_network_run_session_exhausts_source_at_end_of_results(

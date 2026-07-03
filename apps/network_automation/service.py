@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shlex
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
@@ -37,6 +38,7 @@ from .models import (
     SourceScanProgress,
     apply_audit,
     apply_pending_audit,
+    candidate_counts_as_real_send,
     capture_state_count,
     drain_stale_connectable_candidates,
     fill_run_from_reservoir,
@@ -154,9 +156,21 @@ def import_audit(store: Store, path: Path) -> str:
     audit = read_model(path, SalesNavAudit)
     note = "imported audit; recent_names=" + ", ".join(audit.recent_names)
     apply_audit(run, audit.people_count, note)
-    store.save_run(run)
+    promoted = _confirm_audited_recent_sends(
+        store,
+        run,
+        audit.recent_names,
+        audit_path=path,
+        confirmation="imported sent-page audit recent_names match",
+    )
+    if not promoted:
+        store.save_run(run)
     store.append_event(run, "import-audit", {"path": str(path), "people_count": audit.people_count})
-    return f"audit imported: People ({audit.people_count}){_delta_suffix(run.audited_delta())}"
+    promoted_suffix = f"; audit-confirmed {len(promoted)} send(s)" if promoted else ""
+    return (
+        f"audit imported: People ({audit.people_count})"
+        f"{_delta_suffix(run.audited_delta())}{promoted_suffix}"
+    )
 
 
 SAVED_SEARCH_RETRY_ATTEMPTS = 3
@@ -174,6 +188,7 @@ SAVED_SEARCH_RETRYABLE_ERRORS = (
     "TimeoutError",
     "timed out",
     "Navigation timeout",
+    "ERR_ABORTED",
 )
 
 
@@ -1135,11 +1150,22 @@ def network_run_session(
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
                 zero_capture_streaks[plan.source] = streak
                 cursor = after_run.capture_cursors.get(plan.source)
-                if cursor and cursor.end_of_results:
+                cursor_stalled = (
+                    cursor is not None
+                    and cursor.next_url is not None
+                    and cursor.last_scanned_url is not None
+                    and cursor.next_url == cursor.last_scanned_url
+                )
+                if cursor and (cursor.end_of_results or cursor_stalled or streak >= 2):
                     note = (
                         "reached end of saved-search results with no usable candidates; "
                         "carrying remaining quota forward"
                     )
+                    if cursor_stalled:
+                        note = (
+                            "saved-search cursor did not advance after zero usable candidates; "
+                            "carrying remaining quota forward"
+                        )
                     add(source_exhausted(store, plan.source, note=note))
             continue
         if plan.action == "send-candidate":
@@ -1184,7 +1210,27 @@ def network_run_session(
                 )
             )
             continue
-        if plan.action in {"reaudit", "final-audit"}:
+        if plan.action == "reaudit":
+            add(
+                reconcile_audit(
+                    store,
+                    browser,
+                    attempts=audit_attempts,
+                    delay_ms=audit_delay_ms,
+                    finish=False,
+                )
+            )
+            run = store.load_run()
+            if run.state == RunState.NEEDS_REAUDIT:
+                raise RuntimeError(
+                    "sent-page audit did not resolve provisional send confirmation; "
+                    "inspect latest audit before continuing"
+                )
+            if finish and run.verified_count() >= run.target:
+                add(finish_run(store))
+                break
+            continue
+        if plan.action == "final-audit":
             add(
                 reconcile_audit(
                     store,
@@ -1226,8 +1272,16 @@ def reconcile_audit(
         audit, path = browser.audit_sent_invitations(load_more=0)
         run = store.load_run()
         apply_audit(run, audit.people_count, f"reconcile audit attempt {attempt}/{attempts}")
+        promoted = _confirm_audited_recent_sends(
+            store,
+            run,
+            audit.recent_names,
+            audit_path=Path(path),
+            confirmation=f"reconcile audit attempt {attempt}/{attempts} recent_names match",
+        )
         latest_delta = run.audited_delta()
-        store.save_run(run)
+        if not promoted:
+            store.save_run(run)
         store.append_event(
             run,
             "reconcile-audit",
@@ -1236,12 +1290,18 @@ def reconcile_audit(
                 "path": path,
                 "people_count": audit.people_count,
                 "delta": latest_delta,
+                "audit_confirmed": promoted,
                 "finished": False,
             },
         )
+        promoted_text = (
+            f"; audit-confirmed {len(promoted)} send(s): {', '.join(promoted)}"
+            if promoted
+            else ""
+        )
         messages.append(
             f"reconcile audit {attempt}/{attempts}: People ({audit.people_count}), "
-            f"delta {format_delta(latest_delta)}; out={path}"
+            f"delta {format_delta(latest_delta)}{promoted_text}; out={path}"
         )
         if latest_delta == run.target:
             break
@@ -1250,6 +1310,106 @@ def reconcile_audit(
     if finish:
         messages.append(finish_run(store))
     return "\n".join(messages + [render_report(store.load_run())])
+
+
+def _confirm_audited_recent_sends(
+    store: Store,
+    run: Run,
+    recent_names: Sequence[str],
+    *,
+    audit_path: Path,
+    confirmation: str,
+) -> list[str]:
+    names_remaining = Counter(
+        normalized
+        for name in recent_names
+        if (normalized := _normalize_audit_name(name))
+    )
+    if not names_remaining:
+        return []
+    promoted: list[CandidateEvent] = []
+    for candidate in run.candidates:
+        normalized_name = _normalize_audit_name(candidate.name)
+        if not normalized_name or names_remaining[normalized_name] <= 0:
+            continue
+        if candidate.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
+            names_remaining[normalized_name] -= 1
+            continue
+        if not _candidate_can_be_audit_confirmed(candidate):
+            continue
+        previous_status = candidate.status.value
+        candidate.status = CandidateStatus.PENDING
+        candidate.note = "; ".join(
+            part
+            for part in (
+                candidate.note,
+                "sent-page audit confirmed pending",
+                f"previous_status={previous_status}",
+                f"audit={audit_path}",
+            )
+            if part
+        )
+        promoted.append(candidate)
+        names_remaining[normalized_name] -= 1
+    delta = run.audited_delta()
+    unrecorded_audit_delta = (
+        max(0, delta - run.verified_count()) if delta is not None else 0
+    )
+    if unrecorded_audit_delta > 0:
+        ledger = store.load_lead_ledger()
+        for observation in run.observations:
+            if unrecorded_audit_delta <= 0:
+                break
+            normalized_name = _normalize_audit_name(observation.name)
+            if not normalized_name or names_remaining[normalized_name] <= 0:
+                continue
+            if run.has_candidate_event_for_observation(observation):
+                continue
+            record = ledger.get_for_observation(observation)
+            if record is None or record.status != LeadStatus.APPROVED:
+                continue
+            event = CandidateEvent(
+                source=observation.source,
+                name=observation.name,
+                profile_url=observation.profile_url,
+                public_profile_url=observation.public_profile_url,
+                status=CandidateStatus.PENDING,
+                note=(
+                    "sent-page audit confirmed pending; "
+                    "no recorded send event; "
+                    f"audit={audit_path}"
+                ),
+            )
+            run.candidates.append(event)
+            promoted.append(event)
+            names_remaining[normalized_name] -= 1
+            unrecorded_audit_delta -= 1
+    if promoted and run.state not in {RunState.DONE, RunState.BLOCKED}:
+        run.state = (
+            RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
+        )
+    committer = SendAttemptCommitter(store)
+    for event in promoted:
+        committer.commit_audit_confirmation_result(
+            run,
+            event,
+            audit_path=audit_path,
+            confirmation=confirmation,
+        )
+    return [event.name for event in promoted]
+
+
+def _normalize_audit_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _candidate_can_be_audit_confirmed(candidate: CandidateEvent) -> bool:
+    if candidate.status in {
+        CandidateStatus.PENDING_PROVISIONAL,
+        CandidateStatus.REVERTED_CONNECT,
+    }:
+        return True
+    return candidate.status == CandidateStatus.FAILED and candidate_counts_as_real_send(candidate)
 
 
 def record_candidate(
@@ -1409,6 +1569,12 @@ def confirm_provisional_send(
     if blocked:
         run.state = RunState.BLOCKED
         run.notes.append(f"durable confirmation blocked for {event.name}: {status_note}")
+    elif final_status == CandidateStatus.PENDING_PROVISIONAL:
+        run.state = RunState.NEEDS_REAUDIT
+        run.notes.append(
+            "durable confirmation was inconclusive for "
+            f"{event.name}: {status_note}; sent-page audit required"
+        )
     elif run.state not in {RunState.DONE, RunState.BLOCKED}:
         run.state = (
             RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
@@ -1451,7 +1617,11 @@ def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateSt
     if status == AcceptanceStatus.ACCEPTED:
         return CandidateStatus.ACCEPTED, "accepted", False
     if status == AcceptanceStatus.CONNECTABLE:
-        return CandidateStatus.REVERTED_CONNECT, "connectable again; invite not durable", False
+        return (
+            CandidateStatus.PENDING_PROVISIONAL,
+            "connectable on public profile; sent-page audit required",
+            False,
+        )
     if status == AcceptanceStatus.BLOCKED:
         return CandidateStatus.FAILED, f"blocked: {note or 'blocked'}", True
     value = getattr(status, "value", str(status))
@@ -1681,6 +1851,9 @@ def send_guarded(
                 )
             )
             run = store.load_run()
+            if run.state == RunState.NEEDS_REAUDIT:
+                add("guarded send paused for sent-page audit")
+                break
         if is_uncertain_send_status(result.status):
             raise RuntimeError(
                 f"guarded send stopped on uncertain status {result.status}; "
@@ -2406,25 +2579,6 @@ def pending_cleanup_finish(store: Store, *, force: bool = False) -> str:
     store.save_pending(run)
     store.append_pending_event(run, "finish", {"audited_delta": delta})
     return render_pending_report(run)
-
-
-def load_fixture_browser(
-    *,
-    send_result: Path | None = None,
-    capture: Path | None = None,
-    audit: Path | None = None,
-    followup_result: Path | None = None,
-    withdraw_result: Path | None = None,
-) -> BrowserClient:
-    from .browser import FixtureBrowserClient
-
-    return FixtureBrowserClient(
-        send_result=send_result,
-        capture=capture,
-        audit=audit,
-        followup_result=followup_result,
-        withdraw_result=withdraw_result,
-    )
 
 
 def record_top_up_result_from_path(store: Store, path: Path, note: str | None = None) -> str:

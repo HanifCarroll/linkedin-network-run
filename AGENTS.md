@@ -83,6 +83,9 @@ uv run linkedin-tools --help
   security verification, LinkedIn `429`, network refusal, or uncertain send
   results as blocking evidence. Preserve controller state and diagnose the
   cause before retrying.
+- Treat a post-send public-profile `connectable` result as inconclusive, not
+  proof that the invite failed. Reconcile with the sent-page audit; matching
+  `recentNames` can confirm the provisional send as durable pending.
 
 ## Source-Faithful Extraction
 

@@ -42,11 +42,8 @@ packages = [
   "packages",
   "packages.linkedin_common",
   "packages.linkedin_browser",
-  "packages.linkedin_salesnav",
   "packages.linkedin_storage",
-  "packages.linkedin_reports",
   "packages.linkedin_ui",
-  "packages.linkedin_experiments",
 ]
 
 [tool.setuptools.package-data]

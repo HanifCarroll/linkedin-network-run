@@ -5,71 +5,16 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
 from urllib.parse import quote_plus
 
 from apps.opportunity_intel.company_pages import canonicalize_linkedin_post_url
 from apps.opportunity_intel.post_discovery import PostCandidate, prioritize_posts
 from apps.opportunity_intel.post_prefilter import POST_QUEUE_COLUMNS, read_post_queue
 from packages.linkedin_browser.playwriter import PlaywriterRunner
-from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
-
-POST_MENU_PATTERN = re.compile(r"open control menu for post by", re.IGNORECASE)
-COPY_LINK_PATTERN = re.compile(r"^Copy link to post$", re.IGNORECASE)
-COPY_CAPTURE_INSTALL_SCRIPT = """
-() => {
-  const clipboard = navigator.clipboard;
-  if (!clipboard || typeof clipboard.writeText !== "function") {
-    throw new Error("navigator.clipboard.writeText is unavailable");
-  }
-  const state = {
-    writes: [],
-    originalWriteText: clipboard.writeText.bind(clipboard),
-  };
-  const captureWriteText = async (text) => {
-    state.writes.push(String(text));
-    return undefined;
-  };
-  Object.defineProperty(clipboard, "writeText", {
-    configurable: true,
-    writable: true,
-    value: captureWriteText,
-  });
-  window.__linkedinPostCopyCapture = state;
-}
-"""
-COPY_CAPTURE_READ_SCRIPT = """
-() => {
-  const state = window.__linkedinPostCopyCapture;
-  if (!state || !Array.isArray(state.writes) || state.writes.length === 0) {
-    return "";
-  }
-  return state.writes.at(-1) || "";
-}
-"""
-COPY_CAPTURE_RESTORE_SCRIPT = """
-() => {
-  const state = window.__linkedinPostCopyCapture;
-  if (state && state.originalWriteText && navigator.clipboard) {
-    Object.defineProperty(navigator.clipboard, "writeText", {
-      configurable: true,
-      writable: true,
-      value: state.originalWriteText,
-    });
-  }
-  delete window.__linkedinPostCopyCapture;
-}
-"""
-COPY_CAPTURE_TIMEOUT_MS = 1_000
-
-
-class PostCopyCaptureError(RuntimeError):
-    """LinkedIn's copy action did not publish a post URL through the page API."""
 
 
 @dataclass(frozen=True)
@@ -417,156 +362,6 @@ def _import_search_capture_artifact(
             post_url=post_url,
         )
     return {"captured": captured, "duplicates": duplicates}
-
-
-async def _capture_single_search(
-    *,
-    page: Any,
-    search_input: SearchCaptureInput,
-    output_path: Path,
-    metrics_path: Path,
-    seen_post_urls: set[str],
-    limits: SearchCaptureLimits,
-    reporter: ProgressReporter,
-) -> dict[str, int]:
-    await page.goto(
-        search_input.capture_url,
-        wait_until="domcontentloaded",
-        timeout=limits.navigation_timeout_ms,
-    )
-    await page.wait_for_timeout(limits.settle_ms)
-    captured = 0
-    duplicates = 0
-    stale_scrolls = 0
-    processed_menu_buttons = 0
-    for scroll_index in range(1, limits.max_scrolls + 1):
-        if captured >= limits.max_results_per_search:
-            break
-        buttons = page.get_by_role("button", name=POST_MENU_PATTERN)
-        try:
-            button_count = await buttons.count()
-        except TimeoutError:
-            button_count = 0
-        reporter.emit(
-            "search_scroll",
-            source_id=search_input.candidate.source_id,
-            scroll=scroll_index,
-            menu_buttons=button_count,
-            new_menu_buttons=max(0, button_count - processed_menu_buttons),
-            captured=captured,
-        )
-        captured_before_scroll = captured
-        for index in range(processed_menu_buttons, button_count):
-            if captured >= limits.max_results_per_search:
-                break
-            try:
-                copied_url = await _copy_post_url_from_menu(
-                    page=page,
-                    menu_button=buttons.nth(index),
-                )
-            except (Exception, PostCopyCaptureError) as exc:
-                _append_capture_metric(
-                    metrics_path=metrics_path,
-                    event="copy_failed",
-                    search_input=search_input,
-                    error_type=type(exc).__name__,
-                    message=str(exc),
-                )
-                continue
-            post_url = canonicalize_linkedin_post_url(copied_url)
-            if not post_url:
-                _append_capture_metric(
-                    metrics_path=metrics_path,
-                    event="copied_url_rejected",
-                    search_input=search_input,
-                    copied_url=copied_url,
-                    reason="not_linkedin_post_url",
-                )
-                continue
-            if post_url in seen_post_urls:
-                duplicates += 1
-                _append_capture_metric(
-                    metrics_path=metrics_path,
-                    event="duplicate_post",
-                    search_input=search_input,
-                    post_url=post_url,
-                )
-                continue
-            seen_post_urls.add(post_url)
-            captured += 1
-            candidate = PostCandidate(
-                source_id=search_input.candidate.source_id,
-                source_kind=search_input.candidate.source_kind,
-                query_id=search_input.candidate.query_id,
-                post_url=post_url,
-                source_url=search_input.candidate.source_url,
-                search_query=search_input.candidate.search_query,
-                priority=search_input.candidate.priority,
-                reason="linkedin_search_copy_link",
-            )
-            _append_post_candidate(output_path, candidate)
-            _append_capture_metric(
-                metrics_path=metrics_path,
-                event="post_captured",
-                search_input=search_input,
-                post_url=post_url,
-            )
-        processed_menu_buttons = max(processed_menu_buttons, button_count)
-        if captured == captured_before_scroll:
-            stale_scrolls += 1
-        else:
-            stale_scrolls = 0
-        if stale_scrolls >= 3:
-            break
-        await page.evaluate("(pixels) => window.scrollBy(0, pixels)", limits.scroll_pixels)
-        await page.wait_for_timeout(limits.settle_ms)
-    return {"captured": captured, "duplicates": duplicates}
-
-
-async def _copy_post_url_from_menu(
-    *,
-    page: Any,
-    menu_button: Any,
-) -> str:
-    await page.evaluate(COPY_CAPTURE_INSTALL_SCRIPT)
-    try:
-        try:
-            await menu_button.click(timeout=2_000)
-        except TimeoutError:
-            await menu_button.dispatch_event("click")
-        menu_item = page.get_by_role("menuitem", name=COPY_LINK_PATTERN)
-        await menu_item.click()
-        try:
-            await page.wait_for_function(
-                "() => window.__linkedinPostCopyCapture?.writes?.length > 0",
-                timeout=COPY_CAPTURE_TIMEOUT_MS,
-            )
-        except TimeoutError as exc:
-            raise PostCopyCaptureError(
-                "LinkedIn copy action did not call navigator.clipboard.writeText"
-            ) from exc
-        copied_value = await page.evaluate(COPY_CAPTURE_READ_SCRIPT)
-        if not isinstance(copied_value, str):
-            raise PostCopyCaptureError("LinkedIn copy action produced a non-text post URL")
-        copied_url = copied_value
-        if not copied_url:
-            raise PostCopyCaptureError("LinkedIn copy action produced an empty post URL")
-        return copied_url
-    finally:
-        await page.evaluate(COPY_CAPTURE_RESTORE_SCRIPT)
-
-
-async def _reusable_page(context: Any) -> Any:
-    fragments = (
-        "linkedin.com/search/results/content",
-        "linkedin.com/feed/",
-        "linkedin.com",
-    )
-    session = BrowserSession(
-        context,
-        PageReusePolicy(preferred_url_fragments=fragments, foreground=False),
-    )
-    return cast(Any, await session.page(preferred_url_fragments=fragments))
 
 
 def _write_known_posts(

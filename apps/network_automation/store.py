@@ -336,9 +336,6 @@ class Store:
             return set()
         return {entry.entry_id for entry in self._state_db.load_send_ledger_entries()}
 
-    def send_ledger_entry_ids(self) -> set[str]:
-        return {entry.entry_id for entry in self.load_send_ledger_entries()}
-
     def append_event(self, run: Run, kind: str, payload: object) -> None:
         append_jsonl(
             self.event_path(run), {"run_id": str(run.id), "kind": kind, "payload": payload}

@@ -25,13 +25,9 @@ The top-level CLI is `uv run linkedin-tools`.
 
 - `packages/linkedin_browser`: browser artifacts, reusable page helpers, state
   classification, and guarded browser action primitives.
-- `packages/linkedin_salesnav`: Sales Navigator capture, audit, saved-search,
-  and profile primitives.
-- `packages/linkedin_storage`: SQLite, JSONL, and CSV helpers.
-- `packages/linkedin_reports`: report rendering helpers.
+- `packages/linkedin_storage`: SQLite migration and legacy-state import helpers.
 - `packages/linkedin_ui`: shared review UI support.
-- `packages/linkedin_experiments`: experiment metrics and gate helpers.
-- `packages/linkedin_common`: config, progress, URL, schema, and utility code.
+- `packages/linkedin_common`: state paths, progress, URL, and profile identity helpers.
 
 ## State
 

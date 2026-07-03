@@ -125,6 +125,38 @@ class SendAttemptCommitter:
         )
         return SendAttemptCommit(run=run, event=event, drained=[])
 
+    def commit_audit_confirmation_result(
+        self,
+        run: Run,
+        event: CandidateEvent,
+        *,
+        audit_path: str | Path,
+        confirmation: str,
+    ) -> SendAttemptCommit:
+        run.mark_updated()
+        self.store.save_run(run)
+        self._apply_candidate_events_to_lead_ledger([event])
+        _append_send_ledger_event(
+            self.store,
+            run,
+            event,
+            event_kind="confirm-send-result",
+            result_path=str(audit_path),
+            confirmed_at=now_utc(),
+        )
+        self.store.append_event(
+            run,
+            "confirm-send-result",
+            {
+                "out": str(audit_path),
+                "event": event,
+                "status": event.status.value,
+                "confirmation": confirmation,
+                "via": "sent-page-audit",
+            },
+        )
+        return SendAttemptCommit(run=run, event=event, drained=[])
+
     def commit_top_up_result(
         self,
         run: Run,

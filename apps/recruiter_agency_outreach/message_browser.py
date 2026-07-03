@@ -6,21 +6,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from apps.network_automation.browser import (
-    _find_composer,
-    _locator_count,
-    _locator_disabled,
-    _locator_visible,
-    _safe_stem,
-)
+from apps.network_automation.browser import _safe_stem
 from packages.linkedin_browser.playwriter import PlaywriterRunner
 
 from .send import MessageSendResult, load_message_send_result
 
 DEFAULT_MESSAGE_OUT_DIR = Path("/tmp/recruiter-agency-outreach-message")
-SALES_NAV_INMAIL_ACTION = "button[data-anchor-send-inmail]"
-COMPOSER_WAIT_ATTEMPTS = 20
-COMPOSER_WAIT_MS = 500
 
 
 class PlaywriterMessageBrowserClient:
@@ -82,46 +73,6 @@ class PlaywriterMessageBrowserClient:
         )
 
 
-async def _click_message_action(page: Any, action: Mapping[str, Any]) -> dict[str, Any]:
-    inmail = page.locator(SALES_NAV_INMAIL_ACTION).first
-    if (
-        await _locator_count(inmail)
-        and await _locator_visible(inmail)
-        and not await _locator_disabled(inmail)
-    ):
-        box = await inmail.bounding_box()
-        if box and box.get("width") and box.get("height"):
-            x = max(1.0, min(8.0, float(box["width"]) - 1.0))
-            y = max(1.0, min(float(box["height"]) / 2.0, float(box["height"]) - 1.0))
-            await inmail.click(position={"x": x, "y": y}, timeout=8000)
-            return {
-                "method": "salesnav-inmail-padding-click",
-                "selector": SALES_NAV_INMAIL_ACTION,
-                "position": {"x": x, "y": y},
-            }
-        await inmail.click(timeout=8000)
-        return {
-            "method": "salesnav-inmail-default-click",
-            "selector": SALES_NAV_INMAIL_ACTION,
-        }
-
-    locator = action["locator"]
-    await locator.click(timeout=8000)
-    return {
-        "method": "generic-message-action-click",
-        "label": str(action.get("label") or ""),
-    }
-
-
-async def _wait_for_message_composer(page: Any) -> dict[str, Any] | None:
-    for _ in range(COMPOSER_WAIT_ATTEMPTS):
-        composer = await _find_composer(page)
-        if composer is not None:
-            return composer
-        await page.wait_for_timeout(COMPOSER_WAIT_MS)
-    return await _find_composer(page)
-
-
 def _candidate(config: Mapping[str, Any]) -> dict[str, Any]:
     raw = config.get("candidate")
     if not isinstance(raw, Mapping):
@@ -134,6 +85,7 @@ def _candidate(config: Mapping[str, Any]) -> dict[str, Any]:
     if not str(config.get("message") or "").strip():
         raise RuntimeError("message is required")
     return candidate
+
 
 def _playwriter_message_script() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts" / "send_message.js"

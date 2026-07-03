@@ -102,9 +102,6 @@ class AgencyPoolDiagnosis:
     state_path: str
     counts: StatusCounts
     funnel: AgencyAccountFunnel
-    website_candidates: int
-    qualified_website_candidates: int
-    exhausted_website_candidates: int
     missing_linkedin_company_url: int
     accounts: list[AgencyPoolAccountDiagnosis]
 
@@ -570,21 +567,12 @@ def build_agency_pool_diagnosis(
 ) -> AgencyPoolDiagnosis:
     lead_counts = agency_pool_lead_counts_by_account(state)
     accounts: list[AgencyPoolAccountDiagnosis] = []
-    website_candidates = 0
-    qualified_website_candidates = 0
-    exhausted_website_candidates = 0
     missing_company_url = 0
     for account in state.agency_accounts:
         item = build_agency_pool_account_diagnosis(
             account,
             lead_counts.get(account.id, AgencyPoolLeadCounts()),
         )
-        if item.next_step == "website_enrichment":
-            website_candidates += 1
-            if account.status == AgencyAccountStatus.QUALIFIED:
-                qualified_website_candidates += 1
-            elif account.status == AgencyAccountStatus.EXHAUSTED:
-                exhausted_website_candidates += 1
         if item.next_step == "missing_linkedin_company_url":
             missing_company_url += 1
         if item.next_step != "no_action":
@@ -599,9 +587,6 @@ def build_agency_pool_diagnosis(
         state_path=state_path,
         counts=counts(state),
         funnel=agency_account_funnel_counts(state),
-        website_candidates=website_candidates,
-        qualified_website_candidates=qualified_website_candidates,
-        exhausted_website_candidates=exhausted_website_candidates,
         missing_linkedin_company_url=missing_company_url,
         accounts=accounts,
     )
@@ -620,12 +605,6 @@ def build_agency_pool_account_diagnosis(
         next_step = "missing_linkedin_company_url"
     elif account.status == AgencyAccountStatus.QUALIFIED and account.contact_capture_count < 3:
         next_step = "continue_linkedin_contact_search"
-    elif (
-        account.website
-        and lead_counts.contacts == 0
-        and agency_account_website_enrichment_eligible(account)
-    ):
-        next_step = "website_enrichment"
     elif account.status == AgencyAccountStatus.NEEDS_REVIEW:
         next_step = "review_account_fit"
     return AgencyPoolAccountDiagnosis(
@@ -730,24 +709,13 @@ def build_agency_pool_next_action(state: OutreachState, state_path: str) -> Agen
             ),
             account=account,
         )
-    if diagnosis.website_candidates > 0:
-        return AgencyPoolNextAction(
-            generated_at=now_iso(),
-            state_path=state_path,
-            action="enrich_agency_websites",
-            reason=(
-                f"{diagnosis.website_candidates} agency account(s) have "
-                "websites that can be checked for explicit contacts."
-            ),
-            command="recruiter-agency-outreach agency-pool enrich-websites --limit 25",
-        )
     return AgencyPoolNextAction(
         generated_at=now_iso(),
         state_path=state_path,
         action="no_action",
         reason=(
             "No agency ready lead, drafted lead, reviewable contact, "
-            "enrichable website, or retry recommendation is available."
+            "or retry recommendation is available."
         ),
     )
 
@@ -831,10 +799,6 @@ def agency_contact_candidates_needing_review(
     return candidates
 
 
-def agency_account_website_enrichment_eligible(account: AgencyAccount) -> bool:
-    return account.status in {AgencyAccountStatus.QUALIFIED, AgencyAccountStatus.EXHAUSTED}
-
-
 def agency_pool_next_step_rank(step: str) -> int:
     if step == "validate_or_send_open_lead":
         return 0
@@ -844,8 +808,6 @@ def agency_pool_next_step_rank(step: str) -> int:
         return 2
     if step.startswith("continue_linkedin_contact_search"):
         return 3
-    if step == "website_enrichment":
-        return 4
     if step == "review_account_fit":
         return 5
     return 9

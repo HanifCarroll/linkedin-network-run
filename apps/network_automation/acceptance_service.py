@@ -886,10 +886,6 @@ def acceptance_dry_run_followups(
     return "\n".join(messages)
 
 
-def followup_id_for_candidate(source: str, name: str, profile_url: str | None) -> str:
-    return acceptance_followup_id(candidate_key(source, name, profile_url))
-
-
 def load_acceptance_check_candidates(path: Path) -> list[AcceptanceCheckCandidate]:
     return [
         AcceptanceCheckCandidate.model_validate(item)

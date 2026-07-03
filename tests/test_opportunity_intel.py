@@ -42,12 +42,6 @@ from apps.opportunity_intel.normalization import normalize_and_dedupe
 from apps.opportunity_intel.post_discovery import PostCandidate, discover_posts_from_registry
 from apps.opportunity_intel.ranking import rank_comment
 from apps.opportunity_intel.search_capture import (
-    COPY_CAPTURE_INSTALL_SCRIPT,
-    COPY_CAPTURE_READ_SCRIPT,
-    COPY_CAPTURE_RESTORE_SCRIPT,
-    COPY_CAPTURE_TIMEOUT_MS,
-    PostCopyCaptureError,
-    _copy_post_url_from_menu,
     plan_search_capture,
     search_capture_url,
 )
@@ -225,54 +219,6 @@ def test_search_capture_url_requires_explicit_search_input() -> None:
     assert search_capture_url(candidate) == ""
 
 
-@pytest.mark.asyncio
-async def test_search_capture_copy_link_uses_page_clipboard_intercept() -> None:
-    copied_url = (
-        "https://www.linkedin.com/posts/dataflip-co_hranalytics-powerbi-"
-        "datadrivenhr-activity-7327939484082159616---Bv"
-        "?utm_source=share&utm_medium=member_desktop"
-    )
-    page = _CopyInterceptPage(copied_url=copied_url)
-    menu_button = _CopyInterceptButton()
-
-    result = await _copy_post_url_from_menu(
-        page=page,  # type: ignore[arg-type]
-        menu_button=menu_button,
-    )
-
-    assert result == copied_url
-    assert menu_button.clicked
-    assert page.menu_item.clicked
-    assert page.role_requests == [("menuitem", "^Copy link to post$")]
-    assert page.wait_for_function_calls == [
-        (
-            "() => window.__linkedinPostCopyCapture?.writes?.length > 0",
-            COPY_CAPTURE_TIMEOUT_MS,
-        )
-    ]
-    assert page.evaluate_calls == [
-        COPY_CAPTURE_INSTALL_SCRIPT,
-        COPY_CAPTURE_READ_SCRIPT,
-        COPY_CAPTURE_RESTORE_SCRIPT,
-    ]
-
-
-@pytest.mark.asyncio
-async def test_search_capture_copy_link_fails_when_no_page_clipboard_write() -> None:
-    page = _CopyInterceptPage(copied_url="", wait_times_out=True)
-
-    with pytest.raises(PostCopyCaptureError, match="did not call navigator\\.clipboard"):
-        await _copy_post_url_from_menu(
-            page=page,  # type: ignore[arg-type]
-            menu_button=_CopyInterceptButton(),
-        )
-
-    assert page.evaluate_calls == [
-        COPY_CAPTURE_INSTALL_SCRIPT,
-        COPY_CAPTURE_RESTORE_SCRIPT,
-    ]
-
-
 def test_progress_reporter_writes_status_lines() -> None:
     stream = io.StringIO()
     reporter = ProgressReporter(stream=stream)
@@ -388,7 +334,7 @@ async def test_live_comment_expansion_uses_dom_scroll_instead_of_mouse_wheel() -
     page = _DomScrollOnlyPage()
 
     stats = await _expand_visible_comment_controls(
-        page,  # type: ignore[arg-type]
+        page,
         BrowserSafetyLimits(
             max_scrolls=1,
             max_comment_control_clicks=1,
@@ -415,7 +361,7 @@ async def test_live_comment_expansion_stops_after_no_progress() -> None:
     )
 
     stats = await _expand_visible_comment_controls(
-        page,  # type: ignore[arg-type]
+        page,
         BrowserSafetyLimits(
             max_scrolls=6,
             max_comment_control_clicks=12,
@@ -450,7 +396,7 @@ async def test_live_comment_expansion_uses_global_click_budgets() -> None:
     )
 
     stats = await _expand_visible_comment_controls(
-        page,  # type: ignore[arg-type]
+        page,
         BrowserSafetyLimits(
             max_scrolls=3,
             max_comment_control_clicks=3,
@@ -472,7 +418,7 @@ async def test_optional_screenshot_failure_returns_warning_without_artifact() ->
     store = _ArtifactRecordingStore()
 
     warnings = await _capture_optional_screenshot(
-        page=object(),  # type: ignore[arg-type]
+        page=object(),
         run_id="run_1",
         writer=_FailingScreenshotWriter(),  # type: ignore[arg-type]
         store=store,  # type: ignore[arg-type]
@@ -1217,7 +1163,6 @@ def test_opportunity_and_comment_modules_do_not_import_action_modules() -> None:
     prohibited_modules = (
         "apps.network_automation",
         "apps.recruiter_agency_outreach",
-        "packages.linkedin_salesnav.messages",
     )
     prohibited_action_terms = ("send", "connect", "withdraw")
     for package_dir in (Path("apps/opportunity_intel"), Path("apps/comment_extractor")):
@@ -1362,52 +1307,6 @@ class _ButtonLocator:
     async def click(self) -> None:
         if self.page is not None:
             self.page.record_click(self.kind)
-
-
-class _CopyInterceptPage:
-    def __init__(self, *, copied_url: str, wait_times_out: bool = False) -> None:
-        self.copied_url = copied_url
-        self.wait_times_out = wait_times_out
-        self.evaluate_calls: list[str] = []
-        self.wait_for_function_calls: list[tuple[str, int]] = []
-        self.role_requests: list[tuple[str, str]] = []
-        self.menu_item = _CopyInterceptMenuItem()
-
-    async def evaluate(self, expression: str) -> str | None:
-        self.evaluate_calls.append(expression)
-        if expression == COPY_CAPTURE_READ_SCRIPT:
-            return self.copied_url
-        return None
-
-    async def wait_for_function(self, expression: str, *, timeout: int) -> None:
-        self.wait_for_function_calls.append((expression, timeout))
-        if self.wait_times_out:
-            raise TimeoutError("timed out")
-
-    def get_by_role(self, role: str, *, name: Any) -> _CopyInterceptMenuItem:
-        pattern = getattr(name, "pattern", str(name))
-        self.role_requests.append((role, pattern))
-        return self.menu_item
-
-
-class _CopyInterceptButton:
-    def __init__(self) -> None:
-        self.clicked = False
-        self.dispatched_events: list[str] = []
-
-    async def click(self, *, timeout: int | None = None) -> None:
-        self.clicked = True
-
-    async def dispatch_event(self, event: str) -> None:
-        self.dispatched_events.append(event)
-
-
-class _CopyInterceptMenuItem:
-    def __init__(self) -> None:
-        self.clicked = False
-
-    async def click(self) -> None:
-        self.clicked = True
 
 
 class _FailingScreenshotWriter:

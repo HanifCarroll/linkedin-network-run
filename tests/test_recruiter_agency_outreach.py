@@ -11,7 +11,6 @@ import apps.network_automation.browser as network_browser_module
 import apps.recruiter_agency_outreach.account_browser as account_browser_module
 import apps.recruiter_agency_outreach.cli as recruiter_cli
 import apps.recruiter_agency_outreach.daily as daily_module
-import apps.recruiter_agency_outreach.message_browser as message_browser_module
 import apps.recruiter_agency_outreach.send as send_module
 from apps.network_automation.models import CandidateStatus
 from apps.network_automation.service import (
@@ -60,7 +59,6 @@ from apps.recruiter_agency_outreach.sourcing import (
     load_agency_source_csv,
     promote_agency_contact_candidates,
     review_agency_contact_candidate,
-    validate_agency_source_capture,
 )
 from apps.recruiter_agency_outreach.storage import Store
 from apps.recruiter_agency_outreach.suppression import apply_network_suppression_to_outreach_state
@@ -166,7 +164,6 @@ def test_agency_source_promotion_requires_salesnav_identity() -> None:
         source="Reviewed agency directory",
         source_type="manual_directory",
     )
-    assert validate_agency_source_capture(capture) == []
 
     state = OutreachState()
     summary = import_agency_source_capture(state, capture)
@@ -766,114 +763,6 @@ def test_default_message_browser_uses_playwriter_backend(
     assert browser.__class__.__name__ == "PlaywriterMessageBrowserClient"
     assert browser.session == "session-fixture"
     assert browser.out_dir == tmp_path / "message-results"
-
-
-@pytest.mark.asyncio
-async def test_message_browser_clicks_salesnav_inmail_button_padding() -> None:
-    inmail = _FakeLocator(count=1, box={"width": 126, "height": 32})
-    generic = _FakeLocator(count=1, box={"width": 80, "height": 30})
-    page = _FakeMessagePage({message_browser_module.SALES_NAV_INMAIL_ACTION: inmail})
-
-    result = await message_browser_module._click_message_action(
-        page,
-        {"locator": generic, "label": "Message"},
-    )
-
-    assert result["method"] == "salesnav-inmail-padding-click"
-    assert inmail.clicks == [{"position": {"x": 8.0, "y": 16.0}, "timeout": 8000}]
-    assert generic.clicks == []
-
-
-@pytest.mark.asyncio
-async def test_message_browser_clicks_generic_action_when_salesnav_button_missing() -> None:
-    inmail = _FakeLocator(count=0, box=None)
-    generic = _FakeLocator(count=1, box={"width": 80, "height": 30})
-    page = _FakeMessagePage({message_browser_module.SALES_NAV_INMAIL_ACTION: inmail})
-
-    result = await message_browser_module._click_message_action(
-        page,
-        {"locator": generic, "label": "Message"},
-    )
-
-    assert result == {"method": "generic-message-action-click", "label": "Message"}
-    assert inmail.clicks == []
-    assert generic.clicks == [{"position": None, "timeout": 8000}]
-
-
-@pytest.mark.asyncio
-async def test_message_browser_waits_for_delayed_composer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
-    page = _FakeMessagePage({})
-    locator = object()
-
-    async def fake_find_composer(_page: object) -> dict[str, object] | None:
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            return None
-        return {"selector": "composer", "locator": locator}
-
-    monkeypatch.setattr(message_browser_module, "_find_composer", fake_find_composer)
-
-    composer = await message_browser_module._wait_for_message_composer(page)
-
-    assert composer == {"selector": "composer", "locator": locator}
-    assert calls == 3
-    assert page.waits == [message_browser_module.COMPOSER_WAIT_MS] * 2
-
-
-class _FakeLocator:
-    def __init__(
-        self,
-        *,
-        count: int,
-        box: dict[str, float] | None,
-        visible: bool = True,
-        disabled: bool = False,
-    ) -> None:
-        self._count = count
-        self._box = box
-        self._visible = visible
-        self._disabled = disabled
-        self.clicks: list[dict[str, object]] = []
-
-    @property
-    def first(self) -> _FakeLocator:
-        return self
-
-    async def count(self) -> int:
-        return self._count
-
-    async def is_visible(self) -> bool:
-        return self._visible
-
-    async def is_disabled(self) -> bool:
-        return self._disabled
-
-    async def bounding_box(self) -> dict[str, float] | None:
-        return self._box
-
-    async def click(
-        self,
-        *,
-        position: dict[str, float] | None = None,
-        timeout: int | None = None,
-    ) -> None:
-        self.clicks.append({"position": position, "timeout": timeout})
-
-
-class _FakeMessagePage:
-    def __init__(self, locators: dict[str, _FakeLocator]) -> None:
-        self.locators = locators
-        self.waits: list[int] = []
-
-    def locator(self, selector: str) -> _FakeLocator:
-        return self.locators.get(selector, _FakeLocator(count=0, box=None))
-
-    async def wait_for_timeout(self, timeout_ms: int) -> None:
-        self.waits.append(timeout_ms)
 
 
 def test_run_daily_is_no_send_and_agency_bucket_is_account_first(tmp_path: Path) -> None:

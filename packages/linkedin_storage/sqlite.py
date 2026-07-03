@@ -45,21 +45,3 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     else:
         conn.commit()
-
-
-def dict_rows(cursor: sqlite3.Cursor) -> list[dict[str, SQLiteValue]]:
-    """Return cursor rows as plain dictionaries."""
-
-    rows: list[dict[str, SQLiteValue]] = []
-    for row in cursor.fetchall():
-        result: dict[str, SQLiteValue] = {}
-        for key in row.keys():
-            value = row[key]
-            if value is None or isinstance(value, str | int | float | bytes):
-                result[str(key)] = value
-                continue
-            raise TypeError(
-                f"unsupported SQLite value type for column {key!r}: {type(value).__name__}"
-            )
-        rows.append(result)
-    return rows

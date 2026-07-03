@@ -236,6 +236,7 @@ async function captureCurrentPageRows({
   allRows,
   requestedLimit,
   stopAfterConnectable,
+  openMenus,
 }) {
   const seenPageRows = new Set();
   let stoppedEarly = false;
@@ -255,9 +256,11 @@ async function captureCurrentPageRows({
       const key = capturedRowKey(item);
       if (seenPageRows.has(key)) continue;
       seenPageRows.add(key);
-      const menu = await openRowMenu(page, row);
-      item.menuLabels = menu.labels || [];
-      item.menuState = classifyMenuLabels(item.menuLabels);
+      if (openMenus) {
+        const menu = await openRowMenu(page, row);
+        item.menuLabels = menu.labels || [];
+        item.menuState = classifyMenuLabels(item.menuLabels);
+      }
       item.pageUrl = page.url();
       allRows.push(item);
       newRowsThisPass += 1;
@@ -308,6 +311,7 @@ async function main() {
   const totalPages = Math.max(1, Number(config.pages || 1));
   const requestedLimit = Math.max(0, Number(config.limit || 0));
   const stopAfterConnectable = Math.max(0, Number(config.stopAfterConnectable || 0));
+  const openMenus = Boolean(config.onlyConnectable) || stopAfterConnectable > 0;
   let lastScannedUrl = activePage.url();
   let nextUrl = null;
   let nextAvailable = false;
@@ -321,6 +325,7 @@ async function main() {
       allRows,
       requestedLimit,
       stopAfterConnectable,
+      openMenus,
     });
     stoppedEarly = pageCapture.stoppedEarly;
     lastScannedUrl = activePage.url();
@@ -366,7 +371,7 @@ async function main() {
       pages: totalPages,
       stopAfterConnectable,
       rowScrollDelayMs: Number(config.rowScrollDelayMs || 0),
-      openMenus: true,
+      openMenus,
       apiState: false,
     },
     apiState: { enabled: false, responses: 0, rows: 0, errors: ["Playwriter capture uses menu evidence"] },
