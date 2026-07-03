@@ -55,6 +55,8 @@ from apps.network_automation.service import (
     pending_cleanup_withdraw_next,
     record_audit,
     record_candidate,
+    record_send_result_from_path,
+    record_top_up_result_from_path,
     reset_source_progress,
     resolve_network_source_url,
     retry_failed_lead,
@@ -536,6 +538,54 @@ def test_manual_durable_record_writes_send_ledger_summary(tmp_path: Path) -> Non
     assert summary.entries[0].durable is True
 
 
+def test_record_send_result_from_path_commits_send_attempt_ledgers(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    result_path = FIXTURES / "send_pending.json"
+
+    output = record_send_result_from_path(store, result_path)
+
+    run = store.load_run()
+    event = run.candidates[-1]
+    entries = store.load_send_ledger_entries()
+    lead_records = list(store.load_lead_ledger().leads.values())
+    event_log = [
+        json.loads(line) for line in store.event_path(run).read_text().splitlines()
+    ]
+    assert "recorded send result as pending-provisional" in output
+    assert event.status == CandidateStatus.PENDING_PROVISIONAL
+    assert entries[0].event_kind == "record-send-result"
+    assert entries[0].result_path == str(result_path)
+    assert entries[0].status == CandidateStatus.PENDING_PROVISIONAL
+    assert lead_records[0].status == LeadStatus.PENDING
+    assert event_log[-1]["kind"] == "record-send-result"
+    assert event_log[-1]["payload"]["path"] == str(result_path)
+
+
+def test_record_top_up_result_from_path_commits_top_up_event_kind(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    result_path = FIXTURES / "send_pending.json"
+
+    output = record_top_up_result_from_path(store, result_path, note="audit shortfall")
+
+    run = store.load_run()
+    entries = store.load_send_ledger_entries()
+    event_log = [
+        json.loads(line) for line in store.event_path(run).read_text().splitlines()
+    ]
+    assert "recorded top-up result as pending-provisional" in output
+    assert entries[0].event_kind == "record-top-up-result"
+    assert entries[0].result_path == str(result_path)
+    assert entries[0].status == CandidateStatus.PENDING_PROVISIONAL
+    assert "audit shortfall" in (entries[0].reason or "")
+    assert event_log[-1]["kind"] == "record-top-up-result"
+
+
 def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
     tmp_path: Path,
 ) -> None:
@@ -565,6 +615,45 @@ def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
     assert summary.durable_sent_count == 1
     assert summary.provisional_count == 0
     assert summary.entries[0].status == CandidateStatus.PENDING
+
+
+def test_send_guarded_commits_send_result_and_confirmation(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+
+    output = send_guarded(
+        store,
+        FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+        dry_run=False,
+        allow_send=True,
+        single_pass=True,
+        confirm_delay_ms=0,
+        confirm_out_dir=tmp_path / "confirm",
+    )
+
+    run = store.load_run()
+    entries = store.load_send_ledger_entries()
+    event_log = [
+        json.loads(line) for line in store.event_path(run).read_text().splitlines()
+    ]
+    assert "confirmation status: pending; verified 1/1" in output
+    assert [entry.event_kind for entry in entries] == [
+        "record-send-result",
+        "confirm-send-result",
+    ]
+    assert [entry.status for entry in entries] == [
+        CandidateStatus.PENDING_PROVISIONAL,
+        CandidateStatus.PENDING,
+    ]
+    event_kinds = [entry["kind"] for entry in event_log]
+    assert event_kinds.index("record-send-result") < event_kinds.index(
+        "confirm-send-result"
+    )
 
 
 def test_send_ledger_history_sync_counts_confirmed_sends(tmp_path: Path) -> None:

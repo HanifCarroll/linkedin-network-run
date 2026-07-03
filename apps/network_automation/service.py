@@ -52,8 +52,6 @@ from .models import (
     new_run,
     now_utc,
     record_pending_withdraw_result,
-    record_send_result,
-    record_top_up_send_result,
     source_repeated_send_noop,
     sources_for_per_source_target,
     target_for_per_source_target,
@@ -63,11 +61,8 @@ from .reports import (
     render_pending_report,
     render_report,
 )
-from .send_ledger import (
-    _append_send_ledger_event,
-    network_sends_summary,
-    sync_send_ledger_from_history,
-)
+from .send_commit import SendAttemptCommitter
+from .send_ledger import network_sends_summary, sync_send_ledger_from_history
 from .state_db import (
     NetworkStateDbStatus,
     NetworkStateMigrationSummary,
@@ -859,12 +854,6 @@ def retry_failed_lead(store: Store, lead_key: str, reason: str | None = None) ->
     )
 
 
-def apply_candidate_event_to_lead_ledger(store: Store, event: CandidateEvent) -> None:
-    ledger = store.load_lead_ledger()
-    ledger.apply_candidate_event(event)
-    store.save_lead_ledger(ledger)
-
-
 def _with_ledger_public_profile_url(
     observation: CandidateObservation, ledger: LeadLedger
 ) -> CandidateObservation:
@@ -872,15 +861,6 @@ def _with_ledger_public_profile_url(
     if record and record.public_profile_url and not observation.public_profile_url:
         return observation.model_copy(update={"public_profile_url": record.public_profile_url})
     return observation
-
-
-def apply_candidate_events_to_lead_ledger(store: Store, events: list[CandidateEvent]) -> None:
-    if not events:
-        return
-    ledger = store.load_lead_ledger()
-    for event in events:
-        ledger.apply_candidate_event(event)
-    store.save_lead_ledger(ledger)
 
 
 def _review_needed_message(run: Run, ledger: LeadLedger) -> str:
@@ -1232,20 +1212,7 @@ def record_candidate(
     )
     run.candidates.append(event)
     run.state = RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
-    drained = drain_stale_connectable_candidates(run)
-    run.mark_updated()
-    store.save_run(run)
-    apply_candidate_events_to_lead_ledger(store, [event, *drained])
-    _append_send_ledger_event(
-        store,
-        run,
-        event,
-        event_kind="record",
-        confirmed_at=event.at,
-    )
-    store.append_event(run, "record", event)
-    if drained:
-        store.append_event(run, "drain-stale-candidates", {"events": drained})
+    SendAttemptCommitter(store).commit_manual_record(run, event)
     return f"recorded {status.value}; verified {run.verified_count()}/{run.target}"
 
 
@@ -1322,21 +1289,7 @@ def record_send_result_from_path(store: Store, path: Path) -> str:
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit first")
     result = read_model(path, SalesNavSendResult)
-    event = record_send_result(run, result, str(path))
-    drained = drain_stale_connectable_candidates(run)
-    store.save_run(run)
-    apply_candidate_events_to_lead_ledger(store, [event, *drained])
-    _append_send_ledger_event(
-        store,
-        run,
-        event,
-        event_kind="record-send-result",
-        result_path=str(path),
-        confirmed_at=None if event.status == CandidateStatus.PENDING_PROVISIONAL else event.at,
-    )
-    store.append_event(run, "record-send-result", {"path": str(path), "event": event})
-    if drained:
-        store.append_event(run, "drain-stale-candidates", {"events": drained})
+    event = SendAttemptCommitter(store).commit_send_result(run, result, path).event
     return (
         f"recorded send result as {event.status.value}; "
         f"verified {run.verified_count()}/{run.target}"
@@ -1401,28 +1354,13 @@ def confirm_provisional_send(
         run.state = (
             RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
         )
-    run.mark_updated()
-    store.save_run(run)
-    apply_candidate_event_to_lead_ledger(store, candidate)
-    confirmed_at = now_utc()
-    _append_send_ledger_event(
-        store,
+    SendAttemptCommitter(store).commit_confirmation_result(
         run,
         candidate,
-        event_kind="confirm-send-result",
-        result_path=str(path),
-        confirmed_at=confirmed_at,
-    )
-    store.append_event(
-        run,
-        "confirm-send-result",
-        {
-            "input": str(input_path),
-            "out": path,
-            "event": candidate,
-            "status": final_status.value,
-            "confirmation": status_note,
-        },
+        input_path=input_path,
+        outcome_path=path,
+        status=final_status,
+        confirmation=status_note,
     )
     return (
         f"confirmation status: {final_status.value}; "
@@ -1531,21 +1469,7 @@ def send_next(
     add(f"send status: {result.status}")
     if allow_send and not dry_run and not no_record:
         run = store.load_run()
-        event = record_send_result(run, result, path)
-        drained = drain_stale_connectable_candidates(run)
-        store.save_run(run)
-        apply_candidate_events_to_lead_ledger(store, [event, *drained])
-        _append_send_ledger_event(
-            store,
-            run,
-            event,
-            event_kind="record-send-result",
-            result_path=path,
-            confirmed_at=None if event.status == CandidateStatus.PENDING_PROVISIONAL else event.at,
-        )
-        store.append_event(run, "record-send-result", {"path": path, "event": event})
-        if drained:
-            store.append_event(run, "drain-stale-candidates", {"events": drained})
+        event = SendAttemptCommitter(store).commit_send_result(run, result, path).event
         add(f"send result: {path}; recorded {event.status.value}")
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             add(f"confirming provisional send: {event.name}")
@@ -1636,11 +1560,12 @@ def send_guarded(
             if dry_result.status != "dry-run-connectable":
                 if not no_record:
                     run = store.load_run()
-                    event = record_send_result(run, dry_result, dry_path)
-                    store.save_run(run)
-                    apply_candidate_event_to_lead_ledger(store, event)
-                    store.append_event(
-                        run, "record-send-result", {"path": dry_path, "event": event}
+                    SendAttemptCommitter(store).commit_send_result(
+                        run,
+                        dry_result,
+                        dry_path,
+                        drain_stale=False,
+                        append_send_ledger=False,
                     )
                 continue
             if dry_run:
@@ -1651,41 +1576,40 @@ def send_guarded(
         add(f"send status: {result.status}")
         if no_record:
             break
-        event = record_send_result(run, result, path)
-        drained = drain_stale_connectable_candidates(run)
-        if result.status == "blocked":
-            run.state = RunState.BLOCKED
-            run.notes.append(f"guarded send blocked for {event.name}: {result.status}")
-        elif is_uncertain_send_status(result.status):
-            run.state = RunState.NEEDS_REAUDIT
-            run.notes.append(
-                f"guarded send stopped after uncertain status for {event.name}: {result.status}"
-            )
-            if is_send_noop_status(result.status) and source_repeated_send_noop(
-                run, event.source, 3
-            ):
-                for source_plan in run.sources:
-                    if source_plan.name == event.source:
-                        source_plan.exhausted = True
-                        break
-                store.append_event(
-                    run,
-                    "source-exhausted",
-                    {"source": event.source, "via": "send-guarded-clicked-send-noop"},
+
+        send_status = result.status
+
+        def update_guarded_send_state(
+            run: Run, event: CandidateEvent, *, send_status: str = send_status
+        ) -> None:
+            if send_status == "blocked":
+                run.state = RunState.BLOCKED
+                run.notes.append(f"guarded send blocked for {event.name}: {send_status}")
+            elif is_uncertain_send_status(send_status):
+                run.state = RunState.NEEDS_REAUDIT
+                run.notes.append(
+                    "guarded send stopped after uncertain status for "
+                    f"{event.name}: {send_status}"
                 )
-        store.save_run(run)
-        apply_candidate_events_to_lead_ledger(store, [event, *drained])
-        _append_send_ledger_event(
-            store,
+                if is_send_noop_status(send_status) and source_repeated_send_noop(
+                    run, event.source, 3
+                ):
+                    for source_plan in run.sources:
+                        if source_plan.name == event.source:
+                            source_plan.exhausted = True
+                            break
+                    store.append_event(
+                        run,
+                        "source-exhausted",
+                        {"source": event.source, "via": "send-guarded-clicked-send-noop"},
+                    )
+
+        event = SendAttemptCommitter(store).commit_send_result(
             run,
-            event,
-            event_kind="record-send-result",
-            result_path=path,
-            confirmed_at=None if event.status == CandidateStatus.PENDING_PROVISIONAL else event.at,
-        )
-        store.append_event(run, "record-send-result", {"path": path, "event": event})
-        if drained:
-            store.append_event(run, "drain-stale-candidates", {"events": drained})
+            result,
+            path,
+            before_save=update_guarded_send_state,
+        ).event
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             add(f"confirming provisional send: {event.name}")
             add(
@@ -1781,22 +1705,13 @@ def top_up_reconcile(
             allow_send=True,
         )
         run = store.load_run()
-        event = record_send_result(run, result, result_path)
-        store.save_run(run)
-        apply_candidate_event_to_lead_ledger(store, event)
-        _append_send_ledger_event(
-            store,
+        event = SendAttemptCommitter(store).commit_send_result(
             run,
-            event,
-            event_kind="record-send-result",
-            result_path=result_path,
-            confirmed_at=None if event.status == CandidateStatus.PENDING_PROVISIONAL else event.at,
-        )
-        store.append_event(
-            run,
-            "record-send-result",
-            {"path": result_path, "event": event, "via": "top-up-reconcile"},
-        )
+            result,
+            result_path,
+            drain_stale=False,
+            controller_payload_extra={"via": "top-up-reconcile"},
+        ).event
         messages.append(f"top-up send status: {result.status}")
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             messages.append(
@@ -2456,18 +2371,7 @@ def load_fixture_browser(
 def record_top_up_result_from_path(store: Store, path: Path, note: str | None = None) -> str:
     run = store.load_run()
     result = read_model(path, SalesNavSendResult)
-    event = record_top_up_send_result(run, result, str(path), note)
-    store.save_run(run)
-    apply_candidate_event_to_lead_ledger(store, event)
-    _append_send_ledger_event(
-        store,
-        run,
-        event,
-        event_kind="record-top-up-result",
-        result_path=str(path),
-        confirmed_at=None if event.status == CandidateStatus.PENDING_PROVISIONAL else event.at,
-    )
-    store.append_event(run, "record-top-up-result", {"path": str(path), "event": event})
+    event = SendAttemptCommitter(store).commit_top_up_result(run, result, path, note=note).event
     return (
         f"recorded top-up result as {event.status.value}; "
         f"row-level verified remains {run.verified_count()}/{run.target}"
