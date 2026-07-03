@@ -1,6 +1,13 @@
 """Shared browser automation primitives."""
 
 from .artifacts import ArtifactRef, ArtifactWriter
+from .playwriter import (
+    PLAYWRITER_BIN_ENV,
+    PLAYWRITER_BROWSER_KEY_ENV,
+    PLAYWRITER_SESSION_ENV,
+    PlaywriterRunner,
+    safe_stem,
+)
 from .safety import (
     GuardedActionResult,
     RealAction,
@@ -26,6 +33,10 @@ __all__ = [
     "BrowserStateEvidence",
     "GuardedActionResult",
     "PageReusePolicy",
+    "PLAYWRITER_BIN_ENV",
+    "PLAYWRITER_BROWSER_KEY_ENV",
+    "PLAYWRITER_SESSION_ENV",
+    "PlaywriterRunner",
     "RealAction",
     "RealActionApproval",
     "UnsafeRealActionError",
@@ -33,4 +44,5 @@ __all__ = [
     "classify_browser_state",
     "guarded_click",
     "require_real_action_approval",
+    "safe_stem",
 ]

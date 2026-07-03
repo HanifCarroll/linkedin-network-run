@@ -5,12 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
-import os
 import re
-import shutil
-import subprocess
-import tempfile
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -20,6 +15,7 @@ from urllib.parse import quote_plus
 from apps.opportunity_intel.company_pages import canonicalize_linkedin_post_url
 from apps.opportunity_intel.post_discovery import PostCandidate, prioritize_posts
 from apps.opportunity_intel.post_prefilter import POST_QUEUE_COLUMNS, read_post_queue
+from packages.linkedin_browser.playwriter import PlaywriterRunner
 from packages.linkedin_browser.sessions import BrowserSession, PageReusePolicy
 from packages.linkedin_common.progress import ProgressReporter
 
@@ -70,9 +66,6 @@ COPY_CAPTURE_RESTORE_SCRIPT = """
 }
 """
 COPY_CAPTURE_TIMEOUT_MS = 1_000
-PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
-PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
-PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
 
 
 class PostCopyCaptureError(RuntimeError):
@@ -319,15 +312,16 @@ class _SearchCapturePlaywriterClient:
         playwriter_bin: str | None = None,
     ) -> None:
         self.out_dir = out_dir
-        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
-        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
-        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+        self._runner = PlaywriterRunner(
+            session=session,
+            browser_key=browser_key,
+            playwriter_bin=playwriter_bin,
+            config_state_key="state.linkedinToolsConfigPath",
+        )
 
     @property
     def session(self) -> str:
-        if self._session is None:
-            self._session = self._create_session()
-        return self._session
+        return self._runner.session
 
     def capture_search(
         self,
@@ -348,43 +342,13 @@ class _SearchCapturePlaywriterClient:
             raise RuntimeError("Playwriter search capture output must be a JSON object")
         return payload
 
-    def _create_session(self) -> str:
-        command = [self._playwriter_bin, "session", "new"]
-        if self._browser_key:
-            command.extend(["--browser", self._browser_key])
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
-        if not match:
-            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
-        return match.group(1)
-
     def _run_script(self, script: Path, config: Mapping[str, object]) -> None:
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        config_path, staged_out, final_out = _stage_playwriter_config(config)
-        script_config = dict(config)
-        if staged_out is not None:
-            script_config["out"] = str(staged_out)
-        _write_json_atomic(config_path, script_config)
-        _run_playwriter_command(
-            [
-                self._playwriter_bin,
-                "-s",
-                self.session,
-                "-e",
-                f"state.linkedinToolsConfigPath = {json.dumps(str(config_path))}",
-            ]
+        self._runner.run_script(
+            script,
+            config,
+            output_missing_message="Playwriter search capture did not write an output artifact",
+            out_dir=self.out_dir,
         )
-        _run_playwriter_command(
-            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
-        )
-        if staged_out is not None and final_out is not None:
-            if not _wait_for_path(staged_out):
-                raise RuntimeError(
-                    "Playwriter search capture did not write an output artifact; "
-                    f"expected {staged_out}"
-                )
-            final_out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(staged_out), str(final_out))
 
     def _next_output_path(self, stem: str) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -693,59 +657,8 @@ def _write_checkpoint(path: Path, payload: dict[str, object]) -> None:
     tmp_path.replace(path)
 
 
-def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
-
-
-def _playwriter_bin() -> str:
-    configured = os.environ.get(PLAYWRITER_BIN_ENV)
-    if configured:
-        return configured
-    default = Path.home() / ".bun/bin/playwriter"
-    if default.exists():
-        return str(default)
-    resolved = shutil.which("playwriter")
-    if resolved:
-        return resolved
-    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
-
-
 def _playwriter_search_capture_script() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts" / "search_capture.js"
-
-
-def _stage_playwriter_config(config: Mapping[str, object]) -> tuple[Path, Path | None, Path | None]:
-    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    final_out = Path(str(config["out"])) if config.get("out") else None
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", final_out.stem if final_out else "search-capture")
-    config_path = staging_dir / f"{stem}-config.json"
-    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
-    return config_path, staged_out, final_out
-
-
-def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if path.exists():
-            return True
-        time.sleep(0.05)
-    return path.exists()
-
-
-def _run_playwriter_command(command: list[str]) -> None:
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = "\n".join(
-            part for part in (result.stdout.strip(), result.stderr.strip()) if part
-        )
-        raise RuntimeError(
-            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
-            + (f"\n{detail}" if detail else "")
-        )
 
 
 def _string_value(value: object) -> str:

@@ -2,12 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import re
-import shutil
-import subprocess
-import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,9 +12,8 @@ from apps.network_automation.browser import (
     _locator_disabled,
     _locator_visible,
     _safe_stem,
-    _wait_for_path,
 )
-from apps.network_automation.store import write_json_atomic
+from packages.linkedin_browser.playwriter import PlaywriterRunner
 
 from .send import MessageSendResult, load_message_send_result
 
@@ -28,9 +21,6 @@ DEFAULT_MESSAGE_OUT_DIR = Path("/tmp/recruiter-agency-outreach-message")
 SALES_NAV_INMAIL_ACTION = "button[data-anchor-send-inmail]"
 COMPOSER_WAIT_ATTEMPTS = 20
 COMPOSER_WAIT_MS = 500
-PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
-PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
-PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
 
 
 class PlaywriterMessageBrowserClient:
@@ -45,15 +35,16 @@ class PlaywriterMessageBrowserClient:
         playwriter_bin: str | None = None,
     ) -> None:
         self.out_dir = out_dir
-        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
-        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
-        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+        self._runner = PlaywriterRunner(
+            session=session,
+            browser_key=browser_key,
+            playwriter_bin=playwriter_bin,
+            config_state_key="state.recruiterAgencyMessageConfigPath",
+        )
 
     @property
     def session(self) -> str:
-        if self._session is None:
-            self._session = self._create_session()
-        return self._session
+        return self._runner.session
 
     def close(self) -> None:
         return None
@@ -80,43 +71,17 @@ class PlaywriterMessageBrowserClient:
         self._run_script(_playwriter_message_script(), payload)
         return load_message_send_result(out), str(out)
 
-    def _create_session(self) -> str:
-        command = [self._playwriter_bin, "session", "new"]
-        if self._browser_key:
-            command.extend(["--browser", self._browser_key])
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
-        if not match:
-            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
-        return match.group(1)
-
     def _run_script(self, script: Path, config: dict[str, Any]) -> None:
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        config_path, staged_out, final_out = _stage_playwriter_config(config)
-        script_config = dict(config)
-        if staged_out is not None:
-            script_config["out"] = str(staged_out)
-        write_json_atomic(config_path, script_config)
-        _run_playwriter_command(
-            [
-                self._playwriter_bin,
-                "-s",
-                self.session,
-                "-e",
-                f"state.recruiterAgencyMessageConfigPath = {json.dumps(str(config_path))}",
-            ]
+        self._runner.run_script(
+            script,
+            config,
+            output_missing_message=(
+                "Playwriter recruiter message script did not write an output artifact"
+            ),
+            out_dir=self.out_dir,
         )
-        _run_playwriter_command(
-            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
-        )
-        if staged_out is not None and final_out is not None:
-            if not _wait_for_path(staged_out):
-                raise RuntimeError(
-                    "Playwriter recruiter message script did not write an output artifact; "
-                    f"expected {staged_out}"
-                )
-            final_out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(staged_out), str(final_out))
+
+
 async def _click_message_action(page: Any, action: Mapping[str, Any]) -> dict[str, Any]:
     inmail = page.locator(SALES_NAV_INMAIL_ACTION).first
     if (
@@ -170,41 +135,5 @@ def _candidate(config: Mapping[str, Any]) -> dict[str, Any]:
         raise RuntimeError("message is required")
     return candidate
 
-
-def _playwriter_bin() -> str:
-    configured = os.environ.get(PLAYWRITER_BIN_ENV)
-    if configured:
-        return configured
-    default = Path.home() / ".bun/bin/playwriter"
-    if default.exists():
-        return str(default)
-    resolved = shutil.which("playwriter")
-    if resolved:
-        return resolved
-    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
-
-
 def _playwriter_message_script() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts" / "send_message.js"
-
-
-def _stage_playwriter_config(config: dict[str, Any]) -> tuple[Path, Path | None, Path | None]:
-    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    final_out = Path(str(config["out"])) if config.get("out") else None
-    stem = _safe_stem(final_out.stem if final_out is not None else "message-result")
-    config_path = staging_dir / f"{stem}-config.json"
-    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
-    return config_path, staged_out, final_out
-
-
-def _run_playwriter_command(command: list[str]) -> None:
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = "\n".join(
-            part for part in (result.stdout.strip(), result.stderr.strip()) if part
-        )
-        raise RuntimeError(
-            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
-            + (f"\n{detail}" if detail else "")
-        )

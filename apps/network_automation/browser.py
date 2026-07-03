@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
-import time
 from collections.abc import Awaitable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +18,8 @@ from packages.linkedin_browser import (
     classify_browser_state,
     guarded_click,
 )
+from packages.linkedin_browser import playwriter as playwriter_module
+from packages.linkedin_browser.playwriter import PlaywriterRunner
 from packages.linkedin_browser.selectors import (
     LINKEDIN_DIALOG,
     MESSAGE_COMPOSER,
@@ -74,18 +70,20 @@ SECURITY_VERIFICATION_SELECTOR = (
     "iframe[src*='li.protechts.net']"
 )
 DISABLE_SALESNAV_API_CAPTURE_ENV = "LINKEDIN_TOOLS_DISABLE_SALESNAV_API_CAPTURE"
-PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
-PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
-PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
+PLAYWRITER_BIN_ENV = playwriter_module.PLAYWRITER_BIN_ENV
+PLAYWRITER_BROWSER_KEY_ENV = playwriter_module.PLAYWRITER_BROWSER_KEY_ENV
+PLAYWRITER_SESSION_ENV = playwriter_module.PLAYWRITER_SESSION_ENV
 ResultT = TypeVar("ResultT")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-class BrowserClient(Protocol):
+class ConnectionSendBrowser(Protocol):
     def send_connection(
         self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
     ) -> tuple[SalesNavSendResult, str]: ...
 
+
+class SalesNavCaptureBrowser(Protocol):
     def capture_salesnav(
         self,
         *,
@@ -98,10 +96,16 @@ class BrowserClient(Protocol):
         row_scroll_delay_ms: int = 250,
     ) -> tuple[SalesNavCapture, str]: ...
 
+
+class SentInvitationAuditBrowser(Protocol):
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]: ...
 
+
+class SavedSearchBrowser(Protocol):
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]: ...
 
+
+class AcceptanceOutcomeBrowser(Protocol):
     def check_acceptance_outcomes(
         self,
         *,
@@ -113,6 +117,8 @@ class BrowserClient(Protocol):
         delay_ms: int = 500,
     ) -> tuple[AcceptanceOutcomeArtifact, str]: ...
 
+
+class AcceptedResearchBrowser(Protocol):
     def research_accepted_candidates(
         self,
         *,
@@ -124,10 +130,14 @@ class BrowserClient(Protocol):
         delay_ms: int = 500,
     ) -> tuple[AcceptedResearchArtifact, str]: ...
 
+
+class PendingInvitationCaptureBrowser(Protocol):
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]: ...
 
+
+class AcceptanceFollowupBrowser(Protocol):
     def send_acceptance_followup(
         self,
         record: AcceptanceFollowupRecord,
@@ -137,6 +147,8 @@ class BrowserClient(Protocol):
         allow_send: bool,
     ) -> tuple[AcceptanceFollowupSendResult, str]: ...
 
+
+class PendingWithdrawBrowser(Protocol):
     def withdraw_pending(
         self,
         candidate: PendingCandidateObservation,
@@ -144,6 +156,21 @@ class BrowserClient(Protocol):
         dry_run: bool,
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawResult, str]: ...
+
+
+class BrowserClient(
+    ConnectionSendBrowser,
+    SalesNavCaptureBrowser,
+    SentInvitationAuditBrowser,
+    SavedSearchBrowser,
+    AcceptanceOutcomeBrowser,
+    AcceptedResearchBrowser,
+    PendingInvitationCaptureBrowser,
+    AcceptanceFollowupBrowser,
+    PendingWithdrawBrowser,
+    Protocol,
+):
+    """All-capability browser adapter for controller workflows."""
 
 
 class UnavailableBrowserClient:
@@ -399,15 +426,16 @@ class PlaywriterBrowserClient:
         playwriter_bin: str | None = None,
     ) -> None:
         self.out_dir = out_dir
-        self._session = session or os.environ.get(PLAYWRITER_SESSION_ENV)
-        self._browser_key = browser_key or os.environ.get(PLAYWRITER_BROWSER_KEY_ENV)
-        self._playwriter_bin = playwriter_bin or _playwriter_bin()
+        self._runner = PlaywriterRunner(
+            session=session,
+            browser_key=browser_key,
+            playwriter_bin=playwriter_bin,
+            config_state_key="state.linkedinToolsConfigPath",
+        )
 
     @property
     def session(self) -> str:
-        if self._session is None:
-            self._session = self._create_session()
-        return self._session
+        return self._runner.session
 
     def close(self) -> None:
         return None
@@ -562,68 +590,20 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_pending_withdraw_script(), config)
         return read_model(out, PendingWithdrawResult), str(out)
 
-    def _create_session(self) -> str:
-        command = [self._playwriter_bin, "session", "new"]
-        if self._browser_key:
-            command.extend(["--browser", self._browser_key])
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        match = re.search(r"Session\s+(\S+)\s+created", result.stdout)
-        if not match:
-            raise RuntimeError(f"could not parse Playwriter session id from: {result.stdout}")
-        return match.group(1)
-
     def _run_script(self, script: Path, config: dict[str, Any]) -> None:
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        config_path, staged_out, final_out = _stage_playwriter_config(config)
-        script_config = dict(config)
-        progress_out = _progress_path(final_out)
-        if staged_out is not None:
-            script_config["out"] = str(staged_out)
-        if progress_out is not None:
-            progress_out.parent.mkdir(parents=True, exist_ok=True)
-            progress_out.unlink(missing_ok=True)
-            script_config["progressOut"] = str(progress_out)
-        write_json_atomic(config_path, script_config)
-        command = [
-            self._playwriter_bin,
-            "-s",
-            self.session,
-            "-e",
-            f"state.linkedinToolsConfigPath = {json.dumps(str(config_path))}",
-        ]
-        _run_playwriter_command(command)
-        _run_playwriter_command(
-            [self._playwriter_bin, "-s", self.session, "-f", str(script), "--timeout", "120000"],
-            progress_path=progress_out,
+        self._runner.run_script(
+            script,
+            config,
+            output_missing_message="Playwriter browser script did not write an output artifact",
+            out_dir=self.out_dir,
+            progress=True,
         )
-        if staged_out is not None and final_out is not None:
-            if not _wait_for_path(staged_out):
-                raise RuntimeError(
-                    "Playwriter browser script did not write an output artifact; "
-                    f"expected {staged_out}"
-                )
-            final_out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(staged_out), str(final_out))
 
     def _next_output_path(self, stem: str) -> Path:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         existing = sorted(self.out_dir.glob(f"*-{_safe_stem(stem)}.json"))
         next_index = len(existing) + 1
         return self.out_dir / f"{next_index:03d}-{_safe_stem(stem)}.json"
-
-
-def _playwriter_bin() -> str:
-    configured = os.environ.get(PLAYWRITER_BIN_ENV)
-    if configured:
-        return configured
-    default = Path.home() / ".bun/bin/playwriter"
-    if default.exists():
-        return str(default)
-    resolved = shutil.which("playwriter")
-    if resolved:
-        return resolved
-    raise RuntimeError("Playwriter binary was not found; set LINKEDIN_TOOLS_PLAYWRITER_BIN")
-
 
 def _playwriter_script_dir() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts"
@@ -663,104 +643,6 @@ def _playwriter_salesnav_audit_script() -> Path:
 
 def _playwriter_salesnav_saved_searches_script() -> Path:
     return _playwriter_script_dir() / "salesnav_saved_searches.js"
-
-
-def _stage_playwriter_config(config: dict[str, Any]) -> tuple[Path, Path | None, Path | None]:
-    staging_dir = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    stem = _safe_stem(Path(str(config.get("out") or "artifact.json")).stem)
-    config_path = staging_dir / f"{stem}-config.json"
-    final_out = Path(str(config["out"])) if config.get("out") else None
-    staged_out = staging_dir / f"{stem}-out.json" if final_out is not None else None
-    return config_path, staged_out, final_out
-
-
-def _progress_path(final_out: Path | None) -> Path | None:
-    return Path(f"{final_out}.progress.jsonl") if final_out is not None else None
-
-
-def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if path.exists():
-            return True
-        time.sleep(0.05)
-    return path.exists()
-
-
-def _run_playwriter_command(command: list[str], *, progress_path: Path | None = None) -> None:
-    if progress_path is None:
-        result = subprocess.run(command, capture_output=True, text=True)
-    else:
-        result = _run_playwriter_command_with_progress(command, progress_path)
-    if result.returncode != 0:
-        detail = "\n".join(
-            part
-            for part in (
-                result.stdout.strip(),
-                result.stderr.strip(),
-            )
-            if part
-        )
-        raise RuntimeError(
-            f"Playwriter command failed ({result.returncode}): {' '.join(command)}"
-            + (f"\n{detail}" if detail else "")
-        )
-
-
-def _run_playwriter_command_with_progress(
-    command: list[str], progress_path: Path
-) -> subprocess.CompletedProcess[str]:
-    with tempfile.TemporaryFile("w+", encoding="utf-8") as stdout:
-        with tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
-            process = subprocess.Popen(command, stdout=stdout, stderr=stderr, text=True)
-            progress_position = 0
-            while process.poll() is None:
-                progress_position = _emit_progress_events(progress_path, progress_position)
-                time.sleep(0.25)
-            progress_position = _emit_progress_events(progress_path, progress_position)
-            stdout.seek(0)
-            stderr.seek(0)
-            return subprocess.CompletedProcess(
-                command,
-                process.returncode,
-                stdout.read(),
-                stderr.read(),
-            )
-
-
-def _emit_progress_events(progress_path: Path, position: int) -> int:
-    if not progress_path.exists():
-        return position
-    with progress_path.open(encoding="utf-8") as handle:
-        handle.seek(position)
-        while line := handle.readline():
-            line = line.strip()
-            if not line:
-                continue
-            print(_format_progress_event(line), file=sys.stderr, flush=True)
-        return handle.tell()
-
-
-def _format_progress_event(line: str) -> str:
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return f"browser progress: {line}"
-    step = str(event.get("step") or "progress")
-    details = []
-    for key, value in event.items():
-        if key in {"at", "step"} or value is None or value == "" or value is False:
-            continue
-        if isinstance(value, bool):
-            details.append(f"{key}=true")
-        elif isinstance(value, int | float | str):
-            details.append(f"{key}={value}")
-        elif isinstance(value, list | dict):
-            compact = json.dumps(value, separators=(",", ":"), sort_keys=True)[:180]
-            details.append(f"{key}={compact}")
-    suffix = " " + " ".join(details) if details else ""
-    return f"browser progress: {step}{suffix}"
 
 
 def _send_result_base(
