@@ -865,18 +865,18 @@ def dashboard_limiting_reason(
         advisors=len(ready_leads(state, "advisor")),
     )
     if run_counts is None:
-        gaps = [
+        ready_gaps = [
             ("Agency", max(0, target_agencies - ready_counts.agencies)),
             ("Recruiter", max(0, target_recruiters - ready_counts.recruiters)),
             ("Advisor", max(0, target_advisors - ready_counts.advisors)),
         ]
         shortfalls = [
             f"{label} ready-to-send pool is short by {gap}"
-            for label, gap in gaps
+            for label, gap in ready_gaps
             if gap > 0
         ]
     else:
-        gaps = [
+        send_gaps = [
             (
                 "Agency",
                 max(0, target_agencies - run_counts.sent.agencies),
@@ -898,7 +898,7 @@ def dashboard_limiting_reason(
                 f"{label} target is still short by {gap} sends; "
                 f"ready-to-send pool has {ready_count} remaining"
             )
-            for label, gap, ready_count in gaps
+            for label, gap, ready_count in send_gaps
             if gap > 0
         ]
     if not shortfalls:
