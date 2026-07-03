@@ -25,6 +25,7 @@ from apps.network_automation.models import (
     SalesNavSendResult,
     SavedSearchArtifact,
     SourceCaptureCursor,
+    SourceCursorStatus,
     SourceScanProgress,
     SourceScanProgressLedger,
     default_sources,
@@ -299,6 +300,67 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
     assert progress.next_url == cursor.resume_url
     assert cursor.resume_url is not None
     assert "lastViewedAt=1781957710070" in cursor.resume_url
+    assert run.operator_plan().action == "capture-source"
+
+
+def test_seed_source_progress_reopens_nonterminal_exhausted_source(
+    tmp_path: Path,
+) -> None:
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 3),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.sources[0].exhausted = True
+    store.save_run(run)
+    page_url = "https://www.linkedin.com/sales/search/people?page=2&savedSearchId=abc"
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    saved_search_id="abc",
+                    saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    next_url=page_url,
+                    last_scanned_url=page_url,
+                    end_of_results=False,
+                    cursor_status=SourceCursorStatus.STALLED_NAVIGATION.value,
+                    last_note="saved-search cursor did not advance",
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": source,
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = seed_run_source_progress(store, saved_searches)
+
+    run = store.load_run()
+    cursor = run.capture_cursors[source]
+    assert output == "source progress seeded; resumed=1; ended=0"
+    assert run.sources[0].exhausted is False
+    assert cursor.resume_url == page_url
+    assert cursor.next_url is None
+    assert cursor.deferred_for_run is False
     assert run.operator_plan().action == "capture-source"
 
 
@@ -2339,7 +2401,7 @@ def test_reset_source_progress_reopens_active_source(tmp_path: Path) -> None:
     assert "reset source progress: ASAP - Vertical Proof Buyers" in reopened.notes
 
 
-def test_cli_network_run_session_exhausts_stalled_zero_import_cursor(
+def test_cli_network_run_session_defers_stalled_zero_import_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2411,8 +2473,16 @@ def test_cli_network_run_session_exhausts_stalled_zero_import_cursor(
 
     assert exit_code == 0
     run = store.load_run()
-    assert run.sources[0].exhausted is True
-    assert any("saved-search cursor did not advance" in note for note in run.notes)
+    cursor = run.capture_cursors[source]
+    assert run.sources[0].exhausted is False
+    assert cursor.deferred_for_run is True
+    assert cursor.cursor_status == SourceCursorStatus.STALLED_NAVIGATION.value
+    assert any("source deferred for run" in note for note in run.notes)
+    progress = store.load_source_progress().sources[source]
+    assert progress.deferred_for_run is True
+    assert progress.end_of_results is False
+    assert run.operator_plan().action == "blocked"
+    assert "deferred for this run" in (run.operator_plan().reason or "")
     stalled_calls = StalledCursorBrowserClient.instances[0].calls
     assert sum(call.startswith(f"capture:{source}") for call in stalled_calls) == 1
 

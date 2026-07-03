@@ -72,8 +72,13 @@ def render_report(run: Run, send_summary: SendLedgerSummary | None = None) -> st
     for source in run.sources:
         verified = run.source_verified_count(source.name)
         target_text = f" / target {source.target}" if source.target > 0 else ""
-        exhausted_text = " (exhausted)" if source.exhausted else ""
-        lines.append(f"- {source.name}: {verified} durable{target_text}{exhausted_text}")
+        cursor = run.capture_cursors.get(source.name)
+        status_text = ""
+        if source.exhausted:
+            status_text = " (exhausted)"
+        elif cursor and cursor.deferred_for_run:
+            status_text = " (deferred for run)"
+        lines.append(f"- {source.name}: {verified} durable{target_text}{status_text}")
     if send_summary is not None:
         lines.extend(["", "## Daily Send Ledger"])
         lines.append(f"- Date: {send_summary.date.isoformat()} ({send_summary.timezone})")
@@ -107,7 +112,12 @@ def render_report(run: Run, send_summary: SendLedgerSummary | None = None) -> st
             if cursor is None:
                 continue
             next_text = cursor.next_url or cursor.resume_url or "None"
-            status = "end of results" if cursor.end_of_results else "resume available"
+            if cursor.end_of_results:
+                status = "end of results"
+            elif cursor.deferred_for_run:
+                status = f"deferred: {cursor.deferred_reason or cursor.cursor_status or 'unknown'}"
+            else:
+                status = cursor.cursor_status or "resume available"
             lines.append(
                 f"- {source.name}: {status}; next scan URL: {next_text}; "
                 f"last scanned: {cursor.last_scanned_url or 'unknown'}"

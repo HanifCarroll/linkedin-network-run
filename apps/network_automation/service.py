@@ -34,6 +34,7 @@ from .models import (
     SalesNavSendResult,
     SavedSearchRow,
     SourceCaptureCursor,
+    SourceCursorStatus,
     SourcePlan,
     SourceScanProgress,
     apply_audit,
@@ -274,6 +275,8 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
                 saved_search_url=row.view_url,
                 next_url=fresh_url,
                 end_of_results=False,
+                cursor_status=SourceCursorStatus.ADVANCED.value,
+                deferred_for_run=False,
                 last_note="fresh saved-search results reset end cursor",
             )
             run.capture_cursors[source.name] = SourceCaptureCursor(
@@ -283,6 +286,7 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
                 resume_url=fresh_url,
                 next_url=fresh_url,
                 end_of_results=False,
+                cursor_status=SourceCursorStatus.ADVANCED.value,
             )
             seeded.append(source.name)
             continue
@@ -290,17 +294,31 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
             source.exhausted = True
             ended.append(source.name)
             continue
-        if existing.next_url:
+        retry_url = existing.next_url or (
+            existing.last_scanned_url if existing.deferred_for_run else None
+        )
+        if retry_url:
+            if source.exhausted and not existing.end_of_results:
+                source.exhausted = False
             run.capture_cursors[source.name] = SourceCaptureCursor(
                 source=source.name,
                 saved_search_id=row.saved_search_id,
                 saved_search_url=row.view_url,
-                resume_url=existing.next_url,
-                next_url=existing.next_url,
+                resume_url=retry_url,
+                next_url=(
+                    existing.next_url
+                    if existing.next_url != existing.last_scanned_url
+                    else None
+                ),
                 last_scanned_url=existing.last_scanned_url,
                 start_url=existing.last_started_url,
                 end_of_results=False,
+                cursor_status=existing.cursor_status or SourceCursorStatus.ADVANCED.value,
+                cursor_reason=existing.cursor_reason,
+                deferred_for_run=False,
             )
+            existing.deferred_for_run = False
+            existing.deferred_reason = None
             seeded.append(source.name)
     if seeded or ended:
         details: list[str] = []
@@ -375,16 +393,35 @@ def update_source_progress_after_capture(
     existing = progress.sources.get(source)
     zero_streak = existing.zero_usable_capture_streak if existing else 0
     zero_streak = 0 if imported > 0 else zero_streak + 1
+    last_scanned_url = capture.last_scanned_url or capture.url or capture.resume_url
+    next_url = (
+        capture.next_url if capture.next_url and capture.next_url != last_scanned_url else None
+    )
+    cursor_status = capture.cursor_status
+    if cursor_status == SourceCursorStatus.ADVANCED.value and next_url is None:
+        cursor_status = SourceCursorStatus.STALLED_NAVIGATION.value
+    if cursor_status is None:
+        if capture.end_of_results:
+            cursor_status = SourceCursorStatus.END_OF_RESULTS.value
+        elif next_url:
+            cursor_status = SourceCursorStatus.ADVANCED.value
+        elif capture.next_page_available is True:
+            cursor_status = SourceCursorStatus.STALLED_NAVIGATION.value
+        else:
+            cursor_status = SourceCursorStatus.NO_NEXT_URL.value
     progress.sources[source] = SourceScanProgress(
         source=source,
         saved_search_id=(
             row.saved_search_id if row else (existing.saved_search_id if existing else None)
         ),
         saved_search_url=row.view_url if row else (existing.saved_search_url if existing else None),
-        next_url=capture.next_url,
-        last_scanned_url=capture.last_scanned_url or capture.url or capture.resume_url,
+        next_url=next_url,
+        last_scanned_url=last_scanned_url,
         last_started_url=capture.start_url,
         end_of_results=capture.end_of_results,
+        cursor_status=cursor_status,
+        cursor_reason=capture.cursor_reason,
+        deferred_for_run=False,
         zero_usable_capture_streak=zero_streak,
         last_raw_row_count=capture.raw_row_count or 0,
         last_output_row_count=capture.output_row_count or 0,
@@ -394,8 +431,10 @@ def update_source_progress_after_capture(
         last_note=(
             "end of results"
             if capture.end_of_results
+            else capture.cursor_reason
+            if capture.cursor_reason
             else "advanced to next_url"
-            if capture.next_url
+            if next_url
             else "no next_url recorded"
         ),
     )
@@ -1150,23 +1189,35 @@ def network_run_session(
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
                 zero_capture_streaks[plan.source] = streak
                 cursor = after_run.capture_cursors.get(plan.source)
+                if cursor and cursor.end_of_results:
+                    add(
+                        source_exhausted(
+                            store,
+                            plan.source,
+                            note=(
+                                "reached end of saved-search results with no usable candidates; "
+                                "carrying remaining quota forward"
+                            ),
+                        )
+                    )
+                    continue
                 cursor_stalled = (
                     cursor is not None
-                    and cursor.next_url is not None
-                    and cursor.last_scanned_url is not None
-                    and cursor.next_url == cursor.last_scanned_url
+                    and cursor.next_page_available is True
+                    and cursor.next_url is None
+                    and cursor.cursor_status
+                    in {
+                        SourceCursorStatus.PARTIAL_PAGE.value,
+                        SourceCursorStatus.STALLED_NAVIGATION.value,
+                        SourceCursorStatus.ROW_LOAD_TIMEOUT.value,
+                    }
                 )
-                if cursor and (cursor.end_of_results or cursor_stalled or streak >= 2):
+                if cursor and (cursor_stalled or streak >= 2):
                     note = (
-                        "reached end of saved-search results with no usable candidates; "
-                        "carrying remaining quota forward"
+                        cursor.cursor_reason
+                        or "saved-search cursor did not advance after zero usable candidates"
                     )
-                    if cursor_stalled:
-                        note = (
-                            "saved-search cursor did not advance after zero usable candidates; "
-                            "carrying remaining quota forward"
-                        )
-                    add(source_exhausted(store, plan.source, note=note))
+                    add(source_deferred_for_run(store, plan.source, note=note))
             continue
         if plan.action == "send-candidate":
             run_for_send = store.load_run()
@@ -2096,6 +2147,48 @@ def source_exhausted(store: Store, source: str, note: str | None = None) -> str:
             store.append_event(run, "source-exhausted", {"source": source})
             return "marked source exhausted"
     raise RuntimeError(f"unknown source: {source}")
+
+
+def source_deferred_for_run(store: Store, source: str, note: str | None = None) -> str:
+    run = store.load_run()
+    cursor = run.capture_cursors.get(source)
+    if cursor is None:
+        cursor = SourceCaptureCursor(source=source)
+        run.capture_cursors[source] = cursor
+    cursor.deferred_for_run = True
+    cursor.deferred_reason = note or "source deferred for this run"
+    if cursor.cursor_status is None:
+        cursor.cursor_status = SourceCursorStatus.STALLED_NAVIGATION.value
+    for source_plan in run.sources:
+        if source_plan.name == source:
+            source_plan.exhausted = False
+            break
+    run.notes.append(f"source deferred for run: {source}: {cursor.deferred_reason}")
+    run.mark_updated()
+    store.save_run(run)
+
+    progress = store.load_source_progress()
+    existing = progress.sources.get(source)
+    if existing is None:
+        existing = SourceScanProgress(source=source)
+    existing.deferred_for_run = True
+    existing.deferred_reason = cursor.deferred_reason
+    existing.cursor_status = cursor.cursor_status
+    existing.cursor_reason = cursor.cursor_reason or cursor.deferred_reason
+    retry_url = cursor.next_url or cursor.resume_url or cursor.last_scanned_url
+    existing.next_url = retry_url
+    existing.last_scanned_url = cursor.last_scanned_url
+    existing.last_started_url = cursor.start_url
+    existing.end_of_results = False
+    existing.last_note = cursor.deferred_reason
+    progress.sources[source] = existing
+    store.save_source_progress(progress)
+    store.append_event(
+        run,
+        "source-deferred",
+        {"source": source, "reason": cursor.deferred_reason},
+    )
+    return "deferred source for this run"
 
 
 def needs_reaudit(store: Store, reason: str) -> str:

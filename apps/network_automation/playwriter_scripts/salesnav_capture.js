@@ -284,8 +284,11 @@ async function clickNext(page) {
   if (await button.isDisabled().catch(() => false)) return false;
   const before = page.url();
   await button.click({ timeout: 8000 });
-  await page.waitForTimeout(1500);
-  return page.url() !== before;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await page.waitForTimeout(500);
+    if (page.url() !== before) return true;
+  }
+  return false;
 }
 
 async function nextPageIsAvailable(page) {
@@ -305,7 +308,44 @@ async function main() {
   if (blockReason) {
     throw new Error(`Sales Navigator capture blocked: ${blockReason}`);
   }
-  await waitForRows(activePage);
+  const initialRowCount = await waitForRows(activePage);
+  if (initialRowCount === 0) {
+    const payload = {
+      schemaVersion: 1,
+      capturedAt: nowIso(),
+      url: activePage.url(),
+      startUrl,
+      lastScannedUrl: activePage.url(),
+      nextUrl: null,
+      resumeUrl: activePage.url(),
+      nextPageAvailable: null,
+      endOfResults: false,
+      cursorStatus: "row_load_timeout",
+      cursorReason: "no Sales Navigator result rows loaded before timeout",
+      warnings: ["row-load-timeout"],
+      source: config.source,
+      page: { url: activePage.url(), pageLabel: null },
+      pages: [{ url: activePage.url(), pageLabel: null }],
+      menuInspection: "menu",
+      filters: { onlyConnectable: Boolean(config.onlyConnectable) },
+      captureOptions: {
+        limit: Math.max(0, Number(config.limit || 0)),
+        pages: Math.max(1, Number(config.pages || 1)),
+        stopAfterConnectable: Math.max(0, Number(config.stopAfterConnectable || 0)),
+        rowScrollDelayMs: Number(config.rowScrollDelayMs || 0),
+        openMenus: Boolean(config.onlyConnectable) || Number(config.stopAfterConnectable || 0) > 0,
+        apiState: false,
+      },
+      apiState: { enabled: false, responses: 0, rows: 0, errors: ["result rows did not load"] },
+      stateCounts: {},
+      rawRowCount: 0,
+      outputRowCount: 0,
+      rows: [],
+    };
+    fs.writeFileSync(config.out, `${JSON.stringify(payload, null, 2)}\n`);
+    console.log(`wrote Sales Navigator capture to ${config.out}`);
+    return;
+  }
   const allRows = [];
   const pageSummaries = [];
   const totalPages = Math.max(1, Number(config.pages || 1));
@@ -316,6 +356,9 @@ async function main() {
   let nextUrl = null;
   let nextAvailable = false;
   let stoppedEarly = false;
+  let cursorStatus = null;
+  let cursorReason = null;
+  const warnings = [];
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     await activePage.waitForTimeout(500);
     pageSummaries.push({ url: activePage.url(), pageLabel: null });
@@ -331,22 +374,58 @@ async function main() {
     lastScannedUrl = activePage.url();
     nextAvailable = await nextPageIsAvailable(activePage);
     if (stoppedEarly) {
-      nextUrl = activePage.url();
+      if (nextAvailable) {
+        if (await clickNext(activePage)) {
+          nextUrl = activePage.url();
+          cursorStatus = "advanced";
+          cursorReason = "advanced to next page after stop-after-connectable capture";
+        } else {
+          nextUrl = null;
+          cursorStatus = "partial_page";
+          cursorReason = "stopped after requested connectable rows; next-page navigation did not advance";
+          warnings.push("next-click-noop-after-partial-page");
+        }
+      } else {
+        nextUrl = null;
+        cursorStatus = "partial_page";
+        cursorReason = "stopped after requested connectable rows";
+      }
       break;
     }
     if (pageNumber < totalPages) {
-      if (!(await clickNext(activePage))) break;
+      if (!nextAvailable) {
+        cursorStatus = "end_of_results";
+        cursorReason = "next button unavailable before requested page count";
+        break;
+      }
+      if (!(await clickNext(activePage))) {
+        nextUrl = null;
+        cursorStatus = "stalled_navigation";
+        cursorReason = "next button was enabled but navigation did not advance";
+        warnings.push("next-click-noop");
+        break;
+      }
       nextUrl = activePage.url();
+      cursorStatus = "advanced";
+      cursorReason = "advanced to next requested capture page";
       continue;
     }
     if (nextAvailable && (await clickNext(activePage))) {
       nextUrl = activePage.url();
+      cursorStatus = "advanced";
+      cursorReason = "advanced to next scan URL";
+    } else if (nextAvailable) {
+      nextUrl = null;
+      cursorStatus = "stalled_navigation";
+      cursorReason = "next button was enabled but navigation did not advance";
+      warnings.push("next-click-noop");
     } else {
       nextUrl = null;
-      nextAvailable = false;
+      cursorStatus = "end_of_results";
+      cursorReason = "next button unavailable after scanned page";
     }
   }
-  const endOfResults = !nextAvailable && !stoppedEarly;
+  const endOfResults = cursorStatus === "end_of_results";
   const outputRows = [];
   for (const row of allRows) {
     if (!config.onlyConnectable || row.menuState === "connectable") outputRows.push(row);
@@ -358,9 +437,12 @@ async function main() {
     startUrl,
     lastScannedUrl,
     nextUrl,
-    resumeUrl: nextUrl || null,
+    resumeUrl: nextUrl || (cursorStatus === "partial_page" ? lastScannedUrl : null),
     nextPageAvailable: nextAvailable,
     endOfResults,
+    cursorStatus,
+    cursorReason,
+    warnings,
     source: config.source,
     page: pageSummaries.length ? pageSummaries[pageSummaries.length - 1] : null,
     pages: pageSummaries,

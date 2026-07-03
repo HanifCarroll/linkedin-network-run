@@ -47,6 +47,15 @@ class CandidateStatus(StrEnum):
     FAILED = "failed"
 
 
+class SourceCursorStatus(StrEnum):
+    ADVANCED = "advanced"
+    PARTIAL_PAGE = "partial_page"
+    END_OF_RESULTS = "end_of_results"
+    STALLED_NAVIGATION = "stalled_navigation"
+    ROW_LOAD_TIMEOUT = "row_load_timeout"
+    NO_NEXT_URL = "no_next_url"
+
+
 class LeadStatus(StrEnum):
     NEW = "new"
     APPROVED = "approved"
@@ -425,6 +434,10 @@ class SourceCaptureCursor(AppModel):
     next_url: str | None = None
     next_page_available: bool | None = None
     end_of_results: bool = False
+    cursor_status: str | None = None
+    cursor_reason: str | None = None
+    deferred_for_run: bool = False
+    deferred_reason: str | None = None
     page_label: str | None = None
     captured_pages: int = 0
     raw_row_count: int = 0
@@ -444,6 +457,10 @@ class SourceScanProgress(AppModel):
     last_scanned_url: str | None = None
     last_started_url: str | None = None
     end_of_results: bool = False
+    cursor_status: str | None = None
+    cursor_reason: str | None = None
+    deferred_for_run: bool = False
+    deferred_reason: str | None = None
     zero_usable_capture_streak: int = 0
     last_raw_row_count: int = 0
     last_output_row_count: int = 0
@@ -633,6 +650,8 @@ class Run(AppModel):
         for index, source in enumerate(self.sources):
             if source.exhausted:
                 continue
+            if self.source_is_deferred_for_run(source.name):
+                continue
             if source.fallback and not self.allow_fallback_sources:
                 continue
             quota = self.source_quota_with_carryover(index)
@@ -684,12 +703,28 @@ class Run(AppModel):
         plan = self.sources[index]
         if plan.fallback:
             return plan.exhausted
-        return plan.exhausted or self.source_verified_count(
-            source
-        ) >= self.source_quota_with_carryover(index)
+        return (
+            plan.exhausted
+            or self.source_is_deferred_for_run(source)
+            or self.source_verified_count(source) >= self.source_quota_with_carryover(index)
+        )
 
     def source_is_fallback(self, source: str) -> bool:
         return any(plan.name == source and plan.fallback for plan in self.sources)
+
+    def source_is_deferred_for_run(self, source: str) -> bool:
+        cursor = self.capture_cursors.get(source)
+        return bool(cursor and cursor.deferred_for_run)
+
+    def deferred_source_reasons(self) -> list[str]:
+        reasons: list[str] = []
+        for source in self.sources:
+            cursor = self.capture_cursors.get(source.name)
+            if not cursor or not cursor.deferred_for_run:
+                continue
+            reason = cursor.deferred_reason or cursor.cursor_reason or cursor.cursor_status
+            reasons.append(f"{source.name}: {reason or 'deferred for this run'}")
+        return reasons
 
     def real_send_capacity_remaining(self) -> int:
         attempts = self.real_send_attempt_count()
@@ -798,6 +833,15 @@ class Run(AppModel):
                 ),
                 resume_url=cursor.resume_url if cursor else None,
                 cursor=cursor,
+            )
+        deferred_reasons = self.deferred_source_reasons()
+        if deferred_reasons:
+            return OperatorPlan(
+                action="blocked",
+                reason=(
+                    "no connectable candidate and all remaining sources are deferred for this run: "
+                    + "; ".join(deferred_reasons)
+                ),
             )
         return OperatorPlan(
             action="blocked", reason="no connectable candidate and no available source"
@@ -1139,6 +1183,13 @@ class SalesNavCapture(AppModel):
     end_of_results: bool = Field(
         default=False, validation_alias=AliasChoices("end_of_results", "endOfResults")
     )
+    cursor_status: str | None = Field(
+        default=None, validation_alias=AliasChoices("cursor_status", "cursorStatus")
+    )
+    cursor_reason: str | None = Field(
+        default=None, validation_alias=AliasChoices("cursor_reason", "cursorReason")
+    )
+    warnings: list[str] = Field(default_factory=list)
     page: SalesNavCapturePage | None = None
     pages: list[SalesNavCapturePage] = Field(default_factory=list)
     state_counts: dict[str, int] = Field(
@@ -1218,6 +1269,44 @@ def capture_state_count(capture: SalesNavCapture, state: str) -> int:
     return sum(1 for row in capture.rows if row.menu_state == state)
 
 
+def _same_url(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return False
+    return left == right
+
+
+def validated_capture_next_url(
+    capture: SalesNavCapture, last_scanned_url: str | None
+) -> str | None:
+    if capture.next_url is None:
+        return None
+    if _same_url(capture.next_url, last_scanned_url):
+        return None
+    return capture.next_url
+
+
+def capture_cursor_status(
+    capture: SalesNavCapture, last_scanned_url: str | None, next_url: str | None
+) -> SourceCursorStatus:
+    if capture.cursor_status:
+        try:
+            raw_status = SourceCursorStatus(capture.cursor_status)
+            if raw_status == SourceCursorStatus.ADVANCED and next_url is None:
+                return SourceCursorStatus.STALLED_NAVIGATION
+            return raw_status
+        except ValueError:
+            pass
+    if capture.end_of_results:
+        return SourceCursorStatus.END_OF_RESULTS
+    if next_url:
+        return SourceCursorStatus.ADVANCED
+    if capture.next_page_available is True and _same_url(capture.next_url, last_scanned_url):
+        return SourceCursorStatus.STALLED_NAVIGATION
+    if capture.next_page_available is True:
+        return SourceCursorStatus.STALLED_NAVIGATION
+    return SourceCursorStatus.NO_NEXT_URL
+
+
 def capture_to_observations(
     source: str, capture: SalesNavCapture, only_connectable: bool
 ) -> list[CandidateObservation]:
@@ -1268,7 +1357,16 @@ def update_capture_cursor(run: Run, source: str, capture: SalesNavCapture) -> No
     last_scanned_url = (
         capture.last_scanned_url or capture.url or (last_page.url if last_page else None)
     )
-    resume_url = capture.next_url or capture.resume_url or last_scanned_url
+    next_url = validated_capture_next_url(capture, last_scanned_url)
+    cursor_status = capture_cursor_status(capture, last_scanned_url, next_url)
+    if cursor_status == SourceCursorStatus.END_OF_RESULTS:
+        resume_url = None
+        next_url = None
+    elif cursor_status == SourceCursorStatus.PARTIAL_PAGE:
+        resume_url = capture.resume_url or last_scanned_url
+        next_url = None
+    else:
+        resume_url = next_url or capture.resume_url
     captured_pages = len(capture.pages) or (1 if capture.page else 0)
     raw_row_count = (
         capture.raw_row_count if capture.raw_row_count is not None else len(capture.rows)
@@ -1283,9 +1381,11 @@ def update_capture_cursor(run: Run, source: str, capture: SalesNavCapture) -> No
         resume_url=resume_url,
         start_url=capture.start_url,
         last_scanned_url=last_scanned_url,
-        next_url=capture.next_url,
+        next_url=next_url,
         next_page_available=capture.next_page_available,
         end_of_results=capture.end_of_results,
+        cursor_status=cursor_status.value,
+        cursor_reason=capture.cursor_reason,
         page_label=last_page.page_label if last_page else None,
         captured_pages=captured_pages,
         raw_row_count=raw_row_count,
