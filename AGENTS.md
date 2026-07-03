@@ -74,10 +74,15 @@ uv run linkedin-tools --help
   hoc click LinkedIn buttons outside guarded Python browser paths.
 - Use `send-guarded --single-pass` for the normal connection-request path. Use `send-next --dry-run` or `send-guarded --dry-run` for focused validation.
 - Record browser artifacts back into the controller with the matching import or record command.
-- After uncertainty, blocked browser state, or possible real sends, audit before declaring success.
+- After uncertainty, exhausted transient-load retries, blocked browser state, or
+  possible real sends, audit before declaring success.
 - `finish` must be backed by sent-page audit reconciliation, not row-level confidence alone.
 - If Playwriter reports a closed page/context/session, run `playwriter session reset <session>` or reopen the session before retrying.
-- Treat LinkedIn `429`, network refusal, or uncertain send results as blocking evidence. Preserve controller state and diagnose the cause before retrying.
+- Let controller retry budgets handle transient Sales Navigator UI-load misses,
+  such as a temporarily missing saved-search control. Treat login, checkpoint,
+  security verification, LinkedIn `429`, network refusal, or uncertain send
+  results as blocking evidence. Preserve controller state and diagnose the
+  cause before retrying.
 
 ## Source-Faithful Extraction
 

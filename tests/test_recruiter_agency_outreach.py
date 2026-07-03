@@ -103,6 +103,26 @@ def test_import_capture_classifies_contract_recruiter_and_drafts() -> None:
     assert "Are you the right person to ask about contract roles" in state.leads[0].draft.body
 
 
+def test_terminal_capture_does_not_resume_last_scanned_page() -> None:
+    state = OutreachState()
+
+    import_salesnav_capture(
+        state,
+        {
+            "source": "ASAP - Contract Recruiter Titles",
+            "capturedAt": "2026-07-03T06:00:00Z",
+            "url": "https://www.linkedin.com/sales/search/people?page=5",
+            "endOfResults": True,
+            "nextPageAvailable": False,
+            "rows": [],
+        },
+    )
+
+    cursor = state.capture_cursors["ASAP - Contract Recruiter Titles"]
+    assert cursor.resume_url is None
+    assert cursor.raw_row_count == 0
+
+
 def test_import_capture_classifies_strategy_consultant_and_drafts() -> None:
     state = OutreachState()
     capture = {
@@ -444,6 +464,70 @@ def test_dashboard_limiting_reason_lists_all_short_ready_pools(tmp_path: Path) -
         "Agency ready-to-send pool is short by 4; "
         "Recruiter ready-to-send pool is short by 5; "
         "Advisor ready-to-send pool is short by 5 for this render target."
+    )
+
+
+def test_send_dashboard_limiting_reason_uses_this_run_shortfall(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    store.save(_sendable_state(message_status=MessageStatus.SENT))
+
+    report = build_dashboard_report(
+        store.load(),
+        str(store.state_path),
+        target_agencies=5,
+        target_recruiters=5,
+        target_advisors=5,
+        allow_send=True,
+        actions=[
+            *[
+                DailyLeadAction(
+                    at="2026-07-03T09:00:00Z",
+                    bucket="agency",
+                    lead_id=f"agency_{index}",
+                    name=f"Agency {index}",
+                    lead_type=LeadType.AGENCY_DELIVERY,
+                    message_status=MessageStatus.SENT,
+                    action="send",
+                    result="sent-clicked",
+                    run_id="send-ready-test",
+                )
+                for index in range(5)
+            ],
+            *[
+                DailyLeadAction(
+                    at="2026-07-03T09:00:00Z",
+                    bucket="recruiter",
+                    lead_id=f"recruiter_{index}",
+                    name=f"Recruiter {index}",
+                    lead_type=LeadType.CONTRACT_RECRUITER,
+                    message_status=MessageStatus.SENT,
+                    action="send",
+                    result="sent-clicked",
+                    run_id="send-ready-test",
+                )
+                for index in range(3)
+            ],
+            *[
+                DailyLeadAction(
+                    at="2026-07-03T09:00:00Z",
+                    bucket="advisor",
+                    lead_id=f"advisor_{index}",
+                    name=f"Advisor {index}",
+                    lead_type=LeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER,
+                    message_status=MessageStatus.SENT,
+                    action="send",
+                    result="sent-clicked",
+                    run_id="send-ready-test",
+                )
+                for index in range(5)
+            ],
+        ],
+        mode="sending",
+    )
+
+    assert report.limiting_reason == (
+        "Recruiter target is still short by 2 sends; "
+        "ready-to-send pool has 0 remaining for this render target."
     )
 
 
@@ -912,6 +996,9 @@ def test_run_daily_validates_drafted_leads_with_live_dry_run_browser(
 
     assert instances and instances[0].closed is True
     output = capsys.readouterr().out
+    assert "summary=run-daily mode=sourcing allow_send=false" in output
+    assert "sent=0 agencies,0 recruiters,0 advisors" in output
+    assert "ready=1 agencies,0 recruiters,0 advisors" in output
     assert "Ready now: `1` agencies, `0` recruiters" in output
     loaded = store.load()
     assert loaded.leads[0].message_status == MessageStatus.DRY_RUN_READY
@@ -1046,6 +1133,95 @@ def test_run_daily_captures_recruiters_and_validates_messages(
     state = Store(tmp_path).load()
     assert state.leads[0].name == "Riley Recruiter"
     assert state.leads[0].message_status == MessageStatus.DRY_RUN_READY
+    assert state.run_events[-1].result == "completed"
+
+
+def test_run_daily_does_not_repeat_exhausted_recruiter_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCaptureBrowser:
+        def __init__(self, source: str, out_dir: Path) -> None:
+            self.source = source
+            self.out_dir = out_dir
+            self.closed = False
+            capture_instances.append(self)
+
+        def capture_salesnav(
+            self,
+            *,
+            source: str,
+            url: str | None = None,
+            pages: int = 1,
+            limit: int = 25,
+            stop_after_connectable: int = 0,
+            only_connectable: bool = False,
+            row_scroll_delay_ms: int = 250,
+        ) -> tuple[object, str]:
+            self.call = {
+                "source": source,
+                "url": url,
+                "pages": pages,
+                "limit": limit,
+                "stop_after_connectable": stop_after_connectable,
+                "only_connectable": only_connectable,
+                "row_scroll_delay_ms": row_scroll_delay_ms,
+            }
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            artifact = self.out_dir / "people.json"
+            artifact.write_text(
+                json.dumps(
+                    {
+                        "source": source,
+                        "capturedAt": "2026-07-03T06:00:00Z",
+                        "url": "https://www.linkedin.com/sales/search/people?page=5",
+                        "endOfResults": True,
+                        "nextPageAvailable": False,
+                        "rows": [],
+                    }
+                )
+            )
+            return object(), str(artifact)
+
+        def close(self) -> None:
+            self.closed = True
+
+    capture_instances: list[FakeCaptureBrowser] = []
+    monkeypatch.setattr(
+        daily_module,
+        "_capture_browser",
+        lambda store, options, run_id, source, round_number: FakeCaptureBrowser(
+            source,
+            store.dir / "captures" / run_id / source / str(round_number),
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "run-daily",
+                "--session",
+                "auto",
+                "--target-agencies",
+                "0",
+                "--target-recruiters",
+                "1",
+                "--target-advisors",
+                "0",
+                "--max-capture-rounds",
+                "4",
+            ]
+        )
+        == 0
+    )
+
+    assert len(capture_instances) == 1
+    assert capture_instances[0].closed is True
+    state = Store(tmp_path).load()
+    cursor = state.capture_cursors["ASAP - Contract Recruiter Titles"]
+    assert cursor.resume_url is None
     assert state.run_events[-1].result == "completed"
 
 

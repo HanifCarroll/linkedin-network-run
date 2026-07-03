@@ -192,6 +192,7 @@ def build_dashboard_report(
     dashboard_path: str = "",
 ) -> DashboardReport:
     action_list = actions or []
+    run_counts = dashboard_run_counts(action_list)
     return DashboardReport(
         generated_at=now_iso(),
         mode=mode,
@@ -202,7 +203,7 @@ def build_dashboard_report(
         target_advisors=target_advisors,
         allow_send=allow_send,
         counts=counts(state),
-        run_counts=dashboard_run_counts(action_list),
+        run_counts=run_counts,
         backlog_counts=BucketCounts(
             agencies=dashboard_bucket_count(state, "agency", MessageStatus.DRAFTED),
             recruiters=dashboard_bucket_count(state, "recruiter", MessageStatus.DRAFTED),
@@ -233,7 +234,11 @@ def build_dashboard_report(
         skipped_advisors=dashboard_skipped_leads(state, "advisor"),
         actions=action_list,
         limiting_reason=dashboard_limiting_reason(
-            state, target_agencies, target_recruiters, target_advisors
+            state,
+            target_agencies,
+            target_recruiters,
+            target_advisors,
+            run_counts=run_counts if mode == "sending" else None,
         ),
     )
 
@@ -851,17 +856,51 @@ def dashboard_limiting_reason(
     target_agencies: int,
     target_recruiters: int,
     target_advisors: int,
+    *,
+    run_counts: RunCounts | None = None,
 ) -> str:
-    gaps = [
-        ("Agency", max(0, target_agencies - len(ready_leads(state, "agency")))),
-        ("Recruiter", max(0, target_recruiters - len(ready_leads(state, "recruiter")))),
-        ("Advisor", max(0, target_advisors - len(ready_leads(state, "advisor")))),
-    ]
-    shortfalls = [
-        f"{label} ready-to-send pool is short by {gap}"
-        for label, gap in gaps
-        if gap > 0
-    ]
+    ready_counts = BucketCounts(
+        agencies=len(ready_leads(state, "agency")),
+        recruiters=len(ready_leads(state, "recruiter")),
+        advisors=len(ready_leads(state, "advisor")),
+    )
+    if run_counts is None:
+        gaps = [
+            ("Agency", max(0, target_agencies - ready_counts.agencies)),
+            ("Recruiter", max(0, target_recruiters - ready_counts.recruiters)),
+            ("Advisor", max(0, target_advisors - ready_counts.advisors)),
+        ]
+        shortfalls = [
+            f"{label} ready-to-send pool is short by {gap}"
+            for label, gap in gaps
+            if gap > 0
+        ]
+    else:
+        gaps = [
+            (
+                "Agency",
+                max(0, target_agencies - run_counts.sent.agencies),
+                ready_counts.agencies,
+            ),
+            (
+                "Recruiter",
+                max(0, target_recruiters - run_counts.sent.recruiters),
+                ready_counts.recruiters,
+            ),
+            (
+                "Advisor",
+                max(0, target_advisors - run_counts.sent.advisors),
+                ready_counts.advisors,
+            ),
+        ]
+        shortfalls = [
+            (
+                f"{label} target is still short by {gap} sends; "
+                f"ready-to-send pool has {ready_count} remaining"
+            )
+            for label, gap, ready_count in gaps
+            if gap > 0
+        ]
     if not shortfalls:
         return ""
     return "; ".join(shortfalls) + " for this render target."

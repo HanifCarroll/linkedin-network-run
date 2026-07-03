@@ -374,12 +374,14 @@ AUTOMATION_EDIT_SAFETY_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "linkedin-network": (
         "Real sends still require `--allow-send`.",
         "Do not run concurrent browser send loops.",
+        "Let controller retry budgets handle transient Sales Navigator UI-load misses.",
         "Stop on checkpoint, challenge, security, login, or weekly-limit blockers.",
         "Finish only after audit-backed reconciliation succeeds.",
     ),
     "linkedin-acceptance-daily": (
         "Do not auto-send follow-up messages.",
         "Do not withdraw or modify invitations.",
+        "Let controller retry budgets handle transient LinkedIn UI-load misses.",
         "Stop on checkpoint, challenge, security, login, or weekly-limit blockers.",
     ),
     "linkedin-acceptance-weekly": (

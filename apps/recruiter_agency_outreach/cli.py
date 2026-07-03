@@ -12,6 +12,8 @@ from typing import Any
 
 from .daily import DailyOptions, SendReadyOptions, run_daily, send_ready
 from .dashboard import (
+    BucketCounts,
+    DashboardReport,
     build_agency_pool_diagnosis,
     build_agency_pool_next_action,
     build_dashboard_report,
@@ -19,7 +21,13 @@ from .dashboard import (
     render_dashboard_markdown,
     write_dashboard_markdown,
 )
-from .drafts import draft_evidence, draft_messages, message_subject, write_draft_markdown
+from .drafts import (
+    clean_inline,
+    draft_evidence,
+    draft_messages,
+    message_subject,
+    write_draft_markdown,
+)
 from .inspection import (
     agency_account_queue,
     build_lead_detail,
@@ -258,6 +266,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _bucket_counts_text(counts: BucketCounts) -> str:
+    return (
+        f"{counts.agencies} agencies,"
+        f"{counts.recruiters} recruiters,"
+        f"{counts.advisors} advisors"
+    )
+
+
+def _run_daily_summary_line(report: DashboardReport) -> str:
+    parts = [
+        "summary=run-daily",
+        f"mode={report.mode}",
+        f"allow_send={str(report.allow_send).lower()}",
+        f"sent={_bucket_counts_text(report.run_counts.sent)}",
+        f"ready={_bucket_counts_text(report.ready_counts)}",
+        f"drafted_needs_validation={_bucket_counts_text(report.backlog_counts)}",
+    ]
+    if report.limiting_reason:
+        parts.append(f"limiting_reason={clean_inline(report.limiting_reason)}")
+    return " ".join(parts)
+
+
 def _run_command(args: argparse.Namespace, store: Store) -> None:
     if args.command == "run-daily":
         daily_result = run_daily(
@@ -283,6 +313,7 @@ def _run_command(args: argparse.Namespace, store: Store) -> None:
             ),
         )
         print(f"dashboard={daily_result.dashboard_path}")
+        print(_run_daily_summary_line(daily_result.report))
         if args.print_markdown:
             print(daily_result.markdown)
         return

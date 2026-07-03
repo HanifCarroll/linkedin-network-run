@@ -42,6 +42,7 @@ from apps.network_automation.old_state import inspect_old_state
 from apps.network_automation.reports import render_report
 from apps.network_automation.service import (
     apply_lead_review_decisions,
+    capture_saved_searches,
     confirm_provisional_send,
     finish_run,
     import_audit,
@@ -282,6 +283,71 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
     assert contract_url == "https://www.linkedin.com/sales/search/people?savedSearchId=def"
     assert agency_url == "https://www.linkedin.com/sales/search/people?savedSearchId=abc"
     assert advisor_url == "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
+
+
+class _TransientSavedSearchBrowser(FakeLiveBrowserClient):
+    def __init__(self, error: str, *, out_dir: Path) -> None:
+        super().__init__(out_dir=out_dir)
+        self.error = error
+        self.saved_search_calls = 0
+
+    def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
+        self.saved_search_calls += 1
+        if self.saved_search_calls == 1:
+            raise RuntimeError(self.error)
+        artifact = SavedSearchArtifact.model_validate(
+            {
+                "capturedAt": "2026-07-03T12:00:00Z",
+                "url": url,
+                "searches": [
+                    {
+                        "savedSearchId": "abc",
+                        "name": "ASAP - Agency Owners Delivery",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    }
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+
+def test_capture_saved_searches_retries_transient_missing_control(tmp_path: Path) -> None:
+    browser = _TransientSavedSearchBrowser(
+        "Playwriter command failed (1): saved-searches control missing; "
+        "verify the automation browser is logged into Sales Navigator",
+        out_dir=tmp_path,
+    )
+
+    output = capture_saved_searches(
+        browser,
+        url="https://www.linkedin.com/sales/search/people",
+        out=tmp_path / "saved-searches.json",
+        attempts=3,
+        delay_ms=0,
+    )
+
+    assert browser.saved_search_calls == 2
+    assert "saved-search capture attempt 1/3 failed" in output
+    assert "captured 1 saved searches" in output
+
+
+def test_capture_saved_searches_does_not_retry_login_blocker(tmp_path: Path) -> None:
+    browser = _TransientSavedSearchBrowser(
+        "saved searches blocked: login required",
+        out_dir=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="login required"):
+        capture_saved_searches(
+            browser,
+            url="https://www.linkedin.com/sales/search/people",
+            out=tmp_path / "saved-searches.json",
+            attempts=3,
+            delay_ms=0,
+        )
+
+    assert browser.saved_search_calls == 1
 
 
 def test_menu_classifier_handles_linkedin_pending_dash() -> None:

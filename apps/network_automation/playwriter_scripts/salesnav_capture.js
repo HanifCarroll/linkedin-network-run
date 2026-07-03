@@ -5,6 +5,7 @@ const config = JSON.parse(fs.readFileSync(state.linkedinToolsConfigPath, "utf8")
 const SALES_NAV_PEOPLE_RESULT_ROW = "li.artdeco-list__item:has(a[href*='/sales/lead/'])";
 const SALES_NAV_PROFILE_LINK = "a[href*='/sales/lead/']";
 const SALES_NAV_MORE_ACTIONS_BUTTON = 'button[aria-label^="See more actions for"]';
+const SALES_NAV_RESULTS_CONTAINER = "#search-results-container";
 const SECURITY_VERIFICATION_SELECTOR =
   "iframe#humanThirdPartyIframe,iframe[title='LinkedIn security verification'],iframe[src*='li.protechts.net']";
 
@@ -193,6 +194,87 @@ function stateCounts(rows) {
   return counts;
 }
 
+function capturedRowKey(item) {
+  return item.profileUrl || item.scrollUrn || `row:${item.pageNumber}:${item.index}`;
+}
+
+async function resetResultScroll(page) {
+  await page
+    .evaluate((selector) => {
+      const element =
+        document.querySelector(selector) ||
+        document.scrollingElement ||
+        document.documentElement;
+      if (element) element.scrollTop = 0;
+    }, SALES_NAV_RESULTS_CONTAINER)
+    .catch(() => null);
+  await page.waitForTimeout(500);
+}
+
+async function scrollResultRows(page) {
+  const result = await page
+    .evaluate((selector) => {
+      const element =
+        document.querySelector(selector) ||
+        document.scrollingElement ||
+        document.documentElement;
+      if (!element) return { before: 0, after: 0, max: 0 };
+      const before = element.scrollTop;
+      const max = Math.max(0, element.scrollHeight - element.clientHeight);
+      const step = Math.max(400, Math.floor(element.clientHeight * 0.8));
+      element.scrollTop = Math.min(max, before + step);
+      return { before, after: element.scrollTop, max };
+    }, SALES_NAV_RESULTS_CONTAINER)
+    .catch(() => ({ before: 0, after: 0, max: 0 }));
+  await page.waitForTimeout(700);
+  return result.after > result.before;
+}
+
+async function captureCurrentPageRows({
+  page,
+  pageNumber,
+  allRows,
+  requestedLimit,
+  stopAfterConnectable,
+}) {
+  const seenPageRows = new Set();
+  let stoppedEarly = false;
+  let stagnantPasses = 0;
+  await resetResultScroll(page);
+  for (let pass = 0; pass < 50; pass += 1) {
+    const rowLocators = await page.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
+    let newRowsThisPass = 0;
+    for (let rowIndex = 0; rowIndex < rowLocators.length; rowIndex += 1) {
+      if (requestedLimit > 0 && seenPageRows.size >= requestedLimit) break;
+      const row = rowLocators[rowIndex];
+      await row.scrollIntoViewIfNeeded().catch(() => null);
+      if (Number(config.rowScrollDelayMs || 0) > 0) {
+        await page.waitForTimeout(Number(config.rowScrollDelayMs));
+      }
+      const item = await captureRow(row, seenPageRows.size, allRows.length, pageNumber);
+      const key = capturedRowKey(item);
+      if (seenPageRows.has(key)) continue;
+      seenPageRows.add(key);
+      const menu = await openRowMenu(page, row);
+      item.menuLabels = menu.labels || [];
+      item.menuState = classifyMenuLabels(item.menuLabels);
+      item.pageUrl = page.url();
+      allRows.push(item);
+      newRowsThisPass += 1;
+      if (stopAfterConnectable > 0 && countState(allRows, "connectable") >= stopAfterConnectable) {
+        stoppedEarly = true;
+        break;
+      }
+    }
+    if (stoppedEarly || (requestedLimit > 0 && seenPageRows.size >= requestedLimit)) break;
+    const scrolled = await scrollResultRows(page);
+    if (newRowsThisPass === 0) stagnantPasses += 1;
+    else stagnantPasses = 0;
+    if (!scrolled || stagnantPasses >= 3) break;
+  }
+  return { stoppedEarly, rowCount: seenPageRows.size };
+}
+
 async function clickNext(page) {
   const button = page.getByRole("button", { name: /^Next$/i }).first();
   if (!(await button.count().catch(() => 0))) return false;
@@ -233,25 +315,14 @@ async function main() {
   for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
     await activePage.waitForTimeout(500);
     pageSummaries.push({ url: activePage.url(), pageLabel: null });
-    const rowLocators = await activePage.locator(SALES_NAV_PEOPLE_RESULT_ROW).all();
-    const rowLimit = requestedLimit > 0 ? Math.min(requestedLimit, rowLocators.length) : rowLocators.length;
-    for (let rowIndex = 0; rowIndex < rowLimit; rowIndex += 1) {
-      const row = rowLocators[rowIndex];
-      await row.scrollIntoViewIfNeeded().catch(() => null);
-      if (Number(config.rowScrollDelayMs || 0) > 0) {
-        await activePage.waitForTimeout(Number(config.rowScrollDelayMs));
-      }
-      const item = await captureRow(row, rowIndex, allRows.length, pageNumber);
-      item.pageUrl = activePage.url();
-      const menu = await openRowMenu(activePage, row);
-      item.menuLabels = menu.labels || [];
-      item.menuState = classifyMenuLabels(item.menuLabels);
-      allRows.push(item);
-      if (stopAfterConnectable > 0 && countState(allRows, "connectable") >= stopAfterConnectable) {
-        stoppedEarly = true;
-        break;
-      }
-    }
+    const pageCapture = await captureCurrentPageRows({
+      page: activePage,
+      pageNumber,
+      allRows,
+      requestedLimit,
+      stopAfterConnectable,
+    });
+    stoppedEarly = pageCapture.stoppedEarly;
     lastScannedUrl = activePage.url();
     nextAvailable = await nextPageIsAvailable(activePage);
     if (stoppedEarly) {
@@ -282,7 +353,7 @@ async function main() {
     startUrl,
     lastScannedUrl,
     nextUrl,
-    resumeUrl: nextUrl || lastScannedUrl,
+    resumeUrl: nextUrl || null,
     nextPageAvailable: nextAvailable,
     endOfResults,
     source: config.source,

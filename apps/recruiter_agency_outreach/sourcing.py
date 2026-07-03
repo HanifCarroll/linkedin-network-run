@@ -1056,6 +1056,9 @@ def _capture_cursor_from_capture(
     updated_at: str,
 ) -> CaptureCursor:
     rows = _rows(capture)
+    resume_url = optional_clean(capture.get("resumeUrl") or capture.get("url"))
+    if capture.get("endOfResults"):
+        resume_url = None
     state_counts = capture.get("stateCounts") or capture.get("state_counts") or {}
     parsed_counts = (
         {str(key): _optional_int(value) for key, value in state_counts.items()}
@@ -1066,7 +1069,7 @@ def _capture_cursor_from_capture(
         source=source,
         updated_at=updated_at,
         captured_at=optional_clean(capture.get("capturedAt")),
-        resume_url=optional_clean(capture.get("resumeUrl") or capture.get("url")),
+        resume_url=resume_url,
         captured_pages=len(capture.get("pages", []))
         if isinstance(capture.get("pages"), list)
         else 0,

@@ -461,13 +461,19 @@ def _run_people_bucket(
 ) -> None:
     if not sources:
         raise ValueError(f"daily bucket {bucket!r} has no sources")
+    exhausted_sources: set[str] = set()
     for round_number in range(1, max(1, options.max_capture_rounds) + 1):
         _progress(f"people-round-start bucket={bucket} round={round_number}")
-        for source in sources:
+        active_sources = [source for source in sources if source not in exhausted_sources]
+        if not active_sources:
+            return
+        for source in active_sources:
             if _ready_count(store, bucket) >= target:
                 return
-            _capture_people_source(store, options, run_id, source, round_number)
+            exhausted = _capture_people_source(store, options, run_id, source, round_number)
             _draft_and_validate_bucket(store, options, run_id, bucket, target, actions)
+            if exhausted:
+                exhausted_sources.add(source)
             if _ready_count(store, bucket) >= target:
                 return
 
@@ -507,7 +513,7 @@ def _capture_people_source(
     run_id: str,
     source: str,
     round_number: int,
-) -> None:
+) -> bool:
     state = store.load()
     url = _people_capture_url(state, source)
     _progress(f"capture-people-start source={source!r} round={round_number} url={url}")
@@ -527,13 +533,15 @@ def _capture_people_source(
         if callable(close):
             close()
     state = store.load()
-    import_salesnav_capture(state, load_json_object(artifact_path))
+    capture_payload = load_json_object(artifact_path)
+    import_salesnav_capture(state, capture_payload)
     suppressed = apply_network_suppression_to_outreach_state(state)
     store.save(state)
     _progress(
         f"capture-people-finish source={source!r} suppressed={suppressed} "
         f"artifact={artifact_path}"
     )
+    return bool(capture_payload.get("endOfResults"))
 
 
 def _capture_account_source(

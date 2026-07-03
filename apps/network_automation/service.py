@@ -159,9 +159,57 @@ def import_audit(store: Store, path: Path) -> str:
     return f"audit imported: People ({audit.people_count}){_delta_suffix(run.audited_delta())}"
 
 
-def capture_saved_searches(browser: BrowserClient, *, url: str, out: Path) -> str:
-    artifact, path = browser.resolve_saved_searches(url=url, out=out)
-    return f"captured {len(artifact.searches)} saved searches to {path}"
+SAVED_SEARCH_RETRY_ATTEMPTS = 3
+SAVED_SEARCH_RETRY_DELAY_MS = 5000
+SAVED_SEARCH_NON_RETRYABLE_ERRORS = (
+    "login required",
+    "checkpoint present",
+    "security verification present",
+    "429",
+    "ERR_CONNECTION_REFUSED",
+    "network refusal",
+)
+SAVED_SEARCH_RETRYABLE_ERRORS = (
+    "saved-searches control missing",
+    "TimeoutError",
+    "timed out",
+    "Navigation timeout",
+)
+
+
+def _is_retryable_saved_search_error(error: Exception) -> bool:
+    message = str(error)
+    if any(item in message for item in SAVED_SEARCH_NON_RETRYABLE_ERRORS):
+        return False
+    return any(item in message for item in SAVED_SEARCH_RETRYABLE_ERRORS)
+
+
+def capture_saved_searches(
+    browser: BrowserClient,
+    *,
+    url: str,
+    out: Path,
+    attempts: int = SAVED_SEARCH_RETRY_ATTEMPTS,
+    delay_ms: int = SAVED_SEARCH_RETRY_DELAY_MS,
+) -> str:
+    attempts = max(1, attempts)
+    messages: list[str] = []
+    for attempt in range(1, attempts + 1):
+        try:
+            artifact, path = browser.resolve_saved_searches(url=url, out=out)
+        except RuntimeError as error:
+            if attempt >= attempts or not _is_retryable_saved_search_error(error):
+                raise
+            messages.append(
+                "saved-search capture attempt "
+                f"{attempt}/{attempts} failed with transient Sales Navigator load state; retrying"
+            )
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000)
+            continue
+        messages.append(f"captured {len(artifact.searches)} saved searches to {path}")
+        return "\n".join(messages)
+    raise RuntimeError("saved-search capture failed without a captured error")
 
 
 def saved_search_row_for_source(path: Path, source: str) -> SavedSearchRow | None:
