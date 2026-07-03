@@ -63,13 +63,13 @@ from .reports import (
 )
 from .send_commit import SendAttemptCommitter
 from .send_ledger import network_sends_summary, sync_send_ledger_from_history
-from .state_db import (
+from .store import (
     NetworkStateDbStatus,
     NetworkStateMigrationSummary,
-    migrate_json_ledgers,
-    preview_json_migration,
+    Store,
+    read_model,
+    write_json_atomic,
 )
-from .store import Store, read_model, write_json_atomic
 from .suppression import skip_outreach_suppressed_observations
 
 __all__ = [
@@ -1217,7 +1217,7 @@ def record_candidate(
 
 
 def network_state_db_status(store: Store, *, as_json: bool = False) -> str:
-    status = store.state_db.status()
+    status = store.state_db_status()
     if as_json:
         return json.dumps(status.to_json_dict(), indent=2)
     return render_network_state_db_status(status)
@@ -1227,19 +1227,9 @@ def network_state_migrate_sqlite(
     store: Store, *, apply: bool, as_json: bool = False
 ) -> str:
     if apply:
-        summary = migrate_json_ledgers(
-            store.state_db,
-            acceptance_ledger_path=store.acceptance_ledger_path,
-            acceptance_followup_ledger_path=store.acceptance_followup_ledger_path,
-            send_ledger_path=store.send_ledger_path,
-        )
+        summary = store.migrate_json_ledgers()
     else:
-        summary = preview_json_migration(
-            database_path=store.database_path,
-            acceptance_ledger_path=store.acceptance_ledger_path,
-            acceptance_followup_ledger_path=store.acceptance_followup_ledger_path,
-            send_ledger_path=store.send_ledger_path,
-        )
+        summary = store.preview_json_migration()
     if as_json:
         return json.dumps(summary.to_json_dict(), indent=2)
     return render_network_state_migration_summary(summary)

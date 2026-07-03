@@ -7,7 +7,7 @@ SQLite package is still a separate workstream dependency.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 
@@ -27,7 +27,7 @@ from .models import (
     SendLedgerEntry,
     SourceScanProgressLedger,
 )
-from .state_db import NetworkStateDb
+from .state_db import NetworkStateDb, NetworkStateDbStatus, NetworkStateMigrationSummary
 
 NETWORK_STATE_DIRNAME = "network-automation"
 OLD_NETWORK_STATE_DIRNAME = "linkedin-network-run"
@@ -45,7 +45,7 @@ class Store:
     def __init__(self, state_dir: Path | str | None = None) -> None:
         self.dir = Path(state_dir) if state_dir is not None else default_state_dir()
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.state_db = NetworkStateDb(self.dir)
+        self._state_db = NetworkStateDb(self.dir)
 
     @property
     def active_path(self) -> Path:
@@ -89,7 +89,101 @@ class Store:
 
     @property
     def database_path(self) -> Path:
-        return self.state_db.path
+        return self._state_db.path
+
+    def state_db_status(self) -> NetworkStateDbStatus:
+        return self._state_db.status()
+
+    def preview_json_migration(self) -> NetworkStateMigrationSummary:
+        ledger, followups, send_entries, warnings = self._load_json_migration_sources()
+        return self._migration_summary(
+            dry_run=True,
+            ledger=ledger,
+            followups=followups,
+            send_entries=send_entries,
+            warnings=warnings,
+        )
+
+    def migrate_json_ledgers(self) -> NetworkStateMigrationSummary:
+        ledger, followups, send_entries, warnings = self._load_json_migration_sources()
+        if ledger is not None:
+            self._state_db.import_acceptance_ledger(ledger)
+        if followups is not None:
+            self._state_db.import_acceptance_followup_ledger(followups)
+        if send_entries:
+            self._import_send_ledger_entries(send_entries)
+        return self._migration_summary(
+            dry_run=False,
+            ledger=ledger,
+            followups=followups,
+            send_entries=send_entries,
+            warnings=warnings,
+        )
+
+    def send_ledger_storage_path(self) -> Path:
+        if self._state_db.has_send_ledger():
+            return self.database_path
+        return self.send_ledger_path
+
+    def _load_json_migration_sources(
+        self,
+    ) -> tuple[
+        AcceptanceLedger | None,
+        AcceptanceFollowupLedger | None,
+        list[SendLedgerEntry],
+        list[str],
+    ]:
+        warnings: list[str] = []
+        ledger = None
+        if self.acceptance_ledger_path.exists():
+            ledger = AcceptanceLedger.model_validate_json(
+                self.acceptance_ledger_path.read_text()
+            )
+        else:
+            warnings.append(f"missing acceptance ledger JSON: {self.acceptance_ledger_path}")
+
+        followups = None
+        if self.acceptance_followup_ledger_path.exists():
+            followups = AcceptanceFollowupLedger.model_validate_json(
+                self.acceptance_followup_ledger_path.read_text()
+            )
+        else:
+            warnings.append(
+                f"missing acceptance follow-up ledger JSON: {self.acceptance_followup_ledger_path}"
+            )
+
+        send_entries = self._load_send_ledger_entries_jsonl()
+        if not self.send_ledger_path.exists():
+            warnings.append(f"missing send ledger JSONL: {self.send_ledger_path}")
+        return ledger, followups, send_entries, warnings
+
+    def _migration_summary(
+        self,
+        *,
+        dry_run: bool,
+        ledger: AcceptanceLedger | None,
+        followups: AcceptanceFollowupLedger | None,
+        send_entries: list[SendLedgerEntry],
+        warnings: Sequence[str],
+    ) -> NetworkStateMigrationSummary:
+        return NetworkStateMigrationSummary(
+            database_path=self.database_path,
+            dry_run=dry_run,
+            acceptance_invitations=len(ledger.invitations) if ledger else 0,
+            acceptance_outcome_events=sum(
+                len(item.history) for item in ledger.invitations
+            )
+            if ledger
+            else 0,
+            acceptance_followups=len(followups.drafts) if followups else 0,
+            acceptance_followup_attempts=sum(
+                len(item.attempts) for item in followups.drafts
+            )
+            if followups
+            else 0,
+            send_ledger_entries=len(send_entries),
+            warnings=tuple(warnings),
+        )
 
     def default_acceptance_followup_report_path(self) -> Path:
         from .models import today
@@ -121,24 +215,24 @@ class Store:
         write_model_atomic(self.pending_active_path, run)
 
     def load_acceptance_ledger(self) -> AcceptanceLedger:
-        if self.state_db.has_acceptance_ledger():
-            return self.state_db.load_acceptance_ledger()
+        if self._state_db.has_acceptance_ledger():
+            return self._state_db.load_acceptance_ledger()
         if not self.acceptance_ledger_path.exists():
             return AcceptanceLedger()
         return read_model(self.acceptance_ledger_path, AcceptanceLedger)
 
     def save_acceptance_ledger(self, ledger: AcceptanceLedger) -> None:
-        self.state_db.replace_acceptance_ledger(ledger)
+        self._state_db.replace_acceptance_ledger(ledger)
 
     def load_acceptance_followup_ledger(self) -> AcceptanceFollowupLedger:
-        if self.state_db.has_acceptance_followups():
-            return self.state_db.load_acceptance_followup_ledger()
+        if self._state_db.has_acceptance_followups():
+            return self._state_db.load_acceptance_followup_ledger()
         if not self.acceptance_followup_ledger_path.exists():
             return AcceptanceFollowupLedger()
         return read_model(self.acceptance_followup_ledger_path, AcceptanceFollowupLedger)
 
     def save_acceptance_followup_ledger(self, ledger: AcceptanceFollowupLedger) -> None:
-        self.state_db.replace_acceptance_followup_ledger(ledger)
+        self._state_db.replace_acceptance_followup_ledger(ledger)
 
     def load_reservoir(self) -> CandidateReservoir:
         if not self.reservoir_path.exists():
@@ -165,8 +259,8 @@ class Store:
         write_model_atomic(self.lead_ledger_path, ledger)
 
     def load_send_ledger_entries(self) -> list[SendLedgerEntry]:
-        if self.state_db.has_send_ledger():
-            return self.state_db.load_send_ledger_entries()
+        if self._state_db.has_send_ledger():
+            return self._state_db.load_send_ledger_entries()
         return self._load_send_ledger_entries_jsonl()
 
     def _load_send_ledger_entries_jsonl(self) -> list[SendLedgerEntry]:
@@ -188,12 +282,47 @@ class Store:
         return entries
 
     def append_send_ledger_entry(self, entry: SendLedgerEntry) -> bool:
-        if not self.state_db.has_send_ledger() and self.send_ledger_path.exists():
-            self.state_db.import_send_ledger_entries(self._load_send_ledger_entries_jsonl())
-        existing_ids = self.send_ledger_entry_ids()
-        if entry.entry_id in existing_ids:
+        self._ensure_send_ledger_sqlite()
+        if entry.entry_id in self._sqlite_send_ledger_entry_ids():
             return False
-        return self.state_db.append_send_ledger_entry(entry)
+        return self._state_db.append_send_ledger_entry(entry)
+
+    def import_send_ledger_entries(self, entries: Sequence[SendLedgerEntry]) -> int:
+        return self._import_send_ledger_entries(entries)
+
+    def _ensure_send_ledger_sqlite(self) -> None:
+        if self._state_db.has_send_ledger() or not self.send_ledger_path.exists():
+            return
+        self._import_send_ledger_entries(
+            self._load_send_ledger_entries_jsonl(),
+            existing_ids=set(),
+        )
+
+    def _import_send_ledger_entries(
+        self,
+        entries: Sequence[SendLedgerEntry],
+        *,
+        existing_ids: set[str] | None = None,
+    ) -> int:
+        seen_ids = (
+            set(existing_ids)
+            if existing_ids is not None
+            else self._sqlite_send_ledger_entry_ids()
+        )
+        new_entries: list[SendLedgerEntry] = []
+        for entry in entries:
+            if entry.entry_id in seen_ids:
+                continue
+            seen_ids.add(entry.entry_id)
+            new_entries.append(entry)
+        if not new_entries:
+            return 0
+        return self._state_db.import_send_ledger_entries(new_entries)
+
+    def _sqlite_send_ledger_entry_ids(self) -> set[str]:
+        if not self._state_db.has_send_ledger():
+            return set()
+        return {entry.entry_id for entry in self._state_db.load_send_ledger_entries()}
 
     def send_ledger_entry_ids(self) -> set[str]:
         return {entry.entry_id for entry in self.load_send_ledger_entries()}
@@ -205,7 +334,7 @@ class Store:
 
     def append_acceptance_event(self, kind: str, payload: object) -> None:
         append_jsonl(self.acceptance_event_path, {"kind": kind, "payload": payload})
-        self.state_db.append_event("acceptance", kind, payload)
+        self._state_db.append_event("acceptance", kind, payload)
 
     def append_pending_event(self, run: PendingCleanupRun, kind: str, payload: object) -> None:
         append_jsonl(

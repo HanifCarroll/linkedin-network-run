@@ -363,12 +363,15 @@ class NetworkStateDb:
                 _insert_acceptance_followup(conn, record, position, replace=True)
             _set_meta(conn, META_ACCEPTANCE_FOLLOWUPS_CANONICAL, "1")
 
-    def import_send_ledger_entries(self, entries: list[SendLedgerEntry]) -> None:
+    def import_send_ledger_entries(self, entries: list[SendLedgerEntry]) -> int:
         self.ensure_schema()
+        inserted = 0
         with self.connect() as conn, transaction(conn):
             for entry in entries:
-                _insert_send_ledger_entry(conn, entry, replace=False)
+                if _insert_send_ledger_entry(conn, entry, replace=False):
+                    inserted += 1
             _set_meta(conn, META_SEND_LEDGER_CANONICAL, "1")
+        return inserted
 
     def append_event(self, stream: str, kind: str, payload: object) -> None:
         self.ensure_schema()
@@ -377,117 +380,6 @@ class NetworkStateDb:
                 "INSERT INTO event_log(stream, kind, payload_json) VALUES (?, ?, ?)",
                 (stream, kind, _json_dumps(payload)),
             )
-
-
-def preview_json_migration(
-    *,
-    database_path: Path,
-    acceptance_ledger_path: Path,
-    acceptance_followup_ledger_path: Path,
-    send_ledger_path: Path,
-) -> NetworkStateMigrationSummary:
-    ledger, followups, send_entries, warnings = _load_json_sources(
-        acceptance_ledger_path=acceptance_ledger_path,
-        acceptance_followup_ledger_path=acceptance_followup_ledger_path,
-        send_ledger_path=send_ledger_path,
-    )
-    return NetworkStateMigrationSummary(
-        database_path=database_path,
-        dry_run=True,
-        acceptance_invitations=len(ledger.invitations) if ledger else 0,
-        acceptance_outcome_events=sum(len(item.history) for item in ledger.invitations)
-        if ledger
-        else 0,
-        acceptance_followups=len(followups.drafts) if followups else 0,
-        acceptance_followup_attempts=sum(len(item.attempts) for item in followups.drafts)
-        if followups
-        else 0,
-        send_ledger_entries=len(send_entries),
-        warnings=tuple(warnings),
-    )
-
-
-def migrate_json_ledgers(
-    state_db: NetworkStateDb,
-    *,
-    acceptance_ledger_path: Path,
-    acceptance_followup_ledger_path: Path,
-    send_ledger_path: Path,
-) -> NetworkStateMigrationSummary:
-    ledger, followups, send_entries, warnings = _load_json_sources(
-        acceptance_ledger_path=acceptance_ledger_path,
-        acceptance_followup_ledger_path=acceptance_followup_ledger_path,
-        send_ledger_path=send_ledger_path,
-    )
-    if ledger is not None:
-        state_db.import_acceptance_ledger(ledger)
-    if followups is not None:
-        state_db.import_acceptance_followup_ledger(followups)
-    if send_entries:
-        state_db.import_send_ledger_entries(send_entries)
-    return NetworkStateMigrationSummary(
-        database_path=state_db.path,
-        dry_run=False,
-        acceptance_invitations=len(ledger.invitations) if ledger else 0,
-        acceptance_outcome_events=sum(len(item.history) for item in ledger.invitations)
-        if ledger
-        else 0,
-        acceptance_followups=len(followups.drafts) if followups else 0,
-        acceptance_followup_attempts=sum(len(item.attempts) for item in followups.drafts)
-        if followups
-        else 0,
-        send_ledger_entries=len(send_entries),
-        warnings=tuple(warnings),
-    )
-
-
-def _load_json_sources(
-    *,
-    acceptance_ledger_path: Path,
-    acceptance_followup_ledger_path: Path,
-    send_ledger_path: Path,
-) -> tuple[
-    AcceptanceLedger | None,
-    AcceptanceFollowupLedger | None,
-    list[SendLedgerEntry],
-    list[str],
-]:
-    warnings: list[str] = []
-    ledger = None
-    if acceptance_ledger_path.exists():
-        ledger = AcceptanceLedger.model_validate_json(acceptance_ledger_path.read_text())
-    else:
-        warnings.append(f"missing acceptance ledger JSON: {acceptance_ledger_path}")
-
-    followups = None
-    if acceptance_followup_ledger_path.exists():
-        followups = AcceptanceFollowupLedger.model_validate_json(
-            acceptance_followup_ledger_path.read_text()
-        )
-    else:
-        warnings.append(
-            f"missing acceptance follow-up ledger JSON: {acceptance_followup_ledger_path}"
-        )
-
-    send_entries = _load_send_ledger_jsonl(send_ledger_path)
-    if not send_ledger_path.exists():
-        warnings.append(f"missing send ledger JSONL: {send_ledger_path}")
-    return ledger, followups, send_entries, warnings
-
-
-def _load_send_ledger_jsonl(path: Path) -> list[SendLedgerEntry]:
-    if not path.exists():
-        return []
-    entries: list[SendLedgerEntry] = []
-    for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(SendLedgerEntry.model_validate_json(line))
-        except ValueError as exc:
-            raise ValueError(f"parsing {path} line {line_number}: {exc}") from exc
-    return entries
 
 
 def _insert_acceptance_invitation(

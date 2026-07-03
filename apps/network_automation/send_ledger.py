@@ -51,11 +51,7 @@ def network_sends_summary(
     return SendLedgerSummary(
         date=summary_date,
         timezone=timezone_name,
-        ledger_path=(
-            str(store.database_path)
-            if store.state_db.has_send_ledger()
-            else str(store.send_ledger_path)
-        ),
+        ledger_path=str(store.send_ledger_storage_path()),
         durable_sent_count=len(durable_entries),
         by_source=dict(sorted(by_source.items())),
         by_status=dict(sorted(by_status.items())),
