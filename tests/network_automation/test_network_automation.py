@@ -40,6 +40,7 @@ from apps.network_automation.reports import render_report
 from apps.network_automation.service import (
     apply_lead_review_decisions,
     capture_saved_searches,
+    capture_source,
     confirm_provisional_send,
     finish_run,
     import_audit,
@@ -303,6 +304,220 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
     assert run.operator_plan().action == "capture-source"
 
 
+def test_fresh_saved_search_end_resumes_full_saved_search(
+    tmp_path: Path,
+) -> None:
+    source = "ASAP - Strategy Consultants Implementation Partners"
+    view_url = "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
+    fresh_url = (
+        "https://www.linkedin.com/sales/search/people?"
+        "lastViewedAt=1783083922996&savedSearchId=ghi"
+    )
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 4),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.sources[0].exhausted = True
+    store.save_run(run)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    saved_search_id="ghi",
+                    saved_search_url=view_url,
+                    end_of_results=True,
+                    last_note="end of results",
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "savedSearchId": "ghi",
+                        "name": source,
+                        "viewUrl": view_url,
+                        "freshUrl": fresh_url,
+                        "freshText": "15 new results since 7/3/2026",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed_run_source_progress(store, saved_searches)
+    browser = FreshSliceEndBrowserClient(out_dir=tmp_path)
+
+    output = capture_source(
+        store,
+        browser,
+        source=source,
+        url=None,
+        saved_searches=saved_searches,
+        pages=5,
+        limit=0,
+        stop_after_connectable=13,
+        only_connectable=True,
+        row_scroll_delay_ms=250,
+    )
+
+    run = store.load_run()
+    progress = store.load_source_progress().sources[source]
+    cursor = run.capture_cursors[source]
+    assert "captured 1 candidate observations" in output
+    assert browser.calls == [
+        f"capture:{source}:pages=5:limit=0:only=True:url={fresh_url}"
+    ]
+    assert cursor.end_of_results is False
+    assert cursor.resume_url == view_url
+    assert cursor.next_url == view_url
+    assert cursor.cursor_status == SourceCursorStatus.ADVANCED.value
+    assert cursor.cursor_reason == "fresh saved-search results exhausted; resume full saved search"
+    assert progress.end_of_results is False
+    assert progress.next_url == view_url
+    assert progress.last_started_url == fresh_url
+    assert (
+        progress.cursor_reason
+        == "fresh saved-search results exhausted; resume full saved search"
+    )
+
+
+def test_seed_source_progress_rechecks_previous_run_end_without_fresh_results(
+    tmp_path: Path,
+) -> None:
+    source = "ASAP - Strategy Consultants Implementation Partners"
+    view_url = "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 4),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.sources[0].exhausted = True
+    run.created_at = datetime(2026, 7, 4, 9, 0, tzinfo=UTC)
+    store.save_run(run)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    updated_at=datetime(2026, 7, 3, 13, 5, tzinfo=UTC),
+                    saved_search_id="ghi",
+                    saved_search_url=view_url,
+                    next_url="https://www.linkedin.com/sales/search/people?page=2&savedSearchId=ghi",
+                    last_scanned_url=(
+                        "https://www.linkedin.com/sales/search/people?page=2&"
+                        "savedSearchId=ghi"
+                    ),
+                    end_of_results=True,
+                    last_note="end of results",
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "savedSearchId": "ghi",
+                        "name": source,
+                        "viewUrl": view_url,
+                        "freshUrl": None,
+                        "freshText": None,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = seed_run_source_progress(store, saved_searches)
+
+    run = store.load_run()
+    progress = store.load_source_progress().sources[source]
+    cursor = run.capture_cursors[source]
+    assert output == "source progress seeded; resumed=1; ended=0"
+    assert run.sources[0].exhausted is False
+    assert progress.end_of_results is False
+    assert progress.next_url == view_url
+    assert progress.last_note == "previous-run end cursor recheck"
+    assert cursor.resume_url == view_url
+    assert cursor.cursor_reason == "previous-run end cursor recheck"
+    assert run.operator_plan().action == "capture-source"
+
+
+def test_seed_source_progress_keeps_current_run_end_closed_without_fresh_results(
+    tmp_path: Path,
+) -> None:
+    source = "ASAP - Strategy Consultants Implementation Partners"
+    view_url = "https://www.linkedin.com/sales/search/people?savedSearchId=ghi"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        run_date=date(2026, 7, 4),
+        force=True,
+        allow_fallback_sources=False,
+        source_names=[source],
+    )
+    run = store.load_run()
+    run.created_at = datetime(2026, 7, 4, 9, 0, tzinfo=UTC)
+    store.save_run(run)
+    store.save_source_progress(
+        SourceScanProgressLedger(
+            sources={
+                source: SourceScanProgress(
+                    source=source,
+                    updated_at=datetime(2026, 7, 4, 9, 5, tzinfo=UTC),
+                    saved_search_id="ghi",
+                    saved_search_url=view_url,
+                    end_of_results=True,
+                    last_note="end of results",
+                )
+            }
+        )
+    )
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text(
+        json.dumps(
+            {
+                "searches": [
+                    {
+                        "savedSearchId": "ghi",
+                        "name": source,
+                        "viewUrl": view_url,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = seed_run_source_progress(store, saved_searches)
+
+    run = store.load_run()
+    assert output == "source progress seeded; resumed=0; ended=1"
+    assert run.sources[0].exhausted is True
+    assert source not in run.capture_cursors
+    assert run.operator_plan().action == "blocked"
+
+
 def test_seed_source_progress_reopens_nonterminal_exhausted_source(
     tmp_path: Path,
 ) -> None:
@@ -432,6 +647,53 @@ class StalledCursorBrowserClient(FakeLiveBrowserClient):
             }
         )
         return artifact, str(self.out_dir / "stalled-capture.json")
+
+
+class FreshSliceEndBrowserClient(FakeLiveBrowserClient):
+    def capture_salesnav(
+        self,
+        *,
+        source: str,
+        url: str | None = None,
+        pages: int = 1,
+        limit: int = 25,
+        stop_after_connectable: int = 0,
+        only_connectable: bool = False,
+        row_scroll_delay_ms: int = 250,
+    ) -> tuple[SalesNavCapture, str]:
+        self.calls.append(
+            f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
+        )
+        _ = stop_after_connectable, row_scroll_delay_ms
+        artifact = SalesNavCapture.model_validate(
+            {
+                "capturedAt": "2026-07-04T09:18:55Z",
+                "source": source,
+                "startUrl": url,
+                "url": f"{url}&sessionId=test-session" if url else "",
+                "lastScannedUrl": f"{url}&sessionId=test-session" if url else "",
+                "nextUrl": None,
+                "resumeUrl": None,
+                "nextPageAvailable": False,
+                "endOfResults": True,
+                "cursorStatus": SourceCursorStatus.END_OF_RESULTS.value,
+                "cursorReason": "next button unavailable before requested page count",
+                "rawRowCount": 1,
+                "outputRowCount": 1,
+                "stateCounts": {"connectable": 1},
+                "rows": [
+                    {
+                        "index": 1,
+                        "name": "Strategy Lead",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/strategy,SEARCH,x",
+                        "publicProfileUrl": "https://www.linkedin.com/in/strategy-lead",
+                        "menuState": "connectable",
+                        "menuLabels": [{"text": "Connect"}],
+                    }
+                ],
+            }
+        )
+        return artifact, str(self.out_dir / "fresh-slice-end-capture.json")
 
 
 class WrongPageCaptureBrowserClient(FakeLiveBrowserClient):
@@ -1440,6 +1702,60 @@ def test_reconcile_audit_promotes_recent_name_false_negatives(tmp_path: Path) ->
     assert all(entry.status == CandidateStatus.PENDING for entry in entries)
 
 
+def test_reconcile_audit_closes_stale_unconfirmed_provisional_send(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 7, 4), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.candidates.extend(
+        [
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Confirmed Lead",
+                profile_url="https://www.linkedin.com/sales/lead/confirmed",
+                status=CandidateStatus.PENDING,
+                note="sent-page audit confirmed pending",
+            ),
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Stale Provisional Lead",
+                profile_url="https://www.linkedin.com/sales/lead/stale-provisional",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+                note="salesnav-send-one saw immediate Connect - Pending; durable check required",
+            ),
+        ]
+    )
+    store.save_run(run)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps({"peopleCount": 101, "recentNames": ["Confirmed Lead"]}),
+        encoding="utf-8",
+    )
+
+    output = reconcile_audit(
+        store,
+        FixtureBrowserClient(audit=audit_path),
+        attempts=1,
+        delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "closed 1 unconfirmed provisional send(s): Stale Provisional Lead" in output
+    assert run.verified_count() == 1
+    assert run.provisional_count() == 0
+    assert run.candidates[-1].status == CandidateStatus.FAILED
+    assert "sent-page audit did not confirm pending" in (run.candidates[-1].note or "")
+    entries = store.load_send_ledger_entries()
+    assert len(entries) == 1
+    assert entries[0].name == "Stale Provisional Lead"
+    assert entries[0].status == CandidateStatus.FAILED
+    assert entries[0].durable is False
+    lead_records = list(store.load_lead_ledger().leads.values())
+    assert lead_records[0].status == LeadStatus.BLOCKED
+
+
 def test_reconcile_audit_recovers_approved_observation_without_send_event(
     tmp_path: Path,
 ) -> None:
@@ -1677,7 +1993,7 @@ def test_playwriter_pending_capture_and_withdraw_use_scripts(
                 },
             )
 
-    client._run_script = fake_run_script  # type: ignore[method-assign]
+    client._run_script = fake_run_script  # type: ignore[method-assign, assignment]
 
     capture, capture_path = client.capture_pending_invitations(
         load_more=3,

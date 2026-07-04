@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .browser import BrowserClient
 from .models import (
@@ -291,6 +291,30 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
             seeded.append(source.name)
             continue
         if existing.end_of_results:
+            if existing.updated_at < run.created_at:
+                source.exhausted = False
+                progress.sources[source.name] = SourceScanProgress(
+                    source=source.name,
+                    saved_search_id=row.saved_search_id,
+                    saved_search_url=row.view_url,
+                    next_url=row.view_url,
+                    end_of_results=False,
+                    cursor_status=SourceCursorStatus.ADVANCED.value,
+                    deferred_for_run=False,
+                    last_note="previous-run end cursor recheck",
+                )
+                run.capture_cursors[source.name] = SourceCaptureCursor(
+                    source=source.name,
+                    saved_search_id=row.saved_search_id,
+                    saved_search_url=row.view_url,
+                    resume_url=row.view_url,
+                    next_url=row.view_url,
+                    end_of_results=False,
+                    cursor_status=SourceCursorStatus.ADVANCED.value,
+                    cursor_reason="previous-run end cursor recheck",
+                )
+                seeded.append(source.name)
+                continue
             source.exhausted = True
             ended.append(source.name)
             continue
@@ -394,14 +418,22 @@ def update_source_progress_after_capture(
     zero_streak = existing.zero_usable_capture_streak if existing else 0
     zero_streak = 0 if imported > 0 else zero_streak + 1
     last_scanned_url = capture.last_scanned_url or capture.url or capture.resume_url
+    fresh_slice_fallback_url = _fresh_slice_fallback_url(capture, row)
     next_url = (
         capture.next_url if capture.next_url and capture.next_url != last_scanned_url else None
     )
     cursor_status = capture.cursor_status
+    cursor_reason = capture.cursor_reason
+    end_of_results = capture.end_of_results
+    if capture.end_of_results and fresh_slice_fallback_url:
+        next_url = fresh_slice_fallback_url
+        cursor_status = SourceCursorStatus.ADVANCED.value
+        cursor_reason = "fresh saved-search results exhausted; resume full saved search"
+        end_of_results = False
     if cursor_status == SourceCursorStatus.ADVANCED.value and next_url is None:
         cursor_status = SourceCursorStatus.STALLED_NAVIGATION.value
     if cursor_status is None:
-        if capture.end_of_results:
+        if end_of_results:
             cursor_status = SourceCursorStatus.END_OF_RESULTS.value
         elif next_url:
             cursor_status = SourceCursorStatus.ADVANCED.value
@@ -418,9 +450,9 @@ def update_source_progress_after_capture(
         next_url=next_url,
         last_scanned_url=last_scanned_url,
         last_started_url=capture.start_url,
-        end_of_results=capture.end_of_results,
+        end_of_results=end_of_results,
         cursor_status=cursor_status,
-        cursor_reason=capture.cursor_reason,
+        cursor_reason=cursor_reason,
         deferred_for_run=False,
         zero_usable_capture_streak=zero_streak,
         last_raw_row_count=capture.raw_row_count or 0,
@@ -430,15 +462,50 @@ def update_source_progress_after_capture(
         last_state_counts=capture.state_counts,
         last_note=(
             "end of results"
-            if capture.end_of_results
-            else capture.cursor_reason
-            if capture.cursor_reason
+            if end_of_results
+            else cursor_reason
+            if cursor_reason
             else "advanced to next_url"
             if next_url
             else "no next_url recorded"
         ),
     )
     store.save_source_progress(progress)
+
+
+def _fresh_slice_fallback_url(capture: SalesNavCapture, row: SavedSearchRow | None) -> str | None:
+    if row is None or not row.view_url:
+        return None
+    start_url = capture.start_url or capture.url or ""
+    if not start_url:
+        return None
+    parsed = urlparse(start_url)
+    query = parse_qs(parsed.query)
+    if "lastViewedAt" not in query:
+        return None
+    saved_search_ids = query.get("savedSearchId", [])
+    if row.saved_search_id and saved_search_ids and row.saved_search_id not in saved_search_ids:
+        return None
+    return row.view_url
+
+
+def _resume_saved_search_after_fresh_slice(
+    run: Run, source: str, capture: SalesNavCapture, row: SavedSearchRow | None
+) -> None:
+    fallback_url = _fresh_slice_fallback_url(capture, row)
+    if not fallback_url or not capture.end_of_results:
+        return
+    cursor = run.capture_cursors.get(source)
+    if cursor is None:
+        return
+    cursor.saved_search_id = row.saved_search_id if row else cursor.saved_search_id
+    cursor.saved_search_url = fallback_url
+    cursor.resume_url = fallback_url
+    cursor.next_url = fallback_url
+    cursor.end_of_results = False
+    cursor.next_page_available = None
+    cursor.cursor_status = SourceCursorStatus.ADVANCED.value
+    cursor.cursor_reason = "fresh saved-search results exhausted; resume full saved search"
 
 
 def sync_lead_ledger_from_observations(
@@ -1319,16 +1386,18 @@ def reconcile_audit(
 ) -> str:
     attempts = max(1, attempts)
     latest_delta: int | None = None
+    latest_path: Path | None = None
     messages: list[str] = []
     for attempt in range(1, attempts + 1):
         audit, path = browser.audit_sent_invitations(load_more=0)
+        latest_path = Path(path)
         run = store.load_run()
         apply_audit(run, audit.people_count, f"reconcile audit attempt {attempt}/{attempts}")
         promoted = _confirm_audited_recent_sends(
             store,
             run,
             audit.recent_names,
-            audit_path=Path(path),
+            audit_path=latest_path,
             confirmation=f"reconcile audit attempt {attempt}/{attempts} recent_names match",
         )
         latest_delta = run.audited_delta()
@@ -1359,6 +1428,18 @@ def reconcile_audit(
             break
         if attempt < attempts and delay_ms > 0:
             time.sleep(delay_ms / 1000)
+    if latest_path is not None:
+        closed = _close_unconfirmed_provisional_sends(
+            store,
+            store.load_run(),
+            audit_path=latest_path,
+            confirmation=f"sent-page audit did not confirm pending after {attempts} attempt(s)",
+        )
+        if closed:
+            messages.append(
+                "closed "
+                f"{len(closed)} unconfirmed provisional send(s): {', '.join(closed)}"
+            )
     if finish:
         messages.append(finish_run(store))
     return "\n".join(messages + [render_report(store.load_run())])
@@ -1462,6 +1543,51 @@ def _candidate_can_be_audit_confirmed(candidate: CandidateEvent) -> bool:
     }:
         return True
     return candidate.status == CandidateStatus.FAILED and candidate_counts_as_real_send(candidate)
+
+
+def _close_unconfirmed_provisional_sends(
+    store: Store,
+    run: Run,
+    *,
+    audit_path: Path,
+    confirmation: str,
+) -> list[str]:
+    delta = run.audited_delta()
+    if delta is None or delta > run.verified_count():
+        return []
+    stale = [
+        candidate
+        for candidate in run.candidates
+        if candidate.status == CandidateStatus.PENDING_PROVISIONAL
+    ]
+    if not stale:
+        return []
+    committer = SendAttemptCommitter(store)
+    closed: list[str] = []
+    for candidate in stale:
+        previous_status = candidate.status.value
+        candidate.status = CandidateStatus.FAILED
+        candidate.note = "; ".join(
+            part
+            for part in (
+                candidate.note,
+                "sent-page audit did not confirm pending",
+                f"previous_status={previous_status}",
+                f"audit={audit_path}",
+            )
+            if part
+        )
+        closed.append(candidate.name)
+        run.state = (
+            RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
+        )
+        committer.commit_audit_confirmation_result(
+            run,
+            candidate,
+            audit_path=audit_path,
+            confirmation=confirmation,
+        )
+    return closed
 
 
 def record_candidate(
@@ -2094,6 +2220,10 @@ def capture_source(
     )
     run = store.load_run()
     imported = import_capture(run, capture, only_connectable)
+    saved_search_row = (
+        saved_search_row_for_source(saved_searches, capture_source_name) if saved_searches else None
+    )
+    _resume_saved_search_after_fresh_slice(run, capture_source_name, capture, saved_search_row)
     ledger, synced = sync_lead_ledger_from_run(store, run)
     suppressed = skip_outreach_suppressed_observations(run)
     for event in suppressed:
