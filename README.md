@@ -77,7 +77,7 @@ uv run linkedin-tools network --state-dir "$state_root/network-automation" saved
 uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance check --session auto
 uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance draft-followups --session auto
 uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup audit --session auto
-uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto
+uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto --load-more 40
 ```
 
 Browser-backed network commands use Playwriter only. To reuse a specific
@@ -150,8 +150,21 @@ uv run linkedin-tools network \
 
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  pending-cleanup run-session --session auto --withdraw-limit 1 --allow-withdraw
+  pending-cleanup run-session --session auto --capture-load-more 40 --withdraw-limit 1 --allow-withdraw
 ```
+
+The normal `pending-cleanup run-session` path audits, captures with deep
+scrolling, then withdraws from the already-loaded bottom rows. This avoids
+reopening the sent page and trying to find one stale candidate from the top of
+LinkedIn's virtualized invitation list. Use `withdraw-next` only for focused
+one-person debugging.
+
+If final finish count does not match the verified withdrawals, `run-session`
+runs one read-only post-check capture. When that post-check finds no stale
+invitations left, the command exits successfully with `Finished with count
+warning`; the controller state stays out of `Done` until the count warning is
+reviewed. If stale invitations still remain, the command stops with that
+blocker.
 
 ## Recruiter, Agency, And Advisor Outreach
 

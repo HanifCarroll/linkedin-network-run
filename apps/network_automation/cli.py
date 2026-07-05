@@ -381,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
     pending_session = pending_sub.add_parser("run-session")
     pending_session.add_argument("--session", default="auto")
     pending_session.add_argument("--audit-load-more", type=int, default=0)
-    pending_session.add_argument("--capture-load-more", type=int, default=10)
+    pending_session.add_argument("--capture-load-more", type=int, default=40)
     pending_session.add_argument("--threshold-days", type=int, default=0)
     pending_session.add_argument("--threshold-weeks", type=int, default=2)
     pending_session.add_argument("--threshold-months", type=int, default=0)

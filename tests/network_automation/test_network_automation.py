@@ -20,6 +20,8 @@ from apps.network_automation.models import (
     CandidateStatus,
     LeadStatus,
     PendingCandidateObservation,
+    PendingCapture,
+    PendingCleanupState,
     RunState,
     SalesNavCapture,
     SalesNavSendResult,
@@ -30,6 +32,8 @@ from apps.network_automation.models import (
     SourceScanProgressLedger,
     default_sources,
     lead_key_for_observation,
+    parse_sent_age_days,
+    parse_sent_age_months,
     record_send_result,
     source_yield_report,
     sources_for_per_source_target,
@@ -1917,7 +1921,7 @@ def test_pending_cleanup_honors_threshold_and_audit_backed_finish(tmp_path: Path
 
     pending_cleanup_record_withdraw_result(store, FIXTURES / "withdraw_result.json")
     pending_cleanup_import_audit(store, FIXTURES / "audit_200.json")
-    with pytest.raises(RuntimeError, match="final audit delta"):
+    with pytest.raises(RuntimeError, match="final pending count did not match withdrawals"):
         pending_cleanup_finish(store)
     pending_cleanup_import_audit(store, FIXTURES / "audit_199.json")
     report = pending_cleanup_finish(store)
@@ -1945,6 +1949,16 @@ def test_pending_cleanup_loads_legacy_month_threshold(tmp_path: Path) -> None:
 
     assert run.threshold_days == 60
     assert run.threshold_months == 2
+
+
+def test_pending_cleanup_parses_sub_day_ages_as_fresh() -> None:
+    assert parse_sent_age_days("Sent 6 hours ago") == 0
+    assert parse_sent_age_days("Sent 23 minutes ago") == 0
+    assert parse_sent_age_days("Sent today") == 0
+    assert parse_sent_age_days("Sent yesterday") == 1
+    assert parse_sent_age_days("Sent 1 week ago") == 7
+    assert parse_sent_age_days("Sent 2 weeks ago") == 14
+    assert parse_sent_age_months("Sent 6 hours ago") == 0
 
 
 def test_playwriter_pending_capture_and_withdraw_use_scripts(
@@ -1979,6 +1993,24 @@ def test_playwriter_pending_capture_and_withdraw_use_scripts(
                     ],
                 },
             )
+        elif script.name == "pending_withdraw_loaded.js":
+            _write_fake_artifact(
+                Path(config["out"]),
+                {
+                    "status": "dry-run-withdrawable",
+                    "results": [
+                        {
+                            "candidate": {
+                                "name": candidate.name,
+                                "profileUrl": candidate.profile_url,
+                                "ageText": candidate.age_text,
+                            },
+                            "status": "dry-run-withdrawable",
+                            "detail": {"source": "loaded-page-bottom"},
+                        }
+                    ],
+                },
+            )
         else:
             _write_fake_artifact(
                 Path(config["out"]),
@@ -2007,15 +2039,35 @@ def test_playwriter_pending_capture_and_withdraw_use_scripts(
         dry_run=True,
         allow_withdraw=False,
     )
+    with pytest.raises(RuntimeError, match="real withdrawal requires allow_withdraw"):
+        client.withdraw_loaded_pending(
+            limit=1,
+            threshold_days=14,
+            dry_run=False,
+            allow_withdraw=False,
+        )
+    batch, batch_path = client.withdraw_loaded_pending(
+        limit=1,
+        threshold_days=14,
+        dry_run=True,
+        allow_withdraw=False,
+    )
 
     assert capture.rows[0].name == "Stale Invite"
     assert Path(capture_path).exists()
     assert withdraw.status == "dry-run-withdrawable"
     assert Path(withdraw_path).exists()
-    assert [call[0].name for call in calls] == ["pending_capture.js", "pending_withdraw.js"]
+    assert batch.results[0].status == "dry-run-withdrawable"
+    assert Path(batch_path).exists()
+    assert [call[0].name for call in calls] == [
+        "pending_capture.js",
+        "pending_withdraw.js",
+        "pending_withdraw_loaded.js",
+    ]
     assert calls[0][1]["loadMore"] == 3
     assert calls[1][1]["candidate"]["name"] == "Stale Invite"
     assert calls[1][1]["allowWithdraw"] is False
+    assert calls[2][1]["thresholdDays"] == 14
 
 
 def test_playwriter_send_connection_requires_allow_send(tmp_path: Path) -> None:
@@ -2339,14 +2391,227 @@ def test_cli_pending_run_session_reuses_one_live_browser(
     assert FakeLiveBrowserClient.instances[0].calls == [
         "audit:load_more=0",
         "pending-capture:load_more=3:threshold=14",
-        "withdraw:Stale Invite:dry=True:allow=False",
-        "withdraw:Stale Invite:dry=False:allow=True",
+        "withdraw-loaded:limit=1:threshold=14:dry=True:allow=False",
+        "withdraw-loaded:limit=1:threshold=14:dry=False:allow=True",
         "audit:load_more=0",
     ]
     run = store.load_pending()
     assert run.start_audit == 101
     assert run.latest_audit == 101
     assert run.withdrawn_count() == 1
+
+
+def test_cli_pending_run_session_explains_finish_mismatch_after_clear_post_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    capture_calls = 0
+
+    def fake_capture(
+        self: FakeLiveBrowserClient, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        nonlocal capture_calls
+        capture_calls += 1
+        self.calls.append(f"pending-capture:load_more={load_more}:threshold={threshold_days}")
+        row = (
+            {
+                "index": 0,
+                "name": "Stale Invite",
+                "profileUrl": "https://www.linkedin.com/in/stale",
+                "ageText": "Sent 3 weeks ago",
+                "ageDays": 21,
+                "eligible": True,
+                "rowText": "Stale Invite Sent 3 weeks ago Withdraw",
+            }
+            if capture_calls == 1
+            else {
+                "index": 0,
+                "name": "Fresh Invite",
+                "profileUrl": "https://www.linkedin.com/in/fresh",
+                "ageText": "Sent 1 week ago",
+                "ageDays": 7,
+                "eligible": False,
+                "rowText": "Fresh Invite Sent 1 week ago Withdraw",
+            }
+        )
+        artifact = PendingCapture.model_validate(
+            {
+                "capturedAt": "2026-07-05T15:30:00Z",
+                "visibleWithdrawCount": 1,
+                "rows": [row],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    monkeypatch.setattr(FakeLiveBrowserClient, "capture_pending_invitations", fake_capture)
+    store = Store(tmp_path)
+    pending_cleanup_start(store, max_withdrawals=2, threshold_days=14, force=True)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "run-session",
+            "--capture-load-more",
+            "3",
+            "--threshold-weeks",
+            "2",
+            "--out",
+            str(tmp_path / "pending-capture.json"),
+            "--withdraw-limit",
+            "1",
+            "--allow-withdraw",
+            "--finish",
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Finished with count warning" in captured.out
+    assert "stale invitations were cleared" in captured.out
+    assert "verified 1 withdrawn; expected People (100)" in captured.out
+    assert "with 0 stale invitations left" in captured.out
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        "pending-capture:load_more=3:threshold=14",
+        "withdraw-loaded:limit=1:threshold=14:dry=True:allow=False",
+        "withdraw-loaded:limit=1:threshold=14:dry=False:allow=True",
+        "audit:load_more=0",
+        "pending-capture:load_more=3:threshold=14",
+    ]
+    run = store.load_pending()
+    assert run.state == PendingCleanupState.FINAL_RECONCILE
+    assert run.withdrawn_count() == 1
+    assert any("Finished with count warning" in note for note in run.notes)
+
+
+def test_cli_pending_run_session_explains_missing_visible_ages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+
+    def fake_capture(
+        self: FakeLiveBrowserClient, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        self.calls.append(f"pending-capture:load_more={load_more}:threshold={threshold_days}")
+        artifact = PendingCapture.model_validate(
+            {
+                "capturedAt": "2026-07-05T07:02:36Z",
+                "visibleWithdrawCount": 1,
+                "warnings": [
+                    "visible withdraw links were found, but no invitation age text was readable"
+                ],
+                "rows": [
+                    {
+                        "index": 0,
+                        "name": "Unreadable Age",
+                        "profileUrl": "https://www.linkedin.com/in/unreadable",
+                        "ageText": None,
+                        "eligible": False,
+                        "rowText": "Unreadable Age Withdraw",
+                    }
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    monkeypatch.setattr(FakeLiveBrowserClient, "capture_pending_invitations", fake_capture)
+    store = Store(tmp_path)
+    pending_cleanup_start(store, max_withdrawals=2, threshold_days=14, force=True)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "run-session",
+            "--out",
+            str(tmp_path / "pending-capture.json"),
+            "--allow-withdraw",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "visible withdraw links 1" in out
+    assert "sent ages could not be read safely" in out
+    assert FakeLiveBrowserClient.instances[0].calls == [
+        "audit:load_more=0",
+        "pending-capture:load_more=40:threshold=14",
+    ]
+    assert store.load_pending().withdrawn_count() == 0
+
+
+def test_cli_pending_run_session_ignores_old_missing_ages_after_clean_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+
+    def fake_capture(
+        self: FakeLiveBrowserClient, *, load_more: int = 0, threshold_days: int = 14, out: Path
+    ) -> tuple[PendingCapture, str]:
+        self.calls.append(f"pending-capture:load_more={load_more}:threshold={threshold_days}")
+        artifact = PendingCapture.model_validate(
+            {
+                "capturedAt": "2026-07-05T07:30:00Z",
+                "visibleWithdrawCount": 1,
+                "rows": [
+                    {
+                        "index": 0,
+                        "name": "Fresh Invite",
+                        "ageText": "Sent 6 hours ago",
+                        "ageDays": 0,
+                        "eligible": False,
+                        "rowText": "Fresh Invite Sent 6 hours ago Withdraw",
+                    }
+                ],
+            }
+        )
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
+
+    monkeypatch.setattr(FakeLiveBrowserClient, "capture_pending_invitations", fake_capture)
+    store = Store(tmp_path)
+    pending_cleanup_start(store, max_withdrawals=2, threshold_days=14, force=True)
+    old_missing_age = tmp_path / "old-missing-age.json"
+    _write_fake_artifact(
+        old_missing_age,
+        {
+            "capturedAt": "2026-07-05T07:00:00Z",
+            "rows": [
+                {
+                    "index": 0,
+                    "name": "Old Missing",
+                    "ageText": None,
+                    "eligible": False,
+                    "rowText": "Old Missing Withdraw",
+                }
+            ],
+        },
+    )
+    pending_cleanup_import_capture(store, old_missing_age)
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "pending-cleanup",
+            "run-session",
+            "--out",
+            str(tmp_path / "pending-capture.json"),
+            "--allow-withdraw",
+        ]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "sent ages could not be read safely" not in out
+    assert "stopped: capture imported no eligible stale invitation" in out
+    assert store.load_pending().withdrawn_count() == 0
 
 
 def test_cli_network_run_session_reuses_one_live_browser(

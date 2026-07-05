@@ -25,7 +25,9 @@ from .models import (
     LeadReviewPacket,
     LeadStatus,
     PendingCapture,
+    PendingCleanupRun,
     PendingCleanupState,
+    PendingWithdrawBatchResult,
     PendingWithdrawResult,
     Run,
     RunState,
@@ -81,6 +83,10 @@ __all__ = [
 ]
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
+
+
+class PendingCleanupFinishMismatch(RuntimeError):
+    """Raised when pending cleanup cannot prove the final pending count."""
 
 
 def start_run(
@@ -2639,6 +2645,26 @@ def pending_cleanup_capture(
     threshold_days: int,
     out: Path,
 ) -> str:
+    artifact, path, imported = _pending_cleanup_capture_artifact(
+        store,
+        browser,
+        load_more=load_more,
+        threshold_days=threshold_days,
+        out=out,
+        event_name="capture",
+    )
+    return _format_pending_capture_result(artifact, path, imported)
+
+
+def _pending_cleanup_capture_artifact(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    load_more: int,
+    threshold_days: int,
+    out: Path,
+    event_name: str,
+) -> tuple[PendingCapture, str, int]:
     artifact, path = browser.capture_pending_invitations(
         load_more=load_more,
         threshold_days=threshold_days,
@@ -2649,10 +2675,19 @@ def pending_cleanup_capture(
     run.state = PendingCleanupState.WITHDRAWING
     run.mark_updated()
     store.save_pending(run)
-    store.append_pending_event(run, "capture", {"path": path, "imported": imported})
+    store.append_pending_event(run, event_name, {"path": path, "imported": imported})
+    return artifact, path, imported
+
+
+def _format_pending_capture_result(artifact: PendingCapture, path: str, imported: int) -> str:
+    detail = ""
+    if artifact.visible_withdraw_count is not None:
+        detail = f"; visible withdraw links {artifact.visible_withdraw_count}"
+    if artifact.warnings:
+        detail = f"{detail}; warning: {'; '.join(artifact.warnings)}"
     return (
         f"pending capture: {len(artifact.rows)} rows written to {path}; "
-        f"imported {imported} observations"
+        f"imported {imported} observations{detail}"
     )
 
 
@@ -2696,6 +2731,58 @@ def pending_cleanup_withdraw_next(
     return f"withdraw result: {path}; dry_run={dry_run or not allow_withdraw}"
 
 
+def _pending_withdraw_batch_counts(batch: PendingWithdrawBatchResult) -> Counter[str]:
+    return Counter(result.status for result in batch.results)
+
+
+def pending_cleanup_withdraw_loaded(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    limit: int,
+    dry_run: bool,
+    allow_withdraw: bool,
+) -> str:
+    run = store.load_pending()
+    if allow_withdraw and run.withdraw_capacity_remaining() == 0:
+        raise RuntimeError(
+            f"withdrawal cap reached: {run.withdrawn_count()}/{run.max_withdrawals} withdrawals"
+        )
+    effective_limit = max(0, min(limit, run.withdraw_capacity_remaining()))
+    batch, path = browser.withdraw_loaded_pending(
+        limit=effective_limit,
+        threshold_days=run.threshold_days,
+        dry_run=dry_run or not allow_withdraw,
+        allow_withdraw=allow_withdraw,
+    )
+    counts = _pending_withdraw_batch_counts(batch)
+    if allow_withdraw and not dry_run:
+        run = store.load_pending()
+        events = []
+        for result in batch.results:
+            event = record_pending_withdraw_result(run, result, path)
+            events.append(event)
+        store.save_pending(run)
+        store.append_pending_event(
+            run,
+            "record-withdraw-loaded-result",
+            {
+                "path": path,
+                "status": batch.status,
+                "recorded": len(events),
+                "counts": dict(counts),
+            },
+        )
+        return (
+            f"loaded-page withdraw result: {path}; "
+            f"recorded {counts.get('withdrawn-verified', 0)} withdrawn"
+        )
+    return (
+        f"loaded-page withdraw result: {path}; dry_run={dry_run or not allow_withdraw}; "
+        f"loaded eligible {len(batch.results)}"
+    )
+
+
 def pending_cleanup_run_session(
     store: Store,
     browser: BrowserClient,
@@ -2726,8 +2813,37 @@ def pending_cleanup_run_session(
                         pending_cleanup_audit(store, browser, load_more=audit_load_more)
                     )
                     if finish:
-                        messages.append(pending_cleanup_finish(store))
-                messages.append("stopped: capture imported no eligible stale invitation")
+                        messages.append(
+                            _pending_cleanup_finish_with_clearance_check(
+                                store,
+                                browser,
+                                capture_load_more=capture_load_more,
+                                threshold_days=threshold_days,
+                                capture_out=capture_out,
+                            )
+                        )
+                latest_capture = store.load_pending()
+                latest_captured_at = max(
+                    (
+                        observation.captured_at
+                        for observation in latest_capture.observations
+                        if observation.captured_at
+                    ),
+                    default=None,
+                )
+                age_missing = any(
+                    observation.captured_at == latest_captured_at
+                    and observation.name
+                    and not observation.age_text
+                    for observation in latest_capture.observations
+                )
+                if age_missing:
+                    messages.append(
+                        "stopped: visible pending invitations were found, but their sent ages "
+                        "could not be read safely"
+                    )
+                else:
+                    messages.append("stopped: capture imported no eligible stale invitation")
                 break
             messages.append(
                 pending_cleanup_capture(
@@ -2747,14 +2863,24 @@ def pending_cleanup_run_session(
                         pending_cleanup_audit(store, browser, load_more=audit_load_more)
                     )
                     if finish:
-                        messages.append(pending_cleanup_finish(store))
+                        messages.append(
+                            _pending_cleanup_finish_with_clearance_check(
+                                store,
+                                browser,
+                                capture_load_more=capture_load_more,
+                                threshold_days=threshold_days,
+                                capture_out=capture_out,
+                            )
+                        )
                 messages.append(f"stopped: withdraw limit {withdraw_limit} reached")
                 break
+            remaining_withdraw_limit = withdraw_limit - real_withdraw_attempts
             if dry_run_first:
                 messages.append(
-                    pending_cleanup_withdraw_next(
+                    pending_cleanup_withdraw_loaded(
                         store,
                         browser,
+                        limit=remaining_withdraw_limit,
                         dry_run=True,
                         allow_withdraw=False,
                     )
@@ -2764,29 +2890,153 @@ def pending_cleanup_run_session(
                 break
             before_count = store.load_pending().withdrawn_count()
             messages.append(
-                pending_cleanup_withdraw_next(
+                pending_cleanup_withdraw_loaded(
                     store,
                     browser,
+                    limit=remaining_withdraw_limit,
                     dry_run=False,
                     allow_withdraw=True,
                 )
             )
-            real_withdraw_attempts += 1
             after_run = store.load_pending()
+            real_withdraw_attempts += max(0, after_run.withdrawn_count() - before_count)
             latest = after_run.withdrawals[-1] if after_run.withdrawals else None
             if after_run.withdrawn_count() == before_count:
                 status = latest.status.value if latest is not None else "missing-result"
                 messages.append(f"stopped: withdrawal did not verify as withdrawn ({status})")
                 break
-            continue
+            messages.append(pending_cleanup_audit(store, browser, load_more=audit_load_more))
+            if latest is not None and latest.status.value != "Withdrawn":
+                messages.append(
+                    f"stopped: loaded-page withdrawal stopped at {latest.status.value}"
+                )
+                break
+            if finish:
+                messages.append(
+                    _pending_cleanup_finish_with_clearance_check(
+                        store,
+                        browser,
+                        capture_load_more=capture_load_more,
+                        threshold_days=threshold_days,
+                        capture_out=capture_out,
+                    )
+                )
+            break
         if plan.action in {"final-audit", "reaudit"}:
             messages.append(pending_cleanup_audit(store, browser, load_more=audit_load_more))
             if finish:
-                messages.append(pending_cleanup_finish(store))
+                messages.append(
+                    _pending_cleanup_finish_with_clearance_check(
+                        store,
+                        browser,
+                        capture_load_more=capture_load_more,
+                        threshold_days=threshold_days,
+                        capture_out=capture_out,
+                    )
+                )
             break
         messages.append(f"stopped: unhandled plan action {plan.action}")
         break
     return "\n".join(messages)
+
+
+def _pending_finish_mismatch_message(run: PendingCleanupRun) -> str:
+    withdrawn = run.withdrawn_count()
+    if run.start_audit is not None and run.latest_audit is not None:
+        expected_final = run.start_audit - withdrawn
+        return (
+            "final pending count did not match withdrawals: "
+            f"started with People ({run.start_audit}), "
+            f"finished with People ({run.latest_audit}), "
+            f"recorded {withdrawn} withdrawn; expected People ({expected_final}). "
+            "Import a fresh audit or use --force after manual verification."
+        )
+    return (
+        "final pending count could not be checked because the start or final audit is missing; "
+        "import a fresh audit before finishing"
+    )
+
+
+def _pending_cleanup_finish_with_clearance_check(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    capture_load_more: int,
+    threshold_days: int,
+    capture_out: Path,
+) -> str:
+    try:
+        return pending_cleanup_finish(store)
+    except PendingCleanupFinishMismatch as error:
+        artifact, path, imported = _pending_cleanup_capture_artifact(
+            store,
+            browser,
+            load_more=capture_load_more,
+            threshold_days=threshold_days,
+            out=capture_out,
+            event_name="post-finish-mismatch-capture",
+        )
+        eligible_remaining = sum(1 for row in artifact.rows if row.eligible is True)
+        if eligible_remaining == 0:
+            run = store.load_pending()
+            warning = _pending_cleanup_finish_warning(
+                run,
+                captured_rows=len(artifact.rows),
+                capture_path=path,
+                imported=imported,
+            )
+            run.state = PendingCleanupState.FINAL_RECONCILE
+            run.notes.append(warning)
+            run.mark_updated()
+            store.save_pending(run)
+            store.append_pending_event(
+                run,
+                "finish-count-warning",
+                {
+                    "capture_path": path,
+                    "captured_rows": len(artifact.rows),
+                    "imported": imported,
+                    "eligible_remaining": eligible_remaining,
+                    "audited_delta": run.audited_delta(),
+                    "withdrawn": run.withdrawn_count(),
+                },
+            )
+            return warning
+        else:
+            stale_summary = (
+                f"post-check found {eligible_remaining} invitation(s) still at or above "
+                "the age rule"
+            )
+        raise PendingCleanupFinishMismatch(
+            f"{error} {stale_summary}; captured {len(artifact.rows)} row(s) "
+            f"from {path}; imported {imported}. The run was not marked Done."
+        ) from error
+
+
+def _pending_cleanup_finish_warning(
+    run: PendingCleanupRun,
+    *,
+    captured_rows: int,
+    capture_path: str,
+    imported: int,
+) -> str:
+    withdrawn = run.withdrawn_count()
+    if run.start_audit is not None and run.latest_audit is not None:
+        expected_final = run.start_audit - withdrawn
+        mismatch = (
+            f"started with People ({run.start_audit}), "
+            f"finished with People ({run.latest_audit}), "
+            f"verified {withdrawn} withdrawn; expected People ({expected_final})"
+        )
+    else:
+        mismatch = "start or final pending count was missing"
+    return (
+        "Finished with count warning: stale invitations were cleared, but LinkedIn's "
+        f"final pending count did not match the verified withdrawals ({mismatch}). "
+        f"Post-check captured {captured_rows} remaining row(s) from {capture_path} "
+        f"with 0 stale invitations left; imported {imported}. "
+        "The controller state was kept out of Done until the count warning is reviewed."
+    )
 
 
 def pending_cleanup_finish(store: Store, *, force: bool = False) -> str:
@@ -2794,10 +3044,7 @@ def pending_cleanup_finish(store: Store, *, force: bool = False) -> str:
     expected_delta = -run.withdrawn_count()
     delta = run.audited_delta()
     if not force and delta != expected_delta:
-        raise RuntimeError(
-            f"final audit delta is {format_delta(delta)}, expected {expected_delta}; "
-            "import a fresh audit or use --force"
-        )
+        raise PendingCleanupFinishMismatch(_pending_finish_mismatch_message(run))
     run.state = PendingCleanupState.DONE
     run.mark_updated()
     store.save_pending(run)

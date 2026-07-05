@@ -20,6 +20,7 @@ from .models import (
     CandidateObservation,
     PendingCandidateObservation,
     PendingCapture,
+    PendingWithdrawBatchResult,
     PendingWithdrawResult,
     SalesNavAudit,
     SalesNavCapture,
@@ -118,6 +119,15 @@ class PendingWithdrawBrowser(Protocol):
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawResult, str]: ...
 
+    def withdraw_loaded_pending(
+        self,
+        *,
+        limit: int,
+        threshold_days: int,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawBatchResult, str]: ...
+
 
 class BrowserClient(
     ConnectionSendBrowser,
@@ -149,6 +159,7 @@ class FixtureBrowserClient:
         pending_capture: Path | None = None,
         followup_result: Path | None = None,
         withdraw_result: Path | None = None,
+        withdraw_batch_result: Path | None = None,
     ) -> None:
         self.send_result = send_result
         self.capture = capture
@@ -159,6 +170,7 @@ class FixtureBrowserClient:
         self.pending_capture = pending_capture
         self.followup_result = followup_result
         self.withdraw_result = withdraw_result
+        self.withdraw_batch_result = withdraw_batch_result
 
     def send_connection(
         self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
@@ -288,6 +300,21 @@ class FixtureBrowserClient:
         if self.withdraw_result is None:
             raise RuntimeError("withdraw fixture was not provided")
         return read_model(self.withdraw_result, PendingWithdrawResult), str(self.withdraw_result)
+
+    def withdraw_loaded_pending(
+        self,
+        *,
+        limit: int,
+        threshold_days: int,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawBatchResult, str]:
+        _ = limit, threshold_days, dry_run, allow_withdraw
+        if self.withdraw_batch_result is None:
+            raise RuntimeError("withdraw batch fixture was not provided")
+        return read_model(self.withdraw_batch_result, PendingWithdrawBatchResult), str(
+            self.withdraw_batch_result
+        )
 
 
 class PlaywriterBrowserClient:
@@ -466,6 +493,27 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_pending_withdraw_script(), config)
         return read_model(out, PendingWithdrawResult), str(out)
 
+    def withdraw_loaded_pending(
+        self,
+        *,
+        limit: int,
+        threshold_days: int,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawBatchResult, str]:
+        if not dry_run and not allow_withdraw:
+            raise RuntimeError("real withdrawal requires allow_withdraw=True")
+        out = self._next_output_path("withdraw-loaded-result")
+        config = {
+            "limit": limit,
+            "thresholdDays": threshold_days,
+            "dryRun": dry_run,
+            "allowWithdraw": allow_withdraw,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_pending_withdraw_loaded_script(), config)
+        return read_model(out, PendingWithdrawBatchResult), str(out)
+
     def _run_script(self, script: Path, config: dict[str, Any]) -> None:
         self._runner.run_script(
             script,
@@ -504,6 +552,10 @@ def _playwriter_pending_capture_script() -> Path:
 
 def _playwriter_pending_withdraw_script() -> Path:
     return _playwriter_script_dir() / "pending_withdraw.js"
+
+
+def _playwriter_pending_withdraw_loaded_script() -> Path:
+    return _playwriter_script_dir() / "pending_withdraw_loaded.js"
 
 
 def _playwriter_salesnav_send_script() -> Path:

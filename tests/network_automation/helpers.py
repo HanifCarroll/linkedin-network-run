@@ -18,6 +18,7 @@ from apps.network_automation.models import (
     CandidateObservation,
     PendingCandidateObservation,
     PendingCapture,
+    PendingWithdrawBatchResult,
     PendingWithdrawResult,
     SalesNavAudit,
     SalesNavCapture,
@@ -272,6 +273,41 @@ class FakeLiveBrowserClient:
             read_model(FIXTURES / "withdraw_result.json", PendingWithdrawResult),
             str(self.out_dir / "withdraw-result.json"),
         )
+
+    def withdraw_loaded_pending(
+        self,
+        *,
+        limit: int,
+        threshold_days: int,
+        dry_run: bool,
+        allow_withdraw: bool,
+    ) -> tuple[PendingWithdrawBatchResult, str]:
+        self.calls.append(
+            f"withdraw-loaded:limit={limit}:threshold={threshold_days}:dry={dry_run}:allow={allow_withdraw}"
+        )
+        status = "dry-run-withdrawable" if dry_run or not allow_withdraw else "withdrawn"
+        result_status = (
+            "dry-run-withdrawable" if dry_run or not allow_withdraw else "withdrawn-verified"
+        )
+        artifact = PendingWithdrawBatchResult.model_validate(
+            {
+                "status": status,
+                "results": [
+                    {
+                        "candidate": {
+                            "name": "Stale Invite",
+                            "profileUrl": "https://www.linkedin.com/in/stale",
+                            "ageText": "Sent 3 weeks ago",
+                        },
+                        "status": result_status,
+                        "detail": {"source": "loaded-page-bottom"},
+                    }
+                ],
+            }
+        )
+        path = self.out_dir / "withdraw-loaded-result.json"
+        _write_fake_artifact(path, artifact)
+        return artifact, str(path)
 
 
 class SequenceFollowupBrowser:

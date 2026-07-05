@@ -3132,6 +3132,11 @@ class PendingCapture(AppModel):
     captured_at: str | None = Field(
         default=None, validation_alias=AliasChoices("captured_at", "capturedAt")
     )
+    visible_withdraw_count: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("visible_withdraw_count", "visibleWithdrawCount"),
+    )
+    warnings: list[str] = Field(default_factory=list)
     rows: list[PendingCaptureRow] = Field(default_factory=list)
 
 
@@ -3165,6 +3170,12 @@ class PendingWithdrawResult(AppModel):
             PendingWithdrawStatus.FAILED,
             f"salesnav-pending-withdraw-one status {self.status}; {self.detail or 'no detail'}",
         )
+
+
+class PendingWithdrawBatchResult(AppModel):
+    status: str
+    results: list[PendingWithdrawResult] = Field(default_factory=list)
+    detail: Any = None
 
 
 def apply_pending_audit(run: PendingCleanupRun, people_count: int, note: str | None = None) -> None:
