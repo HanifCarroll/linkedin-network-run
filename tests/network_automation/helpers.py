@@ -34,6 +34,7 @@ class FakeLiveBrowserClient:
     instances: ClassVar[list[FakeLiveBrowserClient]] = []
     acceptance_status: ClassVar[str] = "accepted"
     fail_acceptance_check: ClassVar[bool] = False
+    acceptance_failures_remaining: ClassVar[int] = 0
 
     def __init__(
         self,
@@ -46,7 +47,11 @@ class FakeLiveBrowserClient:
         self.session = session
         self.withdraw_timeout_seconds = withdraw_timeout_seconds
         self.calls: list[str] = []
+        self.recoveries = 0
         FakeLiveBrowserClient.instances.append(self)
+
+    def recover_after_failure(self) -> None:
+        self.recoveries += 1
 
     def send_connection(
         self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
@@ -120,6 +125,9 @@ class FakeLiveBrowserClient:
         self.calls.append(
             f"acceptance-check:{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
         )
+        if FakeLiveBrowserClient.acceptance_failures_remaining > 0:
+            FakeLiveBrowserClient.acceptance_failures_remaining -= 1
+            raise RuntimeError("browser timed out")
         if FakeLiveBrowserClient.fail_acceptance_check:
             raise RuntimeError("browser timed out")
         selected = candidates[offset : offset + limit] if limit else candidates[offset:]
@@ -482,4 +490,5 @@ def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "accepted"
     FakeLiveBrowserClient.fail_acceptance_check = False
+    FakeLiveBrowserClient.acceptance_failures_remaining = 0
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)

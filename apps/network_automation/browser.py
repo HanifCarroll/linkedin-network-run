@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from packages.linkedin_browser import playwriter as playwriter_module
-from packages.linkedin_browser.playwriter import PlaywriterRunner
+from packages.linkedin_browser.playwriter import PlaywriterRunner, StagingMode
 
 from .models import (
     AcceptanceCheckCandidate,
@@ -343,6 +343,9 @@ class PlaywriterBrowserClient:
     def close(self) -> None:
         return None
 
+    def recover_after_failure(self) -> None:
+        self._runner.reset_session()
+
     def send_connection(
         self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
     ) -> tuple[SalesNavSendResult, str]:
@@ -414,7 +417,7 @@ class PlaywriterBrowserClient:
             "limit": limit,
             "delayMs": delay_ms,
         }
-        self._run_script(_playwriter_acceptance_outcomes_script(), config)
+        self._run_script(_playwriter_acceptance_outcomes_script(), config, staging="direct")
         return read_model(out, AcceptanceOutcomeArtifact), str(out)
 
     def research_accepted_candidates(
@@ -514,12 +517,19 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_pending_withdraw_loaded_script(), config)
         return read_model(out, PendingWithdrawBatchResult), str(out)
 
-    def _run_script(self, script: Path, config: dict[str, Any]) -> None:
+    def _run_script(
+        self,
+        script: Path,
+        config: dict[str, Any],
+        *,
+        staging: StagingMode = "shared",
+    ) -> None:
         self._runner.run_script(
             script,
             config,
             output_missing_message="Playwriter browser script did not write an output artifact",
             out_dir=self.out_dir,
+            staging=staging,
             progress=True,
         )
 

@@ -21,8 +21,10 @@ from apps.network_automation.models import (
     DraftItem,
     DraftReport,
     acceptance_followup_diagnostics,
+    acceptance_followup_id,
     acceptance_followup_result_note,
     acceptance_followup_status_for_result,
+    accepted_followup_candidate_key,
     advisor_accepted_followup_draft,
     agency_accepted_followup_draft,
     choose_angle,
@@ -384,11 +386,57 @@ def test_acceptance_draft_markdown_labels_public_and_sales_nav_profiles() -> Non
 
     rendered = render_draft_markdown(report)
 
+    expected_id = acceptance_followup_id(accepted_followup_candidate_key(candidate))
+    assert f"- Follow-up ID: `{expected_id}`" in rendered
     assert "- LinkedIn profile: https://www.linkedin.com/in/accepted-lead" in rendered
     assert (
         "- Sales Nav profile: https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
         in rendered
     )
+
+
+def test_acceptance_followup_record_report_resets_changed_ready_draft() -> None:
+    candidate = AcceptedDraftCandidate(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 2),
+        source="Network - Founder Operators (11-50)",
+        name="Accepted Lead",
+        profile_url="https://www.linkedin.com/in/accepted-lead",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
+        sent_at=datetime(2026, 7, 1, tzinfo=UTC),
+        accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+    )
+    ledger = AcceptanceFollowupLedger(
+        drafts=[
+            AcceptanceFollowupRecord(
+                key=accepted_followup_candidate_key(candidate),
+                id="afu_test",
+                source=candidate.source,
+                name=candidate.name,
+                profile_url=candidate.profile_url,
+                sales_nav_profile_url=candidate.sales_nav_profile_url,
+                accepted_at=candidate.accepted_at,
+                angle="general",
+                draft="Old dry-run checked draft.",
+                status=AcceptanceFollowupStatus.DRY_RUN_READY,
+                report_path="old.md",
+            )
+        ]
+    )
+    report = DraftReport(
+        items=[
+            DraftItem(
+                candidate=candidate,
+                angle="general",
+                draft="New reviewed draft.",
+            )
+        ]
+    )
+
+    ledger.record_report(report, "new.md", "reviewed-research.json")
+
+    assert ledger.drafts[0].draft == "New reviewed draft."
+    assert ledger.drafts[0].status == AcceptanceFollowupStatus.DRAFTED
 
 
 def test_acceptance_followup_template_routing_is_source_first() -> None:

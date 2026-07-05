@@ -113,15 +113,66 @@ counts across replaced active runs. `--sync-history` backfills the SQLite
 ledger from older per-run JSONL logs. Existing `send-ledger.jsonl` files remain
 readable migration sources.
 
-If a large accepted-followup draft batch times out during profile research,
-retry it in smaller draft chunks. Completed drafts are recorded in the
-follow-up ledger and drop out of the next chunk:
+Accepted follow-up drafting can be split into async source-backed research and
+message writing. First export a research queue:
 
 ```sh
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  acceptance draft-followups --session auto \
-  --research-offset 0 --research-limit 10
+  acceptance export-research-queue \
+  --out /tmp/linkedin-accepted-followups/research-queue.json \
+  --limit 10
+```
+
+Launch Codex research workers. The controller captures source bundles first;
+workers read those local source files and produce reviewed research decisions:
+
+```sh
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance launch-research-workers \
+  --research-queue /tmp/linkedin-accepted-followups/research-queue.json \
+  --sources-dir /tmp/linkedin-accepted-followups/source-bundles \
+  --jobs-dir /tmp/linkedin-accepted-followups/research-jobs
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance collect-research-workers \
+  --research-queue /tmp/linkedin-accepted-followups/research-queue.json \
+  --jobs-dir /tmp/linkedin-accepted-followups/research-jobs \
+  --out /tmp/linkedin-accepted-followups/research-decisions.json
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance apply-research-decisions \
+  /tmp/linkedin-accepted-followups/research-decisions.json \
+  --out /tmp/linkedin-accepted-followups/reviewed-research.json
+```
+
+Then export a separate message queue and finalize it with a bounded wait. This
+launches missing draft workers, waits for completed worker output, applies the
+message decisions, and writes the reviewed draft report. If workers are still
+pending after the deadline, the command reports that as the blocker:
+
+```sh
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance export-message-queue \
+  --reviewed-research /tmp/linkedin-accepted-followups/reviewed-research.json \
+  --out /tmp/linkedin-accepted-followups/message-queue.json \
+  --limit 10
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  acceptance finalize-message-queue \
+  --message-queue /tmp/linkedin-accepted-followups/message-queue.json \
+  --jobs-dir /tmp/linkedin-accepted-followups/draft-jobs \
+  --message-decisions-out /tmp/linkedin-accepted-followups/message-decisions.json \
+  --reviewed-research-out /tmp/linkedin-accepted-followups/reviewed-research.json \
+  --out /tmp/linkedin-accepted-followups/followups.md \
+  --review-out /tmp/linkedin-accepted-followups/followups.review.json \
+  --wait-seconds 1200 \
+  --poll-seconds 20
 ```
 
 Browser-backed commands default to guarded dry-run behavior unless the explicit

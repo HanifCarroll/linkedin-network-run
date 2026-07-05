@@ -8,13 +8,24 @@ from pathlib import Path
 from typing import Any
 
 from .acceptance_service import (
+    CODEX_DRAFT_MODEL,
+    CODEX_DRAFT_REASONING_EFFORT,
+    acceptance_apply_research_decisions,
     acceptance_check,
+    acceptance_collect_codex_draft_workers,
+    acceptance_collect_codex_research_workers,
     acceptance_draft_followups,
+    acceptance_draft_reviewed_followups,
     acceptance_dry_run_followups,
     acceptance_export,
     acceptance_export_followup_candidates,
+    acceptance_export_message_queue,
+    acceptance_export_research_queue,
+    acceptance_finalize_codex_draft_workers,
     acceptance_import,
     acceptance_invalidate_weak_message_acceptances,
+    acceptance_launch_codex_draft_workers,
+    acceptance_launch_codex_research_workers,
     acceptance_report,
     acceptance_research,
     acceptance_retry_send_followup,
@@ -35,6 +46,24 @@ DEFAULT_ACCEPTANCE_SESSION_OUT_DIR = Path("/tmp/linkedin-acceptance-daily-sessio
 DEFAULT_ACCEPTED_RESEARCH = Path("/tmp/linkedin-accepted-followups/accepted-research.json")
 DEFAULT_ACCEPTED_CANDIDATES = Path("/tmp/linkedin-accepted-followups/accepted-candidates.json")
 DEFAULT_ACCEPTED_FOLLOWUP_OUT_DIR = Path("/tmp/linkedin-accepted-followups")
+DEFAULT_ACCEPTED_RESEARCH_QUEUE = Path("/tmp/linkedin-accepted-followups/research-queue.json")
+DEFAULT_ACCEPTED_RESEARCH_JOBS_DIR = Path("/tmp/linkedin-accepted-followups/research-jobs")
+DEFAULT_ACCEPTED_SOURCE_BUNDLES_DIR = Path("/tmp/linkedin-accepted-followups/source-bundles")
+DEFAULT_ACCEPTED_RESEARCH_DECISIONS = Path(
+    "/tmp/linkedin-accepted-followups/research-decisions.json"
+)
+DEFAULT_ACCEPTED_MESSAGE_QUEUE = Path("/tmp/linkedin-accepted-followups/message-queue.json")
+DEFAULT_ACCEPTED_DRAFT_JOBS_DIR = Path("/tmp/linkedin-accepted-followups/draft-jobs")
+DEFAULT_ACCEPTED_MESSAGE_DECISIONS = Path(
+    "/tmp/linkedin-accepted-followups/message-decisions.json"
+)
+DEFAULT_ACCEPTED_REVIEWED_RESEARCH = Path(
+    "/tmp/linkedin-accepted-followups/reviewed-research.json"
+)
+DEFAULT_ACCEPTED_FOLLOWUPS_REPORT = Path("/tmp/linkedin-accepted-followups/followups.md")
+DEFAULT_ACCEPTED_FOLLOWUPS_REVIEW = Path(
+    "/tmp/linkedin-accepted-followups/followups.review.json"
+)
 
 
 def register_acceptance_commands(subparsers: Any) -> None:
@@ -51,6 +80,7 @@ def register_acceptance_commands(subparsers: Any) -> None:
     acceptance_daily.add_argument("--outcomes-out", default=str(DEFAULT_ACCEPTANCE_OUTCOMES))
     acceptance_daily.add_argument("--chunk-dir", default=str(DEFAULT_ACCEPTANCE_CHUNK_DIR))
     acceptance_daily.add_argument("--chunk-size", type=int, default=25)
+    acceptance_daily.add_argument("--chunk-retries", type=int, default=3)
     acceptance_daily.add_argument("--check-delay-ms", type=int, default=750)
     acceptance_daily.add_argument("--no-draft-followups", action="store_true")
     acceptance_daily.add_argument("--draft-report", default=None)
@@ -89,6 +119,138 @@ def register_acceptance_commands(subparsers: Any) -> None:
     acceptance_candidates = acceptance_sub.add_parser("export-followup-candidates")
     acceptance_candidates.add_argument("--out", default=str(DEFAULT_ACCEPTED_CANDIDATES))
     acceptance_candidates.add_argument("--include-drafted", action="store_true")
+    acceptance_research_queue = acceptance_sub.add_parser("export-research-queue")
+    acceptance_research_queue.add_argument(
+        "--out", default="/tmp/linkedin-accepted-followups/research-queue.json"
+    )
+    acceptance_research_queue.add_argument("--markdown-out", default=None)
+    acceptance_research_queue.add_argument("--offset", type=int, default=0)
+    acceptance_research_queue.add_argument("--limit", type=int, default=10)
+    acceptance_research_queue.add_argument("--include-drafted", action="store_true")
+    acceptance_launch_research_workers = acceptance_sub.add_parser("launch-research-workers")
+    acceptance_launch_research_workers.add_argument(
+        "--research-queue", default=str(DEFAULT_ACCEPTED_RESEARCH_QUEUE)
+    )
+    acceptance_launch_research_workers.add_argument(
+        "--jobs-dir", default=str(DEFAULT_ACCEPTED_RESEARCH_JOBS_DIR)
+    )
+    acceptance_launch_research_workers.add_argument(
+        "--sources-dir", default=str(DEFAULT_ACCEPTED_SOURCE_BUNDLES_DIR)
+    )
+    acceptance_launch_research_workers.add_argument("--codex-bin", default="codex")
+    acceptance_launch_research_workers.add_argument("--cwd", default=str(Path.cwd()))
+    acceptance_launch_research_workers.add_argument("--model", default=CODEX_DRAFT_MODEL)
+    acceptance_launch_research_workers.add_argument(
+        "--reasoning-effort", default=CODEX_DRAFT_REASONING_EFFORT
+    )
+    acceptance_launch_research_workers.add_argument("--offset", type=int, default=0)
+    acceptance_launch_research_workers.add_argument("--limit", type=int, default=0)
+    acceptance_launch_research_workers.add_argument("--force", action="store_true")
+    acceptance_launch_research_workers.add_argument(
+        "--fetch-timeout-seconds", type=float, default=20.0
+    )
+    acceptance_collect_research_workers = acceptance_sub.add_parser("collect-research-workers")
+    acceptance_collect_research_workers.add_argument(
+        "--research-queue", default=str(DEFAULT_ACCEPTED_RESEARCH_QUEUE)
+    )
+    acceptance_collect_research_workers.add_argument(
+        "--jobs-dir", default=str(DEFAULT_ACCEPTED_RESEARCH_JOBS_DIR)
+    )
+    acceptance_collect_research_workers.add_argument(
+        "--out", default=str(DEFAULT_ACCEPTED_RESEARCH_DECISIONS)
+    )
+    acceptance_collect_research_workers.add_argument("--offset", type=int, default=0)
+    acceptance_collect_research_workers.add_argument("--limit", type=int, default=0)
+    acceptance_apply_decisions = acceptance_sub.add_parser("apply-research-decisions")
+    acceptance_apply_decisions.add_argument("path")
+    acceptance_apply_decisions.add_argument(
+        "--out", default="/tmp/linkedin-accepted-followups/reviewed-research.json"
+    )
+    acceptance_message_queue = acceptance_sub.add_parser("export-message-queue")
+    acceptance_message_queue.add_argument(
+        "--reviewed-research",
+        default="/tmp/linkedin-accepted-followups/reviewed-research.json",
+    )
+    acceptance_message_queue.add_argument(
+        "--out", default="/tmp/linkedin-accepted-followups/message-queue.json"
+    )
+    acceptance_message_queue.add_argument("--markdown-out", default=None)
+    acceptance_message_queue.add_argument("--include-drafted", action="store_true")
+    acceptance_message_queue.add_argument("--offset", type=int, default=0)
+    acceptance_message_queue.add_argument("--limit", type=int, default=10)
+    acceptance_launch_workers = acceptance_sub.add_parser("launch-draft-workers")
+    acceptance_launch_workers.add_argument(
+        "--message-queue", default=str(DEFAULT_ACCEPTED_MESSAGE_QUEUE)
+    )
+    acceptance_launch_workers.add_argument(
+        "--jobs-dir", default=str(DEFAULT_ACCEPTED_DRAFT_JOBS_DIR)
+    )
+    acceptance_launch_workers.add_argument("--codex-bin", default="codex")
+    acceptance_launch_workers.add_argument("--cwd", default=str(Path.cwd()))
+    acceptance_launch_workers.add_argument("--model", default=CODEX_DRAFT_MODEL)
+    acceptance_launch_workers.add_argument(
+        "--reasoning-effort", default=CODEX_DRAFT_REASONING_EFFORT
+    )
+    acceptance_launch_workers.add_argument("--offset", type=int, default=0)
+    acceptance_launch_workers.add_argument("--limit", type=int, default=0)
+    acceptance_launch_workers.add_argument("--force", action="store_true")
+    acceptance_collect_workers = acceptance_sub.add_parser("collect-draft-workers")
+    acceptance_collect_workers.add_argument(
+        "--message-queue", default=str(DEFAULT_ACCEPTED_MESSAGE_QUEUE)
+    )
+    acceptance_collect_workers.add_argument(
+        "--jobs-dir", default=str(DEFAULT_ACCEPTED_DRAFT_JOBS_DIR)
+    )
+    acceptance_collect_workers.add_argument(
+        "--out", default=str(DEFAULT_ACCEPTED_MESSAGE_DECISIONS)
+    )
+    acceptance_collect_workers.add_argument("--offset", type=int, default=0)
+    acceptance_collect_workers.add_argument("--limit", type=int, default=0)
+    acceptance_finalize_workers = acceptance_sub.add_parser("finalize-message-queue")
+    acceptance_finalize_workers.add_argument(
+        "--message-queue", default=str(DEFAULT_ACCEPTED_MESSAGE_QUEUE)
+    )
+    acceptance_finalize_workers.add_argument(
+        "--jobs-dir", default=str(DEFAULT_ACCEPTED_DRAFT_JOBS_DIR)
+    )
+    acceptance_finalize_workers.add_argument(
+        "--message-decisions-out", default=str(DEFAULT_ACCEPTED_MESSAGE_DECISIONS)
+    )
+    acceptance_finalize_workers.add_argument(
+        "--reviewed-research-out", default=str(DEFAULT_ACCEPTED_REVIEWED_RESEARCH)
+    )
+    acceptance_finalize_workers.add_argument(
+        "--out", default=str(DEFAULT_ACCEPTED_FOLLOWUPS_REPORT)
+    )
+    acceptance_finalize_workers.add_argument(
+        "--review-out", default=str(DEFAULT_ACCEPTED_FOLLOWUPS_REVIEW)
+    )
+    acceptance_finalize_workers.add_argument("--codex-bin", default="codex")
+    acceptance_finalize_workers.add_argument("--cwd", default=str(Path.cwd()))
+    acceptance_finalize_workers.add_argument("--model", default=CODEX_DRAFT_MODEL)
+    acceptance_finalize_workers.add_argument(
+        "--reasoning-effort", default=CODEX_DRAFT_REASONING_EFFORT
+    )
+    acceptance_finalize_workers.add_argument("--offset", type=int, default=0)
+    acceptance_finalize_workers.add_argument("--limit", type=int, default=0)
+    acceptance_finalize_workers.add_argument("--force", action="store_true")
+    acceptance_finalize_workers.add_argument("--wait-seconds", type=float, default=1200.0)
+    acceptance_finalize_workers.add_argument("--poll-seconds", type=float, default=20.0)
+    acceptance_finalize_workers.add_argument("--include-drafted", action="store_true")
+    acceptance_finalize_workers.add_argument(
+        "--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value
+    )
+    acceptance_reviewed_draft = acceptance_sub.add_parser("draft-reviewed-followups")
+    acceptance_reviewed_draft.add_argument(
+        "--reviewed-research",
+        default="/tmp/linkedin-accepted-followups/reviewed-research.json",
+    )
+    acceptance_reviewed_draft.add_argument("--out", default=None)
+    acceptance_reviewed_draft.add_argument("--review-out", default=None)
+    acceptance_reviewed_draft.add_argument("--include-drafted", action="store_true")
+    acceptance_reviewed_draft.add_argument(
+        "--strategy", default=DraftStrategy.ASAP_CONTRACT_V1.value
+    )
     acceptance_research_parser = acceptance_sub.add_parser("research")
     acceptance_research_parser.add_argument("--session", default="auto")
     acceptance_research_parser.add_argument(
@@ -160,6 +322,7 @@ def dispatch_acceptance(
             outcomes_out=Path(args.outcomes_out),
             chunk_dir=Path(args.chunk_dir),
             chunk_size=args.chunk_size,
+            chunk_retries=args.chunk_retries,
             check_delay_ms=args.check_delay_ms,
             draft_followups=not args.no_draft_followups,
             followup_out=Path(args.draft_report) if args.draft_report else None,
@@ -206,6 +369,107 @@ def dispatch_acceptance(
             store,
             out=Path(args.out),
             include_drafted=args.include_drafted,
+        )
+    if command == "export-research-queue":
+        return acceptance_export_research_queue(
+            store,
+            out=Path(args.out),
+            markdown_out=Path(args.markdown_out) if args.markdown_out else None,
+            offset=args.offset,
+            limit=args.limit,
+            include_drafted=args.include_drafted,
+        )
+    if command == "launch-research-workers":
+        return acceptance_launch_codex_research_workers(
+            store,
+            research_queue=Path(args.research_queue),
+            jobs_dir=Path(args.jobs_dir),
+            sources_dir=Path(args.sources_dir),
+            codex_bin=args.codex_bin,
+            cwd=Path(args.cwd),
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            offset=args.offset,
+            limit=args.limit,
+            force=args.force,
+            fetch_timeout_seconds=args.fetch_timeout_seconds,
+        )
+    if command == "collect-research-workers":
+        return acceptance_collect_codex_research_workers(
+            store,
+            research_queue=Path(args.research_queue),
+            jobs_dir=Path(args.jobs_dir),
+            out=Path(args.out),
+            offset=args.offset,
+            limit=args.limit,
+        )
+    if command == "apply-research-decisions":
+        return acceptance_apply_research_decisions(
+            store,
+            input_path=Path(args.path),
+            out=Path(args.out),
+        )
+    if command == "export-message-queue":
+        return acceptance_export_message_queue(
+            store,
+            reviewed_research=Path(args.reviewed_research),
+            out=Path(args.out),
+            markdown_out=Path(args.markdown_out) if args.markdown_out else None,
+            include_drafted=args.include_drafted,
+            offset=args.offset,
+            limit=args.limit,
+        )
+    if command == "launch-draft-workers":
+        return acceptance_launch_codex_draft_workers(
+            store,
+            message_queue=Path(args.message_queue),
+            jobs_dir=Path(args.jobs_dir),
+            codex_bin=args.codex_bin,
+            cwd=Path(args.cwd),
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            offset=args.offset,
+            limit=args.limit,
+            force=args.force,
+        )
+    if command == "collect-draft-workers":
+        return acceptance_collect_codex_draft_workers(
+            store,
+            message_queue=Path(args.message_queue),
+            jobs_dir=Path(args.jobs_dir),
+            out=Path(args.out),
+            offset=args.offset,
+            limit=args.limit,
+        )
+    if command == "finalize-message-queue":
+        return acceptance_finalize_codex_draft_workers(
+            store,
+            message_queue=Path(args.message_queue),
+            jobs_dir=Path(args.jobs_dir),
+            message_decisions_out=Path(args.message_decisions_out),
+            reviewed_research_out=Path(args.reviewed_research_out),
+            draft_out=Path(args.out),
+            review_out=Path(args.review_out),
+            codex_bin=args.codex_bin,
+            cwd=Path(args.cwd),
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            offset=args.offset,
+            limit=args.limit,
+            force=args.force,
+            wait_seconds=args.wait_seconds,
+            poll_seconds=args.poll_seconds,
+            include_drafted=args.include_drafted,
+            strategy=DraftStrategy(args.strategy),
+        )
+    if command == "draft-reviewed-followups":
+        return acceptance_draft_reviewed_followups(
+            store,
+            reviewed_research=Path(args.reviewed_research),
+            out=Path(args.out) if args.out else None,
+            include_drafted=args.include_drafted,
+            strategy=DraftStrategy(args.strategy),
+            review_out=Path(args.review_out) if args.review_out else None,
         )
     if command == "research":
         return acceptance_research(

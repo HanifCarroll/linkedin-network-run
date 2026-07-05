@@ -21,7 +21,7 @@ DEFAULT_SCRIPT_TIMEOUT_MS = 240_000
 
 _SESSION_CREATED = re.compile(r"Session\s+(\S+)\s+created")
 _STAGING_DIR = Path(tempfile.gettempdir()) / "linkedin-tools-playwriter"
-StagingMode = Literal["shared", "temporary"]
+StagingMode = Literal["shared", "temporary", "direct"]
 
 
 class PlaywriterRunner:
@@ -76,12 +76,23 @@ class PlaywriterRunner:
                 progress=progress,
             )
             return
+        if staging == "direct":
+            self._run_with_direct_output(
+                script,
+                config,
+                output_missing_message=output_missing_message,
+                progress=progress,
+            )
+            return
         self._run_with_shared_staging(
             script,
             config,
             output_missing_message=output_missing_message,
             progress=progress,
         )
+
+    def reset_session(self) -> None:
+        self._session = None
 
     def _create_session(self) -> str:
         command = [self._playwriter_bin, "session", "new"]
@@ -163,6 +174,33 @@ class PlaywriterRunner:
                 final_out,
                 output_missing_message=output_missing_message,
             )
+
+    def _run_with_direct_output(
+        self,
+        script: Path,
+        config: Mapping[str, Any],
+        *,
+        output_missing_message: str,
+        progress: bool,
+    ) -> None:
+        final_out = final_output_path(config)
+        if final_out is not None:
+            final_out.parent.mkdir(parents=True, exist_ok=True)
+        stem = safe_stem(Path(str(config.get("out") or "artifact.json")).stem)
+        config_path = _STAGING_DIR / f"{stem}-config.json"
+        script_config = dict(config)
+        progress_out = progress_path(final_out) if progress else None
+        if progress_out is not None:
+            progress_out.parent.mkdir(parents=True, exist_ok=True)
+            progress_out.unlink(missing_ok=True)
+            script_config["progressOut"] = str(progress_out)
+        write_json_atomic(config_path, script_config)
+        self._stage_config_path(config_path)
+        self._run_file(script, progress_path=progress_out)
+        if final_out is not None and not wait_for_path(
+            final_out, timeout_seconds=self._output_wait_seconds
+        ):
+            raise RuntimeError(f"{output_missing_message}; expected {final_out}")
 
     def _stage_config_path(self, config_path: Path) -> None:
         self._run_command(

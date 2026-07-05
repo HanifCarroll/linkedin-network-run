@@ -13,6 +13,61 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function profileUrlFor(item) {
+  return item.profile_url || item.profileUrl || null;
+}
+
+function candidateKey(item) {
+  return [item.source || "", item.name || "", profileUrlFor(item) || ""].join("\u0000");
+}
+
+function artifactFor(rows) {
+  return {
+    capturedAt: nowIso(),
+    input: config.input,
+    count: rows.length,
+    offset,
+    limit: requestedLimit,
+    totalCandidates: candidates.length,
+    complete: rows.length === selected.length,
+    rows,
+  };
+}
+
+function writeArtifact(rows) {
+  const artifact = artifactFor(rows);
+  const tmp = `${config.out}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(artifact, null, 2)}\n`);
+  fs.renameSync(tmp, config.out);
+}
+
+function loadExistingRows() {
+  if (!config.out || !fs.existsSync(config.out)) return [];
+  let existing;
+  try {
+    existing = JSON.parse(fs.readFileSync(config.out, "utf8"));
+  } catch {
+    return [];
+  }
+  if (
+    existing.input !== config.input ||
+    existing.offset !== offset ||
+    existing.limit !== requestedLimit ||
+    existing.totalCandidates !== candidates.length ||
+    !Array.isArray(existing.rows)
+  ) {
+    return [];
+  }
+
+  const rows = [];
+  for (let index = 0; index < Math.min(existing.rows.length, selected.length); index += 1) {
+    const row = existing.rows[index];
+    if (candidateKey(row) !== candidateKey(selected[index])) break;
+    rows.push(row);
+  }
+  return rows;
+}
+
 async function getPage() {
   if (state.linkedinToolsPage && !state.linkedinToolsPage.isClosed()) {
     return state.linkedinToolsPage;
@@ -50,7 +105,7 @@ async function menuLabels(page) {
 
 async function classifyCandidate(candidate) {
   const page = await getPage();
-  const profileUrl = candidate.profile_url || candidate.profileUrl;
+  const profileUrl = profileUrlFor(candidate);
   if (!profileUrl) {
     return {
       source: candidate.source,
@@ -126,21 +181,11 @@ async function classifyCandidate(candidate) {
   }
 }
 
-const rows = [];
-for (const candidate of selected) {
-  rows.push(await classifyCandidate(candidate));
+const rows = loadExistingRows();
+writeArtifact(rows);
+
+for (let index = rows.length; index < selected.length; index += 1) {
+  rows.push(await classifyCandidate(selected[index]));
+  writeArtifact(rows);
 }
-
-const artifact = {
-  capturedAt: nowIso(),
-  input: config.input,
-  count: rows.length,
-  offset,
-  limit: requestedLimit,
-  totalCandidates: candidates.length,
-  complete: rows.length === selected.length,
-  rows,
-};
-
-fs.writeFileSync(config.out, `${JSON.stringify(artifact, null, 2)}\n`);
 console.log(`wrote ${rows.length} acceptance outcomes to ${config.out}`);

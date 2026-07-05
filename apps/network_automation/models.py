@@ -2178,6 +2178,112 @@ class AcceptedResearchArtifact(AppModel):
     rows: list[AcceptedResearchRow] = Field(default_factory=list)
 
 
+class AcceptedResearchDecisionStatus(StrEnum):
+    READY_FOR_DRAFT = "ready_for_draft"
+    RESEARCH_READY = "research_ready"
+    NEEDS_REVIEW = "needs_review"
+    SKIP = "skip"
+
+
+class AcceptedResearchConfidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class AcceptedResearchEvidence(AppModel):
+    evidence_id: str
+    source_url: str
+    claim: str
+    relevance: str | None = None
+    source_excerpt: str
+
+
+class AcceptedResearchDecisionTemplate(AppModel):
+    status: AcceptedResearchDecisionStatus = AcceptedResearchDecisionStatus.NEEDS_REVIEW
+    confidence: AcceptedResearchConfidence | None = None
+    person_summary: str | None = None
+    company_name: str | None = None
+    company_summary: str | None = None
+    official_company_url: str | None = None
+    evidence_urls: list[str] = Field(default_factory=list)
+    research_evidence: list[AcceptedResearchEvidence] = Field(default_factory=list)
+    notes: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    template_key: AcceptedFollowupTemplateKey | None = None
+    angle: str | None = None
+    proposed_message: str | None = None
+
+
+class AcceptedResearchQueueItem(AppModel):
+    followup_id: str
+    candidate_key: str
+    candidate: AcceptedDraftCandidate
+    evidence: list[str] = Field(default_factory=list)
+    decision: AcceptedResearchDecisionTemplate = Field(
+        default_factory=AcceptedResearchDecisionTemplate
+    )
+
+
+class AcceptedResearchQueuePacket(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    items: list[AcceptedResearchQueueItem] = Field(default_factory=list)
+
+
+class AcceptedResearchDecisionItem(AcceptedResearchDecisionTemplate):
+    followup_id: str
+    candidate_key: str
+    candidate: AcceptedDraftCandidate
+
+
+class AcceptedResearchDecisionArtifact(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    source_path: str | None = None
+    decisions: list[AcceptedResearchDecisionItem] = Field(default_factory=list)
+
+
+class AcceptedCodexResearchResult(AppModel):
+    candidate_key: str
+    status: AcceptedResearchDecisionStatus
+    confidence: AcceptedResearchConfidence | None = None
+    person_summary: str | None = None
+    company_name: str | None = None
+    company_summary: str | None = None
+    official_company_url: str | None = None
+    evidence_urls: list[str] = Field(default_factory=list)
+    research_evidence: list[AcceptedResearchEvidence] = Field(default_factory=list)
+    notes: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    template_key: AcceptedFollowupTemplateKey | None = None
+    angle: str | None = None
+
+
+class AcceptedCodexDraftResult(AppModel):
+    candidate_key: str
+    status: AcceptedResearchDecisionStatus
+    message: str | None = None
+    reason: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AcceptedCodexDraftJob(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    followup_id: str
+    candidate_key: str
+    packet_path: str
+    schema_path: str
+    result_path: str
+    events_path: str
+    stderr_path: str
+    pid: int
+    command: list[str] = Field(default_factory=list)
+
+
+class AcceptedCodexResearchJob(AcceptedCodexDraftJob):
+    context_path: str
+    sources_path: str
+
+
 class DraftItem(AppModel):
     candidate: AcceptedDraftCandidate
     template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
@@ -2215,6 +2321,7 @@ class AcceptedFollowupReviewItem(AppModel):
     evidence: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     research: AcceptedResearchRow | None = None
+    reviewed_research: AcceptedResearchDecisionItem | None = None
 
 
 class AcceptedFollowupReviewPacket(AppModel):
@@ -2355,6 +2462,9 @@ class AcceptanceFollowupLedger(AppModel):
             if existing_index is not None:
                 existing = self.drafts[existing_index]
                 if not existing.terminal():
+                    status = existing.status
+                    if existing.draft != item.draft:
+                        status = AcceptanceFollowupStatus.DRAFTED
                     self.drafts[existing_index] = existing.model_copy(
                         update={
                             "drafted_at": report.generated_at,
@@ -2372,6 +2482,7 @@ class AcceptanceFollowupLedger(AppModel):
                             "company_website_url": item.company_website_url,
                             "evidence": list(item.evidence),
                             "warnings": list(item.warnings),
+                            "status": status,
                             "report_path": report_path,
                             "research_path": research_path,
                         }
@@ -2421,6 +2532,155 @@ def accepted_research_row_key(row: AcceptedResearchRow) -> str:
     return candidate_key(row.source, row.name, identity_url)
 
 
+def accepted_research_queue_item(candidate: AcceptedDraftCandidate) -> AcceptedResearchQueueItem:
+    key = accepted_followup_candidate_key(candidate)
+    evidence = [
+        f"Source: {candidate.source}",
+        f"Accepted at: {candidate.accepted_at.isoformat()}",
+    ]
+    if candidate.profile_url:
+        evidence.append(f"Profile URL: {candidate.profile_url}")
+    if candidate.sales_nav_profile_url:
+        evidence.append(f"Sales Nav profile URL: {candidate.sales_nav_profile_url}")
+    if candidate.relationship:
+        evidence.append(f"Relationship: {candidate.relationship}")
+    if candidate.acceptance_note:
+        evidence.append(f"Acceptance note: {candidate.acceptance_note}")
+    if candidate.acceptance_evidence:
+        evidence.append(f"Acceptance evidence: {candidate.acceptance_evidence}")
+    return AcceptedResearchQueueItem(
+        followup_id=acceptance_followup_id(key),
+        candidate_key=key,
+        candidate=candidate,
+        evidence=evidence,
+    )
+
+
+def build_accepted_research_queue_packet(
+    candidates: list[AcceptedDraftCandidate],
+) -> AcceptedResearchQueuePacket:
+    return AcceptedResearchQueuePacket(
+        items=[accepted_research_queue_item(candidate) for candidate in candidates]
+    )
+
+
+def accepted_message_queue_item(
+    decision: AcceptedResearchDecisionItem,
+) -> AcceptedResearchQueueItem:
+    payload = decision.model_dump(mode="python", by_alias=False)
+    payload["status"] = AcceptedResearchDecisionStatus.READY_FOR_DRAFT
+    payload["proposed_message"] = None
+    template = AcceptedResearchDecisionTemplate.model_validate(payload)
+    evidence = [
+        f"Reviewed person summary: {clean_inline(decision.person_summary)}",
+        f"Reviewed company: {clean_inline(decision.company_name)}",
+        f"Reviewed company summary: {clean_inline(decision.company_summary)}",
+    ]
+    if decision.official_company_url:
+        evidence.append(f"Official company URL: {decision.official_company_url}")
+    evidence.extend(f"Reviewed evidence URL: {url}" for url in decision.evidence_urls)
+    for item in decision.research_evidence:
+        evidence.append(
+            f"Reviewed evidence {clean_inline(item.evidence_id)} from "
+            f"{clean_inline(item.source_url)}: {clean_inline(item.claim)}"
+        )
+        if item.relevance:
+            evidence.append(
+                f"Reviewed evidence {clean_inline(item.evidence_id)} relevance: "
+                f"{clean_inline(item.relevance)}"
+            )
+        evidence.append(
+            f"Reviewed evidence {clean_inline(item.evidence_id)} excerpt: "
+            f"{clean_inline(item.source_excerpt)}"
+        )
+    if decision.notes:
+        evidence.append(f"Reviewed research note: {clean_inline(decision.notes)}")
+    if decision.warnings:
+        evidence.extend(
+            f"Reviewed warning: {clean_inline(warning)}" for warning in decision.warnings
+        )
+    return AcceptedResearchQueueItem(
+        followup_id=decision.followup_id,
+        candidate_key=decision.candidate_key,
+        candidate=decision.candidate,
+        evidence=evidence,
+        decision=template,
+    )
+
+
+def build_accepted_message_queue_packet(
+    decisions: list[AcceptedResearchDecisionItem],
+) -> AcceptedResearchQueuePacket:
+    return AcceptedResearchQueuePacket(
+        items=[accepted_message_queue_item(decision) for decision in decisions]
+    )
+
+
+def validate_accepted_research_decision_artifact(
+    artifact: AcceptedResearchDecisionArtifact,
+) -> None:
+    errors: list[str] = []
+    for index, decision in enumerate(artifact.decisions, start=1):
+        label = f"{decision.followup_id or index} ({decision.candidate.name})"
+        if decision.status not in {
+            AcceptedResearchDecisionStatus.RESEARCH_READY,
+            AcceptedResearchDecisionStatus.READY_FOR_DRAFT,
+        }:
+            continue
+        status_label = decision.status.value
+        if decision.confidence != AcceptedResearchConfidence.HIGH:
+            errors.append(f"{label}: {status_label} requires confidence=high")
+        required = {
+            "person_summary": decision.person_summary,
+            "company_name": decision.company_name,
+            "company_summary": decision.company_summary,
+        }
+        for field, value in required.items():
+            if not _non_empty(value):
+                errors.append(f"{label}: {status_label} missing {field}")
+        if not decision.evidence_urls and not decision.research_evidence:
+            errors.append(f"{label}: {status_label} requires at least one evidence source")
+        evidence_ids: set[str] = set()
+        for evidence in decision.research_evidence:
+            if not _non_empty(evidence.evidence_id):
+                errors.append(f"{label}: {status_label} has research evidence missing evidence_id")
+            elif evidence.evidence_id in evidence_ids:
+                errors.append(
+                    f"{label}: {status_label} has duplicate research evidence "
+                    f"{evidence.evidence_id}"
+                )
+            evidence_ids.add(evidence.evidence_id)
+            if not _non_empty(evidence.source_url):
+                errors.append(f"{label}: {status_label} has research evidence missing source_url")
+            if not _non_empty(evidence.claim):
+                errors.append(f"{label}: {status_label} has research evidence missing claim")
+            if not _non_empty(evidence.source_excerpt):
+                errors.append(
+                    f"{label}: {status_label} has research evidence missing source_excerpt"
+                )
+        if decision.status != AcceptedResearchDecisionStatus.READY_FOR_DRAFT:
+            continue
+        message = normalize_reviewed_proposed_message(decision.proposed_message)
+        if message is None:
+            errors.append(f"{label}: ready_for_draft missing proposed_message")
+        else:
+            if len(message) < 40:
+                errors.append(f"{label}: proposed_message is too short")
+            if len(message) > 1000:
+                errors.append(f"{label}: proposed_message is too long")
+            if len(message.splitlines()) > 12:
+                errors.append(f"{label}: proposed_message has too many lines")
+    if errors:
+        raise ValueError("invalid accepted research decisions: " + "; ".join(errors))
+
+
+def normalize_reviewed_proposed_message(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return normalized if normalized else None
+
+
 def build_draft_report(
     candidates: list[AcceptedDraftCandidate],
     artifact: AcceptedResearchArtifact | None,
@@ -2447,6 +2707,28 @@ def build_draft_report(
         strategy=strategy,
         research_path=research_path,
         research_captured_at=research_captured_at,
+        items=items,
+        skipped_names=skipped_names,
+    )
+
+
+def build_draft_report_from_reviewed_research(
+    artifact: AcceptedResearchDecisionArtifact,
+    strategy: DraftStrategy,
+    research_path: str | None,
+) -> DraftReport:
+    validate_accepted_research_decision_artifact(artifact)
+    items: list[DraftItem] = []
+    skipped_names: list[str] = []
+    for decision in artifact.decisions:
+        if decision.status != AcceptedResearchDecisionStatus.READY_FOR_DRAFT:
+            skipped_names.append(decision.candidate.name)
+            continue
+        items.append(build_draft_item_from_reviewed_research(decision, strategy))
+    return DraftReport(
+        strategy=strategy,
+        research_path=research_path,
+        research_captured_at=artifact.generated_at.isoformat(),
         items=items,
         skipped_names=skipped_names,
     )
@@ -2580,6 +2862,68 @@ def build_draft_item(
             if company_profile
             else None
         ),
+        evidence=evidence,
+        warnings=warnings,
+    )
+
+
+def build_draft_item_from_reviewed_research(
+    decision: AcceptedResearchDecisionItem,
+    strategy: DraftStrategy,
+) -> DraftItem:
+    _ = strategy
+    candidate = decision.candidate
+    company = _non_empty(decision.company_name)
+    template_key, default_angle = choose_angle(
+        candidate.source, decision.person_summary, company
+    )
+    if decision.template_key is not None:
+        template_key = decision.template_key
+    angle = clean_inline(decision.angle) if _non_empty(decision.angle) else default_angle
+    draft = normalize_reviewed_proposed_message(decision.proposed_message)
+    if draft is None:
+        raise ValueError(
+            f"ready reviewed research for {candidate.name} is missing proposed_message"
+        )
+    person_does = clean_inline(decision.person_summary)
+    company_summary = clean_inline(decision.company_summary)
+    company_does = f"{company}: {company_summary}" if company else company_summary
+    evidence = [
+        f"Reviewed person summary: {person_does}",
+        f"Reviewed company summary: {company_does}",
+    ]
+    if decision.official_company_url:
+        evidence.append(f"Official company URL: {decision.official_company_url}")
+    evidence.extend(f"Reviewed evidence URL: {url}" for url in decision.evidence_urls)
+    for item in decision.research_evidence:
+        evidence.append(
+            f"Reviewed evidence {clean_inline(item.evidence_id)} from "
+            f"{clean_inline(item.source_url)}: {clean_inline(item.claim)}"
+        )
+        if item.relevance:
+            evidence.append(
+                f"Reviewed evidence {clean_inline(item.evidence_id)} relevance: "
+                f"{clean_inline(item.relevance)}"
+            )
+        evidence.append(
+            f"Reviewed evidence {clean_inline(item.evidence_id)} excerpt: "
+            f"{clean_inline(item.source_excerpt)}"
+        )
+    if decision.notes:
+        evidence.append(f"Reviewed research note: {clean_inline(decision.notes)}")
+    warnings = list(decision.warnings)
+    message_fit = accepted_followup_message_fit(
+        template_key, angle, person_does, company_does
+    )
+    return DraftItem(
+        candidate=candidate,
+        template_key=template_key,
+        angle=angle,
+        draft=draft,
+        person_does=person_does,
+        company_does=company_does,
+        message_fit=message_fit,
+        company_website_url=decision.official_company_url,
         evidence=evidence,
         warnings=warnings,
     )
@@ -2764,7 +3108,7 @@ def render_draft_markdown(report: DraftReport) -> str:
         lines.extend(["", "No newly accepted connections need first-message drafts."])
         return "\n".join(lines)
     for item in report.items:
-        key = candidate_key(item.candidate.source, item.candidate.name, item.candidate.profile_url)
+        key = accepted_followup_candidate_key(item.candidate)
         lines.extend(
             [
                 "",

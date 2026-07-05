@@ -59,6 +59,9 @@ uv run linkedin-tools --help
   Let `linkedin-tools network ... plan --json` drive the next action.
 - `linkedin-network` automation sends and reconciles new connection requests only.
 - `linkedin-acceptance-daily` owns acceptance outcome checks, imports, draft follow-ups, and guarded accepted-follow-up sends.
+- Accepted follow-up message drafting may launch read-only, ephemeral
+  `codex exec` worker jobs from generated message packets. Those workers only
+  write local draft result artifacts; they must not touch LinkedIn or send.
 - `linkedin-acceptance-weekly` is report-only. It should not open LinkedIn, run Playwriter classification, import outcomes, or draft messages.
 - `linkedin-tools recruiter-agency` is separate from network state. It must not
   send connection requests and must not write into the networking controller
@@ -123,12 +126,23 @@ uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/lin
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export --min-age-days 1 --max-age-days 45 --out /tmp/linkedin-acceptance-candidates.json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance import /tmp/linkedin-acceptance-outcomes.json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance report --min-age-days 1 --max-age-days 45
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance draft-followups --session auto
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-research-queue --out /tmp/linkedin-accepted-followups/research-queue.json --limit 10
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance launch-research-workers --research-queue /tmp/linkedin-accepted-followups/research-queue.json --sources-dir /tmp/linkedin-accepted-followups/source-bundles --jobs-dir /tmp/linkedin-accepted-followups/research-jobs
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance collect-research-workers --research-queue /tmp/linkedin-accepted-followups/research-queue.json --jobs-dir /tmp/linkedin-accepted-followups/research-jobs --out /tmp/linkedin-accepted-followups/research-decisions.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance apply-research-decisions /tmp/linkedin-accepted-followups/research-decisions.json --out /tmp/linkedin-accepted-followups/reviewed-research.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-message-queue --reviewed-research /tmp/linkedin-accepted-followups/reviewed-research.json --out /tmp/linkedin-accepted-followups/message-queue.json --limit 10
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance launch-draft-workers --message-queue /tmp/linkedin-accepted-followups/message-queue.json --jobs-dir /tmp/linkedin-accepted-followups/draft-jobs
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance collect-draft-workers --message-queue /tmp/linkedin-accepted-followups/message-queue.json --jobs-dir /tmp/linkedin-accepted-followups/draft-jobs --out /tmp/linkedin-accepted-followups/message-decisions.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance apply-research-decisions /tmp/linkedin-accepted-followups/message-decisions.json --out /tmp/linkedin-accepted-followups/reviewed-research.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance draft-reviewed-followups --reviewed-research /tmp/linkedin-accepted-followups/reviewed-research.json --out /tmp/linkedin-accepted-followups/followups.md
 ```
 
 For large acceptance classification or accepted-research batches, use the
 Python `acceptance check` and `acceptance research` `offset` / `limit` support
-with incremental chunk artifacts. One-shot large browser runs are fragile.
+with incremental chunk artifacts. One-shot large browser runs are fragile. For
+accepted follow-up drafting, use `export-research-queue` for agent research and
+`export-message-queue` when message drafting needs to happen separately from
+research.
 
 Accepted follow-ups:
 
