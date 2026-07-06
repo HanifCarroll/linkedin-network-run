@@ -199,7 +199,17 @@ class FixtureBrowserClient:
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         _ = load_more
         if self.audit is None:
-            raise RuntimeError("audit fixture was not provided")
+            return (
+                SalesNavAudit.model_validate(
+                    {
+                        "peopleCount": 101,
+                        "recentNames": ["Duplicate Lead"],
+                        "loadedCount": 1,
+                        "invitations": [{"name": "Duplicate Lead", "rowIndex": 0}],
+                    }
+                ),
+                "fixture:synthesized-audit",
+            )
         return read_model(self.audit, SalesNavAudit), str(self.audit)
 
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:

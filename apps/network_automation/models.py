@@ -599,6 +599,16 @@ class Run(AppModel):
     def real_send_attempt_count(self) -> int:
         return sum(1 for candidate in self.candidates if candidate_counts_as_real_send(candidate))
 
+    def source_real_send_attempt_count(self, source: str) -> int:
+        return sum(
+            1
+            for candidate in self.candidates
+            if candidate.source == source and candidate_counts_as_real_send(candidate)
+        )
+
+    def send_attempt_goal(self) -> int:
+        return min(self.target, self.max_real_sends)
+
     def audited_delta(self) -> int | None:
         if self.start_audit is None or self.latest_audit is None:
             return None
@@ -628,9 +638,9 @@ class Run(AppModel):
         for plan in self.sources[:source_index]:
             if plan.fallback:
                 continue
-            verified = self.source_verified_count(plan.name)
-            if plan.target > verified:
-                total += plan.target - verified
+            attempted = self.source_real_send_attempt_count(plan.name)
+            if plan.target > attempted:
+                total += plan.target - attempted
         return total
 
     def source_quota_with_carryover(self, source_index: int) -> int:
@@ -645,7 +655,10 @@ class Run(AppModel):
     def next_source(self) -> NextSource | None:
         if self.state in {RunState.NEEDS_REAUDIT, RunState.DONE, RunState.BLOCKED}:
             return None
-        total_remaining = self.target - min(self.target, self.verified_count())
+        send_attempt_goal = self.send_attempt_goal()
+        total_remaining = send_attempt_goal - min(
+            send_attempt_goal, self.real_send_attempt_count()
+        )
         if total_remaining == 0:
             return None
         for index, source in enumerate(self.sources):
@@ -656,16 +669,16 @@ class Run(AppModel):
             if source.fallback and not self.allow_fallback_sources:
                 continue
             quota = self.source_quota_with_carryover(index)
-            verified = self.source_verified_count(source.name)
-            if source.fallback or verified < quota:
+            attempted = self.source_real_send_attempt_count(source.name)
+            if source.fallback or attempted < quota:
                 if source.fallback:
                     remaining_for_source = total_remaining
                 else:
-                    remaining_for_source = min(quota - min(quota, verified), total_remaining)
+                    remaining_for_source = min(quota - min(quota, attempted), total_remaining)
                 return NextSource(
                     name=source.name,
                     quota=quota,
-                    verified=verified,
+                    verified=self.source_verified_count(source.name),
                     remaining_for_source=remaining_for_source,
                     remaining_for_run=total_remaining,
                     fallback=source.fallback,
@@ -696,7 +709,7 @@ class Run(AppModel):
         return None
 
     def source_is_filled_or_closed(self, source: str) -> bool:
-        if self.verified_count() >= self.target:
+        if self.real_send_attempt_count() >= self.send_attempt_goal():
             return True
         index = self.source_index(source)
         if index is None:
@@ -707,7 +720,8 @@ class Run(AppModel):
         return (
             plan.exhausted
             or self.source_is_deferred_for_run(source)
-            or self.source_verified_count(source) >= self.source_quota_with_carryover(index)
+            or self.source_real_send_attempt_count(source)
+            >= self.source_quota_with_carryover(index)
         )
 
     def source_is_fallback(self, source: str) -> bool:
@@ -788,6 +802,14 @@ class Run(AppModel):
             )
         if self.verified_count() >= self.target:
             return OperatorPlan(action="final-audit")
+        if self.real_send_attempt_count() >= self.send_attempt_goal():
+            return OperatorPlan(
+                action="final-audit",
+                reason=(
+                    f"real send attempts reached {self.real_send_attempt_count()}/"
+                    f"{self.send_attempt_goal()}"
+                ),
+            )
         candidate = self.next_connectable_observation()
         if candidate is not None:
             if self.real_send_capacity_remaining() == 0:
@@ -1206,11 +1228,44 @@ class SalesNavCapture(AppModel):
     rows: list[SalesNavCaptureRow] = Field(default_factory=list)
 
 
+class SalesNavAuditInvitation(AppModel):
+    name: str
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
+    public_identifier: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_identifier", "publicIdentifier")
+    )
+    invitation_urn: str | None = Field(
+        default=None, validation_alias=AliasChoices("invitation_urn", "invitationUrn")
+    )
+    profile_urn: str | None = Field(
+        default=None, validation_alias=AliasChoices("profile_urn", "profileUrn")
+    )
+    row_index: int | None = Field(
+        default=None, validation_alias=AliasChoices("row_index", "rowIndex")
+    )
+
+
 class SalesNavAudit(AppModel):
     people_count: int = Field(validation_alias=AliasChoices("people_count", "peopleCount"))
     recent_names: list[str] = Field(
         default_factory=list, validation_alias=AliasChoices("recent_names", "recentNames")
     )
+    invitations: list[SalesNavAuditInvitation] = Field(default_factory=list)
+    loaded_count: int | None = Field(
+        default=None, validation_alias=AliasChoices("loaded_count", "loadedCount")
+    )
+    requested_load_more: int | None = Field(
+        default=None, validation_alias=AliasChoices("requested_load_more", "requestedLoadMore")
+    )
+    load_more_clicks: int | None = Field(
+        default=None, validation_alias=AliasChoices("load_more_clicks", "loadMoreClicks")
+    )
+    load_more_exhausted: bool | None = Field(
+        default=None, validation_alias=AliasChoices("load_more_exhausted", "loadMoreExhausted")
+    )
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SalesNavSendCandidate(AppModel):

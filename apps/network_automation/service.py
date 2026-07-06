@@ -83,6 +83,8 @@ __all__ = [
 ]
 
 DEFAULT_CONFIRM_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-confirm-send")
+SENT_INVITATION_AUDIT_LOAD_MORE = 2
+MAX_SENT_INVITATION_AUDIT_ROWS = 100
 
 
 class PendingCleanupFinishMismatch(RuntimeError):
@@ -166,9 +168,9 @@ def import_audit(store: Store, path: Path) -> str:
     promoted = _confirm_audited_recent_sends(
         store,
         run,
-        audit.recent_names,
+        audit,
         audit_path=path,
-        confirmation="imported sent-page audit recent_names match",
+        confirmation="imported sent-page audit invitation match",
     )
     if not promoted:
         store.save_run(run)
@@ -1123,6 +1125,7 @@ def network_run_session(
     allow_send: bool,
     max_steps: int,
     finish: bool,
+    audit_load_more: int = SENT_INVITATION_AUDIT_LOAD_MORE,
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
     review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
@@ -1172,7 +1175,16 @@ def network_run_session(
             )
         )
         add("auditing sent-page count before run")
-        add(reconcile_audit(store, browser, attempts=1, delay_ms=0, finish=False))
+        add(
+            reconcile_audit(
+                store,
+                browser,
+                attempts=1,
+                delay_ms=0,
+                load_more=audit_load_more,
+                finish=False,
+            )
+        )
         if saved_searches_out.exists() and not refresh_saved_searches:
             add(f"using saved searches from {saved_searches_out}")
         else:
@@ -1342,6 +1354,7 @@ def network_run_session(
                     browser,
                     attempts=audit_attempts,
                     delay_ms=audit_delay_ms,
+                    load_more=audit_load_more,
                     finish=False,
                 )
             )
@@ -1362,6 +1375,7 @@ def network_run_session(
                     browser,
                     attempts=audit_attempts,
                     delay_ms=audit_delay_ms,
+                    load_more=audit_load_more,
                     finish=False,
                 )
             )
@@ -1388,23 +1402,26 @@ def reconcile_audit(
     *,
     attempts: int = 3,
     delay_ms: int = 5000,
+    load_more: int = SENT_INVITATION_AUDIT_LOAD_MORE,
     finish: bool = False,
 ) -> str:
     attempts = max(1, attempts)
     latest_delta: int | None = None
     latest_path: Path | None = None
+    latest_audit: SalesNavAudit | None = None
     messages: list[str] = []
     for attempt in range(1, attempts + 1):
-        audit, path = browser.audit_sent_invitations(load_more=0)
+        audit, path = browser.audit_sent_invitations(load_more=load_more)
+        latest_audit = audit
         latest_path = Path(path)
         run = store.load_run()
         apply_audit(run, audit.people_count, f"reconcile audit attempt {attempt}/{attempts}")
         promoted = _confirm_audited_recent_sends(
             store,
             run,
-            audit.recent_names,
+            audit,
             audit_path=latest_path,
-            confirmation=f"reconcile audit attempt {attempt}/{attempts} recent_names match",
+            confirmation=f"reconcile audit attempt {attempt}/{attempts} invitation match",
         )
         latest_delta = run.audited_delta()
         if not promoted:
@@ -1434,10 +1451,18 @@ def reconcile_audit(
             break
         if attempt < attempts and delay_ms > 0:
             time.sleep(delay_ms / 1000)
-    if latest_path is not None:
+    if latest_path is not None and latest_audit is not None:
+        loaded_warning = _audit_absence_coverage_warning(store.load_run(), latest_audit)
+        if loaded_warning:
+            run = store.load_run()
+            run.notes.append(loaded_warning)
+            run.mark_updated()
+            store.save_run(run)
+            messages.append(loaded_warning)
         closed = _close_unconfirmed_provisional_sends(
             store,
             store.load_run(),
+            latest_audit,
             audit_path=latest_path,
             confirmation=f"sent-page audit did not confirm pending after {attempts} attempt(s)",
         )
@@ -1454,28 +1479,32 @@ def reconcile_audit(
 def _confirm_audited_recent_sends(
     store: Store,
     run: Run,
-    recent_names: Sequence[str],
+    audit: SalesNavAudit,
     *,
     audit_path: Path,
     confirmation: str,
 ) -> list[str]:
-    names_remaining = Counter(
-        normalized
-        for name in recent_names
-        if (normalized := _normalize_audit_name(name))
-    )
-    if not names_remaining:
+    audit_rows = _audit_invitation_rows(audit)
+    if not audit_rows:
         return []
+    consumed = [False] * len(audit_rows)
     promoted: list[CandidateEvent] = []
     for candidate in run.candidates:
-        normalized_name = _normalize_audit_name(candidate.name)
-        if not normalized_name or names_remaining[normalized_name] <= 0:
+        matched_index = _find_audit_match_index(
+            audit_rows,
+            consumed,
+            name=candidate.name,
+            profile_url=candidate.profile_url,
+            public_profile_url=candidate.public_profile_url,
+        )
+        if matched_index is None:
             continue
         if candidate.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
-            names_remaining[normalized_name] -= 1
+            consumed[matched_index] = True
             continue
         if not _candidate_can_be_audit_confirmed(candidate):
             continue
+        consumed[matched_index] = True
         previous_status = candidate.status.value
         candidate.status = CandidateStatus.PENDING
         candidate.note = "; ".join(
@@ -1489,7 +1518,6 @@ def _confirm_audited_recent_sends(
             if part
         )
         promoted.append(candidate)
-        names_remaining[normalized_name] -= 1
     delta = run.audited_delta()
     unrecorded_audit_delta = (
         max(0, delta - run.verified_count()) if delta is not None else 0
@@ -1499,8 +1527,14 @@ def _confirm_audited_recent_sends(
         for observation in run.observations:
             if unrecorded_audit_delta <= 0:
                 break
-            normalized_name = _normalize_audit_name(observation.name)
-            if not normalized_name or names_remaining[normalized_name] <= 0:
+            matched_index = _find_audit_match_index(
+                audit_rows,
+                consumed,
+                name=observation.name,
+                profile_url=observation.profile_url,
+                public_profile_url=observation.public_profile_url,
+            )
+            if matched_index is None:
                 continue
             if run.has_candidate_event_for_observation(observation):
                 continue
@@ -1521,7 +1555,7 @@ def _confirm_audited_recent_sends(
             )
             run.candidates.append(event)
             promoted.append(event)
-            names_remaining[normalized_name] -= 1
+            consumed[matched_index] = True
             unrecorded_audit_delta -= 1
     if promoted and run.state not in {RunState.DONE, RunState.BLOCKED}:
         run.state = (
@@ -1538,6 +1572,100 @@ def _confirm_audited_recent_sends(
     return [event.name for event in promoted]
 
 
+def _audit_invitation_rows(audit: SalesNavAudit) -> list[dict[str, str | None]]:
+    if audit.invitations:
+        return [
+            {
+                "name": invitation.name,
+                "public_profile_url": invitation.public_profile_url,
+                "public_identifier": invitation.public_identifier,
+                "invitation_urn": invitation.invitation_urn,
+                "profile_urn": invitation.profile_urn,
+            }
+            for invitation in audit.invitations
+        ]
+    return [
+        {
+            "name": name,
+            "public_profile_url": None,
+            "public_identifier": None,
+            "invitation_urn": None,
+            "profile_urn": None,
+        }
+        for name in audit.recent_names
+    ]
+
+
+def _find_audit_match_index(
+    audit_rows: Sequence[dict[str, str | None]],
+    consumed: Sequence[bool],
+    *,
+    name: str,
+    profile_url: str | None,
+    public_profile_url: str | None,
+) -> int | None:
+    for index, row in enumerate(audit_rows):
+        if consumed[index]:
+            continue
+        if _audit_row_matches_candidate(
+            row,
+            name=name,
+            profile_url=profile_url,
+            public_profile_url=public_profile_url,
+        ):
+            return index
+    return None
+
+
+def _audit_row_matches_candidate(
+    row: dict[str, str | None],
+    *,
+    name: str,
+    profile_url: str | None,
+    public_profile_url: str | None,
+) -> bool:
+    row_public_url = _normalize_public_profile_url(row.get("public_profile_url"))
+    candidate_public_url = _normalize_public_profile_url(public_profile_url) or (
+        _normalize_public_profile_url(profile_url)
+    )
+    if row_public_url and candidate_public_url:
+        return row_public_url == candidate_public_url
+
+    row_identifier = row.get("public_identifier") or _public_identifier_from_url(row_public_url)
+    candidate_identifier = _public_identifier_from_url(candidate_public_url)
+    if row_identifier and candidate_identifier:
+        return row_identifier.casefold() == candidate_identifier.casefold()
+
+    row_name = _normalize_audit_name(row.get("name") or "")
+    candidate_name = _normalize_audit_name(name)
+    return bool(row_name and candidate_name and row_name == candidate_name)
+
+
+def _normalize_public_profile_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.netloc not in {"linkedin.com", "www.linkedin.com"}:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2 or parts[0] != "in" or not parts[1]:
+        return None
+    return f"https://www.linkedin.com/in/{parts[1]}"
+
+
+def _public_identifier_from_url(value: str | None) -> str | None:
+    normalized = _normalize_public_profile_url(value)
+    if not normalized:
+        return None
+    parts = [part for part in urlparse(normalized).path.split("/") if part]
+    return parts[1] if len(parts) >= 2 else None
+
+
 def _normalize_audit_name(value: str) -> str:
     return " ".join(value.casefold().split())
 
@@ -1551,15 +1679,54 @@ def _candidate_can_be_audit_confirmed(candidate: CandidateEvent) -> bool:
     return candidate.status == CandidateStatus.FAILED and candidate_counts_as_real_send(candidate)
 
 
+def _audit_loaded_count(audit: SalesNavAudit) -> int:
+    if audit.loaded_count is not None:
+        return audit.loaded_count
+    if audit.invitations:
+        return len(audit.invitations)
+    return len(audit.recent_names)
+
+
+def _required_audit_coverage_count(run: Run) -> int:
+    real_attempts = run.real_send_attempt_count()
+    tracked_attempts = run.verified_count() + run.provisional_count() + run.reverted_connect_count()
+    return min(MAX_SENT_INVITATION_AUDIT_ROWS, max(real_attempts, tracked_attempts))
+
+
+def _audit_absence_coverage_warning(run: Run, audit: SalesNavAudit) -> str | None:
+    has_provisional = any(
+        candidate.status == CandidateStatus.PENDING_PROVISIONAL
+        for candidate in run.candidates
+    )
+    if not has_provisional:
+        return None
+    delta = run.audited_delta()
+    if delta is None or delta > run.verified_count():
+        return None
+    required = _required_audit_coverage_count(run)
+    loaded = _audit_loaded_count(audit)
+    if loaded >= required:
+        return None
+    return (
+        "sent-page audit loaded "
+        f"{loaded}/{required} recent invitation row(s); "
+        "not enough to mark provisional sends failed"
+    )
+
+
 def _close_unconfirmed_provisional_sends(
     store: Store,
     run: Run,
+    audit: SalesNavAudit,
     *,
     audit_path: Path,
     confirmation: str,
 ) -> list[str]:
     delta = run.audited_delta()
     if delta is None or delta > run.verified_count():
+        return []
+    required = _required_audit_coverage_count(run)
+    if _audit_loaded_count(audit) < required:
         return []
     stale = [
         candidate
@@ -1705,6 +1872,7 @@ def confirm_provisional_send(
     event: CandidateEvent,
     *,
     delay_ms: int = 5000,
+    audit_load_more: int = SENT_INVITATION_AUDIT_LOAD_MORE,
     out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
 ) -> str:
     if event.status != CandidateStatus.PENDING_PROVISIONAL:
@@ -1730,6 +1898,36 @@ def confirm_provisional_send(
         latest_checked_at=None,
     )
     write_json_atomic(input_path, [check_candidate.model_dump(mode="json")])
+
+    audit, audit_path = browser.audit_sent_invitations(load_more=audit_load_more)
+    run = store.load_run()
+    candidate = _find_matching_provisional_event(run.candidates, event)
+    if candidate is None:
+        current = _find_matching_candidate_event(run.candidates, event)
+        if current and current.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
+            return (
+                f"confirmation status: {current.status.value}; "
+                f"verified {run.verified_count()}/{run.target}"
+            )
+        raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
+    apply_audit(run, audit.people_count, f"durable sent-page confirmation for {event.name}")
+    promoted = _confirm_audited_recent_sends(
+        store,
+        run,
+        audit,
+        audit_path=Path(audit_path),
+        confirmation="durable sent-page confirmation invitation match",
+    )
+    run = store.load_run()
+    current = _find_matching_candidate_event(run.candidates, event)
+    if current and current.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
+        return (
+            f"confirmation status: {current.status.value}; "
+            f"verified {run.verified_count()}/{run.target}"
+        )
+    if not promoted:
+        store.save_run(run)
+
     artifact, path = browser.check_acceptance_outcomes(
         candidates=[check_candidate],
         input_path=input_path,
@@ -1740,11 +1938,22 @@ def confirm_provisional_send(
     )
     row = artifact.rows[0] if artifact.rows else None
     final_status, status_note, blocked = _candidate_status_from_confirmation(row)
+    run = store.load_run()
+    candidate = _find_matching_provisional_event(run.candidates, event)
+    if candidate is None:
+        current = _find_matching_candidate_event(run.candidates, event)
+        if current and current.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
+            return (
+                f"confirmation status: {current.status.value}; "
+                f"verified {run.verified_count()}/{run.target}"
+            )
+        raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
     candidate.status = final_status
     candidate.note = "; ".join(
         part
         for part in (
             candidate.note,
+            f"sent-page audit did not confirm pending; audit={audit_path}",
             f"durable confirmation {status_note}",
             f"outcome={path}",
         )
@@ -1780,10 +1989,18 @@ def confirm_provisional_send(
 def _find_matching_provisional_event(
     candidates: list[CandidateEvent], event: CandidateEvent
 ) -> CandidateEvent | None:
+    candidate = _find_matching_candidate_event(candidates, event)
+    if candidate and candidate.status == CandidateStatus.PENDING_PROVISIONAL:
+        return candidate
+    return None
+
+
+def _find_matching_candidate_event(
+    candidates: list[CandidateEvent], event: CandidateEvent
+) -> CandidateEvent | None:
     for candidate in reversed(candidates):
         if (
-            candidate.status == CandidateStatus.PENDING_PROVISIONAL
-            and candidate.source == event.source
+            candidate.source == event.source
             and candidate.name == event.name
             and candidate.profile_url == event.profile_url
         ):
@@ -1793,11 +2010,19 @@ def _find_matching_provisional_event(
 
 def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateStatus, str, bool]:
     if row is None:
-        return CandidateStatus.FAILED, "missing confirmation row", False
+        return (
+            CandidateStatus.PENDING_PROVISIONAL,
+            "missing public-profile confirmation row; sent-page audit required",
+            False,
+        )
     status = getattr(row, "status", None)
     note = getattr(row, "note", None) or ""
     if status == AcceptanceStatus.PENDING:
-        return CandidateStatus.PENDING, "pending", False
+        return (
+            CandidateStatus.PENDING_PROVISIONAL,
+            "pending on public profile; sent-page audit required",
+            False,
+        )
     if status == AcceptanceStatus.ACCEPTED:
         return CandidateStatus.ACCEPTED, "accepted", False
     if status == AcceptanceStatus.CONNECTABLE:
@@ -1809,7 +2034,11 @@ def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateSt
     if status == AcceptanceStatus.BLOCKED:
         return CandidateStatus.FAILED, f"blocked: {note or 'blocked'}", True
     value = getattr(status, "value", str(status))
-    return CandidateStatus.FAILED, f"{value}: {note}".strip(), False
+    return (
+        CandidateStatus.PENDING_PROVISIONAL,
+        f"{value}: {note}; sent-page audit required".strip(),
+        False,
+    )
 
 
 def _safe_artifact_stem(value: str) -> str:
@@ -1885,16 +2114,7 @@ def send_next(
         event = SendAttemptCommitter(store).commit_send_result(run, result, path).event
         add(f"send result: {path}; recorded {event.status.value}")
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
-            add(f"confirming provisional send: {event.name}")
-            add(
-                confirm_provisional_send(
-                    store,
-                    browser,
-                    event,
-                    delay_ms=confirm_delay_ms,
-                    out_dir=confirm_out_dir,
-                )
-            )
+            add(f"send queued for final audit: {event.name}")
         return "\n".join(messages)
     add(f"send result: {path}; dry_run={dry_run or not allow_send}")
     return "\n".join(messages)
@@ -2024,16 +2244,7 @@ def send_guarded(
             before_save=update_guarded_send_state,
         ).event
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
-            add(f"confirming provisional send: {event.name}")
-            add(
-                confirm_provisional_send(
-                    store,
-                    browser,
-                    event,
-                    delay_ms=confirm_delay_ms,
-                    out_dir=confirm_out_dir,
-                )
-            )
+            add(f"send queued for final audit: {event.name}")
             run = store.load_run()
             if run.state == RunState.NEEDS_REAUDIT:
                 add("guarded send paused for sent-page audit")

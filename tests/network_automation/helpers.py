@@ -35,6 +35,8 @@ class FakeLiveBrowserClient:
     acceptance_status: ClassVar[str] = "accepted"
     fail_acceptance_check: ClassVar[bool] = False
     acceptance_failures_remaining: ClassVar[int] = 0
+    audit_people_count: ClassVar[int] = 101
+    audit_recent_names: ClassVar[list[str]] = ["Duplicate Lead"]
 
     def __init__(
         self,
@@ -84,10 +86,21 @@ class FakeLiveBrowserClient:
 
     def audit_sent_invitations(self, *, load_more: int = 0) -> tuple[SalesNavAudit, str]:
         self.calls.append(f"audit:load_more={load_more}")
-        return (
-            read_model(FIXTURES / "audit_101.json", SalesNavAudit),
-            str(self.out_dir / "audit.json"),
+        artifact = SalesNavAudit.model_validate(
+            {
+                "peopleCount": FakeLiveBrowserClient.audit_people_count,
+                "recentNames": FakeLiveBrowserClient.audit_recent_names,
+                "loadedCount": len(FakeLiveBrowserClient.audit_recent_names),
+                "requestedLoadMore": load_more,
+                "invitations": [
+                    {"name": name, "rowIndex": index}
+                    for index, name in enumerate(FakeLiveBrowserClient.audit_recent_names)
+                ],
+            }
         )
+        out = self.out_dir / "audit.json"
+        _write_fake_artifact(out, artifact)
+        return artifact, str(out)
 
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         self.calls.append(f"saved-searches:{url}")
@@ -491,4 +504,6 @@ def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.acceptance_status = "accepted"
     FakeLiveBrowserClient.fail_acceptance_check = False
     FakeLiveBrowserClient.acceptance_failures_remaining = 0
+    FakeLiveBrowserClient.audit_people_count = 101
+    FakeLiveBrowserClient.audit_recent_names = ["Duplicate Lead"]
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)

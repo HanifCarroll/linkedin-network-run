@@ -24,6 +24,7 @@ from .models import CandidateStatus
 from .old_state import inspect_old_state
 from .reports import render_pending_report, render_report, render_send_summary
 from .service import (
+    SENT_INVITATION_AUDIT_LOAD_MORE,
     apply_lead_review_decisions,
     capture_saved_searches,
     capture_source,
@@ -137,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--allow-send", action="store_true")
     run_session.add_argument("--audit-attempts", type=int, default=3)
     run_session.add_argument("--audit-delay-ms", type=int, default=5000)
+    run_session.add_argument(
+        "--audit-load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE
+    )
     run_session.add_argument("--confirm-delay-ms", type=int, default=5000)
     run_session.add_argument(
         "--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send"
@@ -168,6 +172,9 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--session", default="auto")
     reconcile.add_argument("--attempts", type=int, default=3)
     reconcile.add_argument("--delay-ms", type=int, default=5000)
+    reconcile.add_argument(
+        "--load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE
+    )
     reconcile.add_argument("--finish", action="store_true")
     reconcile.add_argument("--out-dir", default=str(DEFAULT_AUDIT_OUT_DIR))
     reconcile.add_argument("--fixture-result", default=None)
@@ -456,6 +463,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                 refresh_saved_searches=args.refresh_saved_searches,
                 audit_attempts=args.audit_attempts,
                 audit_delay_ms=args.audit_delay_ms,
+                audit_load_more=args.audit_load_more,
                 allow_send=args.allow_send,
                 max_steps=args.max_steps,
                 finish=args.finish,
@@ -490,6 +498,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             browser_from_args(args, audit=True),
             attempts=args.attempts,
             delay_ms=args.delay_ms,
+            load_more=args.load_more,
             finish=args.finish,
         )
     if command == "record":

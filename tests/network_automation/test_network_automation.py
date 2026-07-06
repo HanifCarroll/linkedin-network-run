@@ -931,7 +931,8 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
         confirm_delay_ms=0,
     )
 
-    assert "recorded pending" in send_output
+    assert "recorded pending-provisional" in send_output
+    assert "send queued for final audit: Duplicate Lead" in send_output
     assert store.load_lead_ledger().leads[packet["candidates"][0]["lead_key"]].status == (
         LeadStatus.PENDING
     )
@@ -1024,6 +1025,12 @@ def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
         confirm_delay_ms=0,
         confirm_out_dir=tmp_path / "confirm",
     )
+    reconcile_audit(
+        store,
+        FixtureBrowserClient(),
+        attempts=1,
+        delay_ms=0,
+    )
 
     entries = store.load_send_ledger_entries()
     event_date = entries[0].attempted_at.date().isoformat()
@@ -1038,7 +1045,7 @@ def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
     assert summary.entries[0].status == CandidateStatus.PENDING
 
 
-def test_send_guarded_commits_send_result_and_confirmation(
+def test_send_guarded_commits_send_result_for_final_audit(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path)
@@ -1062,19 +1069,24 @@ def test_send_guarded_commits_send_result_and_confirmation(
     event_log = [
         json.loads(line) for line in store.event_path(run).read_text().splitlines()
     ]
-    assert "confirmation status: pending; verified 1/1" in output
-    assert [entry.event_kind for entry in entries] == [
-        "record-send-result",
-        "confirm-send-result",
-    ]
-    assert [entry.status for entry in entries] == [
-        CandidateStatus.PENDING_PROVISIONAL,
-        CandidateStatus.PENDING,
-    ]
+    assert "send queued for final audit: Duplicate Lead" in output
+    assert [entry.event_kind for entry in entries] == ["record-send-result"]
+    assert [entry.status for entry in entries] == [CandidateStatus.PENDING_PROVISIONAL]
+    sent = next(candidate for candidate in run.candidates if candidate.name == "Duplicate Lead")
+    assert sent.status == CandidateStatus.PENDING_PROVISIONAL
     event_kinds = [entry["kind"] for entry in event_log]
-    assert event_kinds.index("record-send-result") < event_kinds.index(
-        "confirm-send-result"
+    assert "record-send-result" in event_kinds
+    assert "confirm-send-result" not in event_kinds
+
+    reconcile_output = reconcile_audit(
+        store,
+        FixtureBrowserClient(),
+        attempts=1,
+        delay_ms=0,
     )
+
+    assert "audit-confirmed 1 send(s): Duplicate Lead" in reconcile_output
+    assert store.load_run().verified_count() == 1
 
 
 def test_send_ledger_history_sync_counts_confirmed_sends(tmp_path: Path) -> None:
@@ -1294,7 +1306,12 @@ def test_retry_failed_lead_clears_failed_event_for_approved_lead(tmp_path: Path)
     assert browser.candidate.name == observation.name
 
 
-def test_confirmation_prefers_public_profile_url(tmp_path: Path) -> None:
+def test_confirmation_prefers_public_profile_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(FakeLiveBrowserClient, "acceptance_status", "accepted")
+    monkeypatch.setattr(FakeLiveBrowserClient, "audit_people_count", 100)
+    monkeypatch.setattr(FakeLiveBrowserClient, "audit_recent_names", [])
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
     event = CandidateEvent(
@@ -1460,6 +1477,18 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
         ),
         encoding="utf-8",
     )
+    audit_result = tmp_path / "top-up-audit.json"
+    audit_result.write_text(
+        json.dumps(
+            {
+                "peopleCount": 101,
+                "recentNames": ["Top Up Candidate"],
+                "loadedCount": 1,
+                "invitations": [{"name": "Top Up Candidate", "rowIndex": 0}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     exit_code = network_main(
         [
@@ -1474,6 +1503,8 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
             "--no-fallback-capture",
             "--fixture-send-result",
             str(send_result),
+            "--fixture-audit-result",
+            str(audit_result),
         ]
     )
 
@@ -1586,16 +1617,20 @@ def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> Non
     output = send_next(store, browser, dry_run=False, allow_send=True, confirm_delay_ms=0)
 
     run = store.load_run()
-    assert "recorded pending" in output
-    assert run.verified_count() == 1
-    assert run.state == RunState.FINAL_RECONCILE
+    assert "recorded pending-provisional" in output
+    assert "send queued for final audit: Duplicate Lead" in output
+    assert run.verified_count() == 0
+    assert run.real_send_attempt_count() == 1
+    assert run.state == RunState.SENDING
 
 
-def test_send_next_pauses_for_audit_when_public_profile_still_connectable(
+def test_send_next_queues_provisional_for_final_audit(
     tmp_path: Path,
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "connectable"
+    FakeLiveBrowserClient.audit_people_count = 100
+    FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 29), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
@@ -1613,18 +1648,80 @@ def test_send_next_pauses_for_audit_when_public_profile_still_connectable(
 
     run = store.load_run()
     assert "recorded pending-provisional" in output
-    assert "confirmation status: pending-provisional; verified 0/1" in output
+    assert "send queued for final audit: Duplicate Lead" in output
     assert run.verified_count() == 0
     assert run.real_send_attempt_count() == 1
-    assert run.state == RunState.NEEDS_REAUDIT
-    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+    assert run.state == RunState.SENDING
+    sent = next(candidate for candidate in run.candidates if candidate.name == "Duplicate Lead")
+    assert sent.status == CandidateStatus.PENDING_PROVISIONAL
+    assert browser.calls == ["send:Duplicate Lead:dry=False:allow=True"]
 
 
-def test_send_guarded_returns_cleanly_when_confirmation_needs_audit(
+def test_operator_plan_final_audit_after_target_send_attempts(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 6), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+
+    send_next(
+        store,
+        FixtureBrowserClient(send_result=FIXTURES / "send_pending.json"),
+        dry_run=False,
+        allow_send=True,
+        confirm_delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert run.verified_count() == 0
+    assert run.real_send_attempt_count() == 1
+    assert run.operator_plan().action == "final-audit"
+
+
+def test_send_next_final_audit_confirms_sent_page_before_public_profile(
     tmp_path: Path,
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
     FakeLiveBrowserClient.acceptance_status = "connectable"
+    FakeLiveBrowserClient.audit_people_count = 101
+    FakeLiveBrowserClient.audit_recent_names = ["Duplicate Lead"]
+    store = Store(tmp_path)
+    start_run(store, target=1, run_date=date(2026, 7, 6), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    _approve_all_observed_leads(store)
+    browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
+
+    output = send_next(
+        store,
+        browser,
+        dry_run=False,
+        allow_send=True,
+        confirm_delay_ms=0,
+    )
+
+    assert "send queued for final audit: Duplicate Lead" in output
+    assert browser.calls == ["send:Duplicate Lead:dry=False:allow=True"]
+    reconcile_output = reconcile_audit(store, browser, attempts=1, delay_ms=0)
+
+    assert "audit-confirmed 1 send(s): Duplicate Lead" in reconcile_output
+    assert browser.calls == [
+        "send:Duplicate Lead:dry=False:allow=True",
+        "audit:load_more=2",
+    ]
+    sent = next(
+        candidate for candidate in store.load_run().candidates if candidate.name == "Duplicate Lead"
+    )
+    assert sent.status == CandidateStatus.PENDING
+
+
+def test_send_guarded_keeps_provisional_until_final_audit(
+    tmp_path: Path,
+) -> None:
+    FakeLiveBrowserClient.instances.clear()
+    FakeLiveBrowserClient.acceptance_status = "connectable"
+    FakeLiveBrowserClient.audit_people_count = 100
+    FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 3), force=True)
     _make_source_current(store, "ASAP - Agency Owners Delivery")
@@ -1641,9 +1738,11 @@ def test_send_guarded_returns_cleanly_when_confirmation_needs_audit(
         confirm_delay_ms=0,
     )
 
-    assert "confirmation status: pending-provisional; verified 0/1" in output
-    assert "guarded send paused for sent-page audit" in output
-    assert store.load_run().state == RunState.NEEDS_REAUDIT
+    assert "send queued for final audit: Duplicate Lead" in output
+    run = store.load_run()
+    assert run.state == RunState.SENDING
+    sent = next(candidate for candidate in run.candidates if candidate.name == "Duplicate Lead")
+    assert sent.status == CandidateStatus.PENDING_PROVISIONAL
 
 
 def test_reconcile_audit_promotes_recent_name_false_negatives(tmp_path: Path) -> None:
@@ -1706,6 +1805,68 @@ def test_reconcile_audit_promotes_recent_name_false_negatives(tmp_path: Path) ->
     assert all(entry.status == CandidateStatus.PENDING for entry in entries)
 
 
+def test_reconcile_audit_matches_structured_public_profile_before_name(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 7, 6), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.candidates.extend(
+        [
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Duplicate Name",
+                profile_url="https://www.linkedin.com/sales/lead/wrong",
+                public_profile_url="https://www.linkedin.com/in/wrong-person",
+                status=CandidateStatus.PENDING,
+                note="already confirmed from prior audit",
+            ),
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Duplicate Name",
+                profile_url="https://www.linkedin.com/sales/lead/right",
+                public_profile_url="https://www.linkedin.com/in/right-person",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+                note="salesnav-send-one saw immediate Connect - Pending",
+            ),
+        ]
+    )
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "peopleCount": 101,
+                "recentNames": ["Duplicate Name"],
+                "loadedCount": 1,
+                "invitations": [
+                    {
+                        "name": "Duplicate Name",
+                        "publicProfileUrl": "https://www.linkedin.com/in/right-person",
+                        "publicIdentifier": "right-person",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = reconcile_audit(
+        store,
+        FixtureBrowserClient(audit=audit_path),
+        attempts=1,
+        delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "audit-confirmed 1 send(s): Duplicate Name" in output
+    assert run.candidates[0].note == "already confirmed from prior audit"
+    assert "sent-page audit confirmed pending" in (run.candidates[1].note or "")
+    assert run.verified_count() == 2
+
+
 def test_reconcile_audit_closes_stale_unconfirmed_provisional_send(
     tmp_path: Path,
 ) -> None:
@@ -1734,7 +1895,13 @@ def test_reconcile_audit_closes_stale_unconfirmed_provisional_send(
     store.save_run(run)
     audit_path = tmp_path / "audit.json"
     audit_path.write_text(
-        json.dumps({"peopleCount": 101, "recentNames": ["Confirmed Lead"]}),
+        json.dumps(
+            {
+                "peopleCount": 101,
+                "recentNames": ["Confirmed Lead"],
+                "loadedCount": 2,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1758,6 +1925,58 @@ def test_reconcile_audit_closes_stale_unconfirmed_provisional_send(
     assert entries[0].durable is False
     lead_records = list(store.load_lead_ledger().leads.values())
     assert lead_records[0].status == LeadStatus.BLOCKED
+
+
+def test_reconcile_audit_keeps_provisional_when_audit_is_too_shallow(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=3, run_date=date(2026, 7, 6), force=True)
+    record_audit(store, 100, "starting count")
+    run = store.load_run()
+    run.candidates.extend(
+        [
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Confirmed Lead",
+                profile_url="https://www.linkedin.com/sales/lead/confirmed",
+                status=CandidateStatus.PENDING,
+                note="sent-page audit confirmed pending",
+            ),
+            CandidateEvent(
+                source="ASAP - Agency Owners Delivery",
+                name="Stale Provisional Lead",
+                profile_url="https://www.linkedin.com/sales/lead/stale-provisional",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+                note="salesnav-send-one saw immediate Connect - Pending; durable check required",
+            ),
+        ]
+    )
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "peopleCount": 101,
+                "recentNames": ["Confirmed Lead"],
+                "loadedCount": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = reconcile_audit(
+        store,
+        FixtureBrowserClient(audit=audit_path),
+        attempts=1,
+        delay_ms=0,
+    )
+
+    run = store.load_run()
+    assert "loaded 1/2 recent invitation row(s)" in output
+    assert run.provisional_count() == 1
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
 
 
 def test_reconcile_audit_recovers_approved_observation_without_send_event(
@@ -1858,7 +2077,25 @@ def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -
         allow_send=True,
         confirm_delay_ms=0,
     )
-    import_audit(store, FIXTURES / "audit_100.json")
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(
+        json.dumps(
+            {
+                "peopleCount": 101,
+                "recentNames": ["Duplicate Lead"],
+                "loadedCount": 1,
+                "invitations": [
+                    {
+                        "name": "Duplicate Lead",
+                        "publicProfileUrl": "https://www.linkedin.com/in/duplicate-lead",
+                        "publicIdentifier": "duplicate-lead",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    import_audit(store, audit_path)
 
     report = finish_run(store)
 
@@ -2236,10 +2473,11 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
     assert "send status: pending" in output
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
     assert FakeLiveBrowserClient.instances[-1].calls == [
-        "send:Duplicate Lead:dry=False:allow=True",
-        "acceptance-check:1:offset=0:limit=1:delay=0",
+        "send:Duplicate Lead:dry=False:allow=True"
     ]
-    assert store.load_run().verified_count() == 1
+    run = store.load_run()
+    assert run.real_send_attempt_count() == 1
+    assert run.verified_count() == 0
 
 
 def test_cli_pending_withdraw_next_uses_live_browser(
@@ -2649,7 +2887,7 @@ def test_cli_network_run_session_reuses_one_live_browser(
     assert len(FakeLiveBrowserClient.instances) == 1
     assert FakeLiveBrowserClient.instances[0].out_dir == out_dir
     assert FakeLiveBrowserClient.instances[0].calls == [
-        "audit:load_more=0",
+        "audit:load_more=2",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
             "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
@@ -2711,7 +2949,7 @@ def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[0].calls == [
-        "audit:load_more=0",
+        "audit:load_more=2",
         (
             "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
@@ -2768,7 +3006,7 @@ def test_cli_network_run_session_can_refresh_existing_saved_searches(
 
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[0].calls == [
-        "audit:load_more=0",
+        "audit:load_more=2",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
             "capture:ASAP - Agency Owners Delivery:pages=3:limit=0:only=True:"
@@ -2857,7 +3095,7 @@ def test_cli_network_run_session_resume_sends_after_review_decisions(
     assert resume_exit == 0
     calls = FakeLiveBrowserClient.instances[0].calls
     assert calls[0] == "send:Duplicate Lead:dry=False:allow=True"
-    assert "audit:load_more=0" in calls
+    assert "audit:load_more=2" in calls
     assert Store(tmp_path).load_run().verified_count() == 1
 
 
