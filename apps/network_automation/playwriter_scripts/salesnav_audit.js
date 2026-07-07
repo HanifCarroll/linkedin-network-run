@@ -45,6 +45,35 @@ async function blockedReason(page) {
   return null;
 }
 
+async function invitationControlCount(page) {
+  return page.locator("[aria-label^='Withdraw invitation sent to']").count().catch(() => 0);
+}
+
+async function waitForInvitationGrowth(page, previousCount) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await page.waitForTimeout(300);
+    const currentCount = await invitationControlCount(page);
+    if (currentCount > previousCount) return currentCount;
+  }
+  return invitationControlCount(page);
+}
+
+async function scrollSentInvitationsPage(page) {
+  await page.evaluate(() => {
+    const targets = [
+      document.scrollingElement,
+      document.documentElement,
+      document.body,
+      document.querySelector("main#workspace"),
+      document.querySelector("main"),
+    ].filter(Boolean);
+    for (const target of targets) {
+      target.scrollTop = target.scrollHeight;
+    }
+    window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+  });
+}
+
 async function main() {
   const activePage = await getPage();
   await activePage.goto(SENT_INVITATIONS_URL, { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -53,20 +82,25 @@ async function main() {
   if (block) throw new Error(`sent invitations audit blocked: ${block}`);
   const requestedLoadMore = Math.max(0, Number(config.loadMore || 0));
   let loadMoreClicks = 0;
+  let scrollLoads = 0;
   let loadMoreExhausted = false;
   for (let index = 0; index < requestedLoadMore; index += 1) {
+    const previousCount = await invitationControlCount(activePage);
     const button = activePage.getByRole("button", { name: /^Load more$/i }).first();
-    if (!(await button.count().catch(() => 0))) {
+    const buttonAvailable = (await button.count().catch(() => 0)) > 0;
+    if (buttonAvailable && !(await button.isDisabled().catch(() => false))) {
+      await button.click({ timeout: 8000 });
+      loadMoreClicks += 1;
+    } else {
+      await scrollSentInvitationsPage(activePage);
+      scrollLoads += 1;
+    }
+    const currentCount = await waitForInvitationGrowth(activePage, previousCount);
+    if (currentCount <= previousCount) {
       loadMoreExhausted = true;
       break;
     }
-    if (await button.isDisabled().catch(() => false)) {
-      loadMoreExhausted = true;
-      break;
-    }
-    await button.click({ timeout: 8000 });
-    loadMoreClicks += 1;
-    await activePage.waitForTimeout(1500);
+    if (currentCount >= MAX_RECENT_INVITATIONS) break;
   }
   const workspace = activePage.locator("main#workspace").first();
   const text = await workspace.textContent({ timeout: 10000 });
@@ -172,6 +206,7 @@ async function main() {
     peopleCount: Number(match[1].replace(/,/g, "")),
     requestedLoadMore,
     loadMoreClicks,
+    scrollLoads,
     loadMoreExhausted,
     loadedCount: invitations.length,
     recentNames: names,

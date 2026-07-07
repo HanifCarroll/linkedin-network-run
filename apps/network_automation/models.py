@@ -606,6 +606,20 @@ class Run(AppModel):
             if candidate.source == source and candidate_counts_as_real_send(candidate)
         )
 
+    def active_send_count(self) -> int:
+        return self.verified_count() + self.provisional_count()
+
+    def source_active_send_count(self, source: str) -> int:
+        return sum(
+            1
+            for candidate in self.candidates
+            if candidate.source == source
+            and (
+                candidate.status in TARGET_COUNTED_SEND_STATUSES
+                or candidate.status == CandidateStatus.PENDING_PROVISIONAL
+            )
+        )
+
     def send_attempt_goal(self) -> int:
         return min(self.target, self.max_real_sends)
 
@@ -638,9 +652,9 @@ class Run(AppModel):
         for plan in self.sources[:source_index]:
             if plan.fallback:
                 continue
-            attempted = self.source_real_send_attempt_count(plan.name)
-            if plan.target > attempted:
-                total += plan.target - attempted
+            active = self.source_active_send_count(plan.name)
+            if plan.target > active:
+                total += plan.target - active
         return total
 
     def source_quota_with_carryover(self, source_index: int) -> int:
@@ -656,9 +670,7 @@ class Run(AppModel):
         if self.state in {RunState.NEEDS_REAUDIT, RunState.DONE, RunState.BLOCKED}:
             return None
         send_attempt_goal = self.send_attempt_goal()
-        total_remaining = send_attempt_goal - min(
-            send_attempt_goal, self.real_send_attempt_count()
-        )
+        total_remaining = send_attempt_goal - min(send_attempt_goal, self.active_send_count())
         if total_remaining == 0:
             return None
         for index, source in enumerate(self.sources):
@@ -669,12 +681,12 @@ class Run(AppModel):
             if source.fallback and not self.allow_fallback_sources:
                 continue
             quota = self.source_quota_with_carryover(index)
-            attempted = self.source_real_send_attempt_count(source.name)
-            if source.fallback or attempted < quota:
+            active = self.source_active_send_count(source.name)
+            if source.fallback or active < quota:
                 if source.fallback:
                     remaining_for_source = total_remaining
                 else:
-                    remaining_for_source = min(quota - min(quota, attempted), total_remaining)
+                    remaining_for_source = min(quota - min(quota, active), total_remaining)
                 return NextSource(
                     name=source.name,
                     quota=quota,
@@ -709,7 +721,7 @@ class Run(AppModel):
         return None
 
     def source_is_filled_or_closed(self, source: str) -> bool:
-        if self.real_send_attempt_count() >= self.send_attempt_goal():
+        if self.active_send_count() >= self.send_attempt_goal():
             return True
         index = self.source_index(source)
         if index is None:
@@ -720,7 +732,7 @@ class Run(AppModel):
         return (
             plan.exhausted
             or self.source_is_deferred_for_run(source)
-            or self.source_real_send_attempt_count(source)
+            or self.source_active_send_count(source)
             >= self.source_quota_with_carryover(index)
         )
 
@@ -742,10 +754,10 @@ class Run(AppModel):
         return reasons
 
     def real_send_capacity_remaining(self) -> int:
-        attempts = self.real_send_attempt_count()
-        if attempts >= self.max_real_sends:
+        active = self.active_send_count()
+        if active >= self.max_real_sends:
             return 0
-        return self.max_real_sends - attempts
+        return self.max_real_sends - active
 
     def final_audit_is_short(self) -> bool:
         if self.verified_count() < self.target or self.state in {RunState.DONE, RunState.BLOCKED}:
@@ -802,11 +814,11 @@ class Run(AppModel):
             )
         if self.verified_count() >= self.target:
             return OperatorPlan(action="final-audit")
-        if self.real_send_attempt_count() >= self.send_attempt_goal():
+        if self.active_send_count() >= self.send_attempt_goal():
             return OperatorPlan(
                 action="final-audit",
                 reason=(
-                    f"real send attempts reached {self.real_send_attempt_count()}/"
+                    f"active sends reached {self.active_send_count()}/"
                     f"{self.send_attempt_goal()}"
                 ),
             )
@@ -816,8 +828,9 @@ class Run(AppModel):
                 return OperatorPlan(
                     action="blocked",
                     reason=(
-                        f"real-send cap reached: {self.real_send_attempt_count()}/"
-                        f"{self.max_real_sends} real send attempts"
+                        f"active-send cap reached: {self.active_send_count()}/"
+                        f"{self.max_real_sends} active sends "
+                        f"({self.real_send_attempt_count()} real attempts recorded)"
                     ),
                 )
             return OperatorPlan(

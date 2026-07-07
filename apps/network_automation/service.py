@@ -2082,8 +2082,8 @@ def send_next(
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit before sending")
     if allow_send and run.real_send_capacity_remaining() == 0:
         raise RuntimeError(
-            f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
-            "real send attempts"
+            f"active-send cap reached: {run.active_send_count()}/{run.max_real_sends} "
+            f"active sends ({run.real_send_attempt_count()} real attempts recorded)"
         )
     ledger, _synced = sync_lead_ledger_from_run(store, run)
     lead_suppressed = apply_lead_ledger_suppression(run, ledger)
@@ -2174,8 +2174,8 @@ def send_guarded(
             break
         if run.real_send_capacity_remaining() == 0:
             raise RuntimeError(
-                f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
-                "real send attempts"
+                f"active-send cap reached: {run.active_send_count()}/{run.max_real_sends} "
+                f"active sends ({run.real_send_attempt_count()} real attempts recorded)"
             )
         candidate = next_approved_connectable_observation(run, ledger, source)
         if candidate is None:
@@ -2287,8 +2287,8 @@ def top_up_reconcile(
             break
         if run.real_send_capacity_remaining() == 0:
             raise RuntimeError(
-                f"real-send cap reached: {run.real_send_attempt_count()}/{run.max_real_sends} "
-                "real send attempts"
+                f"active-send cap reached: {run.active_send_count()}/{run.max_real_sends} "
+                f"active sends ({run.real_send_attempt_count()} real attempts recorded)"
             )
         ledger, _synced = sync_lead_ledger_from_run(store, run)
         lead_suppressed = apply_lead_ledger_suppression(run, ledger)

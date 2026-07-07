@@ -1678,6 +1678,71 @@ def test_operator_plan_final_audit_after_target_send_attempts(tmp_path: Path) ->
     assert run.operator_plan().action == "final-audit"
 
 
+def test_operator_plan_replaces_proven_failed_send_before_final_audit(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    source = "ASAP - Agency Owners Delivery"
+    start_run(store, target=2, max_real_sends=2, run_date=date(2026, 7, 7), force=True)
+    _make_source_current(store, source)
+    run = store.load_run()
+    run.candidates.extend(
+        [
+            CandidateEvent(
+                source=source,
+                name="Confirmed Lead",
+                profile_url="https://www.linkedin.com/sales/lead/confirmed",
+                status=CandidateStatus.PENDING,
+                note="sent-page audit confirmed pending",
+            ),
+            CandidateEvent(
+                source=source,
+                name="Failed Lead",
+                profile_url="https://www.linkedin.com/sales/lead/failed",
+                status=CandidateStatus.FAILED,
+                note=(
+                    "salesnav-send-one saw immediate Connect - Pending; "
+                    "sent-page audit did not confirm pending; previous_status=pending-provisional"
+                ),
+            ),
+        ]
+    )
+    replacement = CandidateObservation(
+        source=source,
+        index=3,
+        name="Replacement Lead",
+        profile_url="https://www.linkedin.com/sales/lead/replacement",
+        menu_state="connectable",
+    )
+    run.observations.append(replacement)
+    store.save_run(run)
+    ledger = store.load_lead_ledger()
+    ledger.upsert_observation(replacement)
+    ledger.approve(lead_key_for_observation(replacement), "replacement approved")
+    store.save_lead_ledger(ledger)
+
+    run = store.load_run()
+    assert run.real_send_attempt_count() == 2
+    assert run.active_send_count() == 1
+    assert run.source_active_send_count(source) == 1
+    plan = run.operator_plan()
+
+    assert plan.action == "send-candidate"
+    assert plan.name == "Replacement Lead"
+    assert plan.real_send_capacity_remaining == 1
+
+    run.candidates.append(
+        CandidateEvent(
+            source=source,
+            name="Replacement Lead",
+            profile_url="https://www.linkedin.com/sales/lead/replacement",
+            status=CandidateStatus.PENDING_PROVISIONAL,
+            note="send queued for final audit",
+        )
+    )
+    store.save_run(run)
+
+    assert store.load_run().operator_plan().action == "final-audit"
+
+
 def test_send_next_final_audit_confirms_sent_page_before_public_profile(
     tmp_path: Path,
 ) -> None:
