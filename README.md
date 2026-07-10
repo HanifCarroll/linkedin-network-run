@@ -98,6 +98,42 @@ uv run linkedin-tools network \
   acceptance run-daily-session --session auto --min-age-days 1 --max-age-days 45
 ```
 
+`run-session` pauses at a normal, non-terminal review checkpoint whenever it
+captures new connection candidates. The packet at
+`/tmp/linkedin-network-session/lead-review-candidates.json` includes a unique
+`packet_id`. Write a fresh decisions artifact with that same id and exactly one
+decision per candidate:
+
+```json
+{
+  "packet_id": "<current packet id>",
+  "decisions": [
+    {
+      "lead_key": "linkedin:https://www.linkedin.com/sales/lead/...",
+      "status": "approved",
+      "reason": "Evidence from the current packet"
+    }
+  ]
+}
+```
+
+Apply the decisions, then resume with `--finish`. Repeat for every new packet
+until `network report` shows `State: Done` and the durable target is verified:
+
+```sh
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  apply-lead-decisions /tmp/linkedin-network-session/lead-review-candidates-decisions.json
+
+uv run linkedin-tools network \
+  --state-dir "$state_root/network-automation" \
+  run-session --resume --no-fallback --allow-send --finish \
+  --out-dir /tmp/linkedin-network-session
+```
+
+Decisions with a stale packet id, missing candidate, extra candidate, or
+duplicate candidate are rejected before any send can continue.
+
 For network sends, Sales Navigator saved searches are the source of truth for
 each configured source. The controller stores durable per-source scan progress
 in `source-progress.json` and seeds new forced runs from that file when the

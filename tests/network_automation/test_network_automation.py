@@ -881,6 +881,12 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     assert packet["candidates"][1]["search_url"]
     assert packet["candidates"][1]["send_blockers"] == []
     assert packet["candidates"][0]["links"][0]["text"] == "Duplicate Lead"
+    plan = store.load_run().operator_plan()
+    assert plan.action == "review-required"
+    assert plan.review_checkpoint is not None
+    assert str(plan.review_checkpoint.packet_id) == packet["packet_id"]
+    assert plan.review_checkpoint.packet_path == str(review_path)
+    assert plan.review_checkpoint.terminal is False
 
     with pytest.raises(RuntimeError, match="need review"):
         send_next(
@@ -894,6 +900,7 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     decisions_path.write_text(
         json.dumps(
             {
+                "packet_id": packet["packet_id"],
                 "decisions": [
                     {
                         "lead_key": packet["candidates"][0]["lead_key"],
@@ -936,6 +943,186 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     assert store.load_lead_ledger().leads[packet["candidates"][0]["lead_key"]].status == (
         LeadStatus.PENDING
     )
+
+
+def test_lead_review_rejects_stale_and_incomplete_decision_artifacts(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(store, target=2, run_date=date(2026, 7, 10), force=True)
+    _make_source_current(store, "ASAP - Agency Owners Delivery")
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    review_path = tmp_path / "review.json"
+
+    review_candidates(store, source="ASAP - Agency Owners Delivery", out=review_path)
+    stale_packet = json.loads(review_path.read_text())
+    review_candidates(store, source="ASAP - Agency Owners Delivery", out=review_path)
+    current_packet = json.loads(review_path.read_text())
+
+    assert stale_packet["packet_id"] != current_packet["packet_id"]
+    stale_decisions_path = tmp_path / "stale-decisions.json"
+    stale_decisions_path.write_text(
+        json.dumps(
+            {
+                "packet_id": stale_packet["packet_id"],
+                "decisions": [
+                    {
+                        "lead_key": candidate["lead_key"],
+                        "status": "skipped",
+                        "reason": "stale fixture decision",
+                    }
+                    for candidate in stale_packet["candidates"]
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="lead review packet mismatch"):
+        apply_lead_review_decisions(store, stale_decisions_path)
+
+    incomplete_decisions_path = tmp_path / "incomplete-decisions.json"
+    incomplete_decisions_path.write_text(
+        json.dumps(
+            {
+                "packet_id": current_packet["packet_id"],
+                "decisions": [
+                    {
+                        "lead_key": current_packet["candidates"][0]["lead_key"],
+                        "status": "skipped",
+                        "reason": "only one fixture decision",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exactly one decision for every candidate"):
+        apply_lead_review_decisions(store, incomplete_decisions_path)
+
+    run = store.load_run()
+    assert run.lead_review_checkpoint is not None
+    assert str(run.lead_review_checkpoint.packet_id) == current_packet["packet_id"]
+    assert all(
+        record.status == LeadStatus.NEW
+        for record in store.load_lead_ledger().leads.values()
+    )
+
+
+def test_failed_send_can_top_up_through_second_review_packet_and_reach_done(
+    tmp_path: Path,
+) -> None:
+    source = "ASAP - Agency Owners Delivery"
+    store = Store(tmp_path)
+    start_run(
+        store,
+        per_source_target=1,
+        source_names=[source],
+        max_real_sends=1,
+        run_date=date(2026, 7, 10),
+        force=True,
+        allow_fallback_sources=False,
+    )
+    import_capture_path(store, FIXTURES / "capture.json", only_connectable=True)
+    first_review_path = tmp_path / "first-review.json"
+    review_candidates(store, source=source, out=first_review_path)
+    first_packet = json.loads(first_review_path.read_text())
+    first_decisions_path = tmp_path / "first-decisions.json"
+    first_decisions_path.write_text(
+        json.dumps(
+            {
+                "packet_id": first_packet["packet_id"],
+                "decisions": [
+                    {
+                        "lead_key": candidate["lead_key"],
+                        "status": "approved" if index == 0 else "skipped",
+                        "reason": "first packet fixture decision",
+                    }
+                    for index, candidate in enumerate(first_packet["candidates"])
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    apply_lead_review_decisions(store, first_decisions_path)
+    first_candidate = first_packet["candidates"][0]
+    record_candidate(
+        store,
+        source=source,
+        name=first_candidate["name"],
+        profile_url=first_candidate["profile_url"],
+        status=CandidateStatus.FAILED,
+        note="first fixture send failed clearly and needs a top-up",
+    )
+
+    second_capture_path = tmp_path / "second-capture.json"
+    _write_fake_artifact(
+        second_capture_path,
+        SalesNavCapture.model_validate(
+            {
+                "capturedAt": "2026-07-10T12:00:00Z",
+                "source": source,
+                "url": "https://www.linkedin.com/sales/search/people?page=3",
+                "rawRowCount": 1,
+                "outputRowCount": 1,
+                "stateCounts": {"connectable": 1},
+                "rows": [
+                    {
+                        "index": 4,
+                        "name": "Second Packet Lead",
+                        "profileUrl": "https://www.linkedin.com/sales/lead/second-packet",
+                        "publicProfileUrl": "https://www.linkedin.com/in/second-packet-lead",
+                        "menuState": "connectable",
+                        "menuLabels": [{"text": "Connect"}],
+                        "rowText": "Second Packet Lead Founder at Delivery Partners",
+                    }
+                ],
+            }
+        ),
+    )
+    import_capture_path(store, second_capture_path, only_connectable=True)
+    second_review_path = tmp_path / "second-review.json"
+    review_candidates(store, source=source, out=second_review_path)
+    second_packet = json.loads(second_review_path.read_text())
+
+    assert second_packet["packet_id"] != first_packet["packet_id"]
+    assert [candidate["name"] for candidate in second_packet["candidates"]] == [
+        "Second Packet Lead"
+    ]
+    second_decisions_path = tmp_path / "second-decisions.json"
+    second_decisions_path.write_text(
+        json.dumps(
+            {
+                "packet_id": second_packet["packet_id"],
+                "decisions": [
+                    {
+                        "lead_key": second_packet["candidates"][0]["lead_key"],
+                        "status": "approved",
+                        "reason": "second packet fixture decision",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    apply_lead_review_decisions(store, second_decisions_path)
+    second_candidate = second_packet["candidates"][0]
+    record_candidate(
+        store,
+        source=source,
+        name=second_candidate["name"],
+        profile_url=second_candidate["profile_url"],
+        status=CandidateStatus.PENDING,
+        note="second verified fixture send",
+    )
+
+    finish_run(store)
+
+    completed = store.load_run()
+    assert completed.state == RunState.DONE
+    assert completed.verified_count() == completed.target == 1
+    assert completed.lead_review_checkpoint is None
 
 
 def test_manual_durable_record_writes_send_ledger_summary(tmp_path: Path) -> None:
@@ -1177,12 +1364,14 @@ def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
     decisions_path.write_text(
         json.dumps(
             {
+                "packet_id": packet["packet_id"],
                 "decisions": [
                     {
-                        "lead_key": packet["candidates"][0]["lead_key"],
-                        "status": "approved",
+                        "lead_key": candidate["lead_key"],
+                        "status": "approved" if index == 0 else "skipped",
                         "reason": "looks relevant",
                     }
+                    for index, candidate in enumerate(packet["candidates"])
                 ]
             }
         ),
@@ -3122,6 +3311,7 @@ def test_cli_network_run_session_resume_sends_after_review_decisions(
     decisions_path.write_text(
         json.dumps(
             {
+                "packet_id": packet["packet_id"],
                 "decisions": [
                     {
                         "lead_key": candidate["lead_key"],
@@ -3222,10 +3412,15 @@ def test_cli_review_candidates_json_reports_decision_and_next_commands(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["packet_path"] == str(review_out)
+    assert payload["action"] == "review-required"
+    assert payload["terminal"] is False
+    assert payload["packet_id"] == json.loads(review_out.read_text())["packet_id"]
     assert payload["markdown_path"] == str(review_out.with_suffix(".md"))
     assert payload["decisions_path"] == str(tmp_path / "review-decisions.json")
     assert "apply-lead-decisions" in payload["apply_command"]
     assert "run-session --resume" in payload["send_command"]
+    assert "--max-real-sends 1" in payload["send_command"]
+    assert payload["send_command"].endswith("--allow-send --finish")
     assert payload["next_commands"][0] == f"edit decisions: {tmp_path / 'review-decisions.json'}"
 
 

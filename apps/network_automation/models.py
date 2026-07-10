@@ -408,6 +408,7 @@ class LeadReviewCandidate(AppModel):
 
 
 class LeadReviewPacket(AppModel):
+    packet_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     generated_at: datetime = Field(default_factory=now_utc)
     source: str | None = None
     candidates: list[LeadReviewCandidate] = Field(default_factory=list)
@@ -420,7 +421,20 @@ class LeadReviewDecision(AppModel):
 
 
 class LeadReviewDecisionArtifact(AppModel):
+    packet_id: uuid.UUID
     decisions: list[LeadReviewDecision] = Field(default_factory=list)
+
+
+class LeadReviewCheckpoint(AppModel):
+    packet_id: uuid.UUID
+    packet_path: str
+    markdown_path: str
+    decisions_path: str
+    candidate_keys: list[str] = Field(default_factory=list)
+    source: str | None = None
+    action: str = "review-required"
+    terminal: bool = False
+    created_at: datetime = Field(default_factory=now_utc)
 
 
 class SourceCaptureCursor(AppModel):
@@ -511,6 +525,7 @@ class OperatorPlan(AppModel):
     name: str | None = None
     profile_url: str | None = None
     real_send_capacity_remaining: int | None = None
+    review_checkpoint: LeadReviewCheckpoint | None = None
     reason: str | None = None
 
 
@@ -560,6 +575,7 @@ class Run(AppModel):
     capture_cursors: dict[str, SourceCaptureCursor] = Field(default_factory=dict)
     timings: list[RunTimingEvent] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    lead_review_checkpoint: LeadReviewCheckpoint | None = None
     blocked_resume_at: datetime | None = None
     allow_fallback_sources: bool = True
     carry_over_shortfall: bool = True
@@ -811,6 +827,12 @@ class Run(AppModel):
         if self.state == RunState.BLOCKED:
             return OperatorPlan(
                 action="blocked", reason="run is blocked by the latest guarded send result"
+            )
+        if self.lead_review_checkpoint is not None:
+            return OperatorPlan(
+                action="review-required",
+                review_checkpoint=self.lead_review_checkpoint,
+                reason="normal non-terminal lead review checkpoint is awaiting decisions",
             )
         if self.verified_count() >= self.target:
             return OperatorPlan(action="final-audit")

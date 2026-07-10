@@ -21,6 +21,7 @@ from .models import (
     CandidateStatus,
     LeadLedger,
     LeadReviewCandidate,
+    LeadReviewCheckpoint,
     LeadReviewDecisionArtifact,
     LeadReviewPacket,
     LeadStatus,
@@ -737,6 +738,7 @@ def render_lead_review_markdown(packet: LeadReviewPacket) -> str:
     lines = [
         "# LinkedIn Candidate Review",
         "",
+        f"- Packet ID: `{packet.packet_id}`",
         f"- Generated: `{packet.generated_at.isoformat()}`",
         f"- Source: `{packet.source or 'all sources'}`",
         f"- Candidates: `{len(packet.candidates)}`",
@@ -744,7 +746,7 @@ def render_lead_review_markdown(packet: LeadReviewPacket) -> str:
         "Decision artifact shape:",
         "",
         "```json",
-        '{ "decisions": [',
+        f'{{ "packet_id": "{packet.packet_id}", "decisions": [',
         '  { "lead_key": "<lead key>", "status": "approved", "reason": "<why>" },',
         '  { "lead_key": "<lead key>", "status": "skipped", "reason": "<why>" }',
         "] }",
@@ -832,7 +834,9 @@ def lead_review_next_commands(
         resume_parts.extend(["--saved-searches", saved_searches])
     if not allow_fallback_sources:
         resume_parts.append("--no-fallback")
-    resume_parts.append("--allow-send")
+    resume_parts.extend(
+        ["--max-real-sends", str(store.load_run().max_real_sends), "--allow-send", "--finish"]
+    )
     return [
         f"edit decisions: {decisions_path}",
         _shell_command(
@@ -875,11 +879,25 @@ def review_candidates(
     markdown_path = write_lead_review_packet(packet, out)
     decisions_path = lead_review_decisions_path(out)
     next_commands = next_commands or lead_review_next_commands(store, out)
+    run.lead_review_checkpoint = LeadReviewCheckpoint(
+        packet_id=packet.packet_id,
+        packet_path=str(out),
+        markdown_path=str(markdown_path),
+        decisions_path=str(decisions_path),
+        candidate_keys=[candidate.lead_key for candidate in packet.candidates],
+        source=source,
+        created_at=packet.generated_at,
+    )
+    run.mark_updated()
+    store.save_run(run)
     store.append_event(
         run,
         "lead-review-packet",
         {
             "source": source,
+            "packet_id": str(packet.packet_id),
+            "action": "review-required",
+            "terminal": False,
             "out": str(out),
             "markdown": str(markdown_path),
             "decisions": str(decisions_path),
@@ -889,6 +907,9 @@ def review_candidates(
         },
     )
     payload = {
+        "action": "review-required",
+        "terminal": False,
+        "packet_id": str(packet.packet_id),
         "packet_path": str(out),
         "markdown_path": str(markdown_path),
         "decisions_path": str(decisions_path),
@@ -903,6 +924,7 @@ def review_candidates(
         return json.dumps(payload, indent=2)
     return (
         f"lead review packet: {len(packet.candidates)} candidate(s) written to {out}; "
+        f"paused for normal review (non-terminal); packet_id={packet.packet_id}; "
         f"markdown={markdown_path}; decisions={decisions_path}; "
         f"synced={synced}; suppressed={len(suppressed)}\n"
         f"{render_next_command_block(next_commands)}"
@@ -912,6 +934,34 @@ def review_candidates(
 def apply_lead_review_decisions(store: Store, path: Path) -> str:
     artifact = read_model(path, LeadReviewDecisionArtifact)
     run = store.load_run()
+    checkpoint = run.lead_review_checkpoint
+    if checkpoint is None:
+        raise ValueError("no active lead review packet; generate a current review packet first")
+    if artifact.packet_id != checkpoint.packet_id:
+        raise ValueError(
+            "lead review packet mismatch: "
+            f"decisions are for {artifact.packet_id}, current packet is {checkpoint.packet_id}"
+        )
+    decision_keys = [decision.lead_key for decision in artifact.decisions]
+    duplicate_keys = sorted(
+        lead_key for lead_key, count in Counter(decision_keys).items() if count > 1
+    )
+    expected_keys = set(checkpoint.candidate_keys)
+    actual_keys = set(decision_keys)
+    missing_keys = sorted(expected_keys - actual_keys)
+    extra_keys = sorted(actual_keys - expected_keys)
+    if duplicate_keys or missing_keys or extra_keys:
+        details: list[str] = []
+        if missing_keys:
+            details.append("missing: " + ", ".join(missing_keys))
+        if extra_keys:
+            details.append("not in current packet: " + ", ".join(extra_keys))
+        if duplicate_keys:
+            details.append("duplicate: " + ", ".join(duplicate_keys))
+        raise ValueError(
+            "lead review decisions must contain exactly one decision for every candidate "
+            f"in packet {checkpoint.packet_id}; " + "; ".join(details)
+        )
     ledger, synced = sync_lead_ledger_from_run(store, run)
     changed: list[str] = []
     for decision in artifact.decisions:
@@ -934,6 +984,8 @@ def apply_lead_review_decisions(store: Store, path: Path) -> str:
             )
         changed.append(f"{record.name}:{record.status.value}")
     suppressed = apply_lead_ledger_suppression(run, ledger)
+    run.lead_review_checkpoint = None
+    run.mark_updated()
     store.save_lead_ledger(ledger)
     store.save_run(run)
     store.append_event(
@@ -941,6 +993,7 @@ def apply_lead_review_decisions(store: Store, path: Path) -> str:
         "lead-review-decisions",
         {
             "path": str(path),
+            "packet_id": str(artifact.packet_id),
             "decisions": len(artifact.decisions),
             "changed": changed,
             "synced": synced,
@@ -1206,6 +1259,15 @@ def network_run_session(
     for _ in range(max_steps):
         plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
         add(f"plan: {plan.action}")
+        if plan.action == "review-required":
+            checkpoint = plan.review_checkpoint
+            if checkpoint is None:
+                raise RuntimeError("review-required plan did not include checkpoint details")
+            add(
+                "paused: normal non-terminal lead review checkpoint is awaiting decisions; "
+                f"packet={checkpoint.packet_path}; decisions={checkpoint.decisions_path}"
+            )
+            break
         if plan.action == "source-exhausted":
             if not plan.source:
                 raise RuntimeError("source-exhausted plan did not include source")
@@ -1269,7 +1331,10 @@ def network_run_session(
                             next_commands=commands,
                         )
                     )
-                    add("stopped: lead review required before connection requests")
+                    add(
+                        "paused: normal lead review checkpoint is ready; "
+                        "apply every decision and resume this non-terminal run"
+                    )
                     break
             else:
                 streak = zero_capture_streaks.get(plan.source, 0) + 1
@@ -1327,7 +1392,10 @@ def network_run_session(
                         next_commands=commands,
                     )
                 )
-                add("stopped: lead review required before connection requests")
+                add(
+                    "paused: normal lead review checkpoint is ready; "
+                    "apply every decision and resume this non-terminal run"
+                )
                 break
             if not allow_send:
                 add("stopped: pass --allow-send for real network sends")
