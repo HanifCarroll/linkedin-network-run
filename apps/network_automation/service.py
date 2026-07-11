@@ -225,9 +225,13 @@ def capture_saved_searches(
         except RuntimeError as error:
             if attempt >= attempts or not _is_retryable_saved_search_error(error):
                 raise
+            recover = getattr(browser, "recover_after_failure", None)
+            if callable(recover):
+                recover()
             messages.append(
                 "saved-search capture attempt "
-                f"{attempt}/{attempts} failed with transient Sales Navigator load state; retrying"
+                f"{attempt}/{attempts} failed with transient Sales Navigator load state; "
+                "resetting browser session and retrying"
             )
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000)

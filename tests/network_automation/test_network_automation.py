@@ -763,7 +763,9 @@ def test_capture_saved_searches_retries_transient_load_failures(
     )
 
     assert browser.saved_search_calls == 2
+    assert browser.recoveries == 1
     assert "saved-search capture attempt 1/3 failed" in output
+    assert "resetting browser session and retrying" in output
     assert "captured 1 saved searches" in output
 
 
@@ -783,6 +785,7 @@ def test_capture_saved_searches_does_not_retry_login_blocker(tmp_path: Path) -> 
         )
 
     assert browser.saved_search_calls == 1
+    assert browser.recoveries == 0
 
 
 def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path) -> None:
