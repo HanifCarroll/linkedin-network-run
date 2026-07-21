@@ -18,6 +18,7 @@ from packages.linkedin_storage import (
 )
 
 from .models import (
+    AcceptanceDailyRun,
     AcceptanceFollowupAttempt,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
@@ -101,17 +102,10 @@ MIGRATIONS = (
             drafted_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             accepted_at TEXT NOT NULL,
-            strategy TEXT NOT NULL,
-            template_key TEXT NOT NULL,
-            angle TEXT NOT NULL,
             draft TEXT NOT NULL,
             status TEXT NOT NULL,
             sent_at TEXT,
             report_path TEXT NOT NULL,
-            research_path TEXT,
-            person_does TEXT,
-            company_does TEXT,
-            message_fit TEXT,
             raw_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_acceptance_followups_status
@@ -164,6 +158,40 @@ MIGRATIONS = (
             ON send_ledger_entries(run_date, source);
         """,
     ),
+    Migration(
+        2,
+        "acceptance_daily_observation_metrics",
+        """
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN first_observed_accepted_at TEXT;
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN last_observed_unaccepted_at TEXT;
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN acceptance_observation_precision TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_acceptance_invitations_first_accepted
+            ON acceptance_invitations(first_observed_accepted_at);
+
+        CREATE TABLE IF NOT EXISTS acceptance_daily_runs (
+            id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            local_date TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            min_age_days INTEGER NOT NULL,
+            max_age_days INTEGER,
+            eligible INTEGER NOT NULL,
+            checked INTEGER NOT NULL,
+            newly_confirmed_accepted INTEGER NOT NULL,
+            remaining_unresolved INTEGER NOT NULL,
+            coverage_complete INTEGER NOT NULL,
+            blocker TEXT,
+            raw_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_acceptance_daily_runs_date
+            ON acceptance_daily_runs(timezone, local_date, completed_at);
+        """,
+    ),
 )
 
 
@@ -176,6 +204,7 @@ class NetworkStateDbStatus:
     acceptance_outcome_events: int
     acceptance_followups: int
     acceptance_followup_attempts: int
+    acceptance_daily_runs: int
     send_ledger_entries: int
     canonical_acceptance_ledger: bool
     canonical_acceptance_followups: bool
@@ -190,6 +219,7 @@ class NetworkStateDbStatus:
             "acceptance_outcome_events": self.acceptance_outcome_events,
             "acceptance_followups": self.acceptance_followups,
             "acceptance_followup_attempts": self.acceptance_followup_attempts,
+            "acceptance_daily_runs": self.acceptance_daily_runs,
             "send_ledger_entries": self.send_ledger_entries,
             "canonical_acceptance_ledger": self.canonical_acceptance_ledger,
             "canonical_acceptance_followups": self.canonical_acceptance_followups,
@@ -243,6 +273,7 @@ class NetworkStateDb:
                 acceptance_outcome_events=0,
                 acceptance_followups=0,
                 acceptance_followup_attempts=0,
+                acceptance_daily_runs=0,
                 send_ledger_entries=0,
                 canonical_acceptance_ledger=False,
                 canonical_acceptance_followups=False,
@@ -259,6 +290,7 @@ class NetworkStateDb:
                 acceptance_followup_attempts=_table_count(
                     conn, "acceptance_followup_attempts"
                 ),
+                acceptance_daily_runs=_table_count(conn, "acceptance_daily_runs"),
                 send_ledger_entries=_table_count(conn, "send_ledger_entries"),
                 canonical_acceptance_ledger=_meta_bool(
                     conn, META_ACCEPTANCE_LEDGER_CANONICAL
@@ -305,6 +337,61 @@ class NetworkStateDb:
             for position, invitation in enumerate(ledger.invitations):
                 _insert_acceptance_invitation(conn, invitation, position, replace=True)
             _set_meta(conn, META_ACCEPTANCE_LEDGER_CANONICAL, "1")
+
+    def load_acceptance_daily_runs(self) -> list[AcceptanceDailyRun]:
+        self.ensure_schema()
+        with self.connect(readonly=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT raw_json
+                FROM acceptance_daily_runs
+                ORDER BY completed_at, id
+                """
+            ).fetchall()
+        return [
+            AcceptanceDailyRun.model_validate_json(str(row["raw_json"])) for row in rows
+        ]
+
+    def append_acceptance_daily_run(self, run: AcceptanceDailyRun) -> bool:
+        self.ensure_schema()
+        with self.connect() as conn, transaction(conn):
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO acceptance_daily_runs(
+                    id,
+                    started_at,
+                    completed_at,
+                    local_date,
+                    timezone,
+                    min_age_days,
+                    max_age_days,
+                    eligible,
+                    checked,
+                    newly_confirmed_accepted,
+                    remaining_unresolved,
+                    coverage_complete,
+                    blocker,
+                    raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(run.id),
+                    run.started_at.isoformat(),
+                    run.completed_at.isoformat(),
+                    run.local_date.isoformat(),
+                    run.timezone,
+                    run.min_age_days,
+                    run.max_age_days,
+                    run.eligible,
+                    run.checked,
+                    run.newly_confirmed_accepted,
+                    run.remaining_unresolved,
+                    int(run.coverage_complete),
+                    run.blocker,
+                    _model_json(run),
+                ),
+            )
+            return cursor.rowcount > 0
 
     def load_acceptance_followup_ledger(self) -> AcceptanceFollowupLedger:
         with self.connect(readonly=True) as conn:
@@ -404,8 +491,11 @@ def _insert_acceptance_invitation(
             sent_at,
             latest_status,
             latest_checked_at,
+            first_observed_accepted_at,
+            last_observed_unaccepted_at,
+            acceptance_observation_precision,
             raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             invitation.key(),
@@ -420,6 +510,15 @@ def _insert_acceptance_invitation(
             invitation.latest_status.value,
             invitation.latest_checked_at.isoformat()
             if invitation.latest_checked_at is not None
+            else None,
+            invitation.first_observed_accepted_at.isoformat()
+            if invitation.first_observed_accepted_at is not None
+            else None,
+            invitation.last_observed_unaccepted_at.isoformat()
+            if invitation.last_observed_unaccepted_at is not None
+            else None,
+            invitation.acceptance_observation_precision.value
+            if invitation.acceptance_observation_precision is not None
             else None,
             _model_json(invitation),
         ),
@@ -494,19 +593,12 @@ def _insert_acceptance_followup(
             drafted_at,
             updated_at,
             accepted_at,
-            strategy,
-            template_key,
-            angle,
             draft,
             status,
             sent_at,
             report_path,
-            research_path,
-            person_does,
-            company_does,
-            message_fit,
             raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.id,
@@ -519,17 +611,10 @@ def _insert_acceptance_followup(
             record.drafted_at.isoformat(),
             record.updated_at.isoformat(),
             record.accepted_at.isoformat(),
-            record.strategy.value,
-            record.template_key.value,
-            record.angle,
             record.draft,
             record.status.value,
             record.sent_at.isoformat() if record.sent_at is not None else None,
             record.report_path,
-            record.research_path,
-            record.person_does,
-            record.company_does,
-            record.message_fit,
             _model_json(record),
         ),
     )

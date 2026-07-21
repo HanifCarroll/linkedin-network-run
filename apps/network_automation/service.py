@@ -13,7 +13,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .browser import BrowserClient
+from .browser_supervision import resolve_audited_browser_incident
 from .models import (
+    DEFAULT_SOURCE_MIX,
     AcceptanceCheckCandidate,
     AcceptanceStatus,
     CandidateEvent,
@@ -61,6 +63,7 @@ from .models import (
     source_repeated_send_noop,
     sources_for_per_source_target,
     target_for_per_source_target,
+    today,
 )
 from .reports import (
     format_delta,
@@ -92,6 +95,183 @@ class PendingCleanupFinishMismatch(RuntimeError):
     """Raised when pending cleanup cannot prove the final pending count."""
 
 
+def _daily_source_targets(run: Run) -> dict[str, int]:
+    return {source.name: source.target for source in run.sources if source.target > 0}
+
+
+def _validate_daily_run_contract(run: Run, *, target: int, max_real_sends: int) -> None:
+    expected_sources = dict(DEFAULT_SOURCE_MIX)
+    problems: list[str] = []
+    if run.target != target:
+        problems.append(f"target={run.target}, expected {target}")
+    if run.max_real_sends != max_real_sends:
+        problems.append(
+            f"max_real_sends={run.max_real_sends}, expected {max_real_sends}"
+        )
+    if _daily_source_targets(run) != expected_sources:
+        problems.append(
+            f"sources={_daily_source_targets(run)!r}, expected {expected_sources!r}"
+        )
+    if run.allow_fallback_sources:
+        problems.append("fallback sources are enabled")
+    if problems:
+        raise RuntimeError("daily network run contract mismatch: " + "; ".join(problems))
+
+
+def network_daily_session_action(
+    store: Store,
+    *,
+    target: int,
+    max_real_sends: int,
+) -> str:
+    """Return the one safe next action for the local calendar day's send objective."""
+
+    expected_sources = dict(DEFAULT_SOURCE_MIX)
+    if target != sum(expected_sources.values()):
+        raise ValueError(
+            f"daily target must be {sum(expected_sources.values())} for the approved source mix"
+        )
+    if max_real_sends != target:
+        raise ValueError("daily max_real_sends must equal target")
+
+    summary = network_sends_summary(store, date_arg="today", timezone_name="local")
+    run = store.load_run() if store.active_path.exists() else None
+    if run is None:
+        if summary.entries:
+            raise RuntimeError(
+                "today has send-ledger entries but no active run; refusing to start a replacement"
+            )
+        return "start-today"
+
+    if run.date == today():
+        _validate_daily_run_contract(run, target=target, max_real_sends=max_real_sends)
+        if run.state != RunState.DONE:
+            return "resume-today"
+        if (
+            summary.durable_sent_count == target
+            and summary.provisional_count == 0
+        ):
+            return "today-complete"
+        raise RuntimeError(
+            "today's active run is Done but its local-day durable ledger does not match "
+            f"the completion contract: durable={summary.durable_sent_count}, "
+            f"provisional={summary.provisional_count}, sources={summary.by_source!r}"
+        )
+
+    if run.state != RunState.DONE:
+        _validate_daily_run_contract(run, target=target, max_real_sends=max_real_sends)
+        return "resume-carryover"
+    if summary.entries:
+        raise RuntimeError(
+            "today has send-ledger entries but the active run belongs to "
+            f"{run.date.isoformat()}; refusing to replace unclear state"
+        )
+    return "start-today"
+
+
+def network_run_daily_session(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    target: int,
+    max_real_sends: int,
+    allow_fallback_sources: bool,
+    saved_searches_url: str,
+    saved_searches_out: Path,
+    refresh_saved_searches: bool,
+    audit_attempts: int,
+    audit_delay_ms: int,
+    allow_send: bool,
+    max_steps: int,
+    finish: bool,
+    audit_load_more: int = SENT_INVITATION_AUDIT_LOAD_MORE,
+    confirm_delay_ms: int = 5000,
+    confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
+    review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
+    emit: Callable[[str], None] | None = None,
+) -> str:
+    """Resolve an older run first, then continue the current local-day objective."""
+
+    if allow_fallback_sources:
+        raise ValueError("daily session requires --no-fallback")
+    messages: list[str] = []
+
+    def add(message: str) -> None:
+        messages.append(message)
+        if emit is not None:
+            emit(message)
+
+    action = network_daily_session_action(
+        store,
+        target=target,
+        max_real_sends=max_real_sends,
+    )
+    add(f"daily objective {today().isoformat()}: {action}")
+    if action == "today-complete":
+        add("today is complete: 30 durable sends, 0 provisional")
+        return "\n".join(messages)
+
+    resume = action in {"resume-today", "resume-carryover"}
+    session_output = network_run_session(
+        store,
+        browser,
+        target=target,
+        max_real_sends=max_real_sends,
+        force=action == "start-today" and store.active_path.exists(),
+        resume=resume,
+        per_source_target=None,
+        allow_fallback_sources=False,
+        saved_searches_url=saved_searches_url,
+        saved_searches_out=saved_searches_out,
+        refresh_saved_searches=(refresh_saved_searches if action == "start-today" else False),
+        audit_attempts=audit_attempts,
+        audit_delay_ms=audit_delay_ms,
+        audit_load_more=audit_load_more,
+        allow_send=allow_send,
+        max_steps=max_steps,
+        finish=finish,
+        confirm_delay_ms=confirm_delay_ms,
+        confirm_out_dir=confirm_out_dir,
+        review_out=review_out,
+        emit=emit,
+    )
+    messages.append(session_output)
+
+    if action == "resume-carryover" and store.load_run().state == RunState.DONE:
+        next_action = network_daily_session_action(
+            store,
+            target=target,
+            max_real_sends=max_real_sends,
+        )
+        add(f"carryover resolved; daily objective {today().isoformat()}: {next_action}")
+        if next_action == "start-today":
+            today_output = network_run_session(
+                store,
+                browser,
+                target=target,
+                max_real_sends=max_real_sends,
+                force=True,
+                resume=False,
+                per_source_target=None,
+                allow_fallback_sources=False,
+                saved_searches_url=saved_searches_url,
+                saved_searches_out=saved_searches_out,
+                refresh_saved_searches=refresh_saved_searches,
+                audit_attempts=audit_attempts,
+                audit_delay_ms=audit_delay_ms,
+                audit_load_more=audit_load_more,
+                allow_send=allow_send,
+                max_steps=max_steps,
+                finish=finish,
+                confirm_delay_ms=confirm_delay_ms,
+                confirm_out_dir=confirm_out_dir,
+                review_out=review_out,
+                emit=emit,
+            )
+            messages.append(today_output)
+    return "\n".join(messages)
+
+
 def start_run(
     store: Store,
     *,
@@ -120,8 +300,7 @@ def start_run(
         if explicit_source_names:
             target = per_source_target * len(explicit_source_names)
             sources = [
-                SourcePlan(name=name, target=per_source_target)
-                for name in explicit_source_names
+                SourcePlan(name=name, target=per_source_target) for name in explicit_source_names
             ]
             sources.append(SourcePlan(name="FO - Founders - Urgent", target=0, fallback=True))
         else:
@@ -343,9 +522,7 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
                 saved_search_url=row.view_url,
                 resume_url=retry_url,
                 next_url=(
-                    existing.next_url
-                    if existing.next_url != existing.last_scanned_url
-                    else None
+                    existing.next_url if existing.next_url != existing.last_scanned_url else None
                 ),
                 last_scanned_url=existing.last_scanned_url,
                 start_url=existing.last_started_url,
@@ -366,11 +543,7 @@ def seed_run_source_progress(store: Store, saved_searches: Path) -> str:
         run.notes.extend(details)
     store.save_run(run)
     store.save_source_progress(progress)
-    return (
-        "source progress seeded"
-        f"; resumed={len(seeded)}"
-        f"; ended={len(ended)}"
-    )
+    return f"source progress seeded; resumed={len(seeded)}; ended={len(ended)}"
 
 
 def reset_source_progress(store: Store, sources: Sequence[str]) -> str:
@@ -649,9 +822,7 @@ def next_approved_connectable_observation(
     return None
 
 
-def next_approved_top_up_observation(
-    run: Run, ledger: LeadLedger
-) -> CandidateObservation | None:
+def next_approved_top_up_observation(run: Run, ledger: LeadLedger) -> CandidateObservation | None:
     for observation in run.observations:
         if (
             run.source_is_fallback(observation.source)
@@ -782,9 +953,7 @@ def render_lead_review_markdown(packet: LeadReviewPacket) -> str:
             readable_text = "\n".join(
                 line.strip() for line in candidate.text.splitlines() if line.strip()
             )
-            lines.extend(
-                ["", "Readable row text:", "", "```text", readable_text, "```"]
-            )
+            lines.extend(["", "Readable row text:", "", "```text", readable_text, "```"])
         if candidate.links:
             lines.extend(["", "Links:"])
             for link in candidate.links:
@@ -973,9 +1142,7 @@ def apply_lead_review_decisions(store: Store, path: Path) -> str:
         if decision.status == LeadStatus.APPROVED:
             blockers = _lead_send_blockers(record)
             if blockers:
-                raise ValueError(
-                    f"cannot approve {record.name}: " + "; ".join(blockers)
-                )
+                raise ValueError(f"cannot approve {record.name}: " + "; ".join(blockers))
             record = ledger.approve(decision.lead_key, decision.reason)
         elif decision.status == LeadStatus.SKIPPED:
             record = ledger.skip(decision.lead_key, decision.reason)
@@ -1037,10 +1204,7 @@ def set_lead_public_profile_url(store: Store, lead_key: str, public_profile_url:
                 "updated_observations": updated_observations,
             },
         )
-    return (
-        f"updated public profile URL for {record.name}; "
-        f"observations={updated_observations}"
-    )
+    return f"updated public profile URL for {record.name}; observations={updated_observations}"
 
 
 def _candidate_event_lead_key(event: CandidateEvent) -> str:
@@ -1087,8 +1251,7 @@ def retry_failed_lead(store: Store, lead_key: str, reason: str | None = None) ->
         event
         for event in run.candidates
         if not (
-            _candidate_event_lead_key(event) == lead_key
-            and event.status == CandidateStatus.FAILED
+            _candidate_event_lead_key(event) == lead_key and event.status == CandidateStatus.FAILED
         )
     ]
     run.mark_updated()
@@ -1151,10 +1314,7 @@ def require_saved_search_coverage(store: Store, saved_searches: Path) -> str:
         if resolve_network_source_url(saved_searches, source.name) is None:
             missing.append(source.name)
     if missing:
-        note = (
-            "saved-search coverage missing for targeted source(s): "
-            + ", ".join(missing)
-        )
+        note = "saved-search coverage missing for targeted source(s): " + ", ".join(missing)
         run.state = RunState.BLOCKED
         run.notes.append(note)
         run.mark_updated()
@@ -1198,12 +1358,31 @@ def network_run_session(
 
     if resume:
         run = store.load_run()
+        if run.state == RunState.NEEDS_BROWSER_INSPECTION:
+            incident = run.active_browser_incident()
+            detail = incident.incident_path if incident is not None else "missing incident artifact"
+            raise RuntimeError(
+                "run is paused in NeedsBrowserInspection; inspect and apply the active "
+                f"recovery receipt before resuming: {detail}"
+            )
         if not allow_fallback_sources and run.allow_fallback_sources:
             run.allow_fallback_sources = False
             run.mark_updated()
             store.save_run(run)
             store.append_event(run, "disable-fallback-sources", {})
         add(f"resumed run {run.id} for {run.date.isoformat()}")
+        if run.start_audit is None:
+            add("auditing sent-page count before resumed run")
+            add(
+                reconcile_audit(
+                    store,
+                    browser,
+                    attempts=1,
+                    delay_ms=0,
+                    load_more=audit_load_more,
+                    finish=False,
+                )
+            )
         if refresh_saved_searches or not saved_searches_out.exists():
             add(
                 "refreshing saved-search index"
@@ -1377,11 +1556,9 @@ def network_run_session(
         if plan.action == "send-candidate":
             run_for_send = store.load_run()
             ledger_for_send = store.load_lead_ledger()
-            if (
-                next_approved_connectable_observation(run_for_send, ledger_for_send)
-                is None
-                and reviewable_observations(run_for_send, ledger_for_send)
-            ):
+            if next_approved_connectable_observation(
+                run_for_send, ledger_for_send
+            ) is None and reviewable_observations(run_for_send, ledger_for_send):
                 commands = lead_review_next_commands(
                     store,
                     review_out,
@@ -1495,6 +1672,16 @@ def reconcile_audit(
             audit_path=latest_path,
             confirmation=f"reconcile audit attempt {attempt}/{attempts} invitation match",
         )
+        promoted.extend(
+            _confirm_complete_aggregate_audit(
+                store,
+                run,
+                audit_path=latest_path,
+                confirmation=(
+                    f"reconcile audit attempt {attempt}/{attempts} complete aggregate delta"
+                ),
+            )
+        )
         latest_delta = run.audited_delta()
         if not promoted:
             store.save_run(run)
@@ -1511,9 +1698,7 @@ def reconcile_audit(
             },
         )
         promoted_text = (
-            f"; audit-confirmed {len(promoted)} send(s): {', '.join(promoted)}"
-            if promoted
-            else ""
+            f"; audit-confirmed {len(promoted)} send(s): {', '.join(promoted)}" if promoted else ""
         )
         messages.append(
             f"reconcile audit {attempt}/{attempts}: People ({audit.people_count}), "
@@ -1531,18 +1716,28 @@ def reconcile_audit(
             run.mark_updated()
             store.save_run(run)
             messages.append(loaded_warning)
-        closed = _close_unconfirmed_provisional_sends(
+        resolved, reverted, unresolved = _resolve_unconfirmed_provisional_sends(
             store,
+            browser,
             store.load_run(),
             latest_audit,
             audit_path=latest_path,
-            confirmation=f"sent-page audit did not confirm pending after {attempts} attempt(s)",
         )
-        if closed:
+        if resolved:
             messages.append(
-                "closed "
-                f"{len(closed)} unconfirmed provisional send(s): {', '.join(closed)}"
+                f"profile-confirmed {len(resolved)} unlisted send(s): {', '.join(resolved)}"
             )
+        if reverted:
+            messages.append(
+                "profile-confirmed "
+                f"{len(reverted)} unlisted send(s) reverted to Connect: "
+                f"{', '.join(reverted)}"
+            )
+        if unresolved:
+            messages.append(
+                f"kept {len(unresolved)} unlisted send(s) provisional: {', '.join(unresolved)}"
+            )
+        resolve_audited_browser_incident(store, audit_path=latest_path)
     if finish:
         messages.append(finish_run(store))
     return "\n".join(messages + [render_report(store.load_run())])
@@ -1591,9 +1786,7 @@ def _confirm_audited_recent_sends(
         )
         promoted.append(candidate)
     delta = run.audited_delta()
-    unrecorded_audit_delta = (
-        max(0, delta - run.verified_count()) if delta is not None else 0
-    )
+    unrecorded_audit_delta = max(0, delta - run.verified_count()) if delta is not None else 0
     if unrecorded_audit_delta > 0:
         ledger = store.load_lead_ledger()
         for observation in run.observations:
@@ -1620,9 +1813,7 @@ def _confirm_audited_recent_sends(
                 public_profile_url=observation.public_profile_url,
                 status=CandidateStatus.PENDING,
                 note=(
-                    "sent-page audit confirmed pending; "
-                    "no recorded send event; "
-                    f"audit={audit_path}"
+                    f"sent-page audit confirmed pending; no recorded send event; audit={audit_path}"
                 ),
             )
             run.candidates.append(event)
@@ -1642,6 +1833,56 @@ def _confirm_audited_recent_sends(
             confirmation=confirmation,
         )
     return [event.name for event in promoted]
+
+
+def _confirm_complete_aggregate_audit(
+    store: Store,
+    run: Run,
+    *,
+    audit_path: Path,
+    confirmation: str,
+) -> list[str]:
+    provisional = [
+        candidate
+        for candidate in run.candidates
+        if candidate.status == CandidateStatus.PENDING_PROVISIONAL
+    ]
+    if not provisional:
+        return []
+    if not (
+        run.target == run.send_attempt_goal()
+        and run.real_send_attempt_count() == run.target
+        and run.active_send_count() == run.target
+        and run.audited_delta() == run.target
+        and run.reverted_connect_count() == 0
+        and not any(candidate.status == CandidateStatus.FAILED for candidate in run.candidates)
+    ):
+        return []
+
+    committer = SendAttemptCommitter(store)
+    for candidate in provisional:
+        previous_status = candidate.status.value
+        candidate.status = CandidateStatus.PENDING
+        candidate.note = "; ".join(
+            part
+            for part in (
+                candidate.note,
+                "complete sent-page delta confirmed the full guarded attempt set",
+                f"previous_status={previous_status}",
+                f"audit={audit_path}",
+            )
+            if part
+        )
+        committer.commit_audit_confirmation_result(
+            run,
+            candidate,
+            audit_path=audit_path,
+            confirmation=confirmation,
+        )
+    run.state = RunState.FINAL_RECONCILE
+    run.mark_updated()
+    store.save_run(run)
+    return [candidate.name for candidate in provisional]
 
 
 def _audit_invitation_rows(audit: SalesNavAudit) -> list[dict[str, str | None]]:
@@ -1767,8 +2008,7 @@ def _required_audit_coverage_count(run: Run) -> int:
 
 def _audit_absence_coverage_warning(run: Run, audit: SalesNavAudit) -> str | None:
     has_provisional = any(
-        candidate.status == CandidateStatus.PENDING_PROVISIONAL
-        for candidate in run.candidates
+        candidate.status == CandidateStatus.PENDING_PROVISIONAL for candidate in run.candidates
     )
     if not has_provisional:
         return None
@@ -1786,53 +2026,120 @@ def _audit_absence_coverage_warning(run: Run, audit: SalesNavAudit) -> str | Non
     )
 
 
-def _close_unconfirmed_provisional_sends(
+def _resolve_unconfirmed_provisional_sends(
     store: Store,
+    browser: BrowserClient,
     run: Run,
     audit: SalesNavAudit,
     *,
     audit_path: Path,
-    confirmation: str,
-) -> list[str]:
+) -> tuple[list[str], list[str], list[str]]:
     delta = run.audited_delta()
     if delta is None or delta > run.verified_count():
-        return []
+        return [], [], []
     required = _required_audit_coverage_count(run)
     if _audit_loaded_count(audit) < required:
-        return []
-    stale = [
+        return [], [], []
+    candidates = [
         candidate
         for candidate in run.candidates
         if candidate.status == CandidateStatus.PENDING_PROVISIONAL
+        or (
+            candidate.status == CandidateStatus.FAILED
+            and candidate.note is not None
+            and "previous_status=pending-provisional" in candidate.note
+            and "sent-page audit did not confirm pending" in candidate.note
+        )
     ]
-    if not stale:
-        return []
+    if not candidates:
+        return [], [], []
+
+    check_candidates = [
+        AcceptanceCheckCandidate(
+            run_id=str(run.id),
+            run_date=run.date,
+            source=candidate.source,
+            name=candidate.name,
+            profile_url=candidate.public_profile_url or candidate.profile_url,
+            sent_at=candidate.at,
+            latest_status=AcceptanceStatus.SENT,
+            latest_checked_at=None,
+        )
+        for candidate in candidates
+    ]
+    input_path = audit_path.with_name(f"{audit_path.stem}-unlisted-candidates.json")
+    outcome_path = audit_path.with_name(f"{audit_path.stem}-unlisted-outcomes.json")
+    write_json_atomic(
+        input_path,
+        [candidate.model_dump(mode="json") for candidate in check_candidates],
+    )
+    artifact, outcome = browser.check_acceptance_outcomes(
+        candidates=check_candidates,
+        input_path=input_path,
+        out=outcome_path,
+        offset=0,
+        limit=len(check_candidates),
+        delay_ms=0,
+    )
+    if len(artifact.rows) != len(candidates):
+        raise RuntimeError(
+            "unlisted send confirmation returned "
+            f"{len(artifact.rows)}/{len(candidates)} outcome row(s)"
+        )
+
     committer = SendAttemptCommitter(store)
-    closed: list[str] = []
-    for candidate in stale:
-        previous_status = candidate.status.value
-        candidate.status = CandidateStatus.FAILED
+    resolved: list[str] = []
+    reverted: list[str] = []
+    unresolved: list[str] = []
+    blocked: list[str] = []
+    for candidate, row in zip(candidates, artifact.rows, strict=True):
+        final_status, status_note, is_blocked = _candidate_status_from_confirmation(
+            row,
+            connectable_is_reverted=True,
+        )
+        candidate.status = final_status
         candidate.note = "; ".join(
             part
             for part in (
                 candidate.note,
-                "sent-page audit did not confirm pending",
-                f"previous_status={previous_status}",
                 f"audit={audit_path}",
+                f"unlisted send profile confirmation {status_note}",
+                f"outcome={outcome}",
             )
             if part
         )
-        closed.append(candidate.name)
+        if final_status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
+            resolved.append(candidate.name)
+        elif final_status == CandidateStatus.REVERTED_CONNECT:
+            reverted.append(candidate.name)
+        else:
+            unresolved.append(candidate.name)
+        if is_blocked:
+            blocked.append(candidate.name)
+        committer.commit_confirmation_result(
+            run,
+            candidate,
+            input_path=input_path,
+            outcome_path=outcome,
+            status=final_status,
+            confirmation=status_note,
+        )
+    if blocked:
+        run.state = RunState.BLOCKED
+        run.notes.append(f"unlisted send confirmation blocked for: {', '.join(blocked)}")
+    elif unresolved:
+        run.state = RunState.NEEDS_REAUDIT
+        run.notes.append(
+            "unlisted sends remain inconclusive after sent-page and profile checks: "
+            f"{', '.join(unresolved)}"
+        )
+    else:
         run.state = (
             RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
         )
-        committer.commit_audit_confirmation_result(
-            run,
-            candidate,
-            audit_path=audit_path,
-            confirmation=confirmation,
-        )
-    return closed
+    run.mark_updated()
+    store.save_run(run)
+    return resolved, reverted, unresolved
 
 
 def record_candidate(
@@ -1845,6 +2152,10 @@ def record_candidate(
     note: str | None = None,
 ) -> str:
     run = store.load_run()
+    if run.state == RunState.NEEDS_BROWSER_INSPECTION:
+        raise RuntimeError(
+            "run is in NeedsBrowserInspection; apply the active recovery receipt before sending"
+        )
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit first")
     if status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
@@ -1875,9 +2186,7 @@ def network_state_db_status(store: Store, *, as_json: bool = False) -> str:
     return render_network_state_db_status(status)
 
 
-def network_state_migrate_sqlite(
-    store: Store, *, apply: bool, as_json: bool = False
-) -> str:
+def network_state_migrate_sqlite(store: Store, *, apply: bool, as_json: bool = False) -> str:
     if apply:
         summary = store.migrate_json_ledgers()
     else:
@@ -1928,6 +2237,10 @@ def render_network_state_migration_summary(
 
 def record_send_result_from_path(store: Store, path: Path) -> str:
     run = store.load_run()
+    if run.state == RunState.NEEDS_BROWSER_INSPECTION:
+        raise RuntimeError(
+            "run is in NeedsBrowserInspection; apply the active recovery receipt before sending"
+        )
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit first")
     result = read_model(path, SalesNavSendResult)
@@ -2053,8 +2366,7 @@ def confirm_provisional_send(
         confirmation=status_note,
     )
     return (
-        f"confirmation status: {final_status.value}; "
-        f"verified {run.verified_count()}/{run.target}"
+        f"confirmation status: {final_status.value}; verified {run.verified_count()}/{run.target}"
     )
 
 
@@ -2080,7 +2392,11 @@ def _find_matching_candidate_event(
     return None
 
 
-def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateStatus, str, bool]:
+def _candidate_status_from_confirmation(
+    row: object | None,
+    *,
+    connectable_is_reverted: bool = False,
+) -> tuple[CandidateStatus, str, bool]:
     if row is None:
         return (
             CandidateStatus.PENDING_PROVISIONAL,
@@ -2090,14 +2406,16 @@ def _candidate_status_from_confirmation(row: object | None) -> tuple[CandidateSt
     status = getattr(row, "status", None)
     note = getattr(row, "note", None) or ""
     if status == AcceptanceStatus.PENDING:
-        return (
-            CandidateStatus.PENDING_PROVISIONAL,
-            "pending on public profile; sent-page audit required",
-            False,
-        )
+        return CandidateStatus.PENDING, "pending on public profile", False
     if status == AcceptanceStatus.ACCEPTED:
         return CandidateStatus.ACCEPTED, "accepted", False
     if status == AcceptanceStatus.CONNECTABLE:
+        if connectable_is_reverted:
+            return (
+                CandidateStatus.REVERTED_CONNECT,
+                "connectable after full sent-page audit coverage; invite not durable",
+                False,
+            )
         return (
             CandidateStatus.PENDING_PROVISIONAL,
             "connectable on public profile; sent-page audit required",
@@ -2150,6 +2468,10 @@ def send_next(
             emit(message)
 
     run = store.load_run()
+    if run.state == RunState.NEEDS_BROWSER_INSPECTION:
+        raise RuntimeError(
+            "run is in NeedsBrowserInspection; apply the active recovery receipt before sending"
+        )
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit before sending")
     if allow_send and run.real_send_capacity_remaining() == 0:
@@ -2208,6 +2530,10 @@ def send_guarded(
     if not dry_run and not allow_send:
         raise RuntimeError("real guarded sends require --allow-send")
     run = store.load_run()
+    if run.state == RunState.NEEDS_BROWSER_INSPECTION:
+        raise RuntimeError(
+            "run is in NeedsBrowserInspection; apply the active recovery receipt before sending"
+        )
     if run.state == RunState.NEEDS_REAUDIT:
         raise RuntimeError("run is in NEEDS_REAUDIT; record a fresh sent-page audit before sending")
     next_source = run.next_source()
@@ -2293,8 +2619,7 @@ def send_guarded(
             elif is_uncertain_send_status(send_status):
                 run.state = RunState.NEEDS_REAUDIT
                 run.notes.append(
-                    "guarded send stopped after uncertain status for "
-                    f"{event.name}: {send_status}"
+                    f"guarded send stopped after uncertain status for {event.name}: {send_status}"
                 )
                 if is_send_noop_status(send_status) and source_repeated_send_noop(
                     run, event.source, 3
@@ -2309,12 +2634,16 @@ def send_guarded(
                         {"source": event.source, "via": "send-guarded-clicked-send-noop"},
                     )
 
-        event = SendAttemptCommitter(store).commit_send_result(
-            run,
-            result,
-            path,
-            before_save=update_guarded_send_state,
-        ).event
+        event = (
+            SendAttemptCommitter(store)
+            .commit_send_result(
+                run,
+                result,
+                path,
+                before_save=update_guarded_send_state,
+            )
+            .event
+        )
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             add(f"send queued for final audit: {event.name}")
             run = store.load_run()
@@ -2404,13 +2733,17 @@ def top_up_reconcile(
             allow_send=True,
         )
         run = store.load_run()
-        event = SendAttemptCommitter(store).commit_send_result(
-            run,
-            result,
-            result_path,
-            drain_stale=False,
-            controller_payload_extra={"via": "top-up-reconcile"},
-        ).event
+        event = (
+            SendAttemptCommitter(store)
+            .commit_send_result(
+                run,
+                result,
+                result_path,
+                drain_stale=False,
+                controller_payload_extra={"via": "top-up-reconcile"},
+            )
+            .event
+        )
         messages.append(f"top-up send status: {result.status}")
         if event.status == CandidateStatus.PENDING_PROVISIONAL:
             messages.append(
@@ -2641,6 +2974,12 @@ def finish_run(store: Store, *, force: bool = False) -> str:
         raise RuntimeError(
             f"durable confirmed sends are {run.verified_count()}/{run.target}; "
             "continue normal guarded sends before finishing"
+        )
+    if not force and (
+        run.start_audit is None or run.latest_audit is None or len(run.audits) < 2
+    ):
+        raise RuntimeError(
+            "final sent-page audit reconciliation is required before finishing a durable run"
         )
     if force and run.verified_count() < run.target:
         run.notes.append(
@@ -2900,9 +3239,7 @@ def pending_cleanup_audit(
     note = "browser audit; recent_names=" + ", ".join(audit.recent_names)
     apply_pending_audit(run, audit.people_count, note)
     store.save_pending(run)
-    store.append_pending_event(
-        run, "audit", {"path": path, "people_count": audit.people_count}
-    )
+    store.append_pending_event(run, "audit", {"path": path, "people_count": audit.people_count})
     return (
         f"pending audit: People ({audit.people_count}) from {path}"
         f"{_delta_suffix(run.audited_delta())}"
@@ -3023,6 +3360,7 @@ def pending_cleanup_withdraw_loaded(
     browser: BrowserClient,
     *,
     limit: int,
+    timeout_seconds: float,
     dry_run: bool,
     allow_withdraw: bool,
 ) -> str:
@@ -3035,6 +3373,7 @@ def pending_cleanup_withdraw_loaded(
     batch, path = browser.withdraw_loaded_pending(
         limit=effective_limit,
         threshold_days=run.threshold_days,
+        timeout_seconds=timeout_seconds,
         dry_run=dry_run or not allow_withdraw,
         allow_withdraw=allow_withdraw,
     )
@@ -3075,13 +3414,15 @@ def pending_cleanup_run_session(
     threshold_days: int,
     capture_out: Path,
     withdraw_limit: int,
+    withdraw_timeout_seconds: float,
     allow_withdraw: bool,
     dry_run_first: bool = True,
     finish: bool = False,
+    emit: Callable[[str], None] | None = None,
 ) -> str:
-    messages: list[str] = [
-        pending_cleanup_audit(store, browser, load_more=audit_load_more)
-    ]
+    notify = emit or (lambda _message: None)
+    notify("pending cleanup: auditing starting count")
+    messages: list[str] = [pending_cleanup_audit(store, browser, load_more=audit_load_more)]
     captured = False
     starting_withdrawn_count = store.load_pending().withdrawn_count()
     real_withdraw_attempts = 0
@@ -3127,7 +3468,11 @@ def pending_cleanup_run_session(
                     )
                 else:
                     messages.append("stopped: capture imported no eligible stale invitation")
+                    if finish:
+                        notify("pending cleanup: finishing clean run")
+                        messages.append(pending_cleanup_finish(store))
                 break
+            notify("pending cleanup: loading invitation ages")
             messages.append(
                 pending_cleanup_capture(
                     store,
@@ -3159,11 +3504,15 @@ def pending_cleanup_run_session(
                 break
             remaining_withdraw_limit = withdraw_limit - real_withdraw_attempts
             if dry_run_first:
+                notify(
+                    f"pending cleanup: checking up to {remaining_withdraw_limit} stale invitations"
+                )
                 messages.append(
                     pending_cleanup_withdraw_loaded(
                         store,
                         browser,
                         limit=remaining_withdraw_limit,
+                        timeout_seconds=withdraw_timeout_seconds,
                         dry_run=True,
                         allow_withdraw=False,
                     )
@@ -3172,27 +3521,35 @@ def pending_cleanup_run_session(
                 messages.append("stopped: pass --allow-withdraw for real withdrawals")
                 break
             before_count = store.load_pending().withdrawn_count()
+            notify(
+                "pending cleanup: withdrawing up to "
+                f"{remaining_withdraw_limit} verified stale invitations"
+            )
             messages.append(
                 pending_cleanup_withdraw_loaded(
                     store,
                     browser,
                     limit=remaining_withdraw_limit,
+                    timeout_seconds=withdraw_timeout_seconds,
                     dry_run=False,
                     allow_withdraw=True,
                 )
             )
             after_run = store.load_pending()
+            notify(
+                "pending cleanup: recorded "
+                f"{max(0, after_run.withdrawn_count() - before_count)} withdrawal(s)"
+            )
             real_withdraw_attempts += max(0, after_run.withdrawn_count() - before_count)
             latest = after_run.withdrawals[-1] if after_run.withdrawals else None
             if after_run.withdrawn_count() == before_count:
                 status = latest.status.value if latest is not None else "missing-result"
                 messages.append(f"stopped: withdrawal did not verify as withdrawn ({status})")
                 break
+            notify("pending cleanup: auditing final count")
             messages.append(pending_cleanup_audit(store, browser, load_more=audit_load_more))
             if latest is not None and latest.status.value != "Withdrawn":
-                messages.append(
-                    f"stopped: loaded-page withdrawal stopped at {latest.status.value}"
-                )
+                messages.append(f"stopped: loaded-page withdrawal stopped at {latest.status.value}")
                 break
             if finish:
                 messages.append(

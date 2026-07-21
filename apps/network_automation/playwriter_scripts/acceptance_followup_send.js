@@ -20,6 +20,9 @@ function normalizeMessage(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
+const SALES_NAV_PROFILE_MESSAGE_SELECTOR = "button[data-anchor-send-inmail]";
+const SALES_NAV_COMPOSER_SELECTOR = "textarea[name='message'][aria-label='Type your message here…']";
+
 async function getPage() {
   if (state.linkedinToolsPage && !state.linkedinToolsPage.isClosed()) {
     return state.linkedinToolsPage;
@@ -99,7 +102,7 @@ async function actionDetails(item) {
     ""
   ).trim();
   const ariaLabel = ((await item.getAttribute("aria-label").catch(() => "")) || "").trim();
-  const label = text || ariaLabel;
+  const label = ariaLabel || text;
   if (!label) return null;
   return {
     label,
@@ -195,13 +198,11 @@ async function scanVisibleActionsFromLocator(locator, pattern) {
         item,
         details,
         hitTest,
-        score: actionCandidateScore(details),
       });
     }
   }
-  candidates.sort((left, right) => right.score - left.score);
-  const selected = candidates[0];
-  if (selected) {
+  if (candidates.length === 1) {
+    const selected = candidates[0];
     return {
       action: {
         locator: selected.item,
@@ -213,18 +214,12 @@ async function scanVisibleActionsFromLocator(locator, pattern) {
       visibleActions,
     };
   }
-  return { action: null, visibleActions };
-}
-
-function actionCandidateScore(details) {
-  let score = 0;
-  const rect = details.rect || {};
-  if (rect.y > 80) score += 100;
-  if (details.href && details.href.includes("/messaging/compose")) score += 20;
-  if (/^(Message|InMail)\b/i.test(details.label) && rect.y < 80) score -= 500;
-  if (/^(Send|Send message)$/i.test(details.label)) score += 200;
-  if (/\b(close|dismiss|discard)\b/i.test(details.label)) score += 200;
-  return score;
+  return {
+    action: null,
+    visibleActions,
+    exactMatchCount: candidates.length,
+    reason: candidates.length > 1 ? "multiple exact actions were visible" : "exact action missing",
+  };
 }
 
 async function clickAction(action, timeout = 8000) {
@@ -244,8 +239,66 @@ async function clickAction(action, timeout = 8000) {
   return { method: "locator-click" };
 }
 
-async function scanVisibleActions(page, pattern) {
-  return scanVisibleActionsFromLocator(page.locator("button,a,[role='button']"), pattern);
+async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
+  const expectedAriaLabel = `Message ${normalizeMessage(name)}`;
+  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  let visibleActions = [];
+  while (Date.now() < deadline) {
+    const locator = page.locator(SALES_NAV_PROFILE_MESSAGE_SELECTOR);
+    const count = await locator.count().catch(() => 0);
+    visibleActions = [];
+    const exactActions = [];
+    for (let index = 0; index < count; index += 1) {
+      const item = locator.nth(index);
+      if (!(await item.isVisible().catch(() => false))) continue;
+      const details = await actionDetails(item);
+      if (!details) continue;
+      const hitTest = await hitTestAction(item);
+      details.hittable = hitTest.hittable;
+      if (!hitTest.hittable) details.blockedBy = hitTest;
+      visibleActions.push(details);
+      if (
+        !details.disabled &&
+        details.hittable &&
+        normalizeMessage(details.ariaLabel) === expectedAriaLabel
+      ) {
+        exactActions.push({ item, details, hitTest });
+      }
+    }
+    if (exactActions.length === 1) {
+      const selected = exactActions[0];
+      return {
+        action: {
+          locator: selected.item,
+          label: "Message",
+          kind: "message",
+          hitTest: selected.hitTest,
+          details: selected.details,
+        },
+        visibleActions,
+        exactMatchCount: 1,
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+    if (exactActions.length > 1) {
+      return {
+        action: null,
+        visibleActions,
+        exactMatchCount: exactActions.length,
+        elapsedMs: Date.now() - startedAt,
+        reason: "multiple exact Sales Navigator Message actions were visible",
+      };
+    }
+    await page.waitForTimeout(250);
+  }
+  return {
+    action: null,
+    visibleActions,
+    exactMatchCount: 0,
+    elapsedMs: Date.now() - startedAt,
+    reason: "exact Sales Navigator Message action did not become hittable",
+  };
 }
 
 async function waitForVisibleActionInRoot(page, root, pattern, timeoutMs = 8000) {
@@ -260,24 +313,20 @@ async function waitForVisibleActionInRoot(page, root, pattern, timeoutMs = 8000)
 }
 
 async function visibleComposerForRecipient(page, name) {
-  for (const selector of [
-    "div.msg-form__contenteditable[contenteditable='true']",
-    "[contenteditable='true'][role='textbox']",
-  ]) {
-    const locator = page.locator(selector);
-    const count = await locator.count().catch(() => 0);
-    for (let index = count - 1; index >= 0; index -= 1) {
-      const item = locator.nth(index);
-      if (!(await item.isVisible().catch(() => false))) continue;
-      const composer = { locator: item, selector };
-      if (!await composerRoot(page, composer)) continue;
-      const stateForComposer = await composerState(composer);
-      if (recipientMatches(stateForComposer, name)) {
-        return { composer, state: stateForComposer };
-      }
+  const locator = page.locator(SALES_NAV_COMPOSER_SELECTOR);
+  const count = await locator.count().catch(() => 0);
+  const matches = [];
+  for (let index = 0; index < count; index += 1) {
+    const item = locator.nth(index);
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const composer = { locator: item, selector: SALES_NAV_COMPOSER_SELECTOR };
+    if (!await composerRoot(page, composer)) continue;
+    const stateForComposer = await composerState(composer);
+    if (recipientMatches(stateForComposer, name)) {
+      matches.push({ composer, state: stateForComposer });
     }
   }
-  return null;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 async function waitForComposerForRecipient(page, name, timeoutMs = 8000) {
@@ -292,77 +341,32 @@ async function waitForComposerForRecipient(page, name, timeoutMs = 8000) {
 }
 
 async function composerRoot(page, composer) {
-  for (const selector of [
-    "xpath=ancestor-or-self::*[contains(concat(' ', normalize-space(@class), ' '), ' msg-overlay-conversation-bubble ')][1]",
-    "xpath=ancestor-or-self::*[contains(concat(' ', normalize-space(@class), ' '), ' msg-convo-wrapper ')][1]",
-    "xpath=ancestor-or-self::*[@role='dialog'][1]",
-    "xpath=ancestor-or-self::form[contains(concat(' ', normalize-space(@class), ' '), ' msg-form ')][1]",
-  ]) {
-    const root = composer.locator.locator(selector);
-    if ((await root.count().catch(() => 0)) > 0 && await root.isVisible().catch(() => false)) {
-      return root;
-    }
+  const form = composer.locator.locator(
+    "xpath=ancestor-or-self::form[@data-x-conversation-widget='compose-form'][1]",
+  );
+  if ((await form.count().catch(() => 0)) !== 1 || !await form.isVisible().catch(() => false)) {
+    return null;
+  }
+  const selector = "xpath=ancestor-or-self::section[contains(concat(' ', normalize-space(@class), ' '), ' thread-container ')][1]";
+  const root = composer.locator.locator(selector);
+  if ((await root.count().catch(() => 0)) === 1 && await root.isVisible().catch(() => false)) {
+    return root;
   }
   return null;
 }
 
 async function composerState(composer) {
   return composer.locator.evaluate((node) => {
-    let root = null;
-    for (const selector of [
-      ".msg-overlay-conversation-bubble",
-      ".msg-convo-wrapper",
-      "[role='dialog']",
-    ]) {
-      root = node.closest(selector);
-      if (root) break;
-    }
-    root = root || node.closest(".msg-form") || node.parentElement || node;
-    const recipientSelectors = [
-      ".msg-connections-typeahead__top-fixed-section",
-      ".msg-connections-typeahead__added-recipients",
-      ".msg-connections-typeahead-container",
-      ".msg-overlay-bubble-header__title",
-      ".msg-thread__link-to-profile",
-      ".msg-entity-lockup__entity-title",
-    ];
+    const form = node.closest("form[data-x-conversation-widget='compose-form']");
+    const root = form ? form.closest("section.thread-container") : null;
     const recipients = [];
-    for (const selector of recipientSelectors) {
-      for (const recipientNode of root.querySelectorAll(selector)) {
-        const text = (recipientNode.innerText || recipientNode.textContent || "")
-          .trim()
-          .replace(/\s+/g, " ");
-        if (text) recipients.push(text);
-      }
+    for (const recipientNode of root ? root.querySelectorAll("h2[aria-label^='Conversation with ']") : []) {
+      const ariaLabel = (recipientNode.getAttribute("aria-label") || "").trim();
+      const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
+      if (recipient) recipients.push(recipient);
     }
     return {
-      bodyText: node.innerText || node.textContent || "",
-      recipients,
-    };
-  }).catch(() => ({ bodyText: "", recipients: [] }));
-}
-
-async function messageBubbleState(root) {
-  return root.evaluate((node) => {
-    const recipientSelectors = [
-      ".msg-connections-typeahead__top-fixed-section",
-      ".msg-connections-typeahead__added-recipients",
-      ".msg-connections-typeahead-container",
-      ".msg-overlay-bubble-header__title",
-      ".msg-thread__link-to-profile",
-      ".msg-entity-lockup__entity-title",
-    ];
-    const recipients = [];
-    for (const selector of recipientSelectors) {
-      for (const recipientNode of node.querySelectorAll(selector)) {
-        const text = (recipientNode.innerText || recipientNode.textContent || "")
-          .trim()
-          .replace(/\s+/g, " ");
-        if (text) recipients.push(text);
-      }
-    }
-    return {
-      bodyText: "",
+      bodyText: node.value,
       recipients,
     };
   }).catch(() => ({ bodyText: "", recipients: [] }));
@@ -381,90 +385,8 @@ function bodyFillResult(composer, draft, bodyText) {
     expectedLength: draft.length,
     actualLength: String(bodyText || "").length,
     lineBreakCount: (draft.match(/\n/g) || []).length,
-    source: "innerText",
+    source: "value",
   };
-}
-
-async function closeOtherConversationBubbles(page, name) {
-  const result = await page.evaluate((targetName) => {
-    const normalize = (text) => String(text || "").replace(/\s+/g, " ").trim();
-    const visibleElement = (element) => {
-      const rect = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-    };
-    const labelFor = (element) => (
-      element.getAttribute("aria-label") ||
-      element.getAttribute("title") ||
-      element.innerText ||
-      element.textContent ||
-      ""
-    ).trim().replace(/\s+/g, " ");
-    const rootSelector = ".msg-overlay-conversation-bubble,.msg-convo-wrapper";
-    const roots = new Set(Array.from(document.querySelectorAll(rootSelector)).filter(visibleElement));
-    for (const button of document.querySelectorAll("button,a,[role='button']")) {
-      const label = labelFor(button);
-      if (!/\b(close|dismiss|discard)\b/i.test(label)) continue;
-      const root = button.closest(rootSelector);
-      if (root && visibleElement(root)) roots.add(root);
-    }
-    const target = normalize(targetName);
-    const closed = [];
-    const kept = [];
-    const skipped = [];
-    let index = 0;
-    for (const root of roots) {
-      const text = normalize(root.innerText || root.textContent || "");
-      const buttons = Array.from(root.querySelectorAll("button,a,[role='button']"))
-        .filter(visibleElement)
-        .map((button, buttonIndex) => {
-          const rect = button.getBoundingClientRect();
-          return {
-            button,
-            index: buttonIndex,
-            label: labelFor(button),
-            rect,
-          };
-        });
-      if (target && text.includes(target)) {
-        kept.push({ index, text: text.slice(0, 180) });
-        index += 1;
-        continue;
-      }
-      const close = buttons.find((candidate) => /\b(close|dismiss|discard)\b/i.test(candidate.label));
-      if (!close) {
-        skipped.push({
-          index,
-          text: text.slice(0, 180),
-          reason: "close action missing",
-          visibleActions: buttons.map((candidate) => ({
-            index: candidate.index,
-            label: candidate.label,
-            rect: {
-              x: Math.round(candidate.rect.x),
-              y: Math.round(candidate.rect.y),
-              w: Math.round(candidate.rect.width),
-              h: Math.round(candidate.rect.height),
-            },
-          })),
-        });
-        index += 1;
-        continue;
-      }
-      close.button.click();
-      closed.push({ index, text: text.slice(0, 180), close: { label: close.label, method: "dom-click-close" } });
-      index += 1;
-    }
-    return { closed, kept, skipped };
-  }, name).catch((error) => ({
-    closed: [],
-    kept: [],
-    skipped: [{ reason: `message cleanup failed: ${error.message}` }],
-  }));
-  if (result.closed.length > 0) {
-    await page.waitForTimeout(300);
-  }
-  return result;
 }
 
 async function messageContainerDiagnostics(page, name) {
@@ -478,7 +400,6 @@ async function messageContainerDiagnostics(page, name) {
     const labelFor = (element) => normalize(
       element.getAttribute("aria-label") ||
       element.getAttribute("title") ||
-      element.innerText ||
       element.textContent ||
       "",
     );
@@ -492,44 +413,27 @@ async function messageContainerDiagnostics(page, name) {
       };
     };
     const rootFor = (element) => (
-      element.closest(".msg-overlay-conversation-bubble,.msg-convo-wrapper") ||
-      element.closest(".msg-overlay-conversation-bubble__content-wrapper")?.parentElement ||
-      element.closest("form.msg-form") ||
-      element.closest("[role='dialog']")
+      element.closest("section.thread-container")
     );
-    const rootSelector = ".msg-overlay-conversation-bubble,.msg-convo-wrapper";
+    const rootSelector = "section.thread-container";
     const roots = new Set(Array.from(document.querySelectorAll(rootSelector)).filter(visibleElement));
-    for (const wrapper of document.querySelectorAll(".msg-overlay-conversation-bubble__content-wrapper")) {
-      const root = wrapper.closest(rootSelector) || wrapper.parentElement;
-      if (root && visibleElement(root)) roots.add(root);
-    }
-    for (const composer of document.querySelectorAll("div.msg-form__contenteditable[contenteditable='true'],[contenteditable='true'][role='textbox']")) {
+    for (const composer of document.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']")) {
       const root = rootFor(composer);
       if (root && visibleElement(root)) roots.add(root);
     }
-    const recipientSelectors = [
-      ".msg-connections-typeahead__top-fixed-section",
-      ".msg-connections-typeahead__added-recipients",
-      ".msg-connections-typeahead-container",
-      ".msg-overlay-bubble-header__title",
-      ".msg-thread__link-to-profile",
-      ".msg-entity-lockup__entity-title",
-    ];
     const describeRoot = (root, index) => {
-      const text = normalize(root.innerText || root.textContent || "");
       const recipients = [];
-      for (const selector of recipientSelectors) {
-        for (const recipientNode of root.querySelectorAll(selector)) {
-          const recipient = normalize(recipientNode.innerText || recipientNode.textContent || "");
-          if (recipient) recipients.push(recipient);
-        }
+      for (const recipientNode of root.querySelectorAll("h2[aria-label^='Conversation with ']")) {
+        const ariaLabel = normalize(recipientNode.getAttribute("aria-label") || "");
+        const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
+        if (recipient) recipients.push(recipient);
       }
-      const composers = Array.from(root.querySelectorAll("div.msg-form__contenteditable[contenteditable='true'],[contenteditable='true'][role='textbox']"))
+      const composers = Array.from(root.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']"))
         .filter(visibleElement)
         .map((composer, composerIndex) => ({
           index: composerIndex,
           ariaLabel: composer.getAttribute("aria-label") || "",
-          textLength: String(composer.innerText || composer.textContent || "").length,
+          textLength: composer.value.length,
           rect: describeRect(composer),
         }));
       const actions = Array.from(root.querySelectorAll("button,a,[role='button']"))
@@ -547,8 +451,7 @@ async function messageContainerDiagnostics(page, name) {
         role: root.getAttribute("role") || null,
         ariaLabel: root.getAttribute("aria-label") || null,
         rect: describeRect(root),
-        textPreview: text.slice(0, 240),
-        hasTargetName: normalize(targetName) !== "" && text.includes(normalize(targetName)),
+        hasTargetName: recipients.some((recipient) => recipient === normalize(targetName)),
         recipients,
         composers,
         actions,
@@ -557,7 +460,7 @@ async function messageContainerDiagnostics(page, name) {
     return {
       targetName,
       containers: Array.from(roots).map(describeRoot),
-      composerCount: Array.from(document.querySelectorAll("div.msg-form__contenteditable[contenteditable='true'],[contenteditable='true'][role='textbox']")).filter(visibleElement).length,
+      composerCount: Array.from(document.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']")).filter(visibleElement).length,
     };
   }, name).catch((error) => ({
     targetName: name,
@@ -577,26 +480,18 @@ async function visibleConversationHistory(root, stateForRoot, name) {
     };
   }
   return root.evaluate((node) => {
-    const selectors = [
-      ".msg-s-message-list__event",
-      ".msg-s-event-listitem",
-      ".msg-s-message-group",
-      "[data-view-name='message-list'] li",
-      ".msg-s-message-list-content li",
-    ];
+    const selector = "article [aria-label^='Message from ']";
     const visibleElement = (element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
     };
-    for (const selector of selectors) {
-      let visible = 0;
-      for (const item of node.querySelectorAll(selector)) {
-        if (visibleElement(item)) visible += 1;
-      }
-      if (visible > 0) {
-        return { exists: true, scoped: true, matchedRecipient: true, selector, visibleCount: visible };
-      }
+    let visible = 0;
+    for (const item of node.querySelectorAll(selector)) {
+      if (visibleElement(item)) visible += 1;
+    }
+    if (visible > 0) {
+      return { exists: true, scoped: true, matchedRecipient: true, selector, visibleCount: visible };
     }
     return { exists: false, scoped: true, matchedRecipient: true, visibleCount: 0 };
   }).catch(() => ({
@@ -606,21 +501,6 @@ async function visibleConversationHistory(root, stateForRoot, name) {
     reason: "failed to inspect active message container",
     recipients: stateForRoot.recipients,
   }));
-}
-
-async function fillSubjectIfPresent(page) {
-  for (const selector of [
-    "input[name='subject']",
-    "input[placeholder*='Subject' i]",
-    "input[aria-label*='Subject' i]",
-  ]) {
-    const locator = page.locator(selector).last();
-    if ((await locator.count().catch(() => 0)) > 0 && await locator.isVisible().catch(() => false)) {
-      await locator.fill("", { timeout: 8000 });
-      return { filled: true, selector, subject: "" };
-    }
-  }
-  return { filled: false };
 }
 
 async function main() {
@@ -646,18 +526,9 @@ async function main() {
   }
 
   const conversationCleanup = {
-    beforeOpen: await closeOtherConversationBubbles(page, record.name),
+    beforeOpen: { closed: [], kept: [], skipped: [] },
   };
   progress("conversation-cleanup-complete", conversationCleanup.beforeOpen);
-  if (conversationCleanup.beforeOpen.skipped.length > 0) {
-    fs.writeFileSync(config.out, `${JSON.stringify({
-      ...payload,
-      status: "blocked",
-      reason: "could not close all non-target message containers",
-      conversationCleanup,
-    }, null, 2)}\n`);
-    return;
-  }
   const draft = String(record.draft || "");
   const existingTargetComposer = await visibleComposerForRecipient(page, record.name);
   if (existingTargetComposer) {
@@ -721,13 +592,11 @@ async function main() {
         return;
       }
       let finalBodyFill = bodyFill;
-      let subjectFill = { filled: false };
+      const subjectFill = { filled: false };
       if (!bodyFill.matched) {
-        subjectFill = await fillSubjectIfPresent(page);
-        progress("existing-composer-subject-fill-complete", subjectFill);
         await existingComposer.locator.fill(draft, { timeout: 8000 });
         progress("existing-composer-body-fill-command-complete");
-        const actual = await existingComposer.locator.evaluate((node) => node.innerText || node.textContent || "").catch(() => "");
+        const actual = await existingComposer.locator.evaluate((node) => node.value).catch(() => "");
         finalBodyFill = bodyFillResult(existingComposer, draft, actual);
         progress("existing-composer-body-fill-verified", finalBodyFill);
       }
@@ -775,14 +644,20 @@ async function main() {
     return;
   }
 
-  const actionScan = await scanVisibleActions(page, /^(Message|InMail)\b/i);
-  progress("profile-action-scan-complete", { found: Boolean(actionScan.action) });
+  const actionScan = await waitForProfileMessageAction(page, record.name, 15000);
+  progress("profile-action-scan-complete", {
+    found: Boolean(actionScan.action),
+    exactMatchCount: actionScan.exactMatchCount,
+    elapsedMs: actionScan.elapsedMs,
+    reason: actionScan.reason,
+  });
   const action = actionScan.action;
   if (!action) {
+    const ambiguous = actionScan.exactMatchCount > 1;
     fs.writeFileSync(config.out, `${JSON.stringify({
       ...payload,
-      status: "not-messageable",
-      reason: "no hittable Message or InMail action",
+      status: ambiguous ? "blocked" : "not-messageable",
+      reason: actionScan.reason,
       visibleActions: actionScan.visibleActions,
       conversationCleanup,
     }, null, 2)}\n`);
@@ -809,18 +684,6 @@ async function main() {
       action: actionPayload,
       conversationCleanup,
       messageContainers,
-    }, null, 2)}\n`);
-    return;
-  }
-  conversationCleanup.afterOpen = await closeOtherConversationBubbles(page, record.name);
-  progress("post-open-conversation-cleanup-complete", conversationCleanup.afterOpen);
-  if (conversationCleanup.afterOpen.skipped.length > 0) {
-    fs.writeFileSync(config.out, `${JSON.stringify({
-      ...payload,
-      status: "blocked",
-      reason: "could not close all non-target message containers after opening target composer",
-      action: actionPayload,
-      conversationCleanup,
     }, null, 2)}\n`);
     return;
   }
@@ -866,11 +729,10 @@ async function main() {
     }, null, 2)}\n`);
     return;
   }
-  const subjectFill = await fillSubjectIfPresent(page);
-  progress("subject-fill-complete", subjectFill);
+  const subjectFill = { filled: false };
   await composer.locator.fill(draft, { timeout: 8000 });
   progress("body-fill-command-complete");
-  const actual = await composer.locator.evaluate((node) => node.innerText || node.textContent || "").catch(() => "");
+  const actual = await composer.locator.evaluate((node) => node.value).catch(() => "");
   const bodyFill = bodyFillResult(composer, draft, actual);
   progress("body-fill-verified", bodyFill);
   const filledPayload = {

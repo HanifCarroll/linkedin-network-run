@@ -218,16 +218,16 @@ def test_real_action_routes_delegate_to_action_service_only_with_token(tmp_path:
         )
     )
 
-    blocked = test_client.post("/actions/network-send-ready-followup")
+    blocked = test_client.post("/actions/network-send-ready-greetings")
     allowed = test_client.post(
-        "/actions/network-send-ready-followup",
+        "/actions/network-send-ready-greetings",
         data={"access_token": TOKEN},
     )
 
     assert blocked.status_code == 403
     assert allowed.status_code == 200
-    assert service.seen == ["network-send-ready-followup"]
-    assert "linkedin-tools network acceptance send-ready-followups" in allowed.text
+    assert service.seen == ["network-send-ready-greetings"]
+    assert "linkedin-tools network acceptance send-ready-greetings" in allowed.text
 
 
 def test_alpine_state_is_presentational_and_htmx_targets_server_routes(tmp_path: Path) -> None:
@@ -276,7 +276,6 @@ def _seed_network_store(path: Path) -> NetworkStore:
                     profile_url="https://www.linkedin.com/in/accepted-lead",
                     sales_nav_profile_url="https://www.linkedin.com/sales/lead/accepted-lead",
                     accepted_at=accepted_at,
-                    angle="general",
                     draft="Hi Accepted - saw the product work and wanted to compare notes.",
                     status=AcceptanceFollowupStatus.DRAFTED,
                     report_path="/tmp/accepted.md",
@@ -289,7 +288,6 @@ def _seed_network_store(path: Path) -> NetworkStore:
                     profile_url="https://www.linkedin.com/in/excluded-lead",
                     sales_nav_profile_url="https://www.linkedin.com/sales/lead/excluded-lead",
                     accepted_at=accepted_at,
-                    angle="general",
                     draft="Hi Excluded - older source draft.",
                     status=AcceptanceFollowupStatus.EXCLUDED,
                     report_path="/tmp/excluded.md",

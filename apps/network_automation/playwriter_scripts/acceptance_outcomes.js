@@ -41,6 +41,14 @@ function writeArtifact(rows) {
   fs.renameSync(tmp, config.out);
 }
 
+function writeProgress(event) {
+  if (!config.progressOut) return;
+  fs.appendFileSync(
+    config.progressOut,
+    `${JSON.stringify({ at: nowIso(), ...event })}\n`
+  );
+}
+
 function loadExistingRows() {
   if (!config.out || !fs.existsSync(config.out)) return [];
   let existing;
@@ -91,16 +99,52 @@ async function visibleCount(page, selector) {
   return visible;
 }
 
-async function menuLabels(page) {
-  const labels = await page
-    .locator("button, a, [role='button'], [role='menuitem']")
-    .evaluateAll((items) =>
-      items
-        .map((item) => (item.innerText || item.getAttribute("aria-label") || "").trim())
-        .filter(Boolean)
-    )
-    .catch(() => []);
+async function visibleLabels(locator) {
+  if (!locator || typeof locator.all !== "function") return [];
+  const items = await locator.all();
+  const labels = [];
+  for (const item of items) {
+    if (!(await item.isVisible().catch(() => false))) continue;
+    const text = (await item.textContent().catch(() => "")).trim();
+    const aria = (await item.getAttribute("aria-label").catch(() => "")) || "";
+    const label = text || aria.trim();
+    if (label) labels.push(label);
+  }
   return Array.from(new Set(labels));
+}
+
+async function profileActionEvidence(page) {
+  const sections = page.locator("main section");
+  const topCard = sections && typeof sections.first === "function" ? sections.first() : null;
+  if (!topCard) return { firstDegree: false, topCardLabels: [], menuLabels: [] };
+
+  const firstDegree = await topCard
+    .locator("span")
+    .evaluateAll((items) =>
+      items.some((item) => String(item.textContent || "").replace(/\s+/g, " ").trim() === "1st")
+    )
+    .catch(() => false);
+  const topCardLabels = (
+    await visibleLabels(topCard.locator("button, a, [role='button']"))
+  ).filter((label) => /^(Connect|Follow|Message|More|Pending|Withdraw)$/i.test(label));
+  let menuLabels = [];
+  if (typeof topCard.getByRole === "function") {
+    const moreButtons = await topCard.getByRole("button", { name: /^More$/i }).all();
+    for (const button of moreButtons) {
+      if (!(await button.isVisible().catch(() => false))) continue;
+      await button.click({ timeout: 8000 });
+      await page.waitForTimeout(500);
+      menuLabels = await visibleLabels(
+        page.locator(
+          "[role='menu'] button, [role='menu'] a, [role='menuitem'], " +
+            ".artdeco-dropdown__content button, .artdeco-dropdown__content a"
+        )
+      );
+      await page.keyboard.press("Escape").catch(() => null);
+      if (menuLabels.length > 0) break;
+    }
+  }
+  return { firstDegree, topCardLabels, menuLabels };
 }
 
 async function classifyCandidate(candidate) {
@@ -130,9 +174,11 @@ async function classifyCandidate(candidate) {
       page,
       "iframe#humanThirdPartyIframe, iframe[title='LinkedIn security verification'], iframe[src*='li.protechts.net']"
     );
-    const bodyText = await page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
-    const labels = await menuLabels(page);
-    const combined = `${bodyText}\n${labels.join("\n")}`;
+    const profileEvidence = await profileActionEvidence(page);
+    const actionLabels = [
+      ...profileEvidence.topCardLabels,
+      ...profileEvidence.menuLabels,
+    ];
 
     let status = "unknown";
     let relationship = null;
@@ -146,16 +192,22 @@ async function classifyCandidate(candidate) {
     } else if (security > 0) {
       status = "blocked";
       note = "security verification present";
-    } else if (/\b1st\b/i.test(combined)) {
+    } else if (profileEvidence.firstDegree) {
       status = "accepted";
       relationship = "1st";
-      note = "profile shows first-degree relationship evidence";
-    } else if (/Pending|Withdraw/i.test(combined)) {
+      note = "profile top card shows first-degree relationship evidence";
+    } else if (actionLabels.some((label) => /^Remove connection$/i.test(label))) {
+      status = "accepted";
+      relationship = "1st";
+      note = "profile action controls show Remove connection";
+    } else if (
+      actionLabels.some((label) => /^(Connect\s*[-–—]\s*)?Pending$|^Withdraw$/i.test(label))
+    ) {
       status = "pending";
-      note = "profile still shows pending invitation evidence";
-    } else if (/\bConnect\b/i.test(combined)) {
+      note = "profile action controls show pending invitation evidence";
+    } else if (actionLabels.some((label) => /^Connect$/i.test(label))) {
       status = "connectable";
-      note = "lead is connectable again";
+      note = "profile action controls show Connect";
     }
 
     return {
@@ -165,7 +217,7 @@ async function classifyCandidate(candidate) {
       status,
       checkedAt: nowIso(),
       relationship,
-      evidence: JSON.stringify({ url, labels: labels.slice(0, 30) }),
+      evidence: JSON.stringify({ url, profileActions: profileEvidence }),
       note,
     };
   } catch (error) {
@@ -185,7 +237,24 @@ const rows = loadExistingRows();
 writeArtifact(rows);
 
 for (let index = rows.length; index < selected.length; index += 1) {
-  rows.push(await classifyCandidate(selected[index]));
+  const candidate = selected[index];
+  writeProgress({
+    step: "acceptance-candidate",
+    phase: "start",
+    name: candidate.name,
+    completed: index,
+    total: selected.length,
+  });
+  const row = await classifyCandidate(candidate);
+  rows.push(row);
   writeArtifact(rows);
+  writeProgress({
+    step: "acceptance-candidate",
+    phase: "complete",
+    name: candidate.name,
+    status: row.status,
+    completed: index + 1,
+    total: selected.length,
+  });
 }
 console.log(`wrote ${rows.length} acceptance outcomes to ${config.out}`);

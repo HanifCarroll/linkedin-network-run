@@ -3,34 +3,25 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from apps.network_automation.models import (
+    AcceptanceDailyRun,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
     AcceptanceFollowupStatus,
     AcceptanceInvitation,
     AcceptanceLedger,
+    AcceptanceObservationPrecision,
     AcceptanceOutcomeArtifact,
     AcceptanceOutcomeEvent,
     AcceptanceReport,
     AcceptanceSourceReport,
     AcceptanceStatus,
-    AcceptedDraftCandidate,
-    AcceptedFollowupTemplateKey,
     CandidateEvent,
     CandidateStatus,
-    DraftItem,
-    DraftReport,
     acceptance_followup_diagnostics,
-    acceptance_followup_id,
     acceptance_followup_result_note,
     acceptance_followup_status_for_result,
-    accepted_followup_candidate_key,
-    advisor_accepted_followup_draft,
-    agency_accepted_followup_draft,
-    choose_angle,
-    general_accepted_followup_draft,
-    recruiter_accepted_followup_draft,
-    render_draft_markdown,
+    accepted_welcome_message,
 )
 from apps.network_automation.reports import render_acceptance_report
 
@@ -59,7 +50,7 @@ def test_acceptance_report_marks_current_daily_reconciliation() -> None:
 
     assert "- Unchecked: 0" in output
     assert (
-        "- Ledger freshness: Daily acceptance reconciliation appears current for this "
+        "- Current enough: Daily acceptance reconciliation appears current for this "
         "report window."
         in output
     )
@@ -86,7 +77,7 @@ def test_acceptance_report_routes_unchecked_candidates_to_daily_reconciliation()
     output = render_acceptance_report(report)
 
     assert (
-        "- Ledger freshness: Daily acceptance reconciliation should check 2 candidate(s) "
+        "- Current enough: Daily acceptance reconciliation should check 2 candidate(s) "
         "in this report window."
     ) in output
 
@@ -128,6 +119,110 @@ def test_acceptance_import_downgrades_message_only_acceptance() -> None:
     assert "did not include first-degree relationship evidence" in (
         ledger.invitations[0].history[0].note or ""
     )
+
+
+def test_acceptance_import_records_first_observed_transition_once() -> None:
+    sent_at = datetime(2026, 7, 19, 12, tzinfo=UTC)
+    first_check = datetime(2026, 7, 20, 12, tzinfo=UTC)
+    accepted_check = datetime(2026, 7, 21, 12, tzinfo=UTC)
+    later_check = datetime(2026, 7, 22, 12, tzinfo=UTC)
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 7, 19),
+        CandidateEvent(
+            at=sent_at,
+            source="source",
+            name="Daily Lead",
+            profile_url="https://www.linkedin.com/sales/lead/daily-lead",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+
+    for checked_at, status, relationship, note in (
+        (first_check, "pending", None, "invitation is still pending"),
+        (accepted_check, "accepted", "1st", "lead page shows 1st-degree relationship"),
+        (later_check, "accepted", "1st", "lead page shows 1st-degree relationship"),
+    ):
+        ledger.import_outcomes(
+            AcceptanceOutcomeArtifact.model_validate(
+                {
+                    "rows": [
+                        {
+                            "source": "source",
+                            "name": "Daily Lead",
+                            "profileUrl": "https://www.linkedin.com/sales/lead/daily-lead",
+                            "status": status,
+                            "checkedAt": checked_at.isoformat(),
+                            "relationship": relationship,
+                            "evidence": "Daily Lead · 1st" if relationship else "Pending",
+                            "note": note,
+                        }
+                    ]
+                }
+            )
+        )
+
+    invitation = ledger.invitations[0]
+    assert invitation.first_observed_accepted_at == accepted_check
+    assert invitation.last_observed_unaccepted_at == first_check
+    assert (
+        invitation.acceptance_observation_precision
+        == AcceptanceObservationPrecision.DAILY_SCAN
+    )
+
+
+def test_acceptance_report_groups_durable_transitions_and_daily_coverage() -> None:
+    accepted_at = datetime(2026, 7, 21, 3, tzinfo=UTC)
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 19),
+        source="source",
+        name="Daily Lead",
+        profile_url="https://www.linkedin.com/sales/lead/daily-lead",
+        sent_at=datetime(2026, 7, 19, tzinfo=UTC),
+        latest_status=AcceptanceStatus.ACCEPTED,
+        latest_checked_at=accepted_at,
+        first_observed_accepted_at=accepted_at,
+        acceptance_observation_precision=AcceptanceObservationPrecision.DAILY_SCAN,
+        history=[
+            AcceptanceOutcomeEvent(
+                at=accepted_at,
+                status=AcceptanceStatus.ACCEPTED,
+                relationship="1st",
+                note="lead page shows 1st-degree relationship",
+            )
+        ],
+    )
+    daily_run = AcceptanceDailyRun(
+        started_at=datetime(2026, 7, 20, 23, 55, tzinfo=UTC),
+        completed_at=datetime(2026, 7, 21, 3, 5, tzinfo=UTC),
+        local_date=date(2026, 7, 21),
+        timezone="America/Argentina/Buenos_Aires",
+        min_age_days=1,
+        max_age_days=45,
+        eligible=10,
+        checked=10,
+        newly_confirmed_accepted=1,
+        remaining_unresolved=9,
+        coverage_complete=True,
+    )
+
+    report = AcceptanceLedger(invitations=[invitation]).report(
+        0,
+        None,
+        daily_runs=[daily_run],
+        daily_days=30,
+        daily_timezone="America/Argentina/Buenos_Aires",
+        current=datetime(2026, 7, 21, 12, tzinfo=UTC),
+    )
+
+    assert report.daily[-1].date == date(2026, 7, 21)
+    assert report.daily[-1].newly_confirmed_accepted == 1
+    assert report.daily[-1].coverage_complete is True
+    assert report.daily[-1].checked == 10
+    assert report.daily_windows[0].newly_confirmed_accepted == 1
+    assert report.daily_windows[0].missing_or_incomplete_days == 6
 
 
 def test_acceptance_followup_candidates_prefer_public_profile_url() -> None:
@@ -211,7 +306,6 @@ def test_acceptance_invalidates_historical_message_only_acceptance() -> None:
                 name=invitation.name,
                 profile_url=invitation.profile_url,
                 accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
-                angle="general",
                 draft="Hey Weak. Thanks for connecting.",
                 status=AcceptanceFollowupStatus.NOT_MESSAGEABLE,
                 report_path="followups.md",
@@ -240,7 +334,6 @@ def test_acceptance_dry_run_selection_skips_already_classified_records() -> None
             name=name,
             profile_url=f"https://www.linkedin.com/sales/lead/{name}",
             accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
-            angle="general",
             draft=f"Hey {name}. Thanks for connecting.",
             status=status,
             report_path="followups.md",
@@ -362,138 +455,8 @@ def test_acceptance_followup_composer_missing_preserves_message_container_diagno
     assert "message_containers" in note
 
 
-def test_acceptance_draft_markdown_labels_public_and_sales_nav_profiles() -> None:
-    candidate = AcceptedDraftCandidate(
-        run_id=_run_id(),
-        run_date=date(2026, 7, 2),
-        source="Network - Founder Operators (11-50)",
-        name="Accepted Lead",
-        profile_url="https://www.linkedin.com/in/accepted-lead",
-        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
-        sent_at=datetime(2026, 7, 1, tzinfo=UTC),
-        accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
+def test_accepted_welcome_message_matches_confirmed_copy() -> None:
+    assert accepted_welcome_message("Sam") == (
+        "Hey Sam, thanks for connecting. Glad to be in each other’s network, "
+        "and I’m looking forward to following what you share here."
     )
-    report = DraftReport(
-        items=[
-            DraftItem(
-                candidate=candidate,
-                angle="general",
-                draft="Hey, Accepted. Thanks for connecting.",
-                evidence=["Public web URL: https://au.linkedin.com/in/accepted-lead/"],
-            )
-        ]
-    )
-
-    rendered = render_draft_markdown(report)
-
-    expected_id = acceptance_followup_id(accepted_followup_candidate_key(candidate))
-    assert f"- Follow-up ID: `{expected_id}`" in rendered
-    assert "- LinkedIn profile: https://www.linkedin.com/in/accepted-lead" in rendered
-    assert (
-        "- Sales Nav profile: https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token"
-        in rendered
-    )
-
-
-def test_acceptance_followup_record_report_resets_changed_ready_draft() -> None:
-    candidate = AcceptedDraftCandidate(
-        run_id=_run_id(),
-        run_date=date(2026, 7, 2),
-        source="Network - Founder Operators (11-50)",
-        name="Accepted Lead",
-        profile_url="https://www.linkedin.com/in/accepted-lead",
-        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc,NAME_SEARCH,token",
-        sent_at=datetime(2026, 7, 1, tzinfo=UTC),
-        accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
-    )
-    ledger = AcceptanceFollowupLedger(
-        drafts=[
-            AcceptanceFollowupRecord(
-                key=accepted_followup_candidate_key(candidate),
-                id="afu_test",
-                source=candidate.source,
-                name=candidate.name,
-                profile_url=candidate.profile_url,
-                sales_nav_profile_url=candidate.sales_nav_profile_url,
-                accepted_at=candidate.accepted_at,
-                angle="general",
-                draft="Old dry-run checked draft.",
-                status=AcceptanceFollowupStatus.DRY_RUN_READY,
-                report_path="old.md",
-            )
-        ]
-    )
-    report = DraftReport(
-        items=[
-            DraftItem(
-                candidate=candidate,
-                angle="general",
-                draft="New reviewed draft.",
-            )
-        ]
-    )
-
-    ledger.record_report(report, "new.md", "reviewed-research.json")
-
-    assert ledger.drafts[0].draft == "New reviewed draft."
-    assert ledger.drafts[0].status == AcceptanceFollowupStatus.DRAFTED
-
-
-def test_acceptance_followup_template_routing_is_source_first() -> None:
-    assert choose_angle(
-        "ASAP - Agency Owners Delivery", "AI Product Leader", "Acme AI"
-    ) == (AcceptedFollowupTemplateKey.AGENCY, "project or overflow support ask for Acme AI")
-    assert choose_angle(
-        "ASAP - Contract Recruiters Staffing", "Founder", "Hiring Co"
-    ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Hiring Co")
-    assert choose_angle(
-        "ASAP - Strategy Consultants Implementation Partners",
-        "Strategy Advisor",
-        "Strategy Co",
-    ) == (
-        AcceptedFollowupTemplateKey.ADVISOR,
-        "AI and workflow implementation support ask for Strategy Co",
-    )
-    assert choose_angle(
-        "ASAP - AI Advisors Implementation Partners", "AI Advisor", "Old Strategy Co"
-    ) == (
-        AcceptedFollowupTemplateKey.ADVISOR,
-        "AI and workflow implementation support ask for Old Strategy Co",
-    )
-    assert choose_angle(
-        "ASAP - Vertical Proof Buyers", "Founder", "Proof Co"
-    ) == (AcceptedFollowupTemplateKey.GENERAL, "product-engineering support ask for Proof Co")
-    assert choose_angle(
-        "Unknown List", "Talent Acquisition Partner", "Search Co"
-    ) == (AcceptedFollowupTemplateKey.RECRUITER, "contract-role availability ask for Search Co")
-
-
-def test_general_accepted_followup_uses_low_friction_relevant_cta() -> None:
-    draft = general_accepted_followup_draft("Sam", "Acme AI")
-
-    assert "Are you the right person to ask" in draft
-    assert "would be useful at Acme AI?" in draft
-    assert "HC Studio LLC" not in draft
-    assert "resume" not in draft.lower()
-
-
-def test_accepted_followup_templates_omit_hc_studio_and_frame_advisor_benefit() -> None:
-    drafts = [
-        general_accepted_followup_draft("Sam", "Acme AI"),
-        agency_accepted_followup_draft("Jordan", "Acme Studio"),
-        recruiter_accepted_followup_draft("Riley"),
-        advisor_accepted_followup_draft("Morgan"),
-    ]
-
-    assert all("HC Studio LLC" not in draft for draft in drafts)
-    agency = drafts[1]
-    assert (
-        "I'm a full-stack product engineer that works across web and mobile products."
-        in agency
-    )
-    advisor = drafts[-1]
-    assert "turn AI and workflow strategy into working systems" in advisor
-    assert "automations, decision-support tools, integrations, and reporting" in advisor
-    assert "make client implementation easier to deliver" in advisor
-    assert "Would that be helpful for the type of strategy work you do?" in advisor
-    assert "Are you the right person" not in advisor

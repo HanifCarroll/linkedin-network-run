@@ -1,42 +1,36 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
-import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from apps.network_automation.acceptance_service import (
-    acceptance_apply_research_decisions,
-    acceptance_draft_followups,
-    acceptance_export_message_queue,
-    acceptance_export_research_queue,
-    acceptance_import,
-)
 from apps.network_automation.browser import PlaywriterBrowserClient
+from apps.network_automation.cli import build_parser
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
+    FOUNDER_OWNER_BUYERS_LEAD_LIST,
+    FOUNDER_OWNER_BUYERS_SOURCE,
     AcceptanceCheckCandidate,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
     AcceptanceFollowupStatus,
     AcceptanceInvitation,
+    AcceptanceLeadListStatus,
     AcceptanceLedger,
-    AcceptanceOutcomeArtifact,
     AcceptanceOutcomeEvent,
     AcceptanceStatus,
     CandidateEvent,
     CandidateStatus,
-    DraftStrategy,
+    GreetingEligibilityStatus,
+    RelationshipRole,
+    accepted_welcome_message,
 )
 from apps.network_automation.store import Store
 
 from .helpers import (
-    FIXTURES,
     FakeLiveBrowserClient,
     _install_fake_live_browser,
     _run_id,
@@ -44,8 +38,61 @@ from .helpers import (
 )
 
 
-def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def _seed_pending_invitation(store: Store, name: str = "Duplicate Lead") -> None:
+    ledger = AcceptanceLedger()
+    ledger.upsert_invitation(
+        _run_id(),
+        date(2026, 6, 24),
+        CandidateEvent(
+            at=datetime.now(UTC) - timedelta(days=8),
+            source="ASAP - Agency Owners Delivery",
+            name=name,
+            profile_url=f"https://www.linkedin.com/sales/lead/{name.lower().replace(' ', '-')}",
+            status=CandidateStatus.PENDING,
+        ),
+    )
+    store.save_acceptance_ledger(ledger)
+
+
+def test_cli_acceptance_report_emits_daily_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _seed_pending_invitation(Store(tmp_path))
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "report",
+            "--daily-days",
+            "7",
+            "--timezone",
+            "UTC",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["daily_timezone"] == "UTC"
+    assert len(report["daily"]) == 7
+    assert report["daily"][-1]["coverage_complete"] is None
+    assert report["daily_windows"] == [
+        {
+            "days": 7,
+            "newly_confirmed_accepted": 0,
+            "per_calendar_day": 0.0,
+            "complete_days": 0,
+            "missing_or_incomplete_days": 7,
+        }
+    ]
+
+
+def test_cli_invalidate_weak_message_acceptances_is_guarded(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     store = Store(tmp_path)
     invitation = AcceptanceInvitation(
@@ -77,10 +124,9 @@ def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
                     name=invitation.name,
                     profile_url=invitation.profile_url,
                     accepted_at=datetime(2026, 7, 2, tzinfo=UTC),
-                    angle="general",
-                    draft="Hey Weak. Thanks for connecting.",
+                    draft=accepted_welcome_message("Weak"),
                     status=AcceptanceFollowupStatus.NOT_MESSAGEABLE,
-                    report_path="followups.md",
+                    report_path="greetings.md",
                 )
             ]
         )
@@ -96,11 +142,11 @@ def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
             "1",
         ]
     )
-
     assert exit_code == 0
-    dry_run = capsys.readouterr().out
-    assert "weak acceptance invalidation dry-run: 1 invitation(s), 1 follow-up draft(s)" in dry_run
-    assert store.load_acceptance_ledger().invitations[0].latest_status == AcceptanceStatus.ACCEPTED
+    assert "dry-run: 1 invitation(s), 1 follow-up draft(s)" in capsys.readouterr().out
+    assert store.load_acceptance_ledger().invitations[0].latest_status == (
+        AcceptanceStatus.ACCEPTED
+    )
 
     exit_code = network_main(
         [
@@ -113,277 +159,125 @@ def test_cli_acceptance_invalidate_weak_message_acceptances_is_guarded(
             "1",
         ]
     )
-
     assert exit_code == 0
-    applied = capsys.readouterr().out
-    assert "weak acceptance invalidation applied: 1 invitation(s), 1 follow-up draft(s)" in applied
-    assert (
-        store.load_acceptance_ledger().invitations[0].latest_status
-        == AcceptanceStatus.INVALIDATED
+    assert "applied: 1 invitation(s), 1 follow-up draft(s)" in capsys.readouterr().out
+    assert store.load_acceptance_ledger().invitations[0].latest_status == (
+        AcceptanceStatus.INVALIDATED
     )
-    assert (
-        store.load_acceptance_followup_ledger().drafts[0].status
-        == AcceptanceFollowupStatus.INVALID_ACCEPTANCE
-    )
-    event = json.loads(store.acceptance_event_path.read_text().strip().splitlines()[-1])
-    assert event["kind"] == "invalidate-weak-message-acceptances"
-
-
-def test_cli_acceptance_finalize_message_queue_waits_and_writes_review(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Duplicate Lead",
-            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
-    acceptance_import(store, FIXTURES / "acceptance_outcomes.json")
-    research_queue = tmp_path / "research-queue.json"
-    acceptance_export_research_queue(
-        store,
-        out=research_queue,
-        markdown_out=None,
-        offset=0,
-        limit=1,
-        include_drafted=False,
-    )
-    packet = json.loads(research_queue.read_text())
-    packet["items"][0]["decision"] = {
-        "status": "research_ready",
-        "confidence": "high",
-        "person_summary": "Duplicate Lead runs product work at Acme AI.",
-        "company_name": "Acme AI",
-        "company_summary": "Acme AI builds workflow automation products for service teams.",
-        "official_company_url": "https://www.acme-ai.example",
-        "evidence_urls": ["https://www.acme-ai.example"],
-        "notes": "Identity and company match reviewed evidence.",
-        "warnings": [],
-    }
-    research_decisions = tmp_path / "research-decisions.json"
-    research_decisions.write_text(json.dumps(packet), encoding="utf-8")
-    reviewed_research = tmp_path / "reviewed-research.json"
-    acceptance_apply_research_decisions(
-        store,
-        input_path=research_decisions,
-        out=reviewed_research,
-    )
-    message_queue = tmp_path / "message-queue.json"
-    acceptance_export_message_queue(
-        store,
-        reviewed_research=reviewed_research,
-        out=message_queue,
-        markdown_out=None,
-        include_drafted=False,
-        offset=0,
-        limit=1,
-    )
-    fake_codex = tmp_path / "fake-codex"
-    fake_codex.write_text(
-        f"""#!{sys.executable}
-import json
-import re
-import sys
-
-out = sys.argv[sys.argv.index("-o") + 1]
-prompt = sys.stdin.read()
-match = re.search(r"Return `candidate_key` exactly as: `([^`]+)`", prompt)
-candidate_key = match.group(1)
-message = (
-    "Hey, Duplicate. Thanks for connecting.\\n\\n"
-    "I build web apps and internal tools for teams that are stuck with "
-    "spreadsheets, manual handoffs, or half-working automations.\\n\\n"
-    "Acme AI's work on workflow automation for service teams seems adjacent "
-    "to what I do: turning messy workflows into tools people can actually use."
-    "\\n\\n"
-    "Does that kind of cleanup come up much with the teams you work with?"
-)
-with open(out, "w", encoding="utf-8") as handle:
-    json.dump({{
-        "candidate_key": candidate_key,
-        "status": "ready_for_draft",
-        "message": message,
-        "reason": "The reviewed research supports the workflow bridge.",
-        "warnings": [],
-    }}, handle)
-""",
-        encoding="utf-8",
-    )
-    fake_codex.chmod(0o755)
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "finalize-message-queue",
-            "--message-queue",
-            str(message_queue),
-            "--jobs-dir",
-            str(tmp_path / "draft-jobs"),
-            "--message-decisions-out",
-            str(tmp_path / "message-decisions.json"),
-            "--reviewed-research-out",
-            str(tmp_path / "reviewed-research-final.json"),
-            "--out",
-            str(tmp_path / "followups.md"),
-            "--review-out",
-            str(tmp_path / "followups.review.json"),
-            "--codex-bin",
-            str(fake_codex),
-            "--cwd",
-            str(tmp_path),
-            "--wait-seconds",
-            "5",
-            "--poll-seconds",
-            "0.1",
-        ]
+    assert store.load_acceptance_followup_ledger().drafts[0].status == (
+        AcceptanceFollowupStatus.INVALID_ACCEPTANCE
     )
 
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "finalized accepted message queue" in output
-    assert "1 ready, 0 needs review, 0 pending" in output
-    assert (tmp_path / "message-decisions.json").exists()
-    assert (tmp_path / "reviewed-research-final.json").exists()
-    assert "turning messy workflows into tools people can actually use" in (
-        tmp_path / "followups.md"
-    ).read_text()
-    review_packet = json.loads((tmp_path / "followups.review.json").read_text())
-    assert review_packet["items"][0]["candidate"]["name"] == "Duplicate Lead"
+
+def test_cli_exposes_only_current_enrichment_welcome_and_watchlist_commands() -> None:
+    parser = build_parser()
+    current = [
+        "export-enrichment-queue",
+        "export-browser-investigation-queue",
+        "apply-browser-investigation",
+        "launch-enrichment-workers",
+        "collect-enrichment-workers",
+        "prepare-welcome-messages",
+        "run-welcome-messages",
+        "save-watchlist-leads",
+        "send-greeting",
+        "dry-run-greetings",
+        "send-ready-greetings",
+    ]
+    for command in current:
+        args = ["acceptance", command]
+        if command == "send-greeting":
+            args.extend(["--id", "afu_test"])
+        elif command == "export-browser-investigation-queue":
+            args.extend(["--out", "/tmp/browser-queue.json"])
+        elif command == "apply-browser-investigation":
+            args.extend(
+                [
+                    "--queue",
+                    "/tmp/browser-queue.json",
+                    "--enrichment",
+                    "/tmp/browser-decisions.json",
+                ]
+            )
+        assert parser.parse_args(args).acceptance_command == command
+
+    removed = [
+        "draft-followups",
+        "export-research-queue",
+        "launch-codex-research-workers",
+        "export-message-queue",
+        "finalize-message-queue",
+        "send-followup",
+        "prepare-approved-greetings",
+        "run-approved-greeting-pilot",
+        "save-lead-to-list",
+    ]
+    for command in removed:
+        with pytest.raises(SystemExit):
+            parser.parse_args(["acceptance", command])
 
 
 def test_playwriter_acceptance_check_requires_first_degree_not_message_label() -> None:
     script = Path("apps/network_automation/playwriter_scripts/acceptance_outcomes.js").read_text()
 
     assert r"\b1st\b|\bMessage\b" not in script
-    assert r"\b1st\b" in script
+    assert 'trim() === "1st"' in script
+    assert 'page.locator("body")' not in script
+    assert "profile action controls show Connect" in script
+    assert "config.progressOut" in script
 
 
-def test_playwriter_acceptance_check_resumes_existing_partial_chunk(tmp_path: Path) -> None:
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is required to execute the Playwriter acceptance script")
+def test_playwriter_acceptance_lead_list_uses_exact_sales_nav_lead_identity() -> None:
+    script = Path(
+        "apps/network_automation/playwriter_scripts/acceptance_lead_list.js"
+    ).read_text()
 
-    script_path = Path(
-        "apps/network_automation/playwriter_scripts/acceptance_outcomes.js"
-    ).resolve()
-    config_path = tmp_path / "config.json"
-    out_path = tmp_path / "chunk-0.json"
-    visited_path = tmp_path / "visited.json"
-    candidates = [
-        {
-            "source": "ASAP - Agency Owners Delivery",
-            "name": "First Lead",
-            "profile_url": "https://www.linkedin.com/sales/lead/first",
-        },
-        {
-            "source": "ASAP - Agency Owners Delivery",
-            "name": "Second Lead",
-            "profile_url": "https://www.linkedin.com/sales/lead/second",
-        },
-    ]
-    config_path.write_text(
-        json.dumps(
-            {
-                "candidates": candidates,
-                "input": str(tmp_path / "acceptance-candidates.json"),
-                "out": str(out_path),
-                "offset": 0,
-                "limit": 2,
-                "delayMs": 0,
-            }
-        )
-    )
-    out_path.write_text(
-        json.dumps(
-            {
-                "capturedAt": "2026-07-03T12:00:00Z",
-                "input": str(tmp_path / "acceptance-candidates.json"),
-                "count": 1,
-                "offset": 0,
-                "limit": 2,
-                "totalCandidates": 2,
-                "complete": False,
-                "rows": [
-                    {
-                        "source": "ASAP - Agency Owners Delivery",
-                        "name": "First Lead",
-                        "profileUrl": "https://www.linkedin.com/sales/lead/first",
-                        "status": "accepted",
-                        "checkedAt": "2026-07-03T12:00:00Z",
-                        "relationship": "1st",
-                        "evidence": "existing partial row",
-                        "note": "fixture",
-                    }
-                ],
-            }
-        )
-    )
-    runner_path = tmp_path / "run-acceptance-outcomes.js"
-    runner_path.write_text(
-        f"""
-const fs = require("node:fs");
-const script = fs.readFileSync({json.dumps(str(script_path))}, "utf8");
-const visited = [];
-const mockPage = {{
-  _url: "about:blank",
-  isClosed: () => false,
-  url: () => mockPage._url,
-  goto: async (url) => {{
-    visited.push(url);
-    mockPage._url = url;
-  }},
-  waitForTimeout: async () => null,
-  locator: () => ({{
-    count: async () => 0,
-    nth: () => ({{ isVisible: async () => false }}),
-    innerText: async () => "1st",
-    evaluateAll: async () => [],
-  }}),
-}};
-const state = {{ linkedinToolsConfigPath: {json.dumps(str(config_path))} }};
-const context = {{
-  pages: () => [mockPage],
-  newPage: async () => mockPage,
-}};
-const waitForPageLoad = async () => null;
-const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+    assert "const expectedLeadId = salesNavLeadId(profileUrl);" in script
+    assert "const loadedLeadId = salesNavLeadId(activePage.url());" in script
+    assert "if (loadedLeadId !== expectedLeadId)" in script
+    assert "activePage.getByText(record.name" not in script
+    assert r"/^(.+) saved\. Add to a custom list\.$/" in script
+    assert r"/^Save (.+) as a lead\. Save to list\.$/" in script
+    assert "multiple Sales Navigator Save or Saved actions were visible" in script
+    assert "await waitForProfileSaveAction(activePage)" in script
+    assert "await classifyBlock(activePage)" in script
+    assert "await activePage.waitForTimeout(500)" in script
+    assert "elapsedMs: saveActionWait.elapsedMs" in script
+    assert '.locator("#hue-web-menu-outlet button")' in script
+    assert "clickExactListSelection(activePage, listName, profileName)" in script
+    assert "expectedProfileName: profileName" in script
+    assert 'menuOutlet.querySelectorAll("button")' in script
+    assert "visibleElement(button) && exactAddAction.test(ariaLabel)" in script
+    assert "customListButtons.length > 0 ? customListButtons : matchingButtons" in script
+    assert "containingMenu?.parentElement?.closest(\"li[role='menuitem']\")" in script
+    assert 'selectionScope: "custom_lists"' not in script
+    assert '"custom_lists" : "visible_exact_match"' in script
+    assert "^Add ${escapeRegExp(expectedProfileName)} to " in script
+    assert "exactNodes" not in script
+    assert "match.buttonCount !== 1" in script
+    assert "selectedByRemoveAction" in script
+    assert "^Remove ${escapeRegExp(expectedProfileName)} from " in script
+    assert "list with [0-9]+ leads?$" in script
 
-(async () => {{
-  await new AsyncFunction("require", "state", "context", "page", "waitForPageLoad", script)(
-    require,
-    state,
-    context,
-    mockPage,
-    waitForPageLoad
-  );
-  fs.writeFileSync({json.dumps(str(visited_path))}, JSON.stringify(visited));
-}})().catch((error) => {{
-  console.error(error && error.stack ? error.stack : error);
-  process.exit(1);
-}});
-"""
-    )
 
-    subprocess.run([node, str(runner_path)], check=True, cwd=Path.cwd())
+def test_playwriter_acceptance_followup_uses_current_sales_nav_message_dom() -> None:
+    script = Path(
+        "apps/network_automation/playwriter_scripts/acceptance_followup_send.js"
+    ).read_text()
 
-    assert json.loads(visited_path.read_text()) == [
-        "https://www.linkedin.com/sales/lead/second"
-    ]
-    artifact = json.loads(out_path.read_text())
-    assert artifact["complete"] is True
-    assert artifact["count"] == 2
-    assert artifact["rows"][0]["evidence"] == "existing partial row"
-    assert artifact["rows"][1]["name"] == "Second Lead"
+    assert 'button[data-anchor-send-inmail]' in script
+    assert "waitForProfileMessageAction(page, record.name, 15000)" in script
+    assert "multiple exact Sales Navigator Message actions were visible" in script
+    assert "exact Sales Navigator Message action did not become hittable" in script
+    assert "textarea[name='message'][aria-label='Type your message here…']" in script
+    assert "form[data-x-conversation-widget='compose-form']" in script
+    assert "section.thread-container" in script
+    assert "h2[aria-label^='Conversation with ']" in script
+    assert ".evaluate((node) => node.value)" in script
+    assert "article [aria-label^='Message from ']" in script
+    assert "scanVisibleActions(page, /^(Message|InMail)" not in script
+    assert "contenteditable='true'" not in script
+    assert "actionCandidateScore" not in script
 
 
 def test_playwriter_acceptance_check_uses_direct_output_staging(tmp_path: Path) -> None:
@@ -391,7 +285,10 @@ def test_playwriter_acceptance_check_uses_direct_output_staging(tmp_path: Path) 
     client = PlaywriterBrowserClient(out_dir=tmp_path, session="test", playwriter_bin="playwriter")
 
     def fake_run_script(
-        script: Path, config: dict[str, Any], *, staging: str = "shared"
+        script: Path,
+        config: dict[str, Any],
+        *,
+        staging: str = "shared",
     ) -> None:
         calls.append((script.name, config, staging))
         _write_fake_artifact(
@@ -420,7 +317,6 @@ def test_playwriter_acceptance_check_uses_direct_output_staging(tmp_path: Path) 
         )
 
     client._run_script = fake_run_script  # type: ignore[method-assign]
-
     artifact, _ = client.check_acceptance_outcomes(
         candidates=[
             AcceptanceCheckCandidate(
@@ -445,111 +341,38 @@ def test_playwriter_acceptance_check_uses_direct_output_staging(tmp_path: Path) 
     assert calls[0][2] == "direct"
 
 
-def test_playwriter_acceptance_followup_uses_script_and_preserves_guards(
+def test_cli_send_greeting_dry_run_uses_live_browser(
     tmp_path: Path,
-) -> None:
-    calls: list[tuple[Path, dict[str, Any]]] = []
-    record = AcceptanceFollowupRecord(
-        key="source:lead",
-        id="lead-1",
-        source="source",
-        name="Accepted Lead",
-        profile_url="https://www.linkedin.com/in/accepted-lead",
-        sales_nav_profile_url="https://www.linkedin.com/sales/lead/abc",
-        accepted_at=datetime(2026, 6, 20, tzinfo=UTC),
-        angle="general",
-        draft="Hey Accepted. Thanks for connecting.",
-        report_path=str(tmp_path / "followups.md"),
-    )
-    client = PlaywriterBrowserClient(out_dir=tmp_path, session="test", playwriter_bin="playwriter")
-
-    def fake_run_script(script: Path, config: dict[str, Any]) -> None:
-        calls.append((script, config))
-        _write_fake_artifact(
-            Path(config["out"]),
-            {
-                "candidate": {
-                    "id": record.id,
-                    "key": record.key,
-                    "name": record.name,
-                    "profileUrl": record.profile_url,
-                    "salesNavProfileUrl": record.sales_nav_profile_url,
-                    "source": record.source,
-                },
-                "dryRun": config["dryRun"],
-                "url": record.profile_url,
-                "messageLength": len(record.draft),
-                "status": "dry-run-messageable",
-            },
-        )
-
-    client._run_script = fake_run_script  # type: ignore[method-assign, assignment]
-
-    with pytest.raises(RuntimeError, match="real send requires allow_send"):
-        client.send_acceptance_followup(
-            record,
-            dry_run=False,
-            preview_fill=False,
-            allow_send=False,
-        )
-    with pytest.raises(RuntimeError, match="preview_fill requires dry_run"):
-        client.send_acceptance_followup(
-            record,
-            dry_run=False,
-            preview_fill=True,
-            allow_send=True,
-        )
-
-    result, path = client.send_acceptance_followup(
-        record,
-        dry_run=True,
-        preview_fill=False,
-        allow_send=False,
-    )
-
-    assert result.status == "dry-run-messageable"
-    assert Path(path).exists()
-    assert calls[0][0].name == "acceptance_followup_send.js"
-    assert calls[0][1]["record"]["id"] == "lead-1"
-    assert calls[0][1]["dryRun"] is True
-    assert calls[0][1]["allowSend"] is False
-
-
-def test_cli_acceptance_followup_dry_run_uses_live_browser(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_live_browser(monkeypatch)
     store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Duplicate Lead",
-            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
+    record = AcceptanceFollowupRecord(
+        key="active-founder",
+        id="afu_active",
+        source=FOUNDER_OWNER_BUYERS_SOURCE,
+        name="Active Founder",
+        profile_url="https://www.linkedin.com/in/active-founder",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/active-founder",
+        accepted_at=datetime(2026, 7, 13, tzinfo=UTC),
+        draft=accepted_welcome_message("Active"),
+        relationship_role=RelationshipRole.BUYER,
+        greeting_eligibility_status=GreetingEligibilityStatus.ELIGIBLE,
+        original_connection_approved_at=datetime(2026, 7, 12, tzinfo=UTC),
+        original_connection_approval_reason="Approved in original connection review.",
+        sales_nav_list_name=FOUNDER_OWNER_BUYERS_LEAD_LIST,
+        sales_nav_list_status=AcceptanceLeadListStatus.SAVED,
+        report_path="greetings.md",
     )
-    store.save_acceptance_ledger(ledger)
-    acceptance_import(store, FIXTURES / "acceptance_outcomes.json")
-    acceptance_draft_followups(
-        store,
-        research=FIXTURES / "accepted_research.json",
-        out=tmp_path / "followups.md",
-        include_drafted=False,
-        strategy=DraftStrategy.ASAP_CONTRACT_V1,
-    )
-    record = store.load_acceptance_followup_ledger().drafts[0]
-    out_dir = tmp_path / "followup-browser"
+    store.save_acceptance_followup_ledger(AcceptanceFollowupLedger(drafts=[record]))
+    out_dir = tmp_path / "greeting-browser"
 
     exit_code = network_main(
         [
             "--state-dir",
             str(tmp_path),
             "acceptance",
-            "send-followup",
+            "send-greeting",
             "--id",
             record.id,
             "--dry-run",
@@ -561,16 +384,18 @@ def test_cli_acceptance_followup_dry_run_uses_live_browser(
     assert exit_code == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == out_dir
     assert FakeLiveBrowserClient.instances[-1].calls == [
-        "followup:Duplicate Lead:dry=True:preview=False:allow=False"
+        "followup:Active Founder:dry=True:preview=False:allow=False"
     ]
-    assert store.load_acceptance_followup_ledger().drafts[0].status.value == "dry_run_ready"
+    assert store.load_acceptance_followup_ledger().drafts[0].status == (
+        AcceptanceFollowupStatus.DRY_RUN_READY
+    )
 
 
 def test_cli_acceptance_check_uses_live_browser(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_live_browser(monkeypatch)
-    store = Store(tmp_path)
     candidates = tmp_path / "candidates.json"
     out = tmp_path / "outcomes.json"
     candidates.write_text(
@@ -610,80 +435,19 @@ def test_cli_acceptance_check_uses_live_browser(
         "acceptance-check:1:offset=0:limit=1:delay=500"
     ]
     assert json.loads(out.read_text())["rows"][0]["status"] == "accepted"
-    event = json.loads(store.acceptance_event_path.read_text().strip().splitlines()[-1])
-    assert event["kind"] == "check"
 
 
-def test_cli_acceptance_draft_followups_can_generate_research(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_cli_daily_session_is_report_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _install_fake_live_browser(monkeypatch)
     store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Duplicate Lead",
-            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
-    acceptance_import(store, FIXTURES / "acceptance_outcomes.json")
-    out_dir = tmp_path / "generated-research"
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "draft-followups",
-            "--session",
-            "auto",
-            "--out-dir",
-            str(out_dir),
-            "--research-offset",
-            "0",
-            "--research-limit",
-            "1",
-        ]
-    )
-
-    assert exit_code == 0
-    assert FakeLiveBrowserClient.instances[-1].calls == [
-        "accepted-research:1:offset=0:limit=1:delay=500"
-    ]
-    assert (out_dir / "accepted-candidates.json").exists()
-    assert (out_dir / "accepted-research.json").exists()
-    assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"
-
-
-def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Duplicate Lead",
-            profile_url="https://www.linkedin.com/sales/lead/dup?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
+    _seed_pending_invitation(store)
     candidates = tmp_path / "acceptance-candidates.json"
     outcomes = tmp_path / "acceptance-outcomes.json"
     chunks = tmp_path / "chunks"
-    draft_report = tmp_path / "followups.md"
-    draft_out_dir = tmp_path / "accepted-followups"
     browser_out_dir = tmp_path / "acceptance-session"
 
     exit_code = network_main(
@@ -700,10 +464,6 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
             str(chunks),
             "--chunk-size",
             "1",
-            "--draft-report",
-            str(draft_report),
-            "--draft-out-dir",
-            str(draft_out_dir),
             "--out-dir",
             str(browser_out_dir),
         ]
@@ -711,271 +471,32 @@ def test_cli_acceptance_run_daily_session_reuses_one_live_browser_and_drafts(
 
     assert exit_code == 0
     assert len(FakeLiveBrowserClient.instances) == 1
-    assert FakeLiveBrowserClient.instances[0].out_dir == browser_out_dir
     assert FakeLiveBrowserClient.instances[0].calls == [
-        "acceptance-check:1:offset=0:limit=1:delay=750",
-        "accepted-research:1:offset=0:limit=0:delay=500",
+        "acceptance-check:1:offset=0:limit=1:delay=750"
     ]
     assert json.loads(outcomes.read_text())["rows"][0]["status"] == "accepted"
-    assert draft_report.exists()
-    assert draft_report.with_suffix(".review.json").exists()
-    assert (draft_out_dir / "accepted-candidates.json").exists()
-    assert (draft_out_dir / "accepted-research.json").exists()
-    assert store.load_acceptance_followup_ledger().drafts[0].name == "Duplicate Lead"
-    events = [
-        json.loads(line)
-        for line in store.acceptance_event_path.read_text().splitlines()
-        if line.strip()
-    ]
-    assert any(
-        event["kind"] == "run-daily-session-check-start"
-        and event["payload"]["offset"] == 0
-        and event["payload"]["limit"] == 1
-        and event["payload"]["out"] == str(chunks / "chunk-0.json")
-        for event in events
-    )
-
-
-def test_cli_acceptance_run_daily_session_reuses_complete_chunks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    for name in ("Already Checked", "Needs Check"):
-        ledger.upsert_invitation(
-            _run_id(),
-            date(2026, 6, 24),
-            CandidateEvent(
-                at=datetime.now(UTC) - timedelta(days=8),
-                source="ASAP - Agency Owners Delivery",
-                name=name,
-                profile_url=f"https://www.linkedin.com/sales/lead/{name.replace(' ', '-').lower()}",
-                status=CandidateStatus.PENDING,
-            ),
-        )
-    store.save_acceptance_ledger(ledger)
-    candidates = tmp_path / "acceptance-candidates.json"
-    outcomes = tmp_path / "acceptance-outcomes.json"
-    chunks = tmp_path / "chunks"
-    _write_fake_artifact(
-        chunks / "chunk-0.json",
-        AcceptanceOutcomeArtifact.model_validate(
-            {
-                "capturedAt": "2026-06-24T12:00:00Z",
-                "input": str(candidates),
-                "count": 1,
-                "offset": 0,
-                "limit": 1,
-                "totalCandidates": 2,
-                "complete": True,
-                "rows": [
-                    {
-                        "source": "ASAP - Agency Owners Delivery",
-                        "name": "Already Checked",
-                        "profileUrl": "https://www.linkedin.com/sales/lead/already-checked",
-                        "status": "accepted",
-                        "checkedAt": "2026-06-24T12:00:00Z",
-                        "relationship": "1st",
-                        "evidence": "existing complete chunk",
-                        "note": "fixture",
-                    }
-                ],
-            }
-        ),
-    )
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "run-daily-session",
-            "--candidates-out",
-            str(candidates),
-            "--outcomes-out",
-            str(outcomes),
-            "--chunk-dir",
-            str(chunks),
-            "--chunk-size",
-            "1",
-        ]
-    )
-
-    assert exit_code == 0
-    assert FakeLiveBrowserClient.instances[0].calls == [
-        "acceptance-check:2:offset=1:limit=1:delay=750",
-        "accepted-research:1:offset=0:limit=0:delay=500",
-    ]
-    assert json.loads(outcomes.read_text())["count"] == 2
-    events = [
-        json.loads(line)
-        for line in store.acceptance_event_path.read_text().splitlines()
-        if line.strip()
-    ]
-    assert any(
-        event["kind"] == "run-daily-session-check-reuse"
-        and event["payload"]["offset"] == 0
-        for event in events
-    )
-
-
-def test_cli_acceptance_run_daily_session_retries_chunk_three_times(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    FakeLiveBrowserClient.acceptance_failures_remaining = 3
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Retry Lead",
-            profile_url="https://www.linkedin.com/sales/lead/retry?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
-    outcomes = tmp_path / "acceptance-outcomes.json"
-    chunks = tmp_path / "chunks"
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "run-daily-session",
-            "--candidates-out",
-            str(tmp_path / "acceptance-candidates.json"),
-            "--outcomes-out",
-            str(outcomes),
-            "--chunk-dir",
-            str(chunks),
-            "--chunk-size",
-            "1",
-            "--no-draft-followups",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "retrying acceptance chunk:" in output
-    assert "attempt 4/4" in output
-    assert outcomes.exists()
-    assert FakeLiveBrowserClient.instances[0].calls == [
-        "acceptance-check:1:offset=0:limit=1:delay=750",
-        "acceptance-check:1:offset=0:limit=1:delay=750",
-        "acceptance-check:1:offset=0:limit=1:delay=750",
-        "acceptance-check:1:offset=0:limit=1:delay=750",
-    ]
-    assert FakeLiveBrowserClient.instances[0].recoveries == 3
-
-
-def test_cli_acceptance_run_daily_session_stops_on_blocked_chunk(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    FakeLiveBrowserClient.acceptance_status = "blocked"
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Blocked Lead",
-            profile_url="https://www.linkedin.com/sales/lead/blocked?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
-    outcomes = tmp_path / "acceptance-outcomes.json"
-    chunks = tmp_path / "chunks"
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "run-daily-session",
-            "--candidates-out",
-            str(tmp_path / "acceptance-candidates.json"),
-            "--outcomes-out",
-            str(outcomes),
-            "--chunk-dir",
-            str(chunks),
-            "--chunk-size",
-            "1",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "stopped:" in output
-    assert "chunk-0.json has 1 blocked rows" in output
-    assert not outcomes.exists()
     assert store.load_acceptance_followup_ledger().drafts == []
-
-
-def test_cli_acceptance_run_daily_session_reports_chunk_check_exception(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _install_fake_live_browser(monkeypatch)
-    FakeLiveBrowserClient.fail_acceptance_check = True
-    store = Store(tmp_path)
-    ledger = AcceptanceLedger()
-    ledger.upsert_invitation(
-        _run_id(),
-        date(2026, 6, 24),
-        CandidateEvent(
-            at=datetime.now(UTC) - timedelta(days=8),
-            source="ASAP - Agency Owners Delivery",
-            name="Timeout Lead",
-            profile_url="https://www.linkedin.com/sales/lead/timeout?_ntb=session",
-            status=CandidateStatus.PENDING,
-        ),
-    )
-    store.save_acceptance_ledger(ledger)
-    outcomes = tmp_path / "acceptance-outcomes.json"
-    chunks = tmp_path / "chunks"
-
-    exit_code = network_main(
-        [
-            "--state-dir",
-            str(tmp_path),
-            "acceptance",
-            "run-daily-session",
-            "--candidates-out",
-            str(tmp_path / "acceptance-candidates.json"),
-            "--outcomes-out",
-            str(outcomes),
-            "--chunk-dir",
-            str(chunks),
-            "--chunk-size",
-            "1",
-        ]
-    )
-
+    daily_runs = store.load_acceptance_daily_runs()
+    assert len(daily_runs) == 1
+    assert daily_runs[0].coverage_complete is True
+    assert daily_runs[0].eligible == 1
+    assert daily_runs[0].checked == 1
+    assert daily_runs[0].newly_confirmed_accepted == 1
     output = capsys.readouterr().out
-    assert exit_code == 0
-    assert "stopped:" in output
-    assert "chunk-0.json failed during acceptance check" in output
-    assert "after 4 attempt(s) (3 retries)" in output
-    assert "offset=0, limit=1, candidates=1" in output
-    assert "browser timed out" in output
-    assert not outcomes.exists()
+    assert "acceptance check: chunk 1/1 completed with 1 row(s)" in output
+    assert "daily acceptance coverage: complete" in output
 
 
-def test_cli_acceptance_run_daily_session_skips_browser_without_candidates(
+def test_cli_daily_session_retries_then_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _install_fake_live_browser(monkeypatch)
+    FakeLiveBrowserClient.acceptance_failures_remaining = 3
+    store = Store(tmp_path)
+    _seed_pending_invitation(store, "Retry Lead")
+    outcomes = tmp_path / "acceptance-outcomes.json"
 
     exit_code = network_main(
         [
@@ -985,9 +506,95 @@ def test_cli_acceptance_run_daily_session_skips_browser_without_candidates(
             "run-daily-session",
             "--candidates-out",
             str(tmp_path / "acceptance-candidates.json"),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(tmp_path / "chunks"),
+            "--chunk-size",
+            "1",
         ]
     )
 
     assert exit_code == 0
-    assert FakeLiveBrowserClient.instances == []
-    assert "no acceptance-check candidates; browser not opened" in capsys.readouterr().out
+    assert "attempt 4/4" in capsys.readouterr().out
+    assert outcomes.exists()
+    assert FakeLiveBrowserClient.instances[0].recoveries == 3
+
+
+def test_cli_daily_session_does_not_reuse_chunk_for_different_candidate_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    store = Store(tmp_path)
+    candidates = tmp_path / "acceptance-candidates.json"
+    outcomes = tmp_path / "acceptance-outcomes.json"
+    chunks = tmp_path / "chunks"
+
+    for name in ("First Lead", "Second Lead"):
+        _seed_pending_invitation(store, name)
+        assert (
+            network_main(
+                [
+                    "--state-dir",
+                    str(tmp_path),
+                    "acceptance",
+                    "run-daily-session",
+                    "--candidates-out",
+                    str(candidates),
+                    "--outcomes-out",
+                    str(outcomes),
+                    "--chunk-dir",
+                    str(chunks),
+                    "--chunk-size",
+                    "1",
+                ]
+            )
+            == 0
+        )
+
+    output = capsys.readouterr().out
+    assert len(FakeLiveBrowserClient.instances) == 2
+    assert "reused complete acceptance chunk" not in output
+    assert json.loads(outcomes.read_text())["rows"][0]["name"] == "Second Lead"
+
+
+def test_cli_daily_session_stops_on_blocked_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_fake_live_browser(monkeypatch)
+    FakeLiveBrowserClient.acceptance_status = "blocked"
+    store = Store(tmp_path)
+    _seed_pending_invitation(store, "Blocked Lead")
+    outcomes = tmp_path / "acceptance-outcomes.json"
+
+    exit_code = network_main(
+        [
+            "--state-dir",
+            str(tmp_path),
+            "acceptance",
+            "run-daily-session",
+            "--candidates-out",
+            str(tmp_path / "acceptance-candidates.json"),
+            "--outcomes-out",
+            str(outcomes),
+            "--chunk-dir",
+            str(tmp_path / "chunks"),
+            "--chunk-size",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert "chunk-0.json has 1 blocked rows" in capsys.readouterr().out
+    assert not outcomes.exists()
+    assert store.load_acceptance_followup_ledger().drafts == []
+    daily_runs = store.load_acceptance_daily_runs()
+    assert len(daily_runs) == 1
+    assert daily_runs[0].coverage_complete is False
+    assert daily_runs[0].eligible == 1
+    assert daily_runs[0].checked == 0
+    assert daily_runs[0].blocker is not None

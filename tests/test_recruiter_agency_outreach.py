@@ -566,6 +566,27 @@ def test_dashboard_markdown_includes_this_run_checked_skipped_counts(tmp_path: P
     ) in markdown
 
 
+def test_sourcing_dashboard_omits_historical_sent_lead_cards(tmp_path: Path) -> None:
+    state = _sendable_state(message_status=MessageStatus.SENT)
+    store = Store(tmp_path)
+    store.save(state)
+
+    report = build_dashboard_report(
+        store.load(),
+        str(store.state_path),
+        target_agencies=1,
+        target_recruiters=0,
+        target_advisors=0,
+        allow_send=False,
+        mode="sourcing",
+    )
+    markdown = render_dashboard_markdown(report)
+
+    assert "- Lifetime sent: `1` agencies, `0` recruiters, `0` advisors" in markdown
+    assert "### Sent" not in markdown
+    assert "- `lead_fixture` Dana Delivery - `sent`" not in markdown
+
+
 def test_store_load_hydrates_draft_and_send_side_tables(tmp_path: Path) -> None:
     store = Store(tmp_path)
     state = OutreachState(

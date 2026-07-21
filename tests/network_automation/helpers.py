@@ -12,9 +12,8 @@ from apps.network_automation.models import (
     AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
+    AcceptanceLeadListSaveResult,
     AcceptanceOutcomeArtifact,
-    AcceptedDraftCandidate,
-    AcceptedResearchArtifact,
     CandidateObservation,
     PendingCandidateObservation,
     PendingCapture,
@@ -60,9 +59,18 @@ class FakeLiveBrowserClient:
     ) -> tuple[SalesNavSendResult, str]:
         self.calls.append(f"send:{candidate.name}:dry={dry_run}:allow={allow_send}")
         return (
-            read_model(FIXTURES / "send_pending.json", SalesNavSendResult),
+            read_model(FIXTURES / "send_pending_consulting.json", SalesNavSendResult),
             str(self.out_dir / "send-result.json"),
         )
+
+    def save_acceptance_lead_to_list(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        allow_save: bool,
+    ) -> tuple[AcceptanceLeadListSaveResult, str]:
+        _ = record, allow_save
+        raise RuntimeError("lead-list save is not configured for this browser fixture")
 
     def capture_salesnav(
         self,
@@ -79,7 +87,7 @@ class FakeLiveBrowserClient:
             f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
         )
         _ = stop_after_connectable, row_scroll_delay_ms
-        capture = read_model(FIXTURES / "capture.json", SalesNavCapture).model_copy(
+        capture = read_model(FIXTURES / "capture_consulting.json", SalesNavCapture).model_copy(
             update={"source": source}
         )
         return capture, str(self.out_dir / "capture-page.json")
@@ -110,14 +118,19 @@ class FakeLiveBrowserClient:
                 "url": url,
                 "searches": [
                     {
+                        "savedSearchId": "abc",
+                        "name": "Consulting - Founder Owner Buyers",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                    },
+                    {
                         "savedSearchId": "def",
-                        "name": "ASAP - Contract Recruiters Staffing",
+                        "name": "Consulting - Operations Leader Buyers",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
                     },
                     {
-                        "savedSearchId": "abc",
-                        "name": "ASAP - Agency Owners Delivery",
-                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
+                        "savedSearchId": "ghi",
+                        "name": "Consulting - Trusted Referral Partners",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     }
                 ],
             }
@@ -171,70 +184,6 @@ class FakeLiveBrowserClient:
                             if FakeLiveBrowserClient.acceptance_status == "accepted"
                             else "security-verification-present"
                         ),
-                    }
-                    for candidate in selected
-                ],
-            }
-        )
-        _write_fake_artifact(out, artifact)
-        return artifact, str(out)
-
-    def research_accepted_candidates(
-        self,
-        *,
-        candidates: list[AcceptedDraftCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptedResearchArtifact, str]:
-        self.calls.append(
-            "accepted-research:"
-            f"{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
-        )
-        selected = candidates[offset : offset + limit] if limit else candidates[offset:]
-        artifact = AcceptedResearchArtifact.model_validate(
-            {
-                "capturedAt": "2026-06-24T12:00:00Z",
-                "rows": [
-                    {
-                        "source": candidate.source,
-                        "name": candidate.name,
-                        "profileUrl": candidate.profile_url,
-                        "salesNavProfileUrl": candidate.sales_nav_profile_url
-                        or candidate.profile_url,
-                        "publicProfileUrl": "https://www.linkedin.com/in/example-lead",
-                        "salesNav": {
-                            "name": candidate.name,
-                            "title": "Founder",
-                            "company": "Example Co",
-                            "url": candidate.profile_url,
-                        },
-                        "companyProfile": {
-                            "name": "Example Co",
-                            "url": "https://www.linkedin.com/sales/company/example-co",
-                            "websiteUrl": "https://example.com",
-                            "description": "Example Co builds software products for clients.",
-                            "warnings": [],
-                        },
-                        "companyWebsite": {
-                            "url": "https://example.com",
-                            "title": "Example Co",
-                            "description": "Software product services for teams.",
-                            "warnings": [],
-                        },
-                        "web": {
-                            "query": candidate.name,
-                            "results": [
-                                {
-                                    "title": "Example Co",
-                                    "url": "https://example.com",
-                                    "snippet": "Example Co builds software products for clients.",
-                                }
-                            ],
-                            "warnings": [],
-                        },
                     }
                     for candidate in selected
                 ],
@@ -300,9 +249,11 @@ class FakeLiveBrowserClient:
         *,
         limit: int,
         threshold_days: int,
+        timeout_seconds: float,
         dry_run: bool,
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawBatchResult, str]:
+        _ = timeout_seconds
         self.calls.append(
             f"withdraw-loaded:limit={limit}:threshold={threshold_days}:dry={dry_run}:allow={allow_withdraw}"
         )
@@ -372,7 +323,10 @@ class CandidateCapturingBrowser(FakeLiveBrowserClient):
     ) -> tuple[SalesNavSendResult, str]:
         _ = dry_run, allow_send
         self.candidate = candidate
-        return read_model(FIXTURES / "send_pending.json", SalesNavSendResult), "send.json"
+        return (
+            read_model(FIXTURES / "send_pending_consulting.json", SalesNavSendResult),
+            "send.json",
+        )
 
 
 class AcceptanceCandidateCapturingBrowser(FakeLiveBrowserClient):
@@ -411,13 +365,18 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "ASAP - Agency Owners Delivery",
+                        "name": "Consulting - Founder Owner Buyers",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     },
                     {
                         "savedSearchId": "def",
-                        "name": "ASAP - Contract Recruiters Staffing",
+                        "name": "Consulting - Operations Leader Buyers",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
+                    },
+                    {
+                        "savedSearchId": "ghi",
+                        "name": "Consulting - Trusted Referral Partners",
+                        "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     },
                 ],
             }
@@ -440,7 +399,7 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
             f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
         )
         _ = stop_after_connectable, row_scroll_delay_ms
-        if source == "ASAP - Contract Recruiters Staffing":
+        if source == "Consulting - Founder Owner Buyers":
             artifact = SalesNavCapture.model_validate(
                 {
                     "capturedAt": "2026-06-24T12:00:00Z",

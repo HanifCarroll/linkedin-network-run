@@ -10,6 +10,7 @@ from datetime import date as Date
 from enum import StrEnum
 from typing import Any
 from urllib.parse import urlparse, urlunparse
+from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -30,10 +31,70 @@ class RunState(StrEnum):
     STARTED = "Started"
     START_AUDITED = "StartAudited"
     SENDING = "Sending"
+    NEEDS_BROWSER_INSPECTION = "NeedsBrowserInspection"
     NEEDS_REAUDIT = "NeedsReaudit"
     FINAL_RECONCILE = "FinalReconcile"
     DONE = "Done"
     BLOCKED = "Blocked"
+
+
+class BrowserRecoveryAction(StrEnum):
+    INSPECT_ONLY = "inspect_only"
+    RELOAD_PAGE = "reload_page"
+    NAVIGATE_EXPECTED_URL = "navigate_expected_url"
+    DISMISS_OBSTRUCTION = "dismiss_obstruction"
+    RECONNECT_SESSION = "reconnect_session"
+    RETRY_OPERATION = "retry_operation"
+
+
+class BrowserIncidentStatus(StrEnum):
+    NEEDS_INSPECTION = "needs_inspection"
+    RECOVERED = "recovered"
+    UNRESOLVED = "unresolved"
+    BLOCKED = "blocked"
+    AUDIT_REQUIRED = "audit_required"
+
+
+class BrowserRecoveryStatus(StrEnum):
+    RECOVERED = "recovered"
+    UNRESOLVED = "unresolved"
+    BLOCKED = "blocked"
+
+
+class BrowserRecoveryReceipt(AppModel):
+    incident_id: uuid.UUID
+    lease_id: uuid.UUID
+    status: BrowserRecoveryStatus
+    actions: list[BrowserRecoveryAction] = Field(default_factory=list)
+    inspected_at: datetime = Field(default_factory=now_utc)
+    before_artifacts: list[str] = Field(default_factory=list)
+    after_artifacts: list[str] = Field(default_factory=list)
+    current_url: str | None = None
+    evidence: str
+    note: str | None = None
+
+
+class BrowserIncident(AppModel):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    lease_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    created_at: datetime = Field(default_factory=now_utc)
+    operation: str
+    previous_state: RunState
+    possible_send: bool = False
+    expected_url: str | None = None
+    source: str | None = None
+    candidate_name: str | None = None
+    profile_url: str | None = None
+    error: str
+    incident_path: str
+    markdown_path: str
+    receipt_path: str
+    diagnostic_path: str | None = None
+    screenshot_path: str | None = None
+    diagnostic_error: str | None = None
+    allowed_actions: list[BrowserRecoveryAction] = Field(default_factory=list)
+    status: BrowserIncidentStatus = BrowserIncidentStatus.NEEDS_INSPECTION
+    receipt: BrowserRecoveryReceipt | None = None
 
 
 class CandidateStatus(StrEnum):
@@ -65,6 +126,20 @@ class LeadStatus(StrEnum):
     PENDING = "pending"
     CONNECTED = "connected"
     BLOCKED = "blocked"
+
+
+class GreetingEligibilityStatus(StrEnum):
+    ELIGIBLE = "eligible"
+    NEEDS_REVIEW = "needs_review"
+    INELIGIBLE = "ineligible"
+
+
+class RelationshipEnrichmentStatus(StrEnum):
+    MISSING = "missing"
+    CURRENT = "current"
+    STALE = "stale"
+    NEEDS_REVIEW = "needs_review"
+    NOT_APPLICABLE = "not_applicable"
 
 
 TARGET_COUNTED_SEND_STATUSES = frozenset({CandidateStatus.PENDING, CandidateStatus.ACCEPTED})
@@ -108,6 +183,11 @@ class AcceptanceStatus(StrEnum):
     FAILED = "failed"
 
 
+class AcceptanceObservationPrecision(StrEnum):
+    DAILY_SCAN = "daily_scan"
+    CONTROLLER_CONFIRMATION = "controller_confirmation"
+
+
 class PendingCleanupState(StrEnum):
     STARTED = "Started"
     AUDITED = "Audited"
@@ -125,15 +205,66 @@ class PendingWithdrawStatus(StrEnum):
     FAILED = "Failed"
 
 
-class DraftStrategy(StrEnum):
-    ASAP_CONTRACT_V1 = "asap-contract-v1"
+class RelationshipRole(StrEnum):
+    BUYER = "buyer"
+    REFERRAL_PARTNER = "referral_partner"
+    HIRING_RECRUITER = "hiring_recruiter"
+    OTHER = "other"
 
 
-class AcceptedFollowupTemplateKey(StrEnum):
-    GENERAL = "general"
-    AGENCY = "agency"
-    RECRUITER = "recruiter"
-    ADVISOR = "advisor"
+class RelationshipSignalType(StrEnum):
+    LINKEDIN_POST = "linkedin_post"
+    COMPANY_SITE = "company_site"
+    PROFILE = "profile"
+    OTHER = "other"
+    NONE = "none"
+
+
+class RelationshipPriority(StrEnum):
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+    PAUSE = "pause"
+
+
+class RelationshipWatchlistDecision(StrEnum):
+    RECOMMENDED = "recommended"
+    NEEDS_REVIEW = "needs_review"
+    NOT_RECOMMENDED = "not_recommended"
+
+
+class CommercialCriterionAssessment(StrEnum):
+    MATCHED = "matched"
+    NOT_MATCHED = "not_matched"
+    UNKNOWN = "unknown"
+
+
+DEFAULT_ICP_PROFILE_ID = "icp-v1"
+DEFAULT_OFFERS_PROFILE_ID = "offers-v1"
+DEFAULT_COMMERCIAL_OFFER_ID = "business-systems-audit"
+DEFAULT_ICP_SOURCE_PATH = (
+    "/Users/hanifcarroll/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
+    "hanif-md/system/ICP.md"
+)
+DEFAULT_OFFERS_SOURCE_PATH = (
+    "/Users/hanifcarroll/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
+    "hanif-md/system/OFFERS.md"
+)
+
+
+class CommercialContextReference(AppModel):
+    icp_profile_id: str = DEFAULT_ICP_PROFILE_ID
+    icp_source_path: str = DEFAULT_ICP_SOURCE_PATH
+    offers_profile_id: str = DEFAULT_OFFERS_PROFILE_ID
+    offers_source_path: str = DEFAULT_OFFERS_SOURCE_PATH
+    offer_id: str = DEFAULT_COMMERCIAL_OFFER_ID
+
+
+class CommercialCriterionEvidence(AppModel):
+    criterion_id: str
+    assessment: CommercialCriterionAssessment
+    evidence_ids: list[str] = Field(default_factory=list)
+    explanation: str
 
 
 class AcceptanceFollowupStatus(StrEnum):
@@ -146,6 +277,16 @@ class AcceptanceFollowupStatus(StrEnum):
     NOT_MESSAGEABLE = "not_messageable"
     BLOCKED = "blocked"
     SEND_FAILED = "send_failed"
+
+
+class AcceptanceLeadListStatus(StrEnum):
+    PENDING = "pending"
+    SAVED = "saved"
+    ALREADY_SAVED = "already_saved"
+    LIST_MISSING = "list_missing"
+    NOT_SAVEABLE = "not_saveable"
+    BLOCKED = "blocked"
+    SAVE_FAILED = "save_failed"
 
 
 class SourcePlan(AppModel):
@@ -265,6 +406,7 @@ class LeadRecord(AppModel):
     last_source: str | None = None
     status: LeadStatus = LeadStatus.NEW
     status_reason: str | None = None
+    approved_source: str | None = None
     approved_reason: str | None = None
     approved_at: datetime | None = None
     reviewed_at: datetime | None = None
@@ -321,6 +463,7 @@ class LeadLedger(AppModel):
         current = now_utc()
         record.status = LeadStatus.APPROVED
         record.status_reason = reason
+        record.approved_source = record.last_source or record.first_source
         record.approved_reason = reason
         record.approved_at = current
         record.reviewed_at = current
@@ -576,6 +719,8 @@ class Run(AppModel):
     timings: list[RunTimingEvent] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     lead_review_checkpoint: LeadReviewCheckpoint | None = None
+    browser_incidents: list[BrowserIncident] = Field(default_factory=list)
+    active_browser_incident_id: uuid.UUID | None = None
     blocked_resume_at: datetime | None = None
     allow_fallback_sources: bool = True
     carry_over_shortfall: bool = True
@@ -591,11 +736,21 @@ class Run(AppModel):
     def mark_updated(self) -> None:
         self.updated_at = now_utc()
 
+    def active_browser_incident(self) -> BrowserIncident | None:
+        if self.active_browser_incident_id is None:
+            return None
+        return next(
+            (
+                incident
+                for incident in reversed(self.browser_incidents)
+                if incident.id == self.active_browser_incident_id
+            ),
+            None,
+        )
+
     def verified_count(self) -> int:
         return sum(
-            1
-            for candidate in self.candidates
-            if candidate.status in TARGET_COUNTED_SEND_STATUSES
+            1 for candidate in self.candidates if candidate.status in TARGET_COUNTED_SEND_STATUSES
         )
 
     def provisional_count(self) -> int:
@@ -683,7 +838,12 @@ class Run(AppModel):
         return source.target + self.primary_shortfall_before(source_index)
 
     def next_source(self) -> NextSource | None:
-        if self.state in {RunState.NEEDS_REAUDIT, RunState.DONE, RunState.BLOCKED}:
+        if self.state in {
+            RunState.NEEDS_BROWSER_INSPECTION,
+            RunState.NEEDS_REAUDIT,
+            RunState.DONE,
+            RunState.BLOCKED,
+        }:
             return None
         send_attempt_goal = self.send_attempt_goal()
         total_remaining = send_attempt_goal - min(send_attempt_goal, self.active_send_count())
@@ -748,8 +908,7 @@ class Run(AppModel):
         return (
             plan.exhausted
             or self.source_is_deferred_for_run(source)
-            or self.source_active_send_count(source)
-            >= self.source_quota_with_carryover(index)
+            or self.source_active_send_count(source) >= self.source_quota_with_carryover(index)
         )
 
     def source_is_fallback(self, source: str) -> bool:
@@ -768,6 +927,16 @@ class Run(AppModel):
             reason = cursor.deferred_reason or cursor.cursor_reason or cursor.cursor_status
             reasons.append(f"{source.name}: {reason or 'deferred for this run'}")
         return reasons
+
+    def exact_source_shortfalls(self) -> list[str]:
+        if self.carry_over_shortfall:
+            return []
+        return [
+            f"{source.name}: {self.source_active_send_count(source.name)}/{source.target} active"
+            for source in self.sources
+            if not source.fallback
+            and self.source_active_send_count(source.name) < source.target
+        ]
 
     def real_send_capacity_remaining(self) -> int:
         active = self.active_send_count()
@@ -822,6 +991,13 @@ class Run(AppModel):
     def operator_plan_with_reservoir(
         self, reservoir: CandidateReservoir | None = None
     ) -> OperatorPlan:
+        if self.state == RunState.NEEDS_BROWSER_INSPECTION:
+            incident = self.active_browser_incident()
+            detail = f"; incident={incident.incident_path}" if incident is not None else ""
+            return OperatorPlan(
+                action="browser-inspection-required",
+                reason=f"run is paused for bounded browser inspection{detail}",
+            )
         if self.state == RunState.NEEDS_REAUDIT:
             return OperatorPlan(action="reaudit", reason="run is paused in NEEDS_REAUDIT")
         if self.state == RunState.BLOCKED:
@@ -840,8 +1016,7 @@ class Run(AppModel):
             return OperatorPlan(
                 action="final-audit",
                 reason=(
-                    f"active sends reached {self.active_send_count()}/"
-                    f"{self.send_attempt_goal()}"
+                    f"active sends reached {self.active_send_count()}/{self.send_attempt_goal()}"
                 ),
             )
         candidate = self.next_connectable_observation()
@@ -901,6 +1076,15 @@ class Run(AppModel):
                     + "; ".join(deferred_reasons)
                 ),
             )
+        exact_shortfalls = self.exact_source_shortfalls()
+        if exact_shortfalls:
+            return OperatorPlan(
+                action="blocked",
+                reason=(
+                    "exact source targets remain incomplete and cannot borrow quota: "
+                    + "; ".join(exact_shortfalls)
+                ),
+            )
         return OperatorPlan(
             action="blocked", reason="no connectable candidate and no available source"
         )
@@ -921,16 +1105,31 @@ class Run(AppModel):
         ]
 
 
-CONTRACT_RECRUITERS_SOURCE = "ASAP - Contract Recruiters Staffing"
-AGENCY_OWNERS_SOURCE = "ASAP - Agency Owners Delivery"
-STRATEGY_CONSULTANTS_SOURCE = "ASAP - Strategy Consultants Implementation Partners"
-AI_ADVISORS_SOURCE = "ASAP - AI Advisors Implementation Partners"
+FOUNDER_OWNER_BUYERS_SOURCE = "Consulting - Founder Owner Buyers"
+OPERATIONS_LEADER_BUYERS_SOURCE = "Consulting - Operations Leader Buyers"
+TRUSTED_REFERRAL_PARTNERS_SOURCE = "Consulting - Trusted Referral Partners"
 
+FOUNDER_OWNER_BUYERS_LEAD_LIST = "Accepted - Founder Owner Buyers"
+OPERATIONS_LEADER_BUYERS_LEAD_LIST = "Accepted - Operations Leader Buyers"
+TRUSTED_REFERRAL_PARTNERS_LEAD_LIST = "Accepted - Trusted Referral Partners"
+BUSINESS_SYSTEMS_WATCHLIST = "Watch - Business Systems Prospects"
+
+APPROVED_RELATIONSHIP_ROLE_BY_SOURCE: dict[str, RelationshipRole] = {
+    FOUNDER_OWNER_BUYERS_SOURCE: RelationshipRole.BUYER,
+    OPERATIONS_LEADER_BUYERS_SOURCE: RelationshipRole.BUYER,
+    TRUSTED_REFERRAL_PARTNERS_SOURCE: RelationshipRole.REFERRAL_PARTNER,
+}
+
+ACCEPTED_LEAD_LIST_BY_SOURCE: dict[str, str] = {
+    FOUNDER_OWNER_BUYERS_SOURCE: FOUNDER_OWNER_BUYERS_LEAD_LIST,
+    OPERATIONS_LEADER_BUYERS_SOURCE: OPERATIONS_LEADER_BUYERS_LEAD_LIST,
+    TRUSTED_REFERRAL_PARTNERS_SOURCE: TRUSTED_REFERRAL_PARTNERS_LEAD_LIST,
+}
 
 DEFAULT_SOURCE_MIX: list[tuple[str, int]] = [
-    (CONTRACT_RECRUITERS_SOURCE, 10),
-    (AGENCY_OWNERS_SOURCE, 10),
-    (STRATEGY_CONSULTANTS_SOURCE, 10),
+    (FOUNDER_OWNER_BUYERS_SOURCE, 15),
+    (OPERATIONS_LEADER_BUYERS_SOURCE, 10),
+    (TRUSTED_REFERRAL_PARTNERS_SOURCE, 5),
 ]
 
 
@@ -953,16 +1152,11 @@ def default_sources(target: int) -> list[SourcePlan]:
                 remaining -= 1
             updated.append((name, count))
         allocated = updated
-    sources = [SourcePlan(name=name, target=count) for name, count in allocated]
-    sources.append(SourcePlan(name="FO - Founders - Urgent", target=0, fallback=True))
-    return sources
+    return [SourcePlan(name=name, target=count) for name, count in allocated]
 
 
 def sources_for_per_source_target(per_source_target: int) -> list[SourcePlan]:
-    return [
-        SourcePlan(name=name, target=per_source_target)
-        for name, _weight in DEFAULT_SOURCE_MIX
-    ] + [SourcePlan(name="FO - Founders - Urgent", target=0, fallback=True)]
+    return [SourcePlan(name=name, target=per_source_target) for name, _weight in DEFAULT_SOURCE_MIX]
 
 
 def target_for_per_source_target(per_source_target: int) -> int:
@@ -1022,9 +1216,7 @@ def candidate_key(source: str, name: str, profile_url: str | None) -> str:
     return f"{source.strip()}|{name.strip()}|{normalized}"
 
 
-def lead_key_for_values(
-    profile_url: str | None, sales_profile_urn: str | None, name: str
-) -> str:
+def lead_key_for_values(profile_url: str | None, sales_profile_urn: str | None, name: str) -> str:
     sales_profile_url = ""
     if profile_url:
         normalized = normalize_linkedin_url(profile_url)
@@ -1078,22 +1270,24 @@ def observation_key(observation: CandidateObservation) -> str:
 
 
 def standard_capture_recommendation(remaining: int) -> CaptureRecommendation:
-    buffer = 3 if remaining > 0 else 0
-    pages = 5 if remaining + buffer > 10 else 3
+    stop_after_connectable = min(max(remaining * 3, 10), 25) if remaining > 0 else 0
+    buffer = max(0, stop_after_connectable - remaining)
+    pages = 5 if stop_after_connectable > 10 else 3
     return CaptureRecommendation(
         pages=pages,
-        stop_after_connectable=min(remaining + buffer, 25),
+        stop_after_connectable=stop_after_connectable,
         buffer=buffer,
-        reason="standard-buffer",
+        reason="approval-yield-buffer",
         playwriter_timeout_ms=45000,
     )
 
 
 def expanded_capture_recommendation(remaining: int, reason: str) -> CaptureRecommendation:
-    buffer = max(remaining, 5)
+    stop_after_connectable = 25 if remaining > 0 else 0
+    buffer = max(0, stop_after_connectable - remaining)
     return CaptureRecommendation(
         pages=5,
-        stop_after_connectable=min(remaining + buffer, 25),
+        stop_after_connectable=stop_after_connectable,
         buffer=buffer,
         reason=reason,
         playwriter_timeout_ms=90000,
@@ -1232,9 +1426,7 @@ class SalesNavCapture(AppModel):
     last_scanned_url: str | None = Field(
         default=None, validation_alias=AliasChoices("last_scanned_url", "lastScannedUrl")
     )
-    next_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("next_url", "nextUrl")
-    )
+    next_url: str | None = Field(default=None, validation_alias=AliasChoices("next_url", "nextUrl"))
     next_page_available: bool | None = Field(
         default=None, validation_alias=AliasChoices("next_page_available", "nextPageAvailable")
     )
@@ -1320,6 +1512,11 @@ class SalesNavSendResult(AppModel):
     )
 
     def to_candidate_status(self) -> tuple[CandidateStatus, str]:
+        if self.status == "uncertain-browser-exception":
+            return (
+                CandidateStatus.PENDING_PROVISIONAL,
+                "browser transport failed during a real send; outcome is uncertain",
+            )
         if self.status == "pending-provisional":
             return (
                 CandidateStatus.PENDING_PROVISIONAL,
@@ -1426,10 +1623,7 @@ def capture_to_observations(
                 profile_url=profile_url,
                 public_profile_url=row.public_profile_url,
                 search_url=(
-                    row.page_url
-                    or capture.url
-                    or capture.last_scanned_url
-                    or capture.start_url
+                    row.page_url or capture.url or capture.last_scanned_url or capture.start_url
                 ),
                 sales_profile_urn=row.scroll_urn,
                 text=row.text,
@@ -1636,15 +1830,12 @@ def candidate_counts_as_real_send(candidate: CandidateEvent) -> bool:
     if candidate.status in REAL_SEND_ATTEMPT_STATUSES:
         return True
     note = candidate.note.casefold() if candidate.note is not None else ""
-    return (
-        candidate.status == CandidateStatus.FAILED
-        and (
-            "clicked-send" in note
-            or "send-connection-clicked" in note
-            or "pending-provisional" in note
-            or "pending-verified" in note
-            or "immediate connect - pending" in note
-        )
+    return candidate.status == CandidateStatus.FAILED and (
+        "clicked-send" in note
+        or "send-connection-clicked" in note
+        or "pending-provisional" in note
+        or "pending-verified" in note
+        or "immediate connect - pending" in note
     )
 
 
@@ -1770,10 +1961,47 @@ class AcceptanceInvitation(AppModel):
     sent_at: datetime
     latest_status: AcceptanceStatus = AcceptanceStatus.SENT
     latest_checked_at: datetime | None = None
+    first_observed_accepted_at: datetime | None = None
+    last_observed_unaccepted_at: datetime | None = None
+    acceptance_observation_precision: AcceptanceObservationPrecision | None = None
     history: list[AcceptanceOutcomeEvent] = Field(default_factory=list)
 
     def key(self) -> str:
         return candidate_key(self.source, self.name, self.profile_url)
+
+
+class AcceptanceDailyRun(AppModel):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    started_at: datetime
+    completed_at: datetime
+    local_date: Date
+    timezone: str
+    min_age_days: int
+    max_age_days: int | None = None
+    eligible: int
+    checked: int
+    newly_confirmed_accepted: int
+    remaining_unresolved: int
+    coverage_complete: bool
+    blocker: str | None = None
+
+
+class AcceptanceDailyMetric(AppModel):
+    date: Date
+    newly_confirmed_accepted: int = 0
+    eligible: int | None = None
+    checked: int | None = None
+    remaining_unresolved: int | None = None
+    coverage_complete: bool | None = None
+    blocker: str | None = None
+
+
+class AcceptanceDailyWindowSummary(AppModel):
+    days: int
+    newly_confirmed_accepted: int
+    per_calendar_day: float
+    complete_days: int
+    missing_or_incomplete_days: int
 
 
 class AcceptanceOutcomeRow(AppModel):
@@ -1796,6 +2024,9 @@ class AcceptanceOutcomeArtifact(AppModel):
         default=None, validation_alias=AliasChoices("captured_at", "capturedAt")
     )
     input: str | None = None
+    input_sha256: str | None = Field(
+        default=None, validation_alias=AliasChoices("input_sha256", "inputSha256")
+    )
     count: int | None = None
     offset: int | None = None
     limit: int | None = None
@@ -1879,6 +2110,9 @@ class AcceptanceReport(AppModel):
     withdrawn: int = 0
     unchecked: int = 0
     by_source: dict[str, AcceptanceSourceReport] = Field(default_factory=dict)
+    daily_timezone: str = "America/Argentina/Buenos_Aires"
+    daily: list[AcceptanceDailyMetric] = Field(default_factory=list)
+    daily_windows: list[AcceptanceDailyWindowSummary] = Field(default_factory=list)
 
     def add(self, source: str, status: AcceptanceStatus, checked: bool) -> None:
         self.total_sent += 1
@@ -1966,8 +2200,17 @@ class AcceptanceLedger(AppModel):
                     if event.status == CandidateStatus.ACCEPTED
                     else AcceptanceStatus.SENT
                 ),
-                latest_checked_at=(
+                latest_checked_at=(event.at if event.status == CandidateStatus.ACCEPTED else None),
+                first_observed_accepted_at=(
                     event.at if event.status == CandidateStatus.ACCEPTED else None
+                ),
+                last_observed_unaccepted_at=(
+                    None if event.status == CandidateStatus.ACCEPTED else event.at
+                ),
+                acceptance_observation_precision=(
+                    AcceptanceObservationPrecision.CONTROLLER_CONFIRMATION
+                    if event.status == CandidateStatus.ACCEPTED
+                    else None
                 ),
                 history=(
                     [
@@ -2002,6 +2245,25 @@ class AcceptanceLedger(AppModel):
                     relationship=sanitized.relationship,
                     evidence=sanitized.evidence,
                 )
+                if (
+                    sanitized.status == AcceptanceStatus.ACCEPTED
+                    and invitation.first_observed_accepted_at is None
+                ):
+                    invitation.first_observed_accepted_at = checked_at
+                    invitation.last_observed_unaccepted_at = (
+                        invitation.last_observed_unaccepted_at
+                        or invitation.latest_checked_at
+                        or invitation.sent_at
+                    )
+                    invitation.acceptance_observation_precision = (
+                        AcceptanceObservationPrecision.DAILY_SCAN
+                    )
+                elif (
+                    invitation.first_observed_accepted_at is None
+                    and sanitized.status
+                    in {AcceptanceStatus.PENDING, AcceptanceStatus.CONNECTABLE}
+                ):
+                    invitation.last_observed_unaccepted_at = checked_at
                 invitation.latest_status = sanitized.status
                 invitation.latest_checked_at = checked_at
                 invitation.history.append(event)
@@ -2065,9 +2327,22 @@ class AcceptanceLedger(AppModel):
                 result.append(invitation)
         return result
 
-    def report(self, min_age_days: int, max_age_days: int | None) -> AcceptanceReport:
-        current = now_utc()
-        report = AcceptanceReport(min_age_days=min_age_days, max_age_days=max_age_days)
+    def report(
+        self,
+        min_age_days: int,
+        max_age_days: int | None,
+        *,
+        daily_runs: list[AcceptanceDailyRun] | None = None,
+        daily_days: int = 30,
+        daily_timezone: str = "America/Argentina/Buenos_Aires",
+        current: datetime | None = None,
+    ) -> AcceptanceReport:
+        current = current or now_utc()
+        report = AcceptanceReport(
+            min_age_days=min_age_days,
+            max_age_days=max_age_days,
+            daily_timezone=daily_timezone,
+        )
         for invitation in self.invitations:
             age_days = int((current - invitation.sent_at).total_seconds() // 86400)
             if age_days < min_age_days or (max_age_days is not None and age_days > max_age_days):
@@ -2077,11 +2352,88 @@ class AcceptanceLedger(AppModel):
                 invitation.latest_status,
                 invitation.latest_checked_at is not None,
             )
+        report.daily = self._daily_acceptance_metrics(
+            daily_runs=daily_runs or [],
+            days=daily_days,
+            timezone=daily_timezone,
+            current=current,
+        )
+        for window_days in (7, 30):
+            if window_days > daily_days:
+                continue
+            metrics = report.daily[-window_days:]
+            accepted = sum(item.newly_confirmed_accepted for item in metrics)
+            complete_days = sum(item.coverage_complete is True for item in metrics)
+            report.daily_windows.append(
+                AcceptanceDailyWindowSummary(
+                    days=window_days,
+                    newly_confirmed_accepted=accepted,
+                    per_calendar_day=round(accepted / window_days, 2),
+                    complete_days=complete_days,
+                    missing_or_incomplete_days=window_days - complete_days,
+                )
+            )
         return report
 
-    def accepted_for_followup(
-        self, followups: AcceptanceFollowupLedger, include_drafted: bool
-    ) -> list[AcceptedDraftCandidate]:
+    def _daily_acceptance_metrics(
+        self,
+        *,
+        daily_runs: list[AcceptanceDailyRun],
+        days: int,
+        timezone: str,
+        current: datetime,
+    ) -> list[AcceptanceDailyMetric]:
+        if days <= 0:
+            raise ValueError("daily_days must be > 0")
+        zone = ZoneInfo(timezone)
+        end_date = current.astimezone(zone).date()
+        start_date = end_date.fromordinal(end_date.toordinal() - days + 1)
+        accepted_by_date: dict[Date, int] = {}
+        for invitation in self.invitations:
+            if invitation.latest_status != AcceptanceStatus.ACCEPTED:
+                continue
+            accepted_at = invitation.first_observed_accepted_at
+            if accepted_at is None:
+                event = latest_acceptance_event(invitation)
+                accepted_at = event.at if event is not None else None
+            if accepted_at is None:
+                continue
+            accepted_date = accepted_at.astimezone(zone).date()
+            if start_date <= accepted_date <= end_date:
+                accepted_by_date[accepted_date] = accepted_by_date.get(accepted_date, 0) + 1
+
+        latest_run_by_date: dict[Date, AcceptanceDailyRun] = {}
+        for daily_run in daily_runs:
+            if daily_run.timezone != timezone or not (
+                start_date <= daily_run.local_date <= end_date
+            ):
+                continue
+            previous = latest_run_by_date.get(daily_run.local_date)
+            if previous is None or daily_run.completed_at > previous.completed_at:
+                latest_run_by_date[daily_run.local_date] = daily_run
+
+        metrics: list[AcceptanceDailyMetric] = []
+        for offset in range(days):
+            day = start_date.fromordinal(start_date.toordinal() + offset)
+            coverage_run = latest_run_by_date.get(day)
+            metrics.append(
+                AcceptanceDailyMetric(
+                    date=day,
+                    newly_confirmed_accepted=accepted_by_date.get(day, 0),
+                    eligible=coverage_run.eligible if coverage_run else None,
+                    checked=coverage_run.checked if coverage_run else None,
+                    remaining_unresolved=(
+                        coverage_run.remaining_unresolved if coverage_run else None
+                    ),
+                    coverage_complete=(
+                        coverage_run.coverage_complete if coverage_run else None
+                    ),
+                    blocker=coverage_run.blocker if coverage_run else None,
+                )
+            )
+        return metrics
+
+    def accepted_connections(self) -> list[AcceptedDraftCandidate]:
         result: list[AcceptedDraftCandidate] = []
         for invitation in self.invitations:
             if invitation.latest_status != AcceptanceStatus.ACCEPTED:
@@ -2089,7 +2441,7 @@ class AcceptanceLedger(AppModel):
             accepted_event = latest_acceptance_event(invitation)
             if accepted_event is None or not accepted_event_confirms_followup(accepted_event):
                 continue
-            accepted_at = accepted_event.at
+            accepted_at = invitation.first_observed_accepted_at or accepted_event.at
             candidate = AcceptedDraftCandidate(
                 run_id=invitation.run_id,
                 run_date=invitation.run_date,
@@ -2107,9 +2459,16 @@ class AcceptanceLedger(AppModel):
                 acceptance_note=accepted_event.note if accepted_event else None,
                 acceptance_evidence=accepted_event.evidence if accepted_event else None,
             )
-            if include_drafted or not followups.has_draft_for(candidate):
-                result.append(candidate)
+            result.append(candidate)
         return sorted(result, key=lambda candidate: (candidate.accepted_at, candidate.name))
+
+    def accepted_for_followup(
+        self, followups: AcceptanceFollowupLedger, include_drafted: bool
+    ) -> list[AcceptedDraftCandidate]:
+        candidates = self.accepted_connections()
+        if include_drafted:
+            return candidates
+        return [candidate for candidate in candidates if not followups.has_draft_for(candidate)]
 
 
 def sanitize_acceptance_outcome(
@@ -2196,92 +2555,40 @@ class AcceptedDraftCandidate(AppModel):
     acceptance_evidence: str | None = None
 
 
-class SalesNavResearch(AppModel):
-    name: str | None = None
-    title: str | None = None
-    company: str | None = None
-    location: str | None = None
-    url: str | None = None
+class AcceptedGreetingEligibilityItem(AppModel):
+    followup_id: str
+    candidate_key: str
+    candidate: AcceptedDraftCandidate
+    status: GreetingEligibilityStatus
+    lead_key: str | None = None
+    original_connection_source: str | None = None
+    original_connection_approved_at: datetime | None = None
+    original_connection_approval_reason: str | None = None
+    original_connection_review_text: str | None = None
+    relationship_role: RelationshipRole | None = None
+    sales_nav_list_name: str | None = None
+    proposed_message: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
-class WebResult(AppModel):
-    title: str | None = None
-    url: str | None = None
-    snippet: str | None = None
+class AcceptedGreetingEligibilityArtifact(AppModel):
+    generated_at: datetime = Field(default_factory=now_utc)
+    items: list[AcceptedGreetingEligibilityItem] = Field(default_factory=list)
 
 
-class WebResearch(AppModel):
-    query: str | None = None
-    results: list[WebResult] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class CompanyProfileResearch(AppModel):
-    name: str | None = None
-    url: str | None = None
-    website_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("website_url", "websiteUrl")
-    )
-    description: str | None = None
-    industry: str | None = None
-    size: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class WebsiteResearch(AppModel):
-    url: str | None = None
-    title: str | None = None
-    description: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class AcceptedResearchRow(AppModel):
-    source: str
-    name: str
-    profile_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("profile_url", "profileUrl")
-    )
-    public_profile_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
-    )
-    sales_nav_profile_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("sales_nav_profile_url", "salesNavProfileUrl")
-    )
-    sales_nav: SalesNavResearch | None = Field(
-        default=None, validation_alias=AliasChoices("sales_nav", "salesNav")
-    )
-    company_profile: CompanyProfileResearch | None = Field(
-        default=None, validation_alias=AliasChoices("company_profile", "companyProfile")
-    )
-    company_website: WebsiteResearch | None = Field(
-        default=None, validation_alias=AliasChoices("company_website", "companyWebsite")
-    )
-    web: WebResearch | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class AcceptedResearchArtifact(AppModel):
-    captured_at: str | None = Field(
-        default=None, validation_alias=AliasChoices("captured_at", "capturedAt")
-    )
-    rows: list[AcceptedResearchRow] = Field(default_factory=list)
-
-
-class AcceptedResearchDecisionStatus(StrEnum):
-    READY_FOR_DRAFT = "ready_for_draft"
-    RESEARCH_READY = "research_ready"
+class RelationshipEnrichmentDecisionStatus(StrEnum):
+    ENRICHED = "enriched"
     NEEDS_REVIEW = "needs_review"
     SKIP = "skip"
 
 
-class AcceptedResearchConfidence(StrEnum):
+class RelationshipEnrichmentConfidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
 
 
-class AcceptedResearchEvidence(AppModel):
+class RelationshipEnrichmentEvidence(AppModel):
     evidence_id: str
     source_url: str
     claim: str
@@ -2289,74 +2596,92 @@ class AcceptedResearchEvidence(AppModel):
     source_excerpt: str
 
 
-class AcceptedResearchDecisionTemplate(AppModel):
-    status: AcceptedResearchDecisionStatus = AcceptedResearchDecisionStatus.NEEDS_REVIEW
-    confidence: AcceptedResearchConfidence | None = None
+class RelationshipEnrichmentDecisionTemplate(AppModel):
+    status: RelationshipEnrichmentDecisionStatus = RelationshipEnrichmentDecisionStatus.NEEDS_REVIEW
+    confidence: RelationshipEnrichmentConfidence | None = None
     person_summary: str | None = None
     company_name: str | None = None
     company_summary: str | None = None
     official_company_url: str | None = None
     evidence_urls: list[str] = Field(default_factory=list)
-    research_evidence: list[AcceptedResearchEvidence] = Field(default_factory=list)
+    research_evidence: list[RelationshipEnrichmentEvidence] = Field(default_factory=list)
+    commercial_context: CommercialContextReference | None = None
+    criterion_evidence: list[CommercialCriterionEvidence] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
     notes: str | None = None
     warnings: list[str] = Field(default_factory=list)
-    template_key: AcceptedFollowupTemplateKey | None = None
-    angle: str | None = None
-    proposed_message: str | None = None
+    relationship_role: RelationshipRole | None = None
+    priority: RelationshipPriority | None = None
+    signal_type: RelationshipSignalType = RelationshipSignalType.NONE
+    visible_signal: str | None = None
+    signal_url: str | None = None
+    followup_reason: str | None = None
+    next_useful_action: str | None = None
+    permission_boundary: str = "review_only"
 
 
-class AcceptedResearchQueueItem(AppModel):
+class RelationshipEnrichmentQueueItem(AppModel):
     followup_id: str
     candidate_key: str
     candidate: AcceptedDraftCandidate
     evidence: list[str] = Field(default_factory=list)
-    decision: AcceptedResearchDecisionTemplate = Field(
-        default_factory=AcceptedResearchDecisionTemplate
+    enrichment_status: RelationshipEnrichmentStatus = RelationshipEnrichmentStatus.MISSING
+    enrichment_reason: str | None = None
+    original_connection_approved_at: datetime | None = None
+    original_connection_approval_reason: str | None = None
+    original_connection_review_text: str | None = None
+    decision: RelationshipEnrichmentDecisionTemplate = Field(
+        default_factory=RelationshipEnrichmentDecisionTemplate
     )
 
 
-class AcceptedResearchQueuePacket(AppModel):
+class RelationshipEnrichmentQueue(AppModel):
     generated_at: datetime = Field(default_factory=now_utc)
-    items: list[AcceptedResearchQueueItem] = Field(default_factory=list)
+    commercial_context: CommercialContextReference = Field(
+        default_factory=CommercialContextReference
+    )
+    items: list[RelationshipEnrichmentQueueItem] = Field(default_factory=list)
 
 
-class AcceptedResearchDecisionItem(AcceptedResearchDecisionTemplate):
+class RelationshipEnrichmentDecision(RelationshipEnrichmentDecisionTemplate):
     followup_id: str
     candidate_key: str
     candidate: AcceptedDraftCandidate
 
 
-class AcceptedResearchDecisionArtifact(AppModel):
+class RelationshipEnrichmentArtifact(AppModel):
     generated_at: datetime = Field(default_factory=now_utc)
     source_path: str | None = None
-    decisions: list[AcceptedResearchDecisionItem] = Field(default_factory=list)
+    commercial_context: CommercialContextReference | None = None
+    decisions: list[RelationshipEnrichmentDecision] = Field(default_factory=list)
 
 
-class AcceptedCodexResearchResult(AppModel):
+class CodexRelationshipEnrichmentResult(AppModel):
     candidate_key: str
-    status: AcceptedResearchDecisionStatus
-    confidence: AcceptedResearchConfidence | None = None
+    status: RelationshipEnrichmentDecisionStatus
+    confidence: RelationshipEnrichmentConfidence | None = None
     person_summary: str | None = None
     company_name: str | None = None
     company_summary: str | None = None
     official_company_url: str | None = None
     evidence_urls: list[str] = Field(default_factory=list)
-    research_evidence: list[AcceptedResearchEvidence] = Field(default_factory=list)
+    research_evidence: list[RelationshipEnrichmentEvidence] = Field(default_factory=list)
+    commercial_context: CommercialContextReference
+    criterion_evidence: list[CommercialCriterionEvidence] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
     notes: str | None = None
     warnings: list[str] = Field(default_factory=list)
-    template_key: AcceptedFollowupTemplateKey | None = None
-    angle: str | None = None
+    relationship_role: RelationshipRole | None = None
+    priority: RelationshipPriority | None = None
+    signal_type: RelationshipSignalType = RelationshipSignalType.NONE
+    visible_signal: str | None = None
+    signal_url: str | None = None
+    followup_reason: str | None = None
+    next_useful_action: str | None = None
+    permission_boundary: str = "review_only"
 
 
-class AcceptedCodexDraftResult(AppModel):
-    candidate_key: str
-    status: AcceptedResearchDecisionStatus
-    message: str | None = None
-    reason: str
-    warnings: list[str] = Field(default_factory=list)
-
-
-class AcceptedCodexDraftJob(AppModel):
+class CodexRelationshipEnrichmentJob(AppModel):
     generated_at: datetime = Field(default_factory=now_utc)
     followup_id: str
     candidate_key: str
@@ -2367,58 +2692,8 @@ class AcceptedCodexDraftJob(AppModel):
     stderr_path: str
     pid: int
     command: list[str] = Field(default_factory=list)
-
-
-class AcceptedCodexResearchJob(AcceptedCodexDraftJob):
     context_path: str
     sources_path: str
-
-
-class DraftItem(AppModel):
-    candidate: AcceptedDraftCandidate
-    template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
-    angle: str
-    draft: str
-    person_does: str | None = None
-    company_does: str | None = None
-    message_fit: str | None = None
-    company_profile_url: str | None = None
-    company_website_url: str | None = None
-    evidence: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class DraftReport(AppModel):
-    generated_at: datetime = Field(default_factory=now_utc)
-    strategy: DraftStrategy = DraftStrategy.ASAP_CONTRACT_V1
-    research_path: str | None = None
-    research_captured_at: str | None = None
-    items: list[DraftItem] = Field(default_factory=list)
-    skipped_names: list[str] = Field(default_factory=list)
-
-
-class AcceptedFollowupReviewItem(AppModel):
-    followup_id: str
-    candidate: AcceptedDraftCandidate
-    template_key: AcceptedFollowupTemplateKey
-    angle: str
-    draft: str
-    person_does: str | None = None
-    company_does: str | None = None
-    message_fit: str | None = None
-    company_profile_url: str | None = None
-    company_website_url: str | None = None
-    evidence: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    research: AcceptedResearchRow | None = None
-    reviewed_research: AcceptedResearchDecisionItem | None = None
-
-
-class AcceptedFollowupReviewPacket(AppModel):
-    generated_at: datetime = Field(default_factory=now_utc)
-    report_path: str
-    research_path: str | None = None
-    items: list[AcceptedFollowupReviewItem] = Field(default_factory=list)
 
 
 class AcceptanceFollowupAttempt(AppModel):
@@ -2429,6 +2704,15 @@ class AcceptanceFollowupAttempt(AppModel):
     note: str | None = None
     out_path: str
     diagnostics: dict[str, str] = Field(default_factory=dict)
+
+
+class AcceptanceLeadListAttempt(AppModel):
+    at: datetime = Field(default_factory=now_utc)
+    status: AcceptanceLeadListStatus
+    list_name: str
+    result_url: str | None = None
+    reason: str | None = None
+    out_path: str
 
 
 class AcceptanceFollowupRecord(AppModel):
@@ -2443,13 +2727,19 @@ class AcceptanceFollowupRecord(AppModel):
     drafted_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
     accepted_at: datetime
-    strategy: DraftStrategy = DraftStrategy.ASAP_CONTRACT_V1
-    template_key: AcceptedFollowupTemplateKey = AcceptedFollowupTemplateKey.GENERAL
-    angle: str
     draft: str
-    person_does: str | None = None
-    company_does: str | None = None
-    message_fit: str | None = None
+    relationship_role: RelationshipRole | None = None
+    relationship_priority: RelationshipPriority | None = None
+    greeting_eligibility_status: GreetingEligibilityStatus | None = None
+    relationship_enrichment_status: RelationshipEnrichmentStatus | None = None
+    relationship_enriched_at: datetime | None = None
+    original_connection_approved_at: datetime | None = None
+    original_connection_approval_reason: str | None = None
+    original_connection_review_text: str | None = None
+    sales_nav_list_name: str | None = None
+    sales_nav_list_status: AcceptanceLeadListStatus | None = None
+    sales_nav_list_saved_at: datetime | None = None
+    sales_nav_list_attempts: list[AcceptanceLeadListAttempt] = Field(default_factory=list)
     company_profile_url: str | None = None
     company_website_url: str | None = None
     evidence: list[str] = Field(default_factory=list)
@@ -2458,7 +2748,6 @@ class AcceptanceFollowupRecord(AppModel):
     sent_at: datetime | None = None
     attempts: list[AcceptanceFollowupAttempt] = Field(default_factory=list)
     report_path: str
-    research_path: str | None = None
 
     def terminal(self) -> bool:
         return self.status in {
@@ -2502,12 +2791,29 @@ class AcceptanceFollowupLedger(AppModel):
                     AcceptanceFollowupStatus.SEND_FAILED,
                 }
             )
-        records = [record for record in self.drafts if record.status in statuses]
+        records = [
+            record
+            for record in self.drafts
+            if record.status in statuses
+        ]
         return records[:limit] if limit > 0 else records
 
-    def invalidatable_for_acceptance_keys(
-        self, keys: set[str]
-    ) -> list[AcceptanceFollowupRecord]:
+    def welcome_message_records(self) -> list[AcceptanceFollowupRecord]:
+        return [
+            record
+            for record in self.drafts
+            if record.greeting_eligibility_status == GreetingEligibilityStatus.ELIGIBLE
+            and record.draft == accepted_welcome_message(first_name(record.name))
+        ]
+
+    def welcome_message_sent_count(self) -> int:
+        return sum(
+            record.status == AcceptanceFollowupStatus.SENT
+            and record.draft == accepted_welcome_message(first_name(record.name))
+            for record in self.drafts
+        )
+
+    def invalidatable_for_acceptance_keys(self, keys: set[str]) -> list[AcceptanceFollowupRecord]:
         return [
             record
             for record in self.drafts
@@ -2539,11 +2845,18 @@ class AcceptanceFollowupLedger(AppModel):
             updated += 1
         return updated
 
-    def record_report(
-        self, report: DraftReport, report_path: str, research_path: str | None
+    def record_welcome_messages(
+        self,
+        artifact: AcceptedGreetingEligibilityArtifact,
+        report_path: str,
     ) -> int:
         written = 0
-        for item in report.items:
+        for item in artifact.items:
+            if (
+                item.status != GreetingEligibilityStatus.ELIGIBLE
+                or item.proposed_message is None
+            ):
+                continue
             key = accepted_followup_candidate_key(item.candidate)
             existing_index = next(
                 (index for index, record in enumerate(self.drafts) if record.key == key),
@@ -2553,28 +2866,36 @@ class AcceptanceFollowupLedger(AppModel):
                 existing = self.drafts[existing_index]
                 if not existing.terminal():
                     status = existing.status
-                    if existing.draft != item.draft:
+                    if existing.draft != item.proposed_message:
                         status = AcceptanceFollowupStatus.DRAFTED
                     self.drafts[existing_index] = existing.model_copy(
                         update={
-                            "drafted_at": report.generated_at,
-                            "updated_at": report.generated_at,
-                            "strategy": report.strategy,
-                            "template_key": item.template_key,
-                            "angle": item.angle,
-                            "draft": item.draft,
+                            "drafted_at": artifact.generated_at,
+                            "updated_at": artifact.generated_at,
+                            "draft": item.proposed_message,
+                            "relationship_role": item.relationship_role,
+                            "greeting_eligibility_status": item.status,
+                            "relationship_enrichment_status": (
+                                existing.relationship_enrichment_status
+                                or RelationshipEnrichmentStatus.MISSING
+                            ),
+                            "original_connection_approved_at": item.original_connection_approved_at,
+                            "original_connection_approval_reason": (
+                                item.original_connection_approval_reason
+                            ),
+                            "original_connection_review_text": item.original_connection_review_text,
+                            "sales_nav_list_name": existing.sales_nav_list_name,
+                            "sales_nav_list_status": existing.sales_nav_list_status,
                             "profile_url": item.candidate.profile_url,
                             "sales_nav_profile_url": item.candidate.sales_nav_profile_url,
-                            "person_does": item.person_does,
-                            "company_does": item.company_does,
-                            "message_fit": item.message_fit,
-                            "company_profile_url": item.company_profile_url,
-                            "company_website_url": item.company_website_url,
-                            "evidence": list(item.evidence),
+                            "evidence": [
+                                f"Original connection source: {item.original_connection_source}",
+                                "Original connection approval: "
+                                f"{item.original_connection_approval_reason}",
+                            ],
                             "warnings": list(item.warnings),
                             "status": status,
                             "report_path": report_path,
-                            "research_path": research_path,
                         }
                     )
                 continue
@@ -2586,22 +2907,24 @@ class AcceptanceFollowupLedger(AppModel):
                     name=item.candidate.name,
                     profile_url=item.candidate.profile_url,
                     sales_nav_profile_url=item.candidate.sales_nav_profile_url,
-                    drafted_at=report.generated_at,
-                    updated_at=report.generated_at,
+                    drafted_at=artifact.generated_at,
+                    updated_at=artifact.generated_at,
                     accepted_at=item.candidate.accepted_at,
-                    strategy=report.strategy,
-                    template_key=item.template_key,
-                    angle=item.angle,
-                    draft=item.draft,
-                    person_does=item.person_does,
-                    company_does=item.company_does,
-                    message_fit=item.message_fit,
-                    company_profile_url=item.company_profile_url,
-                    company_website_url=item.company_website_url,
-                    evidence=list(item.evidence),
+                    draft=item.proposed_message,
+                    relationship_role=item.relationship_role,
+                    greeting_eligibility_status=item.status,
+                    relationship_enrichment_status=RelationshipEnrichmentStatus.MISSING,
+                    original_connection_approved_at=item.original_connection_approved_at,
+                    original_connection_approval_reason=(item.original_connection_approval_reason),
+                    original_connection_review_text=item.original_connection_review_text,
+                    sales_nav_list_name=None,
+                    sales_nav_list_status=None,
+                    evidence=[
+                        f"Original connection source: {item.original_connection_source}",
+                        f"Original connection approval: {item.original_connection_approval_reason}",
+                    ],
                     warnings=list(item.warnings),
                     report_path=report_path,
-                    research_path=research_path,
                 )
             )
             written += 1
@@ -2617,12 +2940,9 @@ def accepted_followup_candidate_key(candidate: AcceptedDraftCandidate) -> str:
     return candidate_key(candidate.source, candidate.name, identity_url)
 
 
-def accepted_research_row_key(row: AcceptedResearchRow) -> str:
-    identity_url = row.sales_nav_profile_url or row.profile_url
-    return candidate_key(row.source, row.name, identity_url)
-
-
-def accepted_research_queue_item(candidate: AcceptedDraftCandidate) -> AcceptedResearchQueueItem:
+def relationship_enrichment_queue_item(
+    candidate: AcceptedDraftCandidate,
+) -> RelationshipEnrichmentQueueItem:
     key = accepted_followup_candidate_key(candidate)
     evidence = [
         f"Source: {candidate.source}",
@@ -2638,7 +2958,7 @@ def accepted_research_queue_item(candidate: AcceptedDraftCandidate) -> AcceptedR
         evidence.append(f"Acceptance note: {candidate.acceptance_note}")
     if candidate.acceptance_evidence:
         evidence.append(f"Acceptance evidence: {candidate.acceptance_evidence}")
-    return AcceptedResearchQueueItem(
+    return RelationshipEnrichmentQueueItem(
         followup_id=acceptance_followup_id(key),
         candidate_key=key,
         candidate=candidate,
@@ -2646,79 +2966,24 @@ def accepted_research_queue_item(candidate: AcceptedDraftCandidate) -> AcceptedR
     )
 
 
-def build_accepted_research_queue_packet(
+def build_relationship_enrichment_queue(
     candidates: list[AcceptedDraftCandidate],
-) -> AcceptedResearchQueuePacket:
-    return AcceptedResearchQueuePacket(
-        items=[accepted_research_queue_item(candidate) for candidate in candidates]
+) -> RelationshipEnrichmentQueue:
+    return RelationshipEnrichmentQueue(
+        items=[relationship_enrichment_queue_item(candidate) for candidate in candidates]
     )
 
 
-def accepted_message_queue_item(
-    decision: AcceptedResearchDecisionItem,
-) -> AcceptedResearchQueueItem:
-    payload = decision.model_dump(mode="python", by_alias=False)
-    payload["status"] = AcceptedResearchDecisionStatus.READY_FOR_DRAFT
-    payload["proposed_message"] = None
-    template = AcceptedResearchDecisionTemplate.model_validate(payload)
-    evidence = [
-        f"Reviewed person summary: {clean_inline(decision.person_summary)}",
-        f"Reviewed company: {clean_inline(decision.company_name)}",
-        f"Reviewed company summary: {clean_inline(decision.company_summary)}",
-    ]
-    if decision.official_company_url:
-        evidence.append(f"Official company URL: {decision.official_company_url}")
-    evidence.extend(f"Reviewed evidence URL: {url}" for url in decision.evidence_urls)
-    for item in decision.research_evidence:
-        evidence.append(
-            f"Reviewed evidence {clean_inline(item.evidence_id)} from "
-            f"{clean_inline(item.source_url)}: {clean_inline(item.claim)}"
-        )
-        if item.relevance:
-            evidence.append(
-                f"Reviewed evidence {clean_inline(item.evidence_id)} relevance: "
-                f"{clean_inline(item.relevance)}"
-            )
-        evidence.append(
-            f"Reviewed evidence {clean_inline(item.evidence_id)} excerpt: "
-            f"{clean_inline(item.source_excerpt)}"
-        )
-    if decision.notes:
-        evidence.append(f"Reviewed research note: {clean_inline(decision.notes)}")
-    if decision.warnings:
-        evidence.extend(
-            f"Reviewed warning: {clean_inline(warning)}" for warning in decision.warnings
-        )
-    return AcceptedResearchQueueItem(
-        followup_id=decision.followup_id,
-        candidate_key=decision.candidate_key,
-        candidate=decision.candidate,
-        evidence=evidence,
-        decision=template,
-    )
-
-
-def build_accepted_message_queue_packet(
-    decisions: list[AcceptedResearchDecisionItem],
-) -> AcceptedResearchQueuePacket:
-    return AcceptedResearchQueuePacket(
-        items=[accepted_message_queue_item(decision) for decision in decisions]
-    )
-
-
-def validate_accepted_research_decision_artifact(
-    artifact: AcceptedResearchDecisionArtifact,
+def validate_relationship_enrichment_artifact(
+    artifact: RelationshipEnrichmentArtifact,
 ) -> None:
     errors: list[str] = []
     for index, decision in enumerate(artifact.decisions, start=1):
         label = f"{decision.followup_id or index} ({decision.candidate.name})"
-        if decision.status not in {
-            AcceptedResearchDecisionStatus.RESEARCH_READY,
-            AcceptedResearchDecisionStatus.READY_FOR_DRAFT,
-        }:
+        if decision.status != RelationshipEnrichmentDecisionStatus.ENRICHED:
             continue
         status_label = decision.status.value
-        if decision.confidence != AcceptedResearchConfidence.HIGH:
+        if decision.confidence != RelationshipEnrichmentConfidence.HIGH:
             errors.append(f"{label}: {status_label} requires confidence=high")
         required = {
             "person_summary": decision.person_summary,
@@ -2730,439 +2995,15 @@ def validate_accepted_research_decision_artifact(
                 errors.append(f"{label}: {status_label} missing {field}")
         if not decision.evidence_urls and not decision.research_evidence:
             errors.append(f"{label}: {status_label} requires at least one evidence source")
-        evidence_ids: set[str] = set()
-        for evidence in decision.research_evidence:
-            if not _non_empty(evidence.evidence_id):
-                errors.append(f"{label}: {status_label} has research evidence missing evidence_id")
-            elif evidence.evidence_id in evidence_ids:
-                errors.append(
-                    f"{label}: {status_label} has duplicate research evidence "
-                    f"{evidence.evidence_id}"
-                )
-            evidence_ids.add(evidence.evidence_id)
-            if not _non_empty(evidence.source_url):
-                errors.append(f"{label}: {status_label} has research evidence missing source_url")
-            if not _non_empty(evidence.claim):
-                errors.append(f"{label}: {status_label} has research evidence missing claim")
-            if not _non_empty(evidence.source_excerpt):
-                errors.append(
-                    f"{label}: {status_label} has research evidence missing source_excerpt"
-                )
-        if decision.status != AcceptedResearchDecisionStatus.READY_FOR_DRAFT:
-            continue
-        message = normalize_reviewed_proposed_message(decision.proposed_message)
-        if message is None:
-            errors.append(f"{label}: ready_for_draft missing proposed_message")
-        else:
-            if len(message) < 40:
-                errors.append(f"{label}: proposed_message is too short")
-            if len(message) > 1000:
-                errors.append(f"{label}: proposed_message is too long")
-            if len(message.splitlines()) > 12:
-                errors.append(f"{label}: proposed_message has too many lines")
     if errors:
-        raise ValueError("invalid accepted research decisions: " + "; ".join(errors))
+        raise ValueError("invalid relationship enrichment decisions: " + "; ".join(errors))
 
 
-def normalize_reviewed_proposed_message(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
-    return normalized if normalized else None
-
-
-def build_draft_report(
-    candidates: list[AcceptedDraftCandidate],
-    artifact: AcceptedResearchArtifact | None,
-    strategy: DraftStrategy,
-    research_path: str | None,
-) -> DraftReport:
-    research_by_key: dict[str, AcceptedResearchRow] = {}
-    research_captured_at: str | None = None
-    if artifact is not None:
-        research_captured_at = artifact.captured_at
-        for row in artifact.rows:
-            research_by_key[accepted_research_row_key(row)] = row
-    seen: set[str] = set()
-    items: list[DraftItem] = []
-    skipped_names: list[str] = []
-    for candidate in candidates:
-        key = accepted_followup_candidate_key(candidate)
-        if key in seen:
-            skipped_names.append(candidate.name)
-            continue
-        seen.add(key)
-        items.append(build_draft_item(candidate, research_by_key.get(key), strategy))
-    return DraftReport(
-        strategy=strategy,
-        research_path=research_path,
-        research_captured_at=research_captured_at,
-        items=items,
-        skipped_names=skipped_names,
-    )
-
-
-def build_draft_report_from_reviewed_research(
-    artifact: AcceptedResearchDecisionArtifact,
-    strategy: DraftStrategy,
-    research_path: str | None,
-) -> DraftReport:
-    validate_accepted_research_decision_artifact(artifact)
-    items: list[DraftItem] = []
-    skipped_names: list[str] = []
-    for decision in artifact.decisions:
-        if decision.status != AcceptedResearchDecisionStatus.READY_FOR_DRAFT:
-            skipped_names.append(decision.candidate.name)
-            continue
-        items.append(build_draft_item_from_reviewed_research(decision, strategy))
-    return DraftReport(
-        strategy=strategy,
-        research_path=research_path,
-        research_captured_at=artifact.generated_at.isoformat(),
-        items=items,
-        skipped_names=skipped_names,
-    )
-
-
-def build_draft_item(
-    candidate: AcceptedDraftCandidate,
-    research: AcceptedResearchRow | None,
-    strategy: DraftStrategy,
-) -> DraftItem:
-    _ = strategy
-    sales_nav = research.sales_nav if research else None
-    company_profile = research.company_profile if research else None
-    company_website = research.company_website if research else None
-    sales_nav_profile_url = (
-        (research.sales_nav_profile_url if research else None)
-        or candidate.sales_nav_profile_url
-        or candidate.profile_url
-    )
-    messaging_profile_url = (
-        (research.public_profile_url if research else None) or candidate.profile_url
-    )
-    draft_candidate = candidate.model_copy(
-        update={
-            "profile_url": messaging_profile_url,
-            "sales_nav_profile_url": sales_nav_profile_url,
-        }
-    )
-    title = _non_empty(sales_nav.title if sales_nav else None)
-    company = _non_empty(sales_nav.company if sales_nav else None)
-    web_result = (
-        research.web.results[0] if research and research.web and research.web.results else None
-    )
-    first = first_name(candidate.name)
-    template_key, angle_label = choose_angle(candidate.source, title, company)
-    if template_key == AcceptedFollowupTemplateKey.RECRUITER:
-        draft = recruiter_accepted_followup_draft(first)
-    elif template_key == AcceptedFollowupTemplateKey.AGENCY:
-        draft = agency_accepted_followup_draft(first, company)
-    elif template_key == AcceptedFollowupTemplateKey.ADVISOR:
-        draft = advisor_accepted_followup_draft(first)
-    else:
-        draft = general_accepted_followup_draft(first, company)
-    evidence: list[str] = []
-    if title:
-        evidence.append(f"Sales Nav title/headline: {title}")
-    if company:
-        evidence.append(f"Sales Nav company: {company}")
-    if sales_nav is not None:
-        if _non_empty(sales_nav.name):
-            evidence.append(f"Sales Nav displayed name: {sales_nav.name}")
-        if _non_empty(sales_nav.location):
-            evidence.append(f"Sales Nav location: {sales_nav.location}")
-        if _non_empty(sales_nav.url):
-            evidence.append(f"Sales Nav URL after load: {sales_nav.url}")
-    if research and research.public_profile_url:
-        evidence.append(f"LinkedIn profile URL: {research.public_profile_url}")
-    if candidate.relationship:
-        evidence.append(f"Sales Nav relationship: {candidate.relationship}")
-    if candidate.acceptance_note:
-        evidence.append(f"Acceptance check: {candidate.acceptance_note}")
-    if web_result is not None:
-        if web_result.title:
-            evidence.append(f"Public web result: {web_result.title}")
-        if web_result.url:
-            evidence.append(f"Public web URL: {web_result.url}")
-        if web_result.snippet:
-            evidence.append(f"Public web snippet: {web_result.snippet}")
-    if company_profile is not None:
-        if company_profile.url:
-            evidence.append(f"Company profile URL: {company_profile.url}")
-        if company_profile.website_url:
-            evidence.append(f"Company website URL: {company_profile.website_url}")
-        if company_profile.description:
-            evidence.append(f"Company profile description: {company_profile.description}")
-        if company_profile.industry:
-            evidence.append(f"Company profile industry: {company_profile.industry}")
-        if company_profile.size:
-            evidence.append(f"Company profile size: {company_profile.size}")
-    if company_website is not None:
-        if company_website.url:
-            evidence.append(f"Company website inspected: {company_website.url}")
-        if company_website.title:
-            evidence.append(f"Company website title: {company_website.title}")
-        if company_website.description:
-            evidence.append(f"Company website description: {company_website.description}")
-    if research and research.web and research.web.query:
-        evidence.append(f"Public web query: {research.web.query}")
-    warnings: list[str] = []
-    if research is None:
-        warnings.append(
-            "No research row matched this accepted candidate; draft uses source and "
-            "ledger evidence only."
-        )
-    else:
-        warnings.extend(research.warnings)
-        if research.sales_nav:
-            warnings.extend(research.sales_nav.warnings)
-        if research.company_profile:
-            warnings.extend(research.company_profile.warnings)
-        if research.company_website:
-            warnings.extend(research.company_website.warnings)
-        if research.web:
-            warnings.extend(research.web.warnings)
-    if not title and not company:
-        warnings.append("Sales Nav title/company were not extracted; review before sending.")
-    if research is not None and not research.public_profile_url:
-        warnings.append(
-            "Public LinkedIn profile URL was not extracted; follow-up send may use Sales Nav URL."
-        )
-    person_does = accepted_followup_person_summary(candidate.name, title, company)
-    company_does = accepted_followup_company_summary(
-        company, company_profile, company_website, web_result
-    )
-    message_fit = accepted_followup_message_fit(
-        template_key, angle_label, person_does, company_does
-    )
-    return DraftItem(
-        candidate=draft_candidate,
-        template_key=template_key,
-        angle=angle_label,
-        draft=draft,
-        person_does=person_does,
-        company_does=company_does,
-        message_fit=message_fit,
-        company_profile_url=company_profile.url if company_profile else None,
-        company_website_url=(
-            company_website.url
-            if company_website and company_website.url
-            else company_profile.website_url
-            if company_profile
-            else None
-        ),
-        evidence=evidence,
-        warnings=warnings,
-    )
-
-
-def build_draft_item_from_reviewed_research(
-    decision: AcceptedResearchDecisionItem,
-    strategy: DraftStrategy,
-) -> DraftItem:
-    _ = strategy
-    candidate = decision.candidate
-    company = _non_empty(decision.company_name)
-    template_key, default_angle = choose_angle(
-        candidate.source, decision.person_summary, company
-    )
-    if decision.template_key is not None:
-        template_key = decision.template_key
-    angle = clean_inline(decision.angle) if _non_empty(decision.angle) else default_angle
-    draft = normalize_reviewed_proposed_message(decision.proposed_message)
-    if draft is None:
-        raise ValueError(
-            f"ready reviewed research for {candidate.name} is missing proposed_message"
-        )
-    person_does = clean_inline(decision.person_summary)
-    company_summary = clean_inline(decision.company_summary)
-    company_does = f"{company}: {company_summary}" if company else company_summary
-    evidence = [
-        f"Reviewed person summary: {person_does}",
-        f"Reviewed company summary: {company_does}",
-    ]
-    if decision.official_company_url:
-        evidence.append(f"Official company URL: {decision.official_company_url}")
-    evidence.extend(f"Reviewed evidence URL: {url}" for url in decision.evidence_urls)
-    for item in decision.research_evidence:
-        evidence.append(
-            f"Reviewed evidence {clean_inline(item.evidence_id)} from "
-            f"{clean_inline(item.source_url)}: {clean_inline(item.claim)}"
-        )
-        if item.relevance:
-            evidence.append(
-                f"Reviewed evidence {clean_inline(item.evidence_id)} relevance: "
-                f"{clean_inline(item.relevance)}"
-            )
-        evidence.append(
-            f"Reviewed evidence {clean_inline(item.evidence_id)} excerpt: "
-            f"{clean_inline(item.source_excerpt)}"
-        )
-    if decision.notes:
-        evidence.append(f"Reviewed research note: {clean_inline(decision.notes)}")
-    warnings = list(decision.warnings)
-    message_fit = accepted_followup_message_fit(
-        template_key, angle, person_does, company_does
-    )
-    return DraftItem(
-        candidate=candidate,
-        template_key=template_key,
-        angle=angle,
-        draft=draft,
-        person_does=person_does,
-        company_does=company_does,
-        message_fit=message_fit,
-        company_website_url=decision.official_company_url,
-        evidence=evidence,
-        warnings=warnings,
-    )
-
-
-def accepted_followup_person_summary(
-    name: str, title: str | None, company: str | None
-) -> str | None:
-    if title and company:
-        return (
-            f"{clean_inline(name)} is listed as {clean_inline(title)} "
-            f"at {clean_inline(company)}."
-        )
-    if title:
-        return f"{clean_inline(name)} is listed as {clean_inline(title)}."
-    if company:
-        return f"{clean_inline(name)} is listed at {clean_inline(company)}."
-    return None
-
-
-def accepted_followup_company_summary(
-    company: str | None,
-    company_profile: CompanyProfileResearch | None,
-    company_website: WebsiteResearch | None,
-    web_result: WebResult | None,
-) -> str | None:
-    if company_profile and company_profile.description:
-        prefix = f"{clean_inline(company)}: " if company else ""
-        return prefix + clean_inline(company_profile.description)
-    if company_website and company_website.description:
-        prefix = f"{clean_inline(company)}: " if company else ""
-        return prefix + clean_inline(company_website.description)
-    if web_result and web_result.snippet:
-        prefix = f"{clean_inline(company)}: " if company else ""
-        return prefix + clean_inline(web_result.snippet)
-    if company:
-        return f"{clean_inline(company)} is the company shown on the accepted profile."
-    return None
-
-
-def accepted_followup_message_fit(
-    template_key: AcceptedFollowupTemplateKey,
-    angle: str,
-    person_does: str | None,
-    company_does: str | None,
-) -> str | None:
-    parts = [f"Selected `{template_key.value}` because the best sourced angle is {angle}."]
-    if person_does:
-        parts.append(person_does)
-    if company_does:
-        parts.append(company_does)
-    return " ".join(parts)
-
-
-def general_accepted_followup_draft(first: str, company: str | None) -> str:
-    target = f" at {clean_inline(company)}" if company else ""
+def accepted_welcome_message(first: str) -> str:
     return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer focused on shipping AI-powered web and "
-        "mobile products.\n\n"
-        "Are you the right person to ask about whether that kind of product-engineering "
-        f"support would be useful{target}?"
+        f"Hey {first}, thanks for connecting. Glad to be in each other’s network, "
+        "and I’m looking forward to following what you share here."
     )
-
-
-def agency_accepted_followup_draft(first: str, company: str | None) -> str:
-    company_intro = ""
-    if company:
-        company_intro = f" I came across {clean_inline(company)}, and"
-    return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer that works across web and mobile products."
-        f"{company_intro} I'm reaching out about project overflow, prototypes, and "
-        "AI-enabled product builds.\n\n"
-        "Are you the right person to ask about this kind of project support?"
-    )
-
-
-def recruiter_accepted_followup_draft(first: str) -> str:
-    return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I'm a full-stack product engineer focused on full-stack product builds and "
-        "AI workflows.\n\n"
-        "Are you the right person to ask about contract roles that fit this background?"
-    )
-
-
-def advisor_accepted_followup_draft(first: str) -> str:
-    return (
-        f"Hey, {first}. Thanks for connecting.\n\n"
-        "I help consultants and advisors turn AI and workflow strategy into working "
-        "systems: automations, decision-support tools, integrations, and reporting that "
-        "make client implementation easier to deliver.\n\n"
-        "Would that be helpful for the type of strategy work you do?"
-    )
-
-
-ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES: dict[str, AcceptedFollowupTemplateKey] = {
-    AGENCY_OWNERS_SOURCE: AcceptedFollowupTemplateKey.AGENCY,
-    CONTRACT_RECRUITERS_SOURCE: AcceptedFollowupTemplateKey.RECRUITER,
-    STRATEGY_CONSULTANTS_SOURCE: AcceptedFollowupTemplateKey.ADVISOR,
-    AI_ADVISORS_SOURCE: AcceptedFollowupTemplateKey.ADVISOR,
-    "ASAP - Startup CTO Eng Leaders": AcceptedFollowupTemplateKey.GENERAL,
-    "ASAP - High-Intent SaaS AI Founders": AcceptedFollowupTemplateKey.GENERAL,
-    "ASAP - Vertical Proof Buyers": AcceptedFollowupTemplateKey.GENERAL,
-    "FO - Founders - Urgent": AcceptedFollowupTemplateKey.GENERAL,
-    "Network - AI-Curious Founders": AcceptedFollowupTemplateKey.GENERAL,
-    "Network - Early Founders": AcceptedFollowupTemplateKey.GENERAL,
-    "Network - Founder Operators": AcceptedFollowupTemplateKey.GENERAL,
-    "Network - Product Leaders": AcceptedFollowupTemplateKey.GENERAL,
-    "Ops-overwhelmed small team operator": AcceptedFollowupTemplateKey.GENERAL,
-}
-
-
-def choose_angle(
-    source: str, title: str | None, company: str | None
-) -> tuple[AcceptedFollowupTemplateKey, str]:
-    template_key = ACCEPTED_FOLLOWUP_SOURCE_TEMPLATES.get(source)
-    if template_key is None:
-        template_key = accepted_followup_structured_override(source, title, company)
-    company_suffix = f" for {clean_inline(company)}" if company else ""
-    if template_key == AcceptedFollowupTemplateKey.RECRUITER:
-        return template_key, "contract-role availability ask" + company_suffix
-    if template_key == AcceptedFollowupTemplateKey.AGENCY:
-        return template_key, "project or overflow support ask" + company_suffix
-    if template_key == AcceptedFollowupTemplateKey.ADVISOR:
-        return template_key, "AI and workflow implementation support ask" + company_suffix
-    return template_key, "product-engineering support ask" + company_suffix
-
-
-def accepted_followup_structured_override(
-    source: str, title: str | None, company: str | None
-) -> AcceptedFollowupTemplateKey:
-    source_lower = source.lower()
-    title_lower = title.lower() if title else ""
-    company_lower = company.lower() if company else ""
-    if contains_any(source_lower, "recruiter", "staffing") or contains_any(
-        title_lower, "recruiter", "talent acquisition", "headhunter"
-    ):
-        return AcceptedFollowupTemplateKey.RECRUITER
-    if contains_any(source_lower, "agency") or contains_any(
-        company_lower, "agency", "studio", "consulting"
-    ):
-        return AcceptedFollowupTemplateKey.AGENCY
-    return AcceptedFollowupTemplateKey.GENERAL
-
-
-def contains_any(value: str, *needles: str) -> bool:
-    return any(needle in value for needle in needles)
 
 
 def first_name(name: str) -> str:
@@ -3178,70 +3019,6 @@ def clean_inline(value: str | None) -> str:
     if value is None:
         return ""
     return " ".join(value.split())
-
-
-def render_draft_markdown(report: DraftReport) -> str:
-    lines = [
-        f"# LinkedIn Accepted Follow-Up Drafts {report.generated_at.date().isoformat()}",
-        "",
-        f"- Generated: `{report.generated_at.isoformat()}`",
-        f"- Strategy: `{report.strategy.value}`",
-        f"- Draft count: {len(report.items)}",
-    ]
-    if report.research_path:
-        lines.append(f"- Research artifact: `{report.research_path}`")
-    if report.research_captured_at:
-        lines.append(f"- Research captured: `{clean_inline(report.research_captured_at)}`")
-    if report.skipped_names:
-        lines.append("- Duplicate candidates skipped: " + ", ".join(report.skipped_names))
-    if not report.items:
-        lines.extend(["", "No newly accepted connections need first-message drafts."])
-        return "\n".join(lines)
-    for item in report.items:
-        key = accepted_followup_candidate_key(item.candidate)
-        lines.extend(
-            [
-                "",
-                "## " + clean_inline(item.candidate.name),
-                "- Follow-up ID: `" + acceptance_followup_id(key) + "`",
-                "- Source: " + clean_inline(item.candidate.source),
-            ]
-        )
-        if item.candidate.profile_url:
-            lines.append("- LinkedIn profile: " + clean_inline(item.candidate.profile_url))
-        if item.candidate.sales_nav_profile_url:
-            lines.append(
-                "- Sales Nav profile: " + clean_inline(item.candidate.sales_nav_profile_url)
-            )
-        lines.append(f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`")
-        lines.append(f"- Template: `{item.template_key.value}`")
-        lines.append("- Best angle: " + clean_inline(item.angle))
-        if item.person_does:
-            lines.append("- Person does: " + clean_inline(item.person_does))
-        if item.company_does:
-            lines.append("- Company does: " + clean_inline(item.company_does))
-        if item.message_fit:
-            lines.append("- Why this draft fits: " + clean_inline(item.message_fit))
-        if item.company_profile_url:
-            lines.append("- Company profile: " + clean_inline(item.company_profile_url))
-        if item.company_website_url:
-            lines.append("- Company website: " + clean_inline(item.company_website_url))
-        if item.evidence:
-            lines.append("- Evidence used:")
-            lines.extend("  - " + clean_inline(evidence) for evidence in item.evidence)
-        if item.warnings:
-            lines.append("- Warnings:")
-            lines.extend("  - " + clean_inline(warning) for warning in item.warnings)
-        lines.extend(["", "Draft:", ""])
-        lines.extend(blockquote(item.draft))
-    return "\n".join(lines)
-
-
-def blockquote(value: str) -> list[str]:
-    normalized = value.strip().replace("\r\n", "\n")
-    if normalized == "":
-        return [">"]
-    return [">" if line.strip() == "" else "> " + line for line in normalized.split("\n")]
 
 
 class AcceptanceFollowupMessageCandidate(AppModel):
@@ -3297,6 +3074,18 @@ class AcceptanceFollowupSendResult(AppModel):
     body: str | None = None
 
 
+class AcceptanceLeadListSaveResult(AppModel):
+    candidate: AcceptanceFollowupMessageCandidate | None = None
+    list_name: str = Field(validation_alias=AliasChoices("list_name", "listName"))
+    status: AcceptanceLeadListStatus
+    url: str | None = None
+    reason: str | None = None
+    action: Any = None
+    visible_lists: Any = Field(
+        default=None, validation_alias=AliasChoices("visible_lists", "visibleLists")
+    )
+
+
 def validate_acceptance_followup_can_send(
     record: AcceptanceFollowupRecord, dry_run: bool, allow_send: bool
 ) -> None:
@@ -3304,17 +3093,20 @@ def validate_acceptance_followup_can_send(
         raise ValueError(f"accepted follow-up {record.id} is already {record.status.value}")
     if record.draft.strip() == "":
         raise ValueError(
-            f"accepted follow-up {record.id} has no stored draft; rerun "
-            "`acceptance draft-followups --include-drafted` first"
+            f"accepted welcome {record.id} has no stored message; rerun "
+            "`acceptance prepare-welcome-messages` first"
         )
     if not record.profile_url or record.profile_url.strip() == "":
         raise ValueError(f"accepted follow-up {record.id} has no profile URL")
     if not dry_run and not allow_send:
         raise ValueError("real send requires --allow-send")
-    if not dry_run and not is_public_linkedin_profile_url(record.profile_url):
+    if not dry_run and not (
+        is_public_linkedin_profile_url(record.profile_url)
+        or is_sales_nav_profile_url(record.profile_url)
+        or is_sales_nav_profile_url(record.sales_nav_profile_url)
+    ):
         raise ValueError(
-            f"accepted follow-up {record.id} has no public LinkedIn profile URL; "
-            "rerun accepted profile research before sending"
+            f"accepted follow-up {record.id} has no usable LinkedIn or Sales Navigator profile URL"
         )
     if not dry_run and record.status != AcceptanceFollowupStatus.DRY_RUN_READY:
         raise ValueError(
@@ -3362,6 +3154,31 @@ def apply_acceptance_followup_send_result(
     record.updated_at = current
     if record.status == AcceptanceFollowupStatus.SENT:
         record.sent_at = current
+
+
+def apply_acceptance_lead_list_save_result(
+    record: AcceptanceFollowupRecord,
+    result: AcceptanceLeadListSaveResult,
+    out_path: str,
+) -> None:
+    current = now_utc()
+    record.sales_nav_list_attempts.append(
+        AcceptanceLeadListAttempt(
+            at=current,
+            status=result.status,
+            list_name=result.list_name,
+            result_url=result.url,
+            reason=result.reason,
+            out_path=out_path,
+        )
+    )
+    record.sales_nav_list_status = result.status
+    record.updated_at = current
+    if result.status in {
+        AcceptanceLeadListStatus.SAVED,
+        AcceptanceLeadListStatus.ALREADY_SAVED,
+    }:
+        record.sales_nav_list_saved_at = current
 
 
 def acceptance_followup_status_for_result(

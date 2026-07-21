@@ -206,11 +206,11 @@ def test_compat_help_and_delegated_command_paths(
             [
                 "capture",
                 "--source",
-                "ASAP - Agency Owners Delivery",
+                "Consulting - Founder Owner Buyers",
                 "--saved-searches",
                 "",
                 "--fixture-result",
-                "tests/fixtures/network_automation/capture.json",
+                "tests/fixtures/network_automation/capture_consulting.json",
                 "--state-dir",
                 str(tmp_path),
             ]

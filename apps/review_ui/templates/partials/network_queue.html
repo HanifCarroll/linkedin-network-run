@@ -32,27 +32,27 @@
   <table>
     <thead>
       <tr>
-        <th>Acceptance Draft</th>
+        <th>Approved Greeting</th>
         <th>Status</th>
         <th>Dry Run</th>
         <th>Send History</th>
       </tr>
     </thead>
     <tbody>
-      {% for draft in snapshot.acceptance_drafts %}
+      {% for greeting in snapshot.acceptance_greetings %}
         <tr>
           <td>
-            {{ draft.person }}<br>
-            {% if draft.profile_url %}
-              <a class="muted" href="{{ draft.profile_url }}" target="_blank" rel="noreferrer">LinkedIn profile</a>
+            {{ greeting.person }}<br>
+            {% if greeting.profile_url %}
+              <a class="muted" href="{{ greeting.profile_url }}" target="_blank" rel="noreferrer">LinkedIn profile</a>
             {% else %}
-              <span class="muted">{{ draft.draft_id }}</span>
+              <span class="muted">{{ greeting.draft_id }}</span>
             {% endif %}
-            <p class="muted">{{ draft.draft_body }}</p>
+            <p class="muted">{{ greeting.draft_body }}</p>
           </td>
-          <td>{{ draft.draft_status }}</td>
-          <td>{{ draft.dry_run_status }}</td>
-          <td>{{ draft.send_history }}</td>
+          <td>{{ greeting.draft_status }}</td>
+          <td>{{ greeting.dry_run_status }}</td>
+          <td>{{ greeting.send_history }}</td>
         </tr>
       {% endfor %}
     </tbody>

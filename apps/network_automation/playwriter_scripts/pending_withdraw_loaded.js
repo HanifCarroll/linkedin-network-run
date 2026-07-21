@@ -192,7 +192,10 @@ if (block) {
   };
 } else {
   const results = [];
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(1000, Number(config.timeoutSeconds || 90) * 1000);
   for (let index = 0; index < limit; index += 1) {
+    if (Date.now() - startedAt >= timeoutMs) break;
     const rows = eligibleRows(await loadedRows(activePage));
     const row = rows.pop();
     if (!row) break;
@@ -205,7 +208,11 @@ if (block) {
       ? "withdrawn"
       : "no-loaded-eligible",
     results,
-    detail: { requestedLimit: limit },
+    detail: {
+      requestedLimit: limit,
+      timeoutSeconds: Number(config.timeoutSeconds || 90),
+      timedOut: Date.now() - startedAt >= timeoutMs,
+    },
   };
 }
 

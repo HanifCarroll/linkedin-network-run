@@ -102,17 +102,17 @@ REVIEW_ACTIONS: tuple[ReviewAction, ...] = (
         integration_dependency="Thread 4 must expose the guarded send service/read model.",
     ),
     ReviewAction(
-        id="network-send-ready-followup",
+        id="network-send-ready-greetings",
         app="network",
-        workflow="Accepted follow-up send",
-        label="Send one ready follow-up",
+        workflow="Approved greeting send",
+        label="Send one ready greeting",
         safety=ActionSafety.REAL_ACTION,
         guarded_command=GuardedCommand(
             argv=(
                 "linkedin-tools",
                 "network",
                 "acceptance",
-                "send-ready-followups",
+                "send-ready-greetings",
                 "--limit",
                 "1",
                 "--allow-send",
@@ -120,7 +120,7 @@ REVIEW_ACTIONS: tuple[ReviewAction, ...] = (
             approval_flag="--allow-send",
         ),
         enabled=False,
-        integration_dependency="Thread 4 must expose accepted follow-up guarded sends.",
+        integration_dependency="Thread 4 must expose approved-greeting guarded sends.",
     ),
     ReviewAction(
         id="network-pending-withdraw",

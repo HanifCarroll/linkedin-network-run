@@ -59,19 +59,32 @@ async function waitForInvitationGrowth(page, previousCount) {
 }
 
 async function scrollSentInvitationsPage(page) {
-  await page.evaluate(() => {
-    const targets = [
-      document.scrollingElement,
-      document.documentElement,
-      document.body,
-      document.querySelector("main#workspace"),
-      document.querySelector("main"),
-    ].filter(Boolean);
-    for (const target of targets) {
-      target.scrollTop = target.scrollHeight;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await page.evaluate(() => {
+        const targets = [
+          document.scrollingElement,
+          document.documentElement,
+          document.body,
+          document.querySelector("main#workspace"),
+          document.querySelector("main"),
+        ].filter(Boolean);
+        for (const target of targets) {
+          target.scrollTop = target.scrollHeight;
+        }
+        window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
+      });
+      return;
+    } catch (error) {
+      const message = String(error && error.message ? error.message : error);
+      if (!/execution context was destroyed|navigation|cannot find context/i.test(message)) {
+        throw error;
+      }
+      await waitForPageLoad({ page, timeout: 10000 }).catch(() => null);
+      await page.waitForTimeout(500);
     }
-    window.scrollTo(0, Math.max(document.body.scrollHeight, document.documentElement.scrollHeight));
-  });
+  }
+  throw new Error("sent invitations page kept navigating while loading more rows");
 }
 
 async function main() {

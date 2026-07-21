@@ -17,7 +17,7 @@ This is the active Python `linkedin-tools` monorepo:
 
 - `apps/network_automation`: deterministic controller for LinkedIn Sales
   Navigator connection-request runs, acceptance tracking, reservoir capture,
-  audit reconciliation, accepted follow-ups, and pending-invitation cleanup.
+  audit reconciliation, welcome messages, and pending-invitation cleanup.
 - `apps/recruiter_agency_outreach`: separate recruiter/agency sourcing,
   drafting, dashboard, guarded message dry-runs, and guarded sends.
 - `apps/opportunity_intel` and `apps/comment_extractor`: recommend-only
@@ -58,10 +58,26 @@ uv run linkedin-tools --help
 - `linkedin-tools network` is the source of truth for connection-request runs.
   Let `linkedin-tools network ... plan --json` drive the next action.
 - `linkedin-network` automation sends and reconciles new connection requests only.
-- `linkedin-acceptance-daily` owns acceptance outcome checks, imports, draft follow-ups, and guarded accepted-follow-up sends.
-- Accepted follow-up message drafting may launch read-only, ephemeral
-  `codex exec` worker jobs from generated message packets. Those workers only
-  write local draft result artifacts; they must not touch LinkedIn or send.
+- `linkedin-acceptance-daily` owns acceptance outcome checks and imports only;
+  `run-daily-session` is report-only and has no drafting mode.
+- `linkedin-relationship-radar` owns non-blocking relationship enrichment and
+  cumulative radar updates. It reuses original connection-review evidence and
+  refreshes public sources only for missing, stale, or explicitly prioritized
+  records. Research is review-only. A separate guarded radar command may save
+  exact source-backed buyer recommendations to `Watch - Business Systems
+  Prospects`; it must not draft or publish comments.
+- `linkedin-prospect-investigation` owns the bounded authenticated-browser
+  follow-up for radar records that remain `needs_review`. It may inspect only
+  the exact queued profile, current-company links, and recent activity; it
+  applies a complete queue-bound artifact, observes a 30-day browser cooldown,
+  and must not connect, comment, react, message, or send.
+- `linkedin-accepted-relationship-followup` owns the exact welcome message for
+  every durable accepted connection. It does not depend on enrichment or an
+  original review approval, and it must not save people to a list. It dry-runs
+  the stored exact welcome and only then sends.
+- Relationship enrichment may launch read-only, ephemeral `codex exec` workers.
+  Those workers only write local enrichment artifacts; they must not draft a
+  message, touch LinkedIn, or send.
 - `linkedin-acceptance-weekly` is report-only. It should not open LinkedIn, run Playwriter classification, import outcomes, or draft messages.
 - `linkedin-tools recruiter-agency` is separate from network state. It must not
   send connection requests and must not write into the networking controller
@@ -72,14 +88,35 @@ uv run linkedin-tools --help
 
 ## Live Browser Safety
 
-- Browser operations default to dry-run. Real sends require explicit user intent plus the matching flag: `--allow-send` or `--allow-withdraw`.
+- Browser operations default to dry-run. Real sends or mutations require
+  explicit user intent plus the matching flag: `--allow-send`, `--allow-save`,
+  or `--allow-withdraw`.
 - Send or withdraw one candidate at a time through the controller. Do not ad
   hoc click LinkedIn buttons outside guarded Python browser paths.
+- Poll an active controller process until it exits. Never interrupt or kill it
+  while a browser operation is in progress; an interruption during a real-send
+  call must be preserved as a possible-send incident and reconciled by audit.
+- Daily completion prioritizes 30 durable sends with zero provisional. The
+  15/10/5 source mix guides selection across the three approved sources; when
+  one is exhausted, its shortfall carries to the next approved source. Proven
+  failed or reverted sends release active capacity, and `--no-fallback` still
+  excludes every source outside the approved three.
+- `NeedsBrowserInspection` is a normal controller checkpoint only when the
+  active incident says `possible_send=false`. Codex may use Chrome on the exact
+  automation-owned tab for actions listed in the incident lease, then must
+  capture before/after evidence and apply a fresh recovery receipt through
+  `browser-inspection apply` before resuming the same run.
+- Chrome recovery never permits Connect, Send, message, save-to-list, withdraw,
+  login, checkpoint, or security-verification actions. A possible-send incident
+  remains on the sent-page audit path and must never receive a recovery receipt.
 - Use `send-guarded --single-pass` for the normal connection-request path. Use `send-next --dry-run` or `send-guarded --dry-run` for focused validation.
 - Record browser artifacts back into the controller with the matching import or record command.
 - After uncertainty, exhausted transient-load retries, blocked browser state, or
   possible real sends, audit before declaring success.
 - `finish` must be backed by sent-page audit reconciliation, not row-level confidence alone.
+- When guarded attempts, active sends, and the sent-page delta all exactly equal
+  the target with no failed or reverted request, the complete aggregate audit
+  may confirm remaining name-unmatched provisional requests. Do not replace them.
 - If Playwriter reports a closed page/context/session, run `playwriter session reset <session>` or reopen the session before retrying.
 - Let controller retry budgets handle transient Sales Navigator UI-load misses,
   such as a temporarily missing saved-search control. Treat login, checkpoint,
@@ -114,9 +151,12 @@ Networking controller:
 ```sh
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" status --json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" plan --json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" run-session --daily --session auto --target 30 --max-real-sends 30 --refresh-saved-searches --no-fallback --allow-send --finish --out-dir /tmp/linkedin-network-session
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" send-guarded --session auto --allow-send --single-pass --max-attempts 30
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" reconcile-audit --session auto --attempts 3 --delay-ms 5000 --finish
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" report
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" browser-inspection status
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" browser-inspection apply /tmp/linkedin-network-session/001-browser-incident-recovery-receipt.json
 ```
 
 Acceptance tracking:
@@ -126,33 +166,38 @@ uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/lin
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export --min-age-days 1 --max-age-days 45 --out /tmp/linkedin-acceptance-candidates.json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance import /tmp/linkedin-acceptance-outcomes.json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance report --min-age-days 1 --max-age-days 45
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-research-queue --out /tmp/linkedin-accepted-followups/research-queue.json --limit 10
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance launch-research-workers --research-queue /tmp/linkedin-accepted-followups/research-queue.json --sources-dir /tmp/linkedin-accepted-followups/source-bundles --jobs-dir /tmp/linkedin-accepted-followups/research-jobs
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance collect-research-workers --research-queue /tmp/linkedin-accepted-followups/research-queue.json --jobs-dir /tmp/linkedin-accepted-followups/research-jobs --out /tmp/linkedin-accepted-followups/research-decisions.json
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance apply-research-decisions /tmp/linkedin-accepted-followups/research-decisions.json --out /tmp/linkedin-accepted-followups/reviewed-research.json
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-message-queue --reviewed-research /tmp/linkedin-accepted-followups/reviewed-research.json --out /tmp/linkedin-accepted-followups/message-queue.json --limit 10
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance launch-draft-workers --message-queue /tmp/linkedin-accepted-followups/message-queue.json --jobs-dir /tmp/linkedin-accepted-followups/draft-jobs
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance collect-draft-workers --message-queue /tmp/linkedin-accepted-followups/message-queue.json --jobs-dir /tmp/linkedin-accepted-followups/draft-jobs --out /tmp/linkedin-accepted-followups/message-decisions.json
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance apply-research-decisions /tmp/linkedin-accepted-followups/message-decisions.json --out /tmp/linkedin-accepted-followups/reviewed-research.json
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance draft-reviewed-followups --reviewed-research /tmp/linkedin-accepted-followups/reviewed-research.json --out /tmp/linkedin-accepted-followups/followups.md
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance prepare-welcome-messages --out /tmp/linkedin-accepted-welcome/eligibility.json --report-out /tmp/linkedin-accepted-welcome/welcome.md --limit 30
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance run-welcome-messages --session auto --limit 30 --allow-send
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance sync-relationship-radar-actions
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-enrichment-queue --out /tmp/linkedin-relationship-radar/enrichment-queue.json --stale-after-days 30 --limit 30
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance launch-enrichment-workers --enrichment-queue /tmp/linkedin-relationship-radar/enrichment-queue.json --sources-dir "$HOME/Library/Application Support/linkedin-tools/network-automation/relationship-radar/source-bundles" --jobs-dir /tmp/linkedin-relationship-radar/enrichment-jobs
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance collect-enrichment-workers --enrichment-queue /tmp/linkedin-relationship-radar/enrichment-queue.json --jobs-dir /tmp/linkedin-relationship-radar/enrichment-jobs --out /tmp/linkedin-relationship-radar/enrichment-decisions.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance update-relationship-radar --enrichment /tmp/linkedin-relationship-radar/enrichment-decisions.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance export-browser-investigation-queue --out /tmp/linkedin-prospect-investigation/queue.json --cooldown-days 30 --limit 5
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance apply-browser-investigation --queue /tmp/linkedin-prospect-investigation/queue.json --enrichment /tmp/linkedin-prospect-investigation/decisions.json
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance save-watchlist-leads --session auto --limit 30 --allow-save
 ```
 
-For large acceptance classification or accepted-research batches, use the
-Python `acceptance check` and `acceptance research` `offset` / `limit` support
-with incremental chunk artifacts. One-shot large browser runs are fragile. For
-accepted follow-up drafting, use `export-research-queue` for agent research and
-`export-message-queue` when message drafting needs to happen separately from
-research.
+For large acceptance-classification batches, use `acceptance check` with
+`offset` / `limit` and incremental chunk artifacts. One-shot large browser runs
+are fragile. Relationship enrichment is separate from greeting eligibility.
+Every enrichment decision must classify the relationship role, record the
+source-backed signal and follow-up reason, name the next useful action, and
+retain `permission_boundary=review_only`. Missing evidence must remain empty
+with a warning; the saved-search label is context, not proof of role.
 
-Accepted follow-ups:
+Welcome-message low-level controls:
 
 ```sh
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance dry-run-followups --session auto --limit 5
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-followup --id <id> --session auto --preview-fill
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-ready-followups --session auto --limit 5 --allow-send
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance dry-run-greetings --session auto --limit 5
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-greeting --id <id> --session auto --preview-fill
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" acceptance send-ready-greetings --session auto --limit 5 --allow-send
 ```
 
-Real accepted-follow-up sends require a stored draft, prior `dry_run_ready` status for batch sends, and `--allow-send`.
+Real welcome sends require the stored exact message, prior `dry_run_ready`
+status, and `--allow-send`. `run-welcome-messages` is the normal path; low-level
+commands diagnose the same queue. Watchlist saving happens only after research
+through `save-watchlist-leads --allow-save`.
 
 Recruiter/agency outreach:
 
@@ -188,7 +233,7 @@ Re-audit before finishing. `pending-cleanup finish` should only pass when the se
   and the README contract.
 - Use structured JSON parsing and explicit status transitions. Avoid hidden string heuristics.
 - Keep real-send and real-withdraw safety gates close to the code that performs the browser action.
-- Preserve draft formatting and line breaks for recruiter/agency and accepted-follow-up messages.
+- Preserve draft formatting for recruiter/agency messages and the exact welcome copy.
 - Do not broaden recruiter/agency outreach into connection requests or generic networking.
 
 ## Reporting Back

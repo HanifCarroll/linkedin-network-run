@@ -7,6 +7,7 @@ from pathlib import Path
 
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
+    AcceptanceDailyRun,
     AcceptanceFollowupAttempt,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
@@ -30,10 +31,32 @@ def test_network_state_db_schema_migration_is_idempotent(tmp_path: Path) -> None
     second = state_db.ensure_schema()
     status = state_db.status()
 
-    assert [migration.version for migration in first] == [1]
+    assert [migration.version for migration in first] == [1, 2]
     assert second == []
-    assert status.applied_migrations == (1,)
+    assert status.applied_migrations == (1, 2)
     assert status.database_path == tmp_path / "network.sqlite"
+
+
+def test_acceptance_daily_runs_append_and_hydrate(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    run = AcceptanceDailyRun(
+        started_at=datetime(2026, 7, 21, 11, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 7, 21, 11, 5, tzinfo=UTC),
+        local_date=date(2026, 7, 21),
+        timezone="America/Argentina/Buenos_Aires",
+        min_age_days=1,
+        max_age_days=45,
+        eligible=12,
+        checked=12,
+        newly_confirmed_accepted=3,
+        remaining_unresolved=9,
+        coverage_complete=True,
+    )
+
+    assert store.append_acceptance_daily_run(run) is True
+    assert store.append_acceptance_daily_run(run) is False
+    assert store.load_acceptance_daily_runs() == [run]
+    assert store.state_db_status().acceptance_daily_runs == 1
 
 
 def test_json_acceptance_ledger_imports_once_without_duplicates(tmp_path: Path) -> None:
@@ -233,7 +256,6 @@ def _followup_record(
         profile_url=f"https://www.linkedin.com/in/{record_id}",
         sales_nav_profile_url=f"https://www.linkedin.com/sales/lead/{record_id}",
         accepted_at=datetime(2026, 7, 2, 12, 0, tzinfo=UTC),
-        angle="product-engineering support ask",
         draft="Hey, thanks for connecting.",
         status=status,
         report_path="/tmp/followups.md",

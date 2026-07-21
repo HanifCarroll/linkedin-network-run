@@ -28,6 +28,7 @@ def network_sends_summary(
     date_arg: str = "today",
     timezone_name: str = "local",
     sync_history: bool = False,
+    run_id: str | None = None,
 ) -> SendLedgerSummary:
     synced_entries = 0
     history_logs_scanned = 0
@@ -35,11 +36,15 @@ def network_sends_summary(
         synced_entries, history_logs_scanned = sync_send_ledger_from_history(store)
     timezone = _resolve_send_summary_timezone(timezone_name)
     summary_date = _parse_send_summary_date(date_arg, timezone)
-    entries_for_date = [
-        entry
-        for entry in _latest_send_ledger_entries(store.load_send_ledger_entries())
-        if entry.attempted_at.astimezone(timezone).date() == summary_date
-    ]
+    latest_entries = _latest_send_ledger_entries(store.load_send_ledger_entries())
+    if run_id is None:
+        entries_for_date = [
+            entry
+            for entry in latest_entries
+            if entry.attempted_at.astimezone(timezone).date() == summary_date
+        ]
+    else:
+        entries_for_date = [entry for entry in latest_entries if entry.run_id == run_id]
     entries_for_date.sort(key=lambda entry: (entry.attempted_at, entry.name, entry.source))
     durable_entries = [entry for entry in entries_for_date if entry.durable]
     by_source: dict[str, int] = {}

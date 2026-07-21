@@ -6,8 +6,11 @@ SQLite package is still a separate workstream dependency.
 
 from __future__ import annotations
 
+import fcntl
 import json
-from collections.abc import Callable, Sequence
+import os
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -16,16 +19,19 @@ from pydantic import BaseModel
 from packages.linkedin_common.paths import DEFAULT_STATE_ROOT
 
 from .models import (
+    AcceptanceDailyRun,
     AcceptanceFollowupLedger,
     AcceptanceHistorySeedSummary,
     AcceptanceLedger,
     CandidateEvent,
     CandidateReservoir,
+    CandidateStatus,
     LeadLedger,
     PendingCleanupRun,
     Run,
     SendLedgerEntry,
     SourceScanProgressLedger,
+    candidate_key,
 )
 from .state_db import NetworkStateDb, NetworkStateDbStatus, NetworkStateMigrationSummary
 
@@ -102,6 +108,43 @@ class Store:
     @property
     def database_path(self) -> Path:
         return self._state_db.path
+
+    @property
+    def controller_lock_path(self) -> Path:
+        return self.dir / "controller.lock"
+
+    @contextmanager
+    def controller_lock(self, operation: str) -> Iterator[None]:
+        """Prevent concurrent state-changing controller processes for this state dir."""
+
+        lock_file = self.controller_lock_path.open("a+", encoding="utf-8")
+        try:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                lock_file.seek(0)
+                owner = lock_file.read().strip() or "owner details unavailable"
+                raise RuntimeError(
+                    f"another controller process is active for {self.dir}: {owner}"
+                ) from exc
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "operation": operation,
+                    },
+                    sort_keys=True,
+                )
+            )
+            lock_file.flush()
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
 
     def state_db_status(self) -> NetworkStateDbStatus:
         return self._state_db.status()
@@ -235,6 +278,12 @@ class Store:
 
     def save_acceptance_ledger(self, ledger: AcceptanceLedger) -> None:
         self._state_db.replace_acceptance_ledger(ledger)
+
+    def load_acceptance_daily_runs(self) -> list[AcceptanceDailyRun]:
+        return self._state_db.load_acceptance_daily_runs()
+
+    def append_acceptance_daily_run(self, run: AcceptanceDailyRun) -> bool:
+        return self._state_db.append_acceptance_daily_run(run)
 
     def load_acceptance_followup_ledger(self) -> AcceptanceFollowupLedger:
         if self._state_db.has_acceptance_followups():
@@ -424,7 +473,7 @@ def to_jsonable(value: object) -> object:
 def sent_events_from_controller_log(
     path: Path, run_id: str
 ) -> tuple[date | None, list[CandidateEvent]]:
-    events: list[CandidateEvent] = []
+    latest_events_by_candidate: dict[str, CandidateEvent] = {}
     run_date: date | None = None
     for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
         line = raw_line.strip()
@@ -439,15 +488,27 @@ def sent_events_from_controller_log(
         at_value = str(entry.get("at", ""))
         if run_date is None and at_value:
             run_date = date.fromisoformat(at_value[:10])
-        if entry.get("kind") not in {"record-send-result", "record-top-up-result"}:
+        if entry.get("kind") not in {
+            "record-send-result",
+            "record-top-up-result",
+            "confirm-send-result",
+        }:
             continue
         payload = entry.get("payload")
         if not isinstance(payload, dict) or "event" not in payload:
             continue
         event = CandidateEvent.model_validate(payload["event"])
-        if event.status.value in {"pending", "audit-top-up"}:
-            events.append(event)
-    return run_date, events
+        latest_events_by_candidate[
+            candidate_key(event.source, event.name, event.profile_url)
+        ] = event
+    durable_statuses = {
+        CandidateStatus.PENDING,
+        CandidateStatus.ACCEPTED,
+        CandidateStatus.AUDIT_TOP_UP,
+    }
+    return run_date, [
+        event for event in latest_events_by_candidate.values() if event.status in durable_statuses
+    ]
 
 
 def read_only_snapshot[ModelT: BaseModel](

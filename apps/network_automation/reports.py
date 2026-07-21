@@ -69,6 +69,23 @@ def render_report(run: Run, send_summary: SendLedgerSummary | None = None) -> st
         "",
         "## Source Counts",
     ]
+    active_incident = run.active_browser_incident()
+    if active_incident is not None:
+        source_counts_header = lines.pop()
+        lines.extend(
+            [
+                "## Browser Inspection",
+                "",
+                f"- Incident: `{active_incident.incident_path}`",
+                f"- Operation: `{active_incident.operation}`",
+                f"- Possible send: `{'yes' if active_incident.possible_send else 'no'}`",
+                f"- Diagnostic: `{active_incident.diagnostic_path or 'unavailable'}`",
+                f"- Screenshot: `{active_incident.screenshot_path or 'unavailable'}`",
+                f"- Receipt: `{active_incident.receipt_path}`",
+                "",
+                source_counts_header,
+            ]
+        )
     for source in run.sources:
         verified = run.source_verified_count(source.name)
         target_text = f" / target {source.target}" if source.target > 0 else ""
@@ -147,9 +164,9 @@ def render_report(run: Run, send_summary: SendLedgerSummary | None = None) -> st
                     "clicked-send artifact and a fresh sent-page audit prove whether the "
                     "clicked invitation landed."
                 )
-        if (
-            audited_delta is None or audited_delta < run.target
-        ) and not (run.state == RunState.DONE and run.verified_count() < run.target):
+        if (audited_delta is None or audited_delta < run.target) and not (
+            run.state == RunState.DONE and run.verified_count() < run.target
+        ):
             lines.append(
                 "- Finish guidance: Sent-page delta is now a pending-queue sanity check, not "
                 "the completion source of truth. Finish only after durable confirmed sends "
@@ -269,7 +286,7 @@ def render_acceptance_report(report: AcceptanceReport) -> str:
         f"- Blocked: {report.blocked}",
         f"- Failed: {report.failed}",
         f"- Withdrawn: {report.withdrawn}",
-        f"- Ledger freshness: {reconciliation_note}",
+        f"- Current enough: {reconciliation_note}",
         "",
         "## By Source",
     ]
@@ -285,6 +302,28 @@ def render_acceptance_report(report: AcceptanceReport) -> str:
                 f"pending {source_report.pending}, "
                 f"connectable {source_report.connectable}, unknown {source_report.unknown}, "
                 f"unchecked {source_report.unchecked}"
+            )
+    lines.extend(["", f"## Daily Confirmations ({report.daily_timezone})"])
+    for summary in report.daily_windows:
+        lines.append(
+            f"- Last {summary.days} days: {summary.newly_confirmed_accepted} newly "
+            f"confirmed ({summary.per_calendar_day:.2f}/calendar day); "
+            f"coverage complete on {summary.complete_days}/{summary.days} days"
+        )
+    if not report.daily:
+        lines.append("- No daily metrics requested")
+    else:
+        for item in report.daily:
+            if item.coverage_complete is True:
+                coverage = f"complete ({item.checked}/{item.eligible} checked)"
+            elif item.coverage_complete is False:
+                coverage = f"incomplete ({item.checked}/{item.eligible} checked)"
+            else:
+                coverage = "not recorded"
+            blocker = f"; blocker: {item.blocker}" if item.blocker else ""
+            lines.append(
+                f"- {item.date.isoformat()}: {item.newly_confirmed_accepted} newly "
+                f"confirmed; coverage {coverage}{blocker}"
             )
     return "\n".join(lines)
 

@@ -151,7 +151,7 @@ class NetworkCandidateRow:
 
 
 @dataclass(frozen=True)
-class AcceptanceDraftRow:
+class AcceptanceGreetingRow:
     draft_id: str
     person: str
     draft_status: str
@@ -234,7 +234,7 @@ class ReviewSnapshot:
     calibration_queue: tuple[CalibrationRow, ...]
     network_status: NetworkRunStatus
     network_candidates: tuple[NetworkCandidateRow, ...]
-    acceptance_drafts: tuple[AcceptanceDraftRow, ...]
+    acceptance_greetings: tuple[AcceptanceGreetingRow, ...]
     pending_cleanup: tuple[PendingCleanupRow, ...]
     recruiter_summary: RecruiterRunSummary
     agency_accounts: tuple[AgencyAccountRow, ...]
@@ -320,7 +320,7 @@ class SQLiteReviewReadModelProvider:
             calibration_queue=self._calibration_queue(),
             network_status=self._network_status(network_run, network_reservoir),
             network_candidates=self._network_candidates(network_run, network_reservoir),
-            acceptance_drafts=self._acceptance_drafts(acceptance_followups),
+            acceptance_greetings=self._acceptance_greetings(acceptance_followups),
             pending_cleanup=self._pending_cleanup_rows(pending_cleanup),
             recruiter_summary=self._recruiter_summary(recruiter_state),
             agency_accounts=self._agency_accounts(recruiter_state),
@@ -692,12 +692,12 @@ class SQLiteReviewReadModelProvider:
             rows.append(_network_observation_row(observation, "reservoir"))
         return tuple(rows)
 
-    def _acceptance_drafts(
+    def _acceptance_greetings(
         self,
         followups: AcceptanceFollowupLedger,
-    ) -> tuple[AcceptanceDraftRow, ...]:
+    ) -> tuple[AcceptanceGreetingRow, ...]:
         return tuple(
-            AcceptanceDraftRow(
+            AcceptanceGreetingRow(
                 draft_id=record.id,
                 person=record.name,
                 draft_status=record.status.value,

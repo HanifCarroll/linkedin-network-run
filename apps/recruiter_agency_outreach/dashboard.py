@@ -337,17 +337,20 @@ def render_dashboard_markdown(report: DashboardReport) -> str:
     lines.extend(["## Agencies", ""])
     lines.extend(render_lead_cards("messageable/sendable", report.ready_agencies))
     lines.extend(render_lead_cards("manually approved", report.approved_agencies))
-    lines.extend(render_lead_cards("sent", report.sent_agencies))
+    if report.mode == "sending":
+        lines.extend(render_lead_cards("sent", report.sent_agencies))
     lines.extend(render_lead_cards("checked/skipped", report.skipped_agencies))
     lines.extend(["## Recruiters", ""])
     lines.extend(render_lead_cards("messageable/sendable", report.ready_recruiters))
     lines.extend(render_lead_cards("manually approved", report.approved_recruiters))
-    lines.extend(render_lead_cards("sent", report.sent_recruiters))
+    if report.mode == "sending":
+        lines.extend(render_lead_cards("sent", report.sent_recruiters))
     lines.extend(render_lead_cards("checked/skipped", report.skipped_recruiters))
     lines.extend(["## Advisors", ""])
     lines.extend(render_lead_cards("messageable/sendable", report.ready_advisors))
     lines.extend(render_lead_cards("manually approved", report.approved_advisors))
-    lines.extend(render_lead_cards("sent", report.sent_advisors))
+    if report.mode == "sending":
+        lines.extend(render_lead_cards("sent", report.sent_advisors))
     lines.extend(render_lead_cards("checked/skipped", report.skipped_advisors))
     return "\n".join(lines)
 

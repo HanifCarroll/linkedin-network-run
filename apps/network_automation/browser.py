@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from pydantic import Field
+
 from packages.linkedin_browser import playwriter as playwriter_module
 from packages.linkedin_browser.playwriter import PlaywriterRunner, StagingMode
 
@@ -14,9 +16,9 @@ from .models import (
     AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
+    AcceptanceLeadListSaveResult,
     AcceptanceOutcomeArtifact,
-    AcceptedDraftCandidate,
-    AcceptedResearchArtifact,
+    AppModel,
     CandidateObservation,
     PendingCandidateObservation,
     PendingCapture,
@@ -80,19 +82,6 @@ class AcceptanceOutcomeBrowser(Protocol):
     ) -> tuple[AcceptanceOutcomeArtifact, str]: ...
 
 
-class AcceptedResearchBrowser(Protocol):
-    def research_accepted_candidates(
-        self,
-        *,
-        candidates: list[AcceptedDraftCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptedResearchArtifact, str]: ...
-
-
 class PendingInvitationCaptureBrowser(Protocol):
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
@@ -110,6 +99,15 @@ class AcceptanceFollowupBrowser(Protocol):
     ) -> tuple[AcceptanceFollowupSendResult, str]: ...
 
 
+class AcceptanceLeadListBrowser(Protocol):
+    def save_acceptance_lead_to_list(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        allow_save: bool,
+    ) -> tuple[AcceptanceLeadListSaveResult, str]: ...
+
+
 class PendingWithdrawBrowser(Protocol):
     def withdraw_pending(
         self,
@@ -124,6 +122,7 @@ class PendingWithdrawBrowser(Protocol):
         *,
         limit: int,
         threshold_days: int,
+        timeout_seconds: float,
         dry_run: bool,
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawBatchResult, str]: ...
@@ -135,9 +134,9 @@ class BrowserClient(
     SentInvitationAuditBrowser,
     SavedSearchBrowser,
     AcceptanceOutcomeBrowser,
-    AcceptedResearchBrowser,
     PendingInvitationCaptureBrowser,
     AcceptanceFollowupBrowser,
+    AcceptanceLeadListBrowser,
     PendingWithdrawBrowser,
     Protocol,
 ):
@@ -155,9 +154,9 @@ class FixtureBrowserClient:
         audit: Path | None = None,
         saved_searches: Path | None = None,
         acceptance_outcomes: Path | None = None,
-        accepted_research: Path | None = None,
         pending_capture: Path | None = None,
         followup_result: Path | None = None,
+        lead_list_result: Path | None = None,
         withdraw_result: Path | None = None,
         withdraw_batch_result: Path | None = None,
     ) -> None:
@@ -166,9 +165,9 @@ class FixtureBrowserClient:
         self.audit = audit
         self.saved_searches = saved_searches
         self.acceptance_outcomes = acceptance_outcomes
-        self.accepted_research = accepted_research
         self.pending_capture = pending_capture
         self.followup_result = followup_result
+        self.lead_list_result = lead_list_result
         self.withdraw_result = withdraw_result
         self.withdraw_batch_result = withdraw_batch_result
 
@@ -259,23 +258,6 @@ class FixtureBrowserClient:
             self.acceptance_outcomes
         )
 
-    def research_accepted_candidates(
-        self,
-        *,
-        candidates: list[AcceptedDraftCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptedResearchArtifact, str]:
-        _ = candidates, input_path, out, offset, limit, delay_ms
-        if self.accepted_research is None:
-            raise RuntimeError("accepted-research fixture was not provided")
-        return read_model(self.accepted_research, AcceptedResearchArtifact), str(
-            self.accepted_research
-        )
-
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]:
@@ -299,6 +281,19 @@ class FixtureBrowserClient:
             self.followup_result
         )
 
+    def save_acceptance_lead_to_list(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        allow_save: bool,
+    ) -> tuple[AcceptanceLeadListSaveResult, str]:
+        _ = record, allow_save
+        if self.lead_list_result is None:
+            raise RuntimeError("lead-list fixture was not provided")
+        return read_model(self.lead_list_result, AcceptanceLeadListSaveResult), str(
+            self.lead_list_result
+        )
+
     def withdraw_pending(
         self,
         candidate: PendingCandidateObservation,
@@ -316,10 +311,11 @@ class FixtureBrowserClient:
         *,
         limit: int,
         threshold_days: int,
+        timeout_seconds: float,
         dry_run: bool,
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawBatchResult, str]:
-        _ = limit, threshold_days, dry_run, allow_withdraw
+        _ = limit, threshold_days, timeout_seconds, dry_run, allow_withdraw
         if self.withdraw_batch_result is None:
             raise RuntimeError("withdraw batch fixture was not provided")
         return read_model(self.withdraw_batch_result, PendingWithdrawBatchResult), str(
@@ -355,6 +351,26 @@ class PlaywriterBrowserClient:
 
     def recover_after_failure(self) -> None:
         self._runner.reset_session()
+
+    def capture_diagnostics(
+        self,
+        *,
+        operation: str,
+        error: str,
+        expected_url: str | None,
+        out: Path,
+        screenshot_out: Path,
+    ) -> tuple[dict[str, Any], str]:
+        config = {
+            "operation": operation,
+            "error": error,
+            "expectedUrl": expected_url,
+            "out": str(out),
+            "screenshotOut": str(screenshot_out),
+        }
+        self._run_script(_playwriter_browser_diagnostic_script(), config, staging="direct")
+        payload = read_model(out, _BrowserDiagnosticArtifact)
+        return payload.model_dump(mode="json", by_alias=True), str(out)
 
     def send_connection(
         self, candidate: CandidateObservation, *, dry_run: bool, allow_send: bool
@@ -430,27 +446,6 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_acceptance_outcomes_script(), config, staging="direct")
         return read_model(out, AcceptanceOutcomeArtifact), str(out)
 
-    def research_accepted_candidates(
-        self,
-        *,
-        candidates: list[AcceptedDraftCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptedResearchArtifact, str]:
-        config = {
-            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-            "input": str(input_path),
-            "out": str(out),
-            "offset": offset,
-            "limit": limit,
-            "delayMs": delay_ms,
-        }
-        self._run_script(_playwriter_accepted_research_script(), config)
-        return read_model(out, AcceptedResearchArtifact), str(out)
-
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]:
@@ -487,6 +482,23 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_acceptance_followup_send_script(), config)
         return read_model(out, AcceptanceFollowupSendResult), str(out)
 
+    def save_acceptance_lead_to_list(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        allow_save: bool,
+    ) -> tuple[AcceptanceLeadListSaveResult, str]:
+        if not allow_save:
+            raise RuntimeError("saving a lead to a Sales Navigator list requires allow_save=True")
+        out = self._next_output_path(f"{record.id}-lead-list")
+        config = {
+            "record": record.model_dump(mode="json"),
+            "allowSave": allow_save,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_acceptance_lead_list_script(), config)
+        return read_model(out, AcceptanceLeadListSaveResult), str(out)
+
     def withdraw_pending(
         self,
         candidate: PendingCandidateObservation,
@@ -511,6 +523,7 @@ class PlaywriterBrowserClient:
         *,
         limit: int,
         threshold_days: int,
+        timeout_seconds: float,
         dry_run: bool,
         allow_withdraw: bool,
     ) -> tuple[PendingWithdrawBatchResult, str]:
@@ -520,6 +533,7 @@ class PlaywriterBrowserClient:
         config = {
             "limit": limit,
             "thresholdDays": threshold_days,
+            "timeoutSeconds": timeout_seconds,
             "dryRun": dry_run,
             "allowWithdraw": allow_withdraw,
             "out": str(out),
@@ -554,16 +568,34 @@ def _playwriter_script_dir() -> Path:
     return Path(__file__).resolve().parent / "playwriter_scripts"
 
 
+class _BrowserDiagnosticArtifact(AppModel):
+    captured_at: str = Field(alias="capturedAt")
+    operation: str
+    expected_url: str | None = Field(default=None, alias="expectedUrl")
+    current_url: str | None = Field(default=None, alias="currentUrl")
+    screenshot_path: str | None = Field(default=None, alias="screenshotPath")
+    page_classification: str | None = Field(default=None, alias="pageClassification")
+    tabs: list[dict[str, Any]] = Field(default_factory=list)
+    probes: dict[str, Any] = Field(default_factory=dict)
+    dialogs: list[dict[str, Any]] = Field(default_factory=list)
+    screenshot_error: str | None = Field(default=None, alias="screenshotError")
+    error: str
+
+
+def _playwriter_browser_diagnostic_script() -> Path:
+    return _playwriter_script_dir() / "browser_diagnostic.js"
+
+
 def _playwriter_acceptance_outcomes_script() -> Path:
     return _playwriter_script_dir() / "acceptance_outcomes.js"
 
 
-def _playwriter_accepted_research_script() -> Path:
-    return _playwriter_script_dir() / "accepted_research.js"
-
-
 def _playwriter_acceptance_followup_send_script() -> Path:
     return _playwriter_script_dir() / "acceptance_followup_send.js"
+
+
+def _playwriter_acceptance_lead_list_script() -> Path:
+    return _playwriter_script_dir() / "acceptance_lead_list.js"
 
 
 def _playwriter_pending_capture_script() -> Path:

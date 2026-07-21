@@ -6,7 +6,9 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -18,6 +20,11 @@ from .browser import (
     BrowserClient,
     FixtureBrowserClient,
     PlaywriterBrowserClient,
+)
+from .browser_supervision import (
+    SupervisedBrowserClient,
+    apply_browser_recovery_receipt,
+    browser_inspection_status,
 )
 from .cli_acceptance import dispatch_acceptance, register_acceptance_commands
 from .models import CandidateStatus
@@ -33,6 +40,7 @@ from .service import (
     import_audit,
     import_capture_path,
     needs_reaudit,
+    network_run_daily_session,
     network_run_session,
     network_sends_summary,
     network_state_db_status,
@@ -80,6 +88,7 @@ BACKEND_HELP = """browser backend:
   Playwriter only
   Playwriter session: set LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>, or let the CLI create one
   Playwriter browser: set LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key> before session creation
+  Browser failures: run-session writes a controller-owned inspection packet for Chrome recovery
 """
 
 
@@ -125,6 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--max-real-sends", type=int, default=None)
     run_session.add_argument("--force", action="store_true")
     run_session.add_argument("--resume", action="store_true")
+    run_session.add_argument(
+        "--daily",
+        action="store_true",
+        help=(
+            "controller-owned local-day orchestration: resolve an unfinished carryover, "
+            "then start or resume today's approved 30-send objective"
+        ),
+    )
     run_session.add_argument("--no-fallback", action="store_true")
     run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
     run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
@@ -138,13 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_session.add_argument("--allow-send", action="store_true")
     run_session.add_argument("--audit-attempts", type=int, default=3)
     run_session.add_argument("--audit-delay-ms", type=int, default=5000)
-    run_session.add_argument(
-        "--audit-load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE
-    )
+    run_session.add_argument("--audit-load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE)
     run_session.add_argument("--confirm-delay-ms", type=int, default=5000)
-    run_session.add_argument(
-        "--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send"
-    )
+    run_session.add_argument("--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send")
     run_session.add_argument("--max-steps", type=int, default=100)
     run_session.add_argument("--finish", action="store_true")
     run_session.add_argument("--fixture-result", default=None)
@@ -172,9 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--session", default="auto")
     reconcile.add_argument("--attempts", type=int, default=3)
     reconcile.add_argument("--delay-ms", type=int, default=5000)
-    reconcile.add_argument(
-        "--load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE
-    )
+    reconcile.add_argument("--load-more", type=int, default=SENT_INVITATION_AUDIT_LOAD_MORE)
     reconcile.add_argument("--finish", action="store_true")
     reconcile.add_argument("--out-dir", default=str(DEFAULT_AUDIT_OUT_DIR))
     reconcile.add_argument("--fixture-result", default=None)
@@ -205,9 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
         send.add_argument("--allow-send", action="store_true")
         send.add_argument("--no-record", action="store_true")
         send.add_argument("--confirm-delay-ms", type=int, default=5000)
-        send.add_argument(
-            "--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send"
-        )
+        send.add_argument("--confirm-out-dir", default="/tmp/linkedin-network-run-confirm-send")
         send.add_argument("--fixture-result", default=None)
         send.add_argument(
             "--out-dir",
@@ -293,6 +302,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--json", action="store_true")
     status = subparsers.add_parser("status")
     status.add_argument("--json", action="store_true")
+    browser_inspection = subparsers.add_parser("browser-inspection")
+    browser_inspection_sub = browser_inspection.add_subparsers(
+        dest="browser_inspection_command", required=True
+    )
+    browser_inspection_sub.add_parser("status")
+    apply_browser_inspection = browser_inspection_sub.add_parser("apply")
+    apply_browser_inspection.add_argument("path")
     sends = subparsers.add_parser("sends")
     sends.add_argument("--date", default="today")
     sends.add_argument("--timezone", default="local")
@@ -421,13 +437,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     store = Store(args.state_dir)
     try:
-        output = dispatch(args, store)
+        lock = (
+            nullcontext()
+            if _is_read_only_command(args)
+            else store.controller_lock(_controller_operation(args))
+        )
+        with lock:
+            output = dispatch(args, store)
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
     if output is not None:
         print(output)
     return 0
+
+
+def _controller_operation(args: argparse.Namespace) -> str:
+    parts = [str(args.command)]
+    for attribute in (
+        "acceptance_command",
+        "browser_inspection_command",
+        "pending_command",
+        "reservoir_command",
+        "state_command",
+        "old_state_command",
+    ):
+        value = getattr(args, attribute, None)
+        if value:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _is_read_only_command(args: argparse.Namespace) -> bool:
+    command = str(args.command)
+    if command in {"next", "next-candidate", "candidates", "plan", "status", "report"}:
+        return True
+    if command == "sends":
+        return not bool(args.sync_history)
+    if command == "browser-inspection":
+        return str(args.browser_inspection_command) == "status"
+    if command == "state":
+        return str(args.state_command) == "db-status" or bool(
+            getattr(args, "dry_run", False)
+        )
+    if command == "reservoir":
+        return str(args.reservoir_command) == "report"
+    if command == "pending-cleanup":
+        return args.pending_command in {"plan", "next", "status", "report"}
+    if command == "old-state":
+        return True
+    return False
 
 
 def dispatch(args: argparse.Namespace, store: Store) -> str | None:
@@ -447,36 +506,62 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             source_names=args.source,
         )
     if command == "run-session":
-        browser = browser_from_args(args, saved_searches=True, capture=True, send=True, audit=True)
+        daily_conflict = (
+            args.resume or args.force or args.per_source_target is not None or args.source
+        )
+        if args.daily and daily_conflict:
+            raise ValueError(
+                "--daily owns start/resume selection and cannot be combined with --resume, "
+                "--force, --per-source-target, or --source"
+            )
+        raw_browser = browser_from_args(
+            args, saved_searches=True, capture=True, send=True, audit=True
+        )
+        browser = SupervisedBrowserClient(
+            raw_browser,
+            store=store,
+            out_dir=Path(args.out_dir),
+        )
         try:
-            network_run_session(
-                store,
-                browser,
-                target=args.target,
-                max_real_sends=args.max_real_sends,
-                force=args.force,
-                resume=args.resume,
-                per_source_target=args.per_source_target,
-                allow_fallback_sources=not args.no_fallback,
-                saved_searches_url=args.saved_searches_url,
-                saved_searches_out=Path(args.saved_searches),
-                refresh_saved_searches=args.refresh_saved_searches,
-                audit_attempts=args.audit_attempts,
-                audit_delay_ms=args.audit_delay_ms,
-                audit_load_more=args.audit_load_more,
-                allow_send=args.allow_send,
-                max_steps=args.max_steps,
-                finish=args.finish,
-                confirm_delay_ms=args.confirm_delay_ms,
-                confirm_out_dir=Path(args.confirm_out_dir),
-                review_out=(
+            common: dict[str, Any] = {
+                "store": store,
+                "browser": browser,
+                "target": args.target,
+                "allow_fallback_sources": not args.no_fallback,
+                "saved_searches_url": args.saved_searches_url,
+                "saved_searches_out": Path(args.saved_searches),
+                "refresh_saved_searches": args.refresh_saved_searches,
+                "audit_attempts": args.audit_attempts,
+                "audit_delay_ms": args.audit_delay_ms,
+                "audit_load_more": args.audit_load_more,
+                "allow_send": args.allow_send,
+                "max_steps": args.max_steps,
+                "finish": args.finish,
+                "confirm_delay_ms": args.confirm_delay_ms,
+                "confirm_out_dir": Path(args.confirm_out_dir),
+                "review_out": (
                     Path(args.review_out)
                     if args.review_out
                     else Path(args.out_dir) / "lead-review-candidates.json"
                 ),
-                source_names=args.source,
-                emit=_emit_progress,
-            )
+                "emit": _emit_progress,
+            }
+            if args.daily:
+                network_run_daily_session(
+                    **common,
+                    max_real_sends=(
+                        args.target if args.max_real_sends is None else args.max_real_sends
+                    ),
+                )
+            else:
+                network_run_session(
+                    **common,
+                    max_real_sends=args.max_real_sends,
+                    force=args.force,
+                    resume=args.resume,
+                    per_source_target=args.per_source_target,
+                    source_names=args.source,
+                )
             return None
         finally:
             close = getattr(browser, "close", None)
@@ -611,6 +696,14 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
     if command == "status":
         run = store.load_run()
         return json_model_or_text(run, as_json=args.json)
+    if command == "browser-inspection":
+        if args.browser_inspection_command == "status":
+            return browser_inspection_status(store)
+        if args.browser_inspection_command == "apply":
+            return apply_browser_recovery_receipt(store, Path(args.path))
+        raise RuntimeError(
+            f"unhandled browser-inspection command {args.browser_inspection_command}"
+        )
     if command == "sends":
         summary = network_sends_summary(
             store,
@@ -629,6 +722,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             store,
             date_arg=run.date.isoformat(),
             timezone_name="local",
+            run_id=str(run.id),
         )
         return render_report(run, send_summary=summary)
     if command == "finish":
@@ -641,7 +735,12 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             apply=args.apply,
         )
     if command == "acceptance":
-        return dispatch_acceptance(args, store, browser_from_args=browser_from_args)
+        return dispatch_acceptance(
+            args,
+            store,
+            browser_from_args=browser_from_args,
+            emit=_emit_progress,
+        )
     if command == "reservoir":
         return dispatch_reservoir(args, store)
     if command == "pending-cleanup":
@@ -762,9 +861,11 @@ def dispatch_pending(args: argparse.Namespace, store: Store) -> str:
                 threshold_days=threshold_days,
                 capture_out=Path(args.out),
                 withdraw_limit=args.withdraw_limit,
+                withdraw_timeout_seconds=args.withdraw_timeout_seconds,
                 allow_withdraw=args.allow_withdraw,
                 dry_run_first=not args.skip_dry_run,
                 finish=args.finish,
+                emit=_emit_progress,
             )
         finally:
             close = getattr(browser, "close", None)
@@ -815,9 +916,9 @@ def browser_from_args(
     audit: bool = False,
     saved_searches: bool = False,
     acceptance_outcomes: bool = False,
-    accepted_research: bool = False,
     pending_capture: bool = False,
     followup: bool = False,
+    lead_list: bool = False,
     withdraw: bool = False,
 ) -> BrowserClient:
     fixture = getattr(args, "fixture_result", None)
@@ -829,9 +930,9 @@ def browser_from_args(
             audit=path if audit else None,
             saved_searches=path if saved_searches else None,
             acceptance_outcomes=path if acceptance_outcomes else None,
-            accepted_research=path if accepted_research else None,
             pending_capture=path if pending_capture else None,
             followup_result=path if followup else None,
+            lead_list_result=path if lead_list else None,
             withdraw_result=path if withdraw else None,
         )
     send_fixture = getattr(args, "fixture_send_result", None)

@@ -6,74 +6,81 @@ import hashlib
 import json
 import re
 import subprocess
-import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from .browser import BrowserClient
+from .commercial_context import (
+    validate_commercial_context_sources as _validate_commercial_context_sources,
+)
+from .commercial_context import (
+    validate_commercial_criterion_evidence,
+    validate_relationship_enrichment_commercial_contract,
+)
 from .models import (
+    APPROVED_RELATIONSHIP_ROLE_BY_SOURCE,
     WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
     AcceptanceCheckCandidate,
+    AcceptanceDailyRun,
     AcceptanceFollowupRecord,
     AcceptanceFollowupStatus,
     AcceptanceOutcomeArtifact,
-    AcceptedCodexDraftJob,
-    AcceptedCodexDraftResult,
-    AcceptedCodexResearchJob,
-    AcceptedCodexResearchResult,
+    AcceptanceStatus,
     AcceptedDraftCandidate,
-    AcceptedFollowupReviewItem,
-    AcceptedFollowupReviewPacket,
-    AcceptedResearchArtifact,
-    AcceptedResearchDecisionArtifact,
-    AcceptedResearchDecisionItem,
-    AcceptedResearchDecisionStatus,
-    AcceptedResearchQueueItem,
-    AcceptedResearchQueuePacket,
-    AcceptedResearchRow,
-    DraftReport,
-    DraftStrategy,
+    AcceptedGreetingEligibilityArtifact,
+    AcceptedGreetingEligibilityItem,
+    CodexRelationshipEnrichmentJob,
+    CodexRelationshipEnrichmentResult,
+    CommercialContextReference,
+    GreetingEligibilityStatus,
     LeadLedger,
+    LeadRecord,
+    RelationshipEnrichmentArtifact,
+    RelationshipEnrichmentDecision,
+    RelationshipEnrichmentDecisionStatus,
+    RelationshipEnrichmentQueue,
+    RelationshipEnrichmentQueueItem,
+    RelationshipEnrichmentStatus,
+    RelationshipRole,
+    RelationshipSignalType,
     RunState,
-    _non_empty,
     acceptance_followup_id,
+    accepted_event_confirms_followup,
     accepted_followup_candidate_key,
+    accepted_welcome_message,
     apply_acceptance_followup_send_result,
-    build_accepted_message_queue_packet,
-    build_accepted_research_queue_packet,
-    build_draft_report,
-    build_draft_report_from_reviewed_research,
-    candidate_key,
+    build_relationship_enrichment_queue,
     clean_inline,
     first_name,
+    is_public_linkedin_profile_url,
+    is_sales_nav_profile_url,
+    latest_acceptance_event,
     lead_key_for_values,
-    normalize_reviewed_proposed_message,
     now_utc,
-    render_draft_markdown,
     validate_acceptance_followup_can_send,
-    validate_accepted_research_decision_artifact,
+    validate_relationship_enrichment_artifact,
 )
 from .reports import render_acceptance_report
 from .store import Store, read_model, write_json_atomic
 
-CODEX_DRAFT_MODEL = "gpt-5.5"
-CODEX_DRAFT_REASONING_EFFORT = "xhigh"
-CODEX_DRAFT_OUTPUT_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["candidate_key", "status", "message", "reason", "warnings"],
-    "properties": {
-        "candidate_key": {"type": "string", "minLength": 1},
-        "status": {"type": "string", "enum": ["ready_for_draft", "needs_review"]},
-        "message": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-        "reason": {"type": "string", "minLength": 1},
-        "warnings": {"type": "array", "items": {"type": "string"}},
-    },
-}
-CODEX_RESEARCH_OUTPUT_SCHEMA = {
+CODEX_ENRICHMENT_MODEL = "gpt-5.5"
+CODEX_ENRICHMENT_REASONING_EFFORT = "xhigh"
+DEFAULT_ACCEPTANCE_TIMEZONE = "America/Argentina/Buenos_Aires"
+
+
+@dataclass(frozen=True)
+class AcceptanceDailyCheckResult:
+    messages: list[str]
+    checked: int
+    coverage_complete: bool
+    blocker: str | None = None
+CODEX_ENRICHMENT_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": [
@@ -86,16 +93,25 @@ CODEX_RESEARCH_OUTPUT_SCHEMA = {
         "official_company_url",
         "evidence_urls",
         "research_evidence",
+        "commercial_context",
+        "criterion_evidence",
+        "unknowns",
         "notes",
         "warnings",
-        "template_key",
-        "angle",
+        "relationship_role",
+        "priority",
+        "signal_type",
+        "visible_signal",
+        "signal_url",
+        "followup_reason",
+        "next_useful_action",
+        "permission_boundary",
     ],
     "properties": {
         "candidate_key": {"type": "string", "minLength": 1},
         "status": {
             "type": "string",
-            "enum": ["research_ready", "needs_review", "skip"],
+            "enum": ["enriched", "needs_review", "skip"],
         },
         "confidence": {
             "anyOf": [
@@ -129,434 +145,289 @@ CODEX_RESEARCH_OUTPUT_SCHEMA = {
                 },
             },
         },
+        "commercial_context": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "icp_profile_id",
+                "icp_source_path",
+                "offers_profile_id",
+                "offers_source_path",
+                "offer_id",
+            ],
+            "properties": {
+                "icp_profile_id": {"type": "string", "minLength": 1},
+                "icp_source_path": {"type": "string", "minLength": 1},
+                "offers_profile_id": {"type": "string", "minLength": 1},
+                "offers_source_path": {"type": "string", "minLength": 1},
+                "offer_id": {"type": "string", "minLength": 1},
+            },
+        },
+        "criterion_evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["criterion_id", "assessment", "evidence_ids", "explanation"],
+                "properties": {
+                    "criterion_id": {"type": "string", "minLength": 1},
+                    "assessment": {
+                        "type": "string",
+                        "enum": ["matched", "not_matched", "unknown"],
+                    },
+                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    "explanation": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+        "unknowns": {"type": "array", "items": {"type": "string"}},
         "notes": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "warnings": {"type": "array", "items": {"type": "string"}},
-        "template_key": {
+        "relationship_role": {
             "anyOf": [
                 {
                     "type": "string",
-                    "enum": ["general", "agency", "recruiter", "advisor"],
+                    "enum": [
+                        "buyer",
+                        "referral_partner",
+                        "hiring_recruiter",
+                        "other",
+                    ],
                 },
                 {"type": "null"},
             ]
         },
-        "angle": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "priority": {
+            "anyOf": [
+                {"type": "string", "enum": ["high", "normal", "low", "pause"]},
+                {"type": "null"},
+            ]
+        },
+        "signal_type": {
+            "type": "string",
+            "enum": ["linkedin_post", "company_site", "profile", "other", "none"],
+        },
+        "visible_signal": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "signal_url": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "followup_reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "next_useful_action": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "permission_boundary": {"type": "string", "enum": ["review_only"]},
     },
 }
 
-ACCEPTED_FOLLOWUP_DRAFTING_GUIDELINES = [
-    "Write in Hanif's voice: clear, plain, matter-of-fact, and low pressure.",
-    "After the greeting, start with what Hanif does: he builds web apps and internal "
-    "tools for teams stuck with spreadsheets, manual handoffs, or half-working "
-    "automations.",
-    "Use one researched fact only to create a practical bridge to workflow/tooling "
-    "cleanup; do not treat the fact itself as the connection.",
-    "Use blank lines between short paragraphs.",
-    "End with a low-pressure relevance check, usually: `Does that kind of cleanup "
-    "come up much with the teams you work with?`",
-    "Do not ask to send a resume, project examples, or set up a call in this first "
-    "note.",
-    "Do not open with `I saw` or `I noticed`. Do not use `curious`, `that made me "
-    "think of`, buzzwords, hype, or partnership language.",
-]
 
-ACCEPTED_FOLLOWUP_DEFAULT_MESSAGE_SHAPE = [
-    "Greeting: `Hey, {first_name}. Thanks for connecting.`",
-    "Paragraph 1: `I build web apps and internal tools for teams that are stuck with "
-    "spreadsheets, manual handoffs, or half-working automations.`",
-    "Paragraph 2: connect the researched fact to the practical problem Hanif works on. "
-    "A good default is: `{company_or_work} seems adjacent to what I do: turning messy "
-    "workflows into tools people can actually use.`",
-    "Paragraph 3: `Does that kind of cleanup come up much with the teams you work "
-    "with?`",
-]
-
-ACCEPTED_FOLLOWUP_EXAMPLE_MESSAGE = (
-    "Hey, Ana. Thanks for connecting.\n\n"
-    "I build web apps and internal tools for teams that are stuck with spreadsheets, "
-    "manual handoffs, or half-working automations.\n\n"
-    "Olyra's work with companies on AI and operations seems adjacent to what I do: "
-    "turning messy workflows into tools people can actually use.\n\n"
-    "Does that kind of cleanup come up much with the teams you work with?"
-)
-
-
-def append_accepted_followup_drafting_prompt(lines: list[str]) -> None:
-    lines.append("Core prompt for Codex drafting:")
-    lines.extend("- " + guideline for guideline in ACCEPTED_FOLLOWUP_DRAFTING_GUIDELINES)
-    lines.extend(["", "Default message shape:"])
-    lines.extend("- " + part for part in ACCEPTED_FOLLOWUP_DEFAULT_MESSAGE_SHAPE)
-    lines.extend(
-        ["", "Example:", "", "```text", ACCEPTED_FOLLOWUP_EXAMPLE_MESSAGE, "```"]
-    )
-
-
-def add_lead_review_context_to_draft_report(
-    report: DraftReport, lead_ledger: LeadLedger
-) -> None:
-    for item in report.items:
-        candidate = item.candidate
-        lead_key = lead_key_for_values(
-            candidate.sales_nav_profile_url or candidate.profile_url,
-            None,
-            candidate.name,
-        )
-        record = lead_ledger.leads.get(lead_key)
-        if record is None:
+def lead_review_record_for_candidate(
+    lead_ledger: LeadLedger,
+    candidate: AcceptedDraftCandidate,
+) -> tuple[str | None, LeadRecord | None]:
+    identity_urls = [candidate.sales_nav_profile_url, candidate.profile_url]
+    checked: set[str] = set()
+    for identity_url in identity_urls:
+        lead_key = lead_key_for_values(identity_url, None, candidate.name)
+        if lead_key in checked:
             continue
-        if record.first_source:
-            item.evidence.append(f"Original connection source: {record.first_source}")
-        if record.approved_reason:
-            item.evidence.append(
-                f"Original connection approval: {record.approved_reason}"
-            )
+        checked.add(lead_key)
+        record = lead_ledger.leads.get(lead_key)
+        if record is not None:
+            return lead_key, record
+    return None, None
 
 
-def accepted_research_by_key(
-    artifact: AcceptedResearchArtifact | None,
-) -> dict[str, AcceptedResearchRow]:
-    if artifact is None:
-        return {}
-    return {
-        candidate_key(row.source, row.name, row.sales_nav_profile_url or row.profile_url): row
-        for row in artifact.rows
-    }
+def lead_review_approval_source(record: LeadRecord) -> str | None:
+    if record.approved_source:
+        return record.approved_source
+    if record.first_source and record.first_source == record.last_source:
+        return record.first_source
+    return None
 
 
-def build_accepted_followup_review_packet(
-    report: DraftReport,
-    artifact: AcceptedResearchArtifact | None,
-    *,
-    report_path: Path,
-    research_path: Path | None,
-) -> AcceptedFollowupReviewPacket:
-    research_rows = accepted_research_by_key(artifact)
-    items: list[AcceptedFollowupReviewItem] = []
-    for item in report.items:
-        key = accepted_followup_candidate_key(item.candidate)
-        items.append(
-            AcceptedFollowupReviewItem(
-                followup_id=acceptance_followup_id(key),
-                candidate=item.candidate,
-                template_key=item.template_key,
-                angle=item.angle,
-                draft=item.draft,
-                person_does=item.person_does,
-                company_does=item.company_does,
-                message_fit=item.message_fit,
-                company_profile_url=item.company_profile_url,
-                company_website_url=item.company_website_url,
-                evidence=list(item.evidence),
-                warnings=list(item.warnings),
-                research=research_rows.get(key),
-            )
+def accepted_greeting_eligibility_item(
+    candidate: AcceptedDraftCandidate,
+    lead_ledger: LeadLedger,
+) -> AcceptedGreetingEligibilityItem:
+    candidate_key_value = accepted_followup_candidate_key(candidate)
+    followup_id = acceptance_followup_id(candidate_key_value)
+    expected_role = APPROVED_RELATIONSHIP_ROLE_BY_SOURCE.get(candidate.source)
+    lead_key, record = lead_review_record_for_candidate(lead_ledger, candidate)
+    approval_source = lead_review_approval_source(record) if record is not None else None
+    warnings: list[str] = []
+    status = GreetingEligibilityStatus.ELIGIBLE
+
+    usable_profile = any(
+        (
+            is_public_linkedin_profile_url(candidate.profile_url),
+            is_sales_nav_profile_url(candidate.profile_url),
+            is_sales_nav_profile_url(candidate.sales_nav_profile_url),
         )
-    return AcceptedFollowupReviewPacket(
-        report_path=str(report_path),
-        research_path=str(research_path) if research_path else None,
-        items=items,
+    )
+    if not usable_profile:
+        status = GreetingEligibilityStatus.NEEDS_REVIEW
+        warnings.append("Durably accepted candidate has no usable LinkedIn profile URL.")
+    if record is None:
+        warnings.append(
+            "Original connection-review evidence was not found; welcome eligibility comes "
+            "from the durable accepted relationship."
+        )
+
+    return AcceptedGreetingEligibilityItem(
+        followup_id=followup_id,
+        candidate_key=candidate_key_value,
+        candidate=candidate,
+        status=status,
+        lead_key=lead_key if record is not None else None,
+        original_connection_source=approval_source,
+        original_connection_approved_at=record.approved_at if record is not None else None,
+        original_connection_approval_reason=(
+            record.approved_reason if record is not None else None
+        ),
+        original_connection_review_text=(record.last_row_text if record is not None else None),
+        relationship_role=expected_role,
+        sales_nav_list_name=None,
+        proposed_message=(
+            accepted_welcome_message(first_name(candidate.name))
+            if status == GreetingEligibilityStatus.ELIGIBLE
+            else None
+        ),
+        warnings=warnings,
     )
 
 
-def build_reviewed_accepted_followup_review_packet(
-    report: DraftReport,
-    artifact: AcceptedResearchDecisionArtifact,
-    *,
-    report_path: Path,
-    research_path: Path,
-) -> AcceptedFollowupReviewPacket:
-    decisions = {
-        decision.candidate_key: decision
-        for decision in artifact.decisions
-        if decision.status == AcceptedResearchDecisionStatus.READY_FOR_DRAFT
-    }
-    items: list[AcceptedFollowupReviewItem] = []
-    for item in report.items:
-        key = accepted_followup_candidate_key(item.candidate)
-        items.append(
-            AcceptedFollowupReviewItem(
-                followup_id=acceptance_followup_id(key),
-                candidate=item.candidate,
-                template_key=item.template_key,
-                angle=item.angle,
-                draft=item.draft,
-                person_does=item.person_does,
-                company_does=item.company_does,
-                message_fit=item.message_fit,
-                company_profile_url=item.company_profile_url,
-                company_website_url=item.company_website_url,
-                evidence=list(item.evidence),
-                warnings=list(item.warnings),
-                reviewed_research=decisions.get(key),
-            )
-        )
-    return AcceptedFollowupReviewPacket(
-        report_path=str(report_path),
-        research_path=str(research_path),
-        items=items,
+def render_greeting_eligibility_markdown(
+    artifact: AcceptedGreetingEligibilityArtifact,
+) -> str:
+    eligible = sum(item.status == GreetingEligibilityStatus.ELIGIBLE for item in artifact.items)
+    needs_review = sum(
+        item.status == GreetingEligibilityStatus.NEEDS_REVIEW for item in artifact.items
     )
-
-
-def render_accepted_followup_review_markdown(packet: AcceptedFollowupReviewPacket) -> str:
+    ineligible = sum(item.status == GreetingEligibilityStatus.INELIGIBLE for item in artifact.items)
     lines = [
-        "# Accepted Follow-Up Draft Review",
+        "# LinkedIn Accepted Greeting Eligibility",
         "",
-        f"- Generated: `{packet.generated_at.isoformat()}`",
-        f"- Report: `{packet.report_path}`",
-        f"- Research: `{packet.research_path or ''}`",
-        f"- Drafts: `{len(packet.items)}`",
+        f"- Generated: `{artifact.generated_at.isoformat()}`",
+        f"- Eligible: `{eligible}`",
+        f"- Needs review: `{needs_review}`",
+        f"- Ineligible: `{ineligible}`",
+        "- Eligibility source: durable accepted first-degree relationship",
+        "- Relationship enrichment: separate and non-blocking",
+    ]
+    for item in artifact.items:
+        approved_at = (
+            item.original_connection_approved_at.isoformat()
+            if item.original_connection_approved_at
+            else ""
+        )
+        lines.extend(
+            [
+                "",
+                f"## {clean_inline(item.candidate.name)}",
+                f"- Status: `{item.status.value}`",
+                f"- Source: `{item.candidate.source}`",
+                f"- Lead key: `{item.lead_key or ''}`",
+                f"- Approved at: `{approved_at}`",
+                "- Original approval: " + clean_inline(item.original_connection_approval_reason),
+            ]
+        )
+        if item.warnings:
+            lines.append("- Warnings:")
+            lines.extend("  - " + clean_inline(warning) for warning in item.warnings)
+        if item.proposed_message:
+            lines.extend(["", "Welcome message:", "", "> " + item.proposed_message])
+    return "\n".join(lines) + "\n"
+
+
+def render_accepted_enrichment_queue_markdown(
+    packet: RelationshipEnrichmentQueue,
+) -> str:
+    lines = [
+        "# LinkedIn Relationship Enrichment Queue",
         "",
-        "Review these drafts before running any dry-run or send command.",
+        "This queue enriches accepted relationships for the Relationship Radar.",
+        "It does not determine greeting eligibility and authorizes no LinkedIn action.",
+        "Original connection-review evidence should be reused before fresh public sources.",
+        "",
+        f"- Items: `{len(packet.items)}`",
     ]
     for item in packet.items:
         lines.extend(
             [
                 "",
-                "## " + item.candidate.name,
-                f"- Follow-up ID: `{item.followup_id}`",
-                f"- Source: `{item.candidate.source}`",
-                f"- Template: `{item.template_key.value}`",
-                "- Best angle: " + item.angle,
-            ]
-        )
-        if item.person_does:
-            lines.append("- Person does: " + item.person_does)
-        if item.company_does:
-            lines.append("- Company does: " + item.company_does)
-        if item.message_fit:
-            lines.append("- Why this draft fits: " + item.message_fit)
-        if item.company_profile_url:
-            lines.append("- Company profile: " + item.company_profile_url)
-        if item.company_website_url:
-            lines.append("- Company website: " + item.company_website_url)
-        if item.reviewed_research:
-            decision = item.reviewed_research
-            lines.append("- Reviewed research:")
-            lines.append(f"  - Status: `{decision.status.value}`")
-            lines.append(
-                f"  - Confidence: `{decision.confidence.value if decision.confidence else ''}`"
-            )
-            if decision.official_company_url:
-                lines.append("  - Official company URL: " + decision.official_company_url)
-            if decision.evidence_urls:
-                lines.append("  - Evidence URLs:")
-                lines.extend("    - " + url for url in decision.evidence_urls)
-        if item.evidence:
-            lines.append("- Evidence:")
-            lines.extend("  - " + evidence for evidence in item.evidence)
-        if item.warnings:
-            lines.append("- Warnings:")
-            lines.extend("  - " + warning for warning in item.warnings)
-        lines.extend(["", "Draft:", ""])
-        lines.extend("> " + line if line else ">" for line in item.draft.splitlines())
-    return "\n".join(lines) + "\n"
-
-
-def write_accepted_followup_review_packet(
-    packet: AcceptedFollowupReviewPacket, out: Path
-) -> Path:
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
-    markdown_path = out.with_suffix(".md")
-    markdown_path.write_text(render_accepted_followup_review_markdown(packet), encoding="utf-8")
-    return markdown_path
-
-
-def render_accepted_research_queue_markdown(packet: AcceptedResearchQueuePacket) -> str:
-    items = packet.items
-    lines = [
-        "# Accepted Follow-Up Research Queue",
-        "",
-        "Codex should research each person/company and fill the decision fields.",
-        "Only use `ready_for_draft` when the identity, company, evidence, and "
-        "`proposed_message` are clear.",
-        "",
-        "Drafting prompt for `proposed_message`:",
-    ]
-    append_accepted_followup_drafting_prompt(lines)
-    lines.extend(
-        [
-            "",
-            f"- Items: `{len(items)}`",
-        ]
-    )
-    for item in items:
-        lines.extend(
-            [
-                "",
-                "## " + item.candidate.name,
+                f"## {clean_inline(item.candidate.name)}",
                 f"- Follow-up ID: `{item.followup_id}`",
                 f"- Candidate key: `{item.candidate_key}`",
                 f"- Source: `{item.candidate.source}`",
-                f"- LinkedIn profile: {item.candidate.profile_url or ''}",
-                f"- Sales Nav profile: {item.candidate.sales_nav_profile_url or ''}",
+                f"- Enrichment status: `{item.enrichment_status.value}`",
+                f"- Enrichment reason: `{item.enrichment_reason or ''}`",
+                f"- Original approval: {clean_inline(item.original_connection_approval_reason)}",
                 f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`",
             ]
         )
         if item.evidence:
-            lines.append("- Existing evidence:")
-            lines.extend("  - " + evidence for evidence in item.evidence)
-        lines.extend(
-            [
-                "",
-                "Decision fields to fill:",
-                "",
-                "```json",
-                json.dumps(item.decision.model_dump(mode="json"), indent=2),
-                "```",
-            ]
-        )
+            lines.append("- Reusable evidence:")
+            lines.extend("  - " + clean_inline(value) for value in item.evidence)
     return "\n".join(lines) + "\n"
 
 
-def render_accepted_message_queue_markdown(packet: AcceptedResearchQueuePacket) -> str:
-    items = packet.items
-    lines = [
-        "# Accepted Follow-Up Message Queue",
-        "",
-        "Codex should write or update only the `proposed_message` field for each item.",
-        "The research fields are already reviewed; keep the message grounded in that "
-        "evidence.",
-        "",
-        "Drafting prompt for `proposed_message`:",
-    ]
-    append_accepted_followup_drafting_prompt(lines)
-    lines.extend(
-        [
-            "",
-            f"- Items: `{len(items)}`",
-        ]
-    )
-    for item in items:
-        lines.extend(
-            [
-                "",
-                "## " + item.candidate.name,
-                f"- Follow-up ID: `{item.followup_id}`",
-                f"- Candidate key: `{item.candidate_key}`",
-                f"- Source: `{item.candidate.source}`",
-                f"- LinkedIn profile: {item.candidate.profile_url or ''}",
-                f"- Sales Nav profile: {item.candidate.sales_nav_profile_url or ''}",
-                f"- Accepted at: `{item.candidate.accepted_at.isoformat()}`",
-            ]
-        )
-        if item.evidence:
-            lines.append("- Reviewed research:")
-            lines.extend("  - " + evidence for evidence in item.evidence)
-        lines.extend(
-            [
-                "",
-                "Message fields to fill:",
-                "",
-                "```json",
-                json.dumps(item.decision.model_dump(mode="json"), indent=2),
-                "```",
-            ]
-        )
-    return "\n".join(lines) + "\n"
-
-
-def render_accepted_codex_draft_prompt(item: AcceptedResearchQueueItem) -> str:
-    decision = item.decision
-    person_summary = clean_inline(decision.person_summary) or "Not provided."
-    company_name = clean_inline(decision.company_name)
-    company_summary = clean_inline(decision.company_summary) or "Not provided."
-    company_context = (
-        f"{company_name}: {company_summary}" if company_name else company_summary
-    )
-    evidence_lines: list[str] = []
-    if decision.official_company_url:
-        evidence_lines.append(f"- Official company URL: {decision.official_company_url}")
-    evidence_lines.extend(f"- Evidence URL: {url}" for url in decision.evidence_urls)
-    if decision.notes:
-        evidence_lines.append(f"- Research note: {clean_inline(decision.notes)}")
-    evidence_lines.extend(
-        f"- Warning: {clean_inline(warning)}" for warning in decision.warnings
-    )
-    if not evidence_lines:
-        evidence_lines.append("- Not provided.")
-    first = first_name(item.candidate.name)
-    return "\n".join(
-        [
-            "Draft one LinkedIn follow-up message for Hanif.",
-            "",
-            "Use only the context below. If the context does not support a specific "
-            "relevance bridge, return `needs_review`.",
-            "",
-            "Context about Hanif:",
-            "Hanif builds web apps and internal tools for teams that are stuck with "
-            "spreadsheets, manual handoffs, or half-working automations. His angle is "
-            "practical workflow cleanup: turning messy internal processes into tools "
-            "people can actually use.",
-            "",
-            "Context about the person:",
-            person_summary,
-            "",
-            "Context about the company:",
-            company_context,
-            "",
-            "Relevant evidence:",
-            *evidence_lines,
-            "",
-            "Write the message in Hanif's voice:",
-            "- clear, plain, matter-of-fact",
-            "- low pressure",
-            "- starts with what Hanif does",
-            "- connects Hanif's work to the person/company through a real workflow/tooling "
-            "problem",
-            "- uses blank lines between short paragraphs",
-            "- ends with a simple relevance-check question",
-            "",
-            "Default structure:",
-            f"Hey, {first}. Thanks for connecting.",
-            "",
-            "I build web apps and internal tools for teams that are stuck with spreadsheets, "
-            "manual handoffs, or half-working automations.",
-            "",
-            "{one sentence connecting their work/company to practical workflow cleanup}",
-            "",
-            "{low-pressure relevance-check question}",
-            "",
-            f"Return `candidate_key` exactly as: `{item.candidate_key}`",
-            "",
-            "Return JSON only:",
-            "{",
-            '  "candidate_key": string,',
-            '  "status": "ready_for_draft" | "needs_review",',
-            '  "message": string | null,',
-            '  "reason": string,',
-            '  "warnings": [string]',
-            "}",
-        ]
-    ) + "\n"
-
-
-def render_accepted_codex_research_prompt(
-    item: AcceptedResearchQueueItem,
+def render_relationship_enrichment_prompt(
+    item: RelationshipEnrichmentQueueItem,
     *,
     context_path: Path,
     sources_path: Path,
+    commercial_context: CommercialContextReference,
+    qualification_criterion_ids: tuple[str, ...],
 ) -> str:
     existing = item.decision
     lines = [
-        "Research one accepted LinkedIn connection for Hanif.",
+        "Enrich one accepted LinkedIn relationship for Hanif's Relationship Radar.",
         "",
-        "Read the local source files listed in the source bundle before deciding. "
-        "Do not browse the web or rely on URLs you have not read from the bundle.",
+        "Start with the original connection-review evidence in the queue item. Read the "
+        "local public-source files only to fill information that is missing, stale, or "
+        "needed to prioritize engagement. Do not browse the web or rely on URLs you have "
+        "not read from the bundle.",
         "",
-        "Your job is research extraction, not message drafting. Use your judgment to "
-        "identify the person, company, relevant work, and why the evidence may connect "
-        "to Hanif's practical workflow/tooling work.",
+        "Your job is relationship enrichment, not greeting eligibility or message drafting. "
+        "Identify the person, company, audience role, one source-backed visible signal, "
+        "and the next useful review action.",
         "",
-        "Return `research_ready` only when the identity, company, and relevance bridge "
+        "Return `enriched` only when the identity, company, and relevance bridge "
         "are supported by source excerpts. Return `needs_review` if the source bundle is "
         "thin, blocked, ambiguous, or contradictory.",
         "",
         "Status/confidence contract:",
-        "- `research_ready` requires `confidence` = `high`.",
-        "- If useful evidence exists but confidence is `medium` or `low`, return "
-        "`needs_review`.",
+        "- `enriched` requires `confidence` = `high`.",
+        "- If useful evidence exists but confidence is `medium` or `low`, return `needs_review`.",
         "- Return `skip` when the source bundle does not support a relevant follow-up.",
+        "- The employment lane is paused. Classify recruiters and hiring-only contacts as "
+        "`hiring_recruiter` and return `skip` unless the evidence shows a separate concrete "
+        "consulting-buyer or referral role.",
+        "",
+        "Relationship role contract:",
+        "- `buyer`: a founder, owner, or operations leader with authority over a growing "
+        "business and a plausible business-systems problem.",
+        "- `referral_partner`: a trusted advisor who is likely to see workflow or systems "
+        "problems and introduce the right specialist.",
+        "- `hiring_recruiter`: recruiting or hiring is the primary relationship context.",
+        "- `other`: the evidence does not support one of the roles above.",
+        "- Treat the saved-search source as context, not proof. Classify from excerpts.",
+        "",
+        "Commercial authority:",
+        f"- Read ICP profile `{commercial_context.icp_profile_id}` from "
+        f"{commercial_context.icp_source_path}",
+        f"- Read offers profile `{commercial_context.offers_profile_id}` from "
+        f"{commercial_context.offers_source_path}",
+        f"- Evaluate offer `{commercial_context.offer_id}` only under the scope, status, "
+        "qualification, and exclusion rules in the offers profile.",
+        "- These two files are the only authority for buyer fit and offer routing. If a "
+        "file is unreadable, its profile ID does not match, or a required criterion is "
+        "not declared, return `needs_review`, add a warning, and preserve the gap in "
+        "`unknowns`.",
+        "- Return one `criterion_evidence` entry for every applicable `criterion_id` "
+        "declared in the ICP profile. For this run the exact required IDs are: "
+        + ", ".join(f"`{value}`" for value in qualification_criterion_ids)
+        + ".",
+        "- A `matched` or `not_matched` assessment must link "
+        "to supporting `research_evidence` IDs. Missing support stays `unknown`.",
+        "- Do not classify from keyword or regex scores, generic page text, page titles, "
+        "URL text, source bucket names, or historical skill copy.",
         "",
         "Context files:",
         f"- Queue item snapshot: {context_path}",
@@ -568,9 +439,11 @@ def render_accepted_codex_research_prompt(
         f"- LinkedIn profile: {item.candidate.profile_url or ''}",
         f"- Sales Nav profile: {item.candidate.sales_nav_profile_url or ''}",
         f"- Accepted at: {item.candidate.accepted_at.isoformat()}",
+        f"- Enrichment status: {item.enrichment_status.value}",
+        f"- Enrichment reason: {item.enrichment_reason or ''}",
     ]
     if item.evidence:
-        lines.append("- Existing ledger evidence:")
+        lines.append("- Reusable original-review and ledger evidence:")
         lines.extend("  - " + evidence for evidence in item.evidence)
     if existing.person_summary or existing.company_summary or existing.evidence_urls:
         lines.extend(
@@ -603,13 +476,20 @@ def render_accepted_codex_research_prompt(
             "- `claim` is the researched fact supported by that excerpt.",
             "- `relevance` explains why that fact matters for Hanif's follow-up, or null.",
             "- Do not fill fields from broad guessing, page titles alone, or URL text.",
+            "- Use `linkedin_post` only when the bundle contains an exact post URL and "
+            "post evidence. Otherwise use the actual source type or `none`; do not invent a "
+            "post from the saved-search activity filter.",
+            "- `visible_signal`, `followup_reason`, and `next_useful_action` must be concrete "
+            "and supported by the evidence. Use null when the bundle cannot support them.",
+            "- Set `permission_boundary` to `review_only`. No message, comment, connection "
+            "request, or other LinkedIn action is authorized by this enrichment.",
             "",
             f"Return `candidate_key` exactly as: `{item.candidate_key}`",
             "",
             "Return JSON only:",
             "{",
             '  "candidate_key": string,',
-            '  "status": "research_ready" | "needs_review" | "skip",',
+            '  "status": "enriched" | "needs_review" | "skip",',
             '  "confidence": "high" | "medium" | "low" | null,',
             '  "person_summary": string | null,',
             '  "company_name": string | null,',
@@ -625,17 +505,40 @@ def render_accepted_codex_research_prompt(
             '      "source_excerpt": string',
             "    }",
             "  ],",
+            '  "commercial_context": {',
+            f'    "icp_profile_id": "{commercial_context.icp_profile_id}",',
+            f'    "icp_source_path": "{commercial_context.icp_source_path}",',
+            f'    "offers_profile_id": "{commercial_context.offers_profile_id}",',
+            f'    "offers_source_path": "{commercial_context.offers_source_path}",',
+            f'    "offer_id": "{commercial_context.offer_id}"',
+            "  },",
+            '  "criterion_evidence": [',
+            "    {",
+            '      "criterion_id": string,',
+            '      "assessment": "matched" | "not_matched" | "unknown",',
+            '      "evidence_ids": [string],',
+            '      "explanation": string',
+            "    }",
+            "  ],",
+            '  "unknowns": [string],',
             '  "notes": string | null,',
             '  "warnings": [string],',
-            '  "template_key": "general" | "agency" | "recruiter" | "advisor" | null,',
-            '  "angle": string | null',
+            '  "relationship_role": "buyer" | "referral_partner" | '
+            '"hiring_recruiter" | "other" | null,',
+            '  "priority": "high" | "normal" | "low" | "pause" | null,',
+            '  "signal_type": "linkedin_post" | "company_site" | "profile" | "other" | "none",',
+            '  "visible_signal": string | null,',
+            '  "signal_url": string | null,',
+            '  "followup_reason": string | null,',
+            '  "next_useful_action": string | null,',
+            '  "permission_boundary": "review_only"',
             "}",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
-def codex_draft_worker_command(
+def codex_enrichment_worker_command(
     *,
     codex_bin: str,
     cwd: Path,
@@ -708,7 +611,7 @@ def _safe_source_name(source_id: str, url: str) -> str:
     return f"{source_id.lower()}-{digest}"
 
 
-def _source_urls_for_research_item(item: AcceptedResearchQueueItem) -> list[str]:
+def _source_urls_for_enrichment_item(item: RelationshipEnrichmentQueueItem) -> list[str]:
     candidates: list[str] = []
     candidates.extend(item.decision.evidence_urls)
     if item.decision.official_company_url:
@@ -717,9 +620,7 @@ def _source_urls_for_research_item(item: AcceptedResearchQueueItem) -> list[str]
         candidates.append(item.candidate.profile_url)
     for evidence in item.evidence:
         candidates.extend(
-            url
-            for url in re.findall(r"https?://[^\s)>\]]+", evidence)
-            if "/sales/" not in url
+            url for url in re.findall(r"https?://[^\s)>\]]+", evidence) if "/sales/" not in url
         )
     urls: list[str] = []
     seen: set[str] = set()
@@ -776,8 +677,8 @@ def fetch_source_material(url: str, *, timeout_seconds: float) -> dict[str, obje
         }
 
 
-def write_research_source_bundle(
-    item: AcceptedResearchQueueItem,
+def write_enrichment_source_bundle(
+    item: RelationshipEnrichmentQueueItem,
     *,
     sources_dir: Path,
     timeout_seconds: float,
@@ -785,7 +686,7 @@ def write_research_source_bundle(
     source_dir = sources_dir / item.followup_id
     source_dir.mkdir(parents=True, exist_ok=True)
     sources: list[dict[str, object]] = []
-    for index, url in enumerate(_source_urls_for_research_item(item), start=1):
+    for index, url in enumerate(_source_urls_for_enrichment_item(item), start=1):
         source_id = f"S{index}"
         stem = _safe_source_name(source_id, url)
         material = fetch_source_material(url, timeout_seconds=timeout_seconds)
@@ -955,6 +856,7 @@ def acceptance_check(
     delay_ms: int,
 ) -> str:
     candidates = load_acceptance_check_candidates(input_path)
+    input_sha256 = hashlib.sha256(input_path.read_bytes()).hexdigest()
     artifact, path = browser.check_acceptance_outcomes(
         candidates=candidates,
         input_path=input_path,
@@ -963,6 +865,9 @@ def acceptance_check(
         limit=limit,
         delay_ms=delay_ms,
     )
+    artifact.input_sha256 = input_sha256
+    if Path(path).resolve() == out.resolve():
+        write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
     store.append_acceptance_event(
         "check",
         {
@@ -984,10 +889,22 @@ def acceptance_check(
 
 
 def acceptance_report(
-    store: Store, *, min_age_days: int, max_age_days: int | None, as_json: bool = False
+    store: Store,
+    *,
+    min_age_days: int,
+    max_age_days: int | None,
+    as_json: bool = False,
+    daily_days: int = 30,
+    daily_timezone: str = DEFAULT_ACCEPTANCE_TIMEZONE,
 ) -> str:
     ledger = store.load_acceptance_ledger()
-    report = ledger.report(min_age_days, max_age_days)
+    report = ledger.report(
+        min_age_days,
+        max_age_days,
+        daily_runs=store.load_acceptance_daily_runs(),
+        daily_days=daily_days,
+        daily_timezone=daily_timezone,
+    )
     if as_json:
         import json
 
@@ -1007,14 +924,12 @@ def acceptance_run_daily_session(
     chunk_size: int,
     chunk_retries: int,
     check_delay_ms: int,
-    draft_followups: bool,
-    followup_out: Path | None,
-    followup_review_out: Path | None,
-    followup_research_out_dir: Path | None,
-    include_drafted: bool,
-    strategy: DraftStrategy,
-    research_delay_ms: int,
+    daily_timezone: str = DEFAULT_ACCEPTANCE_TIMEZONE,
+    emit: Callable[[str], None] | None = None,
 ) -> str:
+    zone = ZoneInfo(daily_timezone)
+    started_at = now_utc()
+    before_accepted = _durably_accepted_invitation_keys(store)
     messages = [
         acceptance_seed_history(store),
         acceptance_export(
@@ -1028,18 +943,35 @@ def acceptance_run_daily_session(
     if not candidates:
         messages.append("no acceptance-check candidates; browser not opened")
         messages.append(
+            _record_acceptance_daily_run(
+                store,
+                started_at=started_at,
+                timezone=daily_timezone,
+                zone=zone,
+                min_age_days=min_age_days,
+                max_age_days=max_age_days,
+                eligible=0,
+                checked=0,
+                coverage_complete=True,
+                blocker=None,
+                before_accepted=before_accepted,
+            )
+        )
+        messages.append(
             acceptance_report(
                 store,
                 min_age_days=min_age_days,
                 max_age_days=max_age_days,
                 as_json=False,
+                daily_timezone=daily_timezone,
             )
         )
         return "\n".join(messages)
 
-    browser = browser_factory()
+    browser: BrowserClient | None = None
     try:
-        check_messages = _acceptance_check_and_import_chunks(
+        browser = browser_factory()
+        check_result = _acceptance_check_and_import_chunks(
             store,
             browser,
             candidates=candidates,
@@ -1049,45 +981,109 @@ def acceptance_run_daily_session(
             chunk_size=chunk_size,
             retries=chunk_retries,
             delay_ms=check_delay_ms,
+            emit=emit,
         )
-        messages.extend(check_messages)
-        if any(message.startswith("stopped:") for message in check_messages):
-            messages.append(
-                acceptance_report(
-                    store,
-                    min_age_days=min_age_days,
-                    max_age_days=max_age_days,
-                    as_json=False,
-                )
+        messages.extend(check_result.messages)
+    except Exception as exc:
+        messages.append(
+            _record_acceptance_daily_run(
+                store,
+                started_at=started_at,
+                timezone=daily_timezone,
+                zone=zone,
+                min_age_days=min_age_days,
+                max_age_days=max_age_days,
+                eligible=len(candidates),
+                checked=0,
+                coverage_complete=False,
+                blocker=str(exc),
+                before_accepted=before_accepted,
             )
-            return "\n".join(messages)
-        if draft_followups:
-            messages.append(
-                acceptance_draft_followups(
-                    store,
-                    research=None,
-                    out=followup_out,
-                    include_drafted=include_drafted,
-                    strategy=strategy,
-                    browser=browser,
-                    research_out_dir=followup_research_out_dir,
-                    delay_ms=research_delay_ms,
-                    review_out=followup_review_out,
-                )
-            )
+        )
+        raise
     finally:
-        close = getattr(browser, "close", None)
-        if callable(close):
-            close()
+        if browser is not None:
+            close = getattr(browser, "close", None)
+            if callable(close):
+                close()
+    messages.append(
+        _record_acceptance_daily_run(
+            store,
+            started_at=started_at,
+            timezone=daily_timezone,
+            zone=zone,
+            min_age_days=min_age_days,
+            max_age_days=max_age_days,
+            eligible=len(candidates),
+            checked=check_result.checked,
+            coverage_complete=check_result.coverage_complete,
+            blocker=check_result.blocker,
+            before_accepted=before_accepted,
+        )
+    )
     messages.append(
         acceptance_report(
             store,
             min_age_days=min_age_days,
             max_age_days=max_age_days,
             as_json=False,
+            daily_timezone=daily_timezone,
         )
     )
     return "\n".join(messages)
+
+
+def _durably_accepted_invitation_keys(store: Store) -> set[str]:
+    ledger = store.load_acceptance_ledger()
+    keys: set[str] = set()
+    for invitation in ledger.invitations:
+        if invitation.latest_status != AcceptanceStatus.ACCEPTED:
+            continue
+        event = latest_acceptance_event(invitation)
+        if event is not None and accepted_event_confirms_followup(event):
+            keys.add(invitation.key())
+    return keys
+
+
+def _record_acceptance_daily_run(
+    store: Store,
+    *,
+    started_at: datetime,
+    timezone: str,
+    zone: ZoneInfo,
+    min_age_days: int,
+    max_age_days: int | None,
+    eligible: int,
+    checked: int,
+    coverage_complete: bool,
+    blocker: str | None,
+    before_accepted: set[str],
+) -> str:
+    completed_at = now_utc()
+    after_accepted = _durably_accepted_invitation_keys(store)
+    ledger = store.load_acceptance_ledger()
+    remaining_unresolved = len(ledger.eligible_for_check(min_age_days, max_age_days))
+    run = AcceptanceDailyRun(
+        started_at=started_at,
+        completed_at=completed_at,
+        local_date=completed_at.astimezone(zone).date(),
+        timezone=timezone,
+        min_age_days=min_age_days,
+        max_age_days=max_age_days,
+        eligible=eligible,
+        checked=checked,
+        newly_confirmed_accepted=len(after_accepted - before_accepted),
+        remaining_unresolved=remaining_unresolved,
+        coverage_complete=coverage_complete,
+        blocker=blocker,
+    )
+    store.append_acceptance_daily_run(run)
+    state = "complete" if coverage_complete else "incomplete"
+    return (
+        f"daily acceptance coverage: {state}; eligible={eligible}, checked={checked}, "
+        f"newly_confirmed_accepted={run.newly_confirmed_accepted}, "
+        f"remaining_unresolved={remaining_unresolved}"
+    )
 
 
 def _acceptance_check_and_import_chunks(
@@ -1101,7 +1097,8 @@ def _acceptance_check_and_import_chunks(
     chunk_size: int,
     retries: int,
     delay_ms: int,
-) -> list[str]:
+    emit: Callable[[str], None] | None = None,
+) -> AcceptanceDailyCheckResult:
     chunk_size = max(1, chunk_size)
     retries = max(0, retries)
     attempts = 1 + retries
@@ -1109,19 +1106,22 @@ def _acceptance_check_and_import_chunks(
     messages: list[str] = []
     chunk_paths: list[Path] = []
     blockers: list[str] = []
+    notify = emit or (lambda _message: None)
+    candidates_sha256 = hashlib.sha256(candidates_out.read_bytes()).hexdigest()
+    chunk_count = (len(candidates) + chunk_size - 1) // chunk_size
     for offset in range(0, len(candidates), chunk_size):
+        chunk_number = (offset // chunk_size) + 1
         limit = min(chunk_size, len(candidates) - offset)
         chunk_path = chunk_dir / f"chunk-{offset}.json"
         if chunk_path.exists():
             existing = read_model(chunk_path, AcceptanceOutcomeArtifact)
             existing_blocked_rows = [
-                row
-                for row in existing.rows
-                if str(getattr(row, "status", "")).lower() == "blocked"
+                row for row in existing.rows if str(getattr(row, "status", "")).lower() == "blocked"
             ]
             if (
                 existing.complete is True
                 and existing.input == str(candidates_out)
+                and existing.input_sha256 == candidates_sha256
                 and existing.offset == offset
                 and existing.limit == limit
                 and existing.total_candidates == len(candidates)
@@ -1139,6 +1139,10 @@ def _acceptance_check_and_import_chunks(
                     },
                 )
                 messages.append(f"reused complete acceptance chunk: {chunk_path}")
+                notify(
+                    f"acceptance check: chunk {chunk_number}/{chunk_count} reused "
+                    f"with {limit} row(s)"
+                )
                 chunk_paths.append(chunk_path)
                 continue
         store.append_acceptance_event(
@@ -1153,6 +1157,10 @@ def _acceptance_check_and_import_chunks(
         )
         last_exception: Exception | None = None
         for attempt in range(1, attempts + 1):
+            notify(
+                f"acceptance check: chunk {chunk_number}/{chunk_count}, "
+                f"attempt {attempt}/{attempts}"
+            )
             if attempt > 1:
                 store.append_acceptance_event(
                     "run-daily-session-check-retry",
@@ -1212,17 +1220,24 @@ def _acceptance_check_and_import_chunks(
                 },
             )
             messages.append("stopped: " + blocker)
-            return messages
+            return AcceptanceDailyCheckResult(
+                messages=messages,
+                checked=_acceptance_completed_row_count(chunk_paths),
+                coverage_complete=False,
+                blocker=blocker,
+            )
         artifact = read_model(chunk_path, AcceptanceOutcomeArtifact)
+        notify(
+            f"acceptance check: chunk {chunk_number}/{chunk_count} completed "
+            f"with {len(artifact.rows)} row(s)"
+        )
         chunk_paths.append(chunk_path)
         if artifact.complete is not True:
             blockers.append(f"{chunk_path} is incomplete")
         if len(artifact.rows) != limit:
             blockers.append(f"{chunk_path} has {len(artifact.rows)}/{limit} rows")
         blocked_rows = [
-            row
-            for row in artifact.rows
-            if str(getattr(row, "status", "")).lower() == "blocked"
+            row for row in artifact.rows if str(getattr(row, "status", "")).lower() == "blocked"
         ]
         if blocked_rows:
             blockers.append(f"{chunk_path} has {len(blocked_rows)} blocked rows")
@@ -1231,8 +1246,14 @@ def _acceptance_check_and_import_chunks(
             "run-daily-session-blocked",
             {"reason": "incomplete chunks", "blockers": blockers},
         )
-        messages.append("stopped: " + "; ".join(blockers))
-        return messages
+        blocker = "; ".join(blockers)
+        messages.append("stopped: " + blocker)
+        return AcceptanceDailyCheckResult(
+            messages=messages,
+            checked=_acceptance_completed_row_count(chunk_paths),
+            coverage_complete=False,
+            blocker=blocker,
+        )
 
     rows = [
         row
@@ -1248,15 +1269,22 @@ def _acceptance_check_and_import_chunks(
                 "candidates": len(candidates),
             },
         )
-        messages.append(
-            f"stopped: merged acceptance row count {len(rows)} "
+        blocker = (
+            f"merged acceptance row count {len(rows)} "
             f"does not equal candidate count {len(candidates)}"
         )
-        return messages
+        messages.append("stopped: " + blocker)
+        return AcceptanceDailyCheckResult(
+            messages=messages,
+            checked=len(rows),
+            coverage_complete=False,
+            blocker=blocker,
+        )
 
     merged = AcceptanceOutcomeArtifact(
         captured_at=now_utc().isoformat(),
         input=str(candidates_out),
+        input_sha256=candidates_sha256,
         count=len(rows),
         offset=0,
         limit=0,
@@ -1276,246 +1304,287 @@ def _acceptance_check_and_import_chunks(
     )
     messages.append(f"merged acceptance outcomes: {len(rows)} rows to {outcomes_out}")
     messages.append(acceptance_import(store, outcomes_out))
-    return messages
-
-
-def acceptance_draft_followups(
-    store: Store,
-    *,
-    research: Path | None,
-    out: Path | None,
-    include_drafted: bool,
-    strategy: DraftStrategy,
-    browser: BrowserClient | None = None,
-    research_out_dir: Path | None = None,
-    delay_ms: int = 500,
-    research_offset: int = 0,
-    research_limit: int = 0,
-    review_out: Path | None = None,
-) -> str:
-    ledger = store.load_acceptance_ledger()
-    followups = store.load_acceptance_followup_ledger()
-    candidates = ledger.accepted_for_followup(followups, include_drafted)
-    if research_limit > 0:
-        report_candidates = candidates[research_offset : research_offset + research_limit]
-    elif research_offset > 0:
-        report_candidates = candidates[research_offset:]
-    else:
-        report_candidates = candidates
-    report_path = out or store.default_acceptance_followup_report_path()
-    generated_research: Path | None = None
-    if report_candidates and research is None:
-        if browser is None:
-            raise RuntimeError("--session is required when --research is not provided")
-        generated_dir = research_out_dir or (store.dir / "acceptance-followups" / "research")
-        generated_dir.mkdir(parents=True, exist_ok=True)
-        candidates_path = generated_dir / "accepted-candidates.json"
-        generated_research = generated_dir / "accepted-research.json"
-        write_json_atomic(
-            candidates_path,
-            [candidate.model_dump(mode="json", by_alias=False) for candidate in candidates],
-        )
-        browser.research_accepted_candidates(
-            candidates=candidates,
-            input_path=candidates_path,
-            out=generated_research,
-            offset=research_offset,
-            limit=research_limit,
-            delay_ms=delay_ms,
-        )
-        research = generated_research
-    artifact = read_model(research, AcceptedResearchArtifact) if research else None
-    report = build_draft_report(
-        report_candidates, artifact, strategy, str(research) if research is not None else None
-    )
-    add_lead_review_context_to_draft_report(report, store.load_lead_ledger())
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(render_draft_markdown(report))
-    review_path = review_out or report_path.with_suffix(".review.json")
-    review_packet = build_accepted_followup_review_packet(
-        report,
-        artifact,
-        report_path=report_path,
-        research_path=research,
-    )
-    review_markdown_path = write_accepted_followup_review_packet(review_packet, review_path)
-    recorded = followups.record_report(
-        report, str(report_path), str(research) if research else None
-    )
-    store.save_acceptance_followup_ledger(followups)
-    store.append_acceptance_event(
-        "draft-followups",
-        {
-            "report_path": str(report_path),
-            "research_path": str(research) if research else None,
-            "draft_count": len(report.items),
-            "recorded": recorded,
-            "strategy": strategy.value,
-            "include_drafted": include_drafted,
-            "generated_research": str(generated_research) if generated_research else None,
-            "review_path": str(review_path),
-            "review_markdown_path": str(review_markdown_path),
-        },
-    )
-    suffix = f"; research artifact: {research}" if research else ""
-    suffix += f"; review packet: {review_path}"
-    if not report.items:
-        return (
-            f"accepted follow-up drafts: 0 written to {report_path}; "
-            "no newly accepted connections need first-message drafts; "
-            f"review packet: {review_path}"
-        )
-    return (
-        f"accepted follow-up drafts: {len(report.items)} written to {report_path}{suffix}; "
-        "stopped before dry-run/send for review"
+    return AcceptanceDailyCheckResult(
+        messages=messages,
+        checked=len(rows),
+        coverage_complete=True,
     )
 
 
-def acceptance_research(
-    store: Store,
-    browser: BrowserClient,
-    *,
-    input_path: Path,
-    out: Path,
-    offset: int,
-    limit: int,
-    delay_ms: int,
-) -> str:
-    candidates = load_accepted_draft_candidates(input_path)
-    artifact, path = browser.research_accepted_candidates(
-        candidates=candidates,
-        input_path=input_path,
-        out=out,
-        offset=offset,
-        limit=limit,
-        delay_ms=delay_ms,
-    )
-    store.append_acceptance_event(
-        "research",
-        {
-            "input": str(input_path),
-            "out": path,
-            "count": len(artifact.rows),
-            "offset": offset,
-            "limit": limit,
-        },
-    )
-    return f"accepted research: {len(artifact.rows)} rows written to {path}"
+def _acceptance_completed_row_count(chunk_paths: Sequence[Path]) -> int:
+    checked = 0
+    for path in chunk_paths:
+        artifact = read_model(path, AcceptanceOutcomeArtifact)
+        if artifact.complete is not True:
+            continue
+        if any(row.status == AcceptanceStatus.BLOCKED for row in artifact.rows):
+            continue
+        checked += len(artifact.rows)
+    return checked
 
 
-def acceptance_export_followup_candidates(
-    store: Store, *, out: Path, include_drafted: bool
-) -> str:
-    ledger = store.load_acceptance_ledger()
-    followups = store.load_acceptance_followup_ledger()
-    candidates = ledger.accepted_for_followup(followups, include_drafted)
-    write_json_atomic(
-        out, [candidate.model_dump(mode="json", by_alias=False) for candidate in candidates]
-    )
-    store.append_acceptance_event(
-        "export-followup-candidates",
-        {"out": str(out), "count": len(candidates), "include_drafted": include_drafted},
-    )
-    return f"exported {len(candidates)} accepted follow-up candidates to {out}"
-
-
-def acceptance_export_research_queue(
+def acceptance_export_enrichment_queue(
     store: Store,
     *,
     out: Path,
     markdown_out: Path | None,
     offset: int,
     limit: int,
-    include_drafted: bool,
+    stale_after_days: int,
+    prioritize_engagement: bool,
 ) -> str:
-    ledger = store.load_acceptance_ledger()
-    followups = store.load_acceptance_followup_ledger()
-    candidates = ledger.accepted_for_followup(followups, include_drafted)
+    if stale_after_days <= 0:
+        raise ValueError("stale_after_days must be > 0")
+    from .relationship_radar import (
+        RelationshipRadarLedger,
+        render_relationship_radar_markdown,
+    )
+
+    radar_path = store.dir / "relationship-radar" / "ledger.json"
+    radar = (
+        read_model(radar_path, RelationshipRadarLedger)
+        if radar_path.exists()
+        else RelationshipRadarLedger()
+    )
+    radar_by_key = {record.candidate_key: record for record in radar.records}
+    lead_ledger = store.load_lead_ledger()
+    current = now_utc()
+    selected_items: list[RelationshipEnrichmentQueueItem] = []
+    stale_updates = 0
+
+    for candidate in store.load_acceptance_ledger().accepted_connections():
+        key = accepted_followup_candidate_key(candidate)
+        record = radar_by_key.get(key)
+        if record is None:
+            enrichment_status = RelationshipEnrichmentStatus.MISSING
+            enrichment_reason = "missing"
+        else:
+            enrichment_status = record.relationship_enrichment_status
+            enrichment_reason = enrichment_status.value
+            if (
+                enrichment_status == RelationshipEnrichmentStatus.CURRENT
+                and record.enriched_at is not None
+                and (current - record.enriched_at).days >= stale_after_days
+            ):
+                enrichment_status = RelationshipEnrichmentStatus.STALE
+                enrichment_reason = "stale"
+                record.relationship_enrichment_status = enrichment_status
+                record.updated_at = current
+                stale_updates += 1
+            elif prioritize_engagement and record.review_state in {
+                "active",
+                "needs_enrichment",
+                "needs_review",
+            }:
+                enrichment_reason = "prioritize_engagement"
+            elif enrichment_status in {
+                RelationshipEnrichmentStatus.CURRENT,
+                RelationshipEnrichmentStatus.NEEDS_REVIEW,
+                RelationshipEnrichmentStatus.NOT_APPLICABLE,
+            }:
+                continue
+
+        item = build_relationship_enrichment_queue([candidate]).items[0]
+        _lead_key, lead_record = lead_review_record_for_candidate(lead_ledger, candidate)
+        evidence = list(item.evidence)
+        if lead_record is not None:
+            approval_source = lead_review_approval_source(lead_record)
+            if approval_source:
+                evidence.append(f"Original connection source: {approval_source}")
+            if lead_record.approved_reason:
+                evidence.append(f"Original connection approval: {lead_record.approved_reason}")
+            if lead_record.last_row_text:
+                evidence.append(f"Original connection review row: {lead_record.last_row_text}")
+        decision_update: dict[str, object] = {}
+        if record is not None:
+            decision_update = {
+                "person_summary": record.person_summary,
+                "company_name": record.company_name,
+                "company_summary": record.company_summary,
+                "relationship_role": record.relationship_role,
+                "priority": record.priority,
+                "signal_type": record.signal_type,
+                "visible_signal": record.visible_signal,
+                "signal_url": record.signal_url,
+                "followup_reason": record.followup_reason,
+                "next_useful_action": record.next_useful_action,
+                "evidence_urls": list(record.evidence_urls),
+                "research_evidence": list(record.research_evidence),
+                "warnings": list(record.warnings),
+            }
+        selected_items.append(
+            item.model_copy(
+                update={
+                    "evidence": evidence,
+                    "enrichment_status": enrichment_status,
+                    "enrichment_reason": enrichment_reason,
+                    "original_connection_approved_at": (
+                        lead_record.approved_at if lead_record is not None else None
+                    ),
+                    "original_connection_approval_reason": (
+                        lead_record.approved_reason if lead_record is not None else None
+                    ),
+                    "original_connection_review_text": (
+                        lead_record.last_row_text if lead_record is not None else None
+                    ),
+                    "decision": item.decision.model_copy(update=decision_update),
+                }
+            )
+        )
+
+    if stale_updates:
+        radar.generated_at = current
+        write_json_atomic(radar_path, radar.model_dump(mode="json", by_alias=False))
+        radar_path.with_suffix(".md").write_text(
+            render_relationship_radar_markdown(radar), encoding="utf-8"
+        )
+
     if limit > 0:
-        selected = candidates[offset : offset + limit]
+        selected_items = selected_items[offset : offset + limit]
     elif offset > 0:
-        selected = candidates[offset:]
-    else:
-        selected = candidates
-    packet = build_accepted_research_queue_packet(selected)
+        selected_items = selected_items[offset:]
+    packet = RelationshipEnrichmentQueue(items=selected_items)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
     markdown_path = markdown_out or out.with_suffix(".md")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(render_accepted_research_queue_markdown(packet), encoding="utf-8")
+    markdown_path.write_text(render_accepted_enrichment_queue_markdown(packet), encoding="utf-8")
     store.append_acceptance_event(
-        "export-research-queue",
+        "export-enrichment-queue",
         {
             "out": str(out),
             "markdown_out": str(markdown_path),
             "count": len(packet.items),
             "offset": offset,
             "limit": limit,
-            "include_drafted": include_drafted,
+            "stale_after_days": stale_after_days,
+            "prioritize_engagement": prioritize_engagement,
+            "stale_updates": stale_updates,
         },
     )
     return (
-        f"exported {len(packet.items)} accepted research queue item(s) to {out}; "
-        f"markdown: {markdown_path}"
+        f"exported {len(packet.items)} relationship enrichment queue item(s) to {out}; "
+        f"original review evidence reused; markdown: {markdown_path}"
     )
 
 
-def acceptance_export_message_queue(
+def acceptance_export_browser_investigation_queue(
     store: Store,
     *,
-    reviewed_research: Path,
     out: Path,
     markdown_out: Path | None,
-    include_drafted: bool,
-    offset: int,
     limit: int,
+    cooldown_days: int,
 ) -> str:
-    artifact = read_model(reviewed_research, AcceptedResearchDecisionArtifact)
-    followups = store.load_acceptance_followup_ledger()
-    decisions = [
-        decision
-        for decision in artifact.decisions
-        if decision.status
-        in {
-            AcceptedResearchDecisionStatus.RESEARCH_READY,
-            AcceptedResearchDecisionStatus.READY_FOR_DRAFT,
-        }
-        and (include_drafted or not followups.has_draft_for(decision.candidate))
-    ]
-    if limit > 0:
-        selected = decisions[offset : offset + limit]
-    elif offset > 0:
-        selected = decisions[offset:]
-    else:
-        selected = decisions
-    packet = build_accepted_message_queue_packet(selected)
+    """Export unresolved radar records for a bounded authenticated-browser pass."""
+
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+    if cooldown_days <= 0:
+        raise ValueError("cooldown_days must be > 0")
+    from .relationship_radar import RelationshipRadarLedger
+
+    radar_path = store.dir / "relationship-radar" / "ledger.json"
+    radar = (
+        read_model(radar_path, RelationshipRadarLedger)
+        if radar_path.exists()
+        else RelationshipRadarLedger()
+    )
+    candidates = {
+        accepted_followup_candidate_key(candidate): candidate
+        for candidate in store.load_acceptance_ledger().accepted_connections()
+    }
+    lead_ledger = store.load_lead_ledger()
+    current = now_utc()
+    selected: list[RelationshipEnrichmentQueueItem] = []
+    for record in radar.records:
+        if record.review_state != "needs_review":
+            continue
+        if record.browser_investigated_at is not None and (
+            current - record.browser_investigated_at
+        ).days < cooldown_days:
+            continue
+        candidate = candidates.get(record.candidate_key)
+        if candidate is None or not any(
+            (
+                is_public_linkedin_profile_url(candidate.profile_url),
+                is_sales_nav_profile_url(candidate.profile_url),
+                is_sales_nav_profile_url(candidate.sales_nav_profile_url),
+            )
+        ):
+            continue
+        item = build_relationship_enrichment_queue([candidate]).items[0]
+        _lead_key, lead_record = lead_review_record_for_candidate(lead_ledger, candidate)
+        evidence = list(item.evidence)
+        if lead_record is not None:
+            if lead_record.approved_reason:
+                evidence.append(f"Original connection approval: {lead_record.approved_reason}")
+            if lead_record.last_row_text:
+                evidence.append(f"Original connection review row: {lead_record.last_row_text}")
+        decision = item.decision.model_copy(
+            update={
+                "person_summary": record.person_summary,
+                "company_name": record.company_name,
+                "company_summary": record.company_summary,
+                "evidence_urls": list(record.evidence_urls),
+                "research_evidence": list(record.research_evidence),
+                "commercial_context": record.commercial_context,
+                "criterion_evidence": list(record.criterion_evidence),
+                "unknowns": list(record.unknowns),
+                "warnings": list(record.warnings),
+                "relationship_role": record.relationship_role,
+                "priority": record.priority,
+                "signal_type": record.signal_type,
+                "visible_signal": record.visible_signal,
+                "signal_url": record.signal_url,
+                "followup_reason": record.followup_reason,
+                "next_useful_action": record.next_useful_action,
+            }
+        )
+        selected.append(
+            item.model_copy(
+                update={
+                    "evidence": evidence,
+                    "enrichment_status": record.relationship_enrichment_status,
+                    "enrichment_reason": "browser_needs_review",
+                    "original_connection_approved_at": record.original_connection_approved_at,
+                    "original_connection_approval_reason": (
+                        record.original_connection_approval_reason
+                    ),
+                    "decision": decision,
+                }
+            )
+        )
+        if len(selected) >= limit:
+            break
+
+    packet = RelationshipEnrichmentQueue(items=selected)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
     markdown_path = markdown_out or out.with_suffix(".md")
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(render_accepted_message_queue_markdown(packet), encoding="utf-8")
+    markdown_path.write_text(render_accepted_enrichment_queue_markdown(packet), encoding="utf-8")
     store.append_acceptance_event(
-        "export-message-queue",
+        "export-browser-investigation-queue",
         {
-            "reviewed_research": str(reviewed_research),
             "out": str(out),
             "markdown_out": str(markdown_path),
             "count": len(packet.items),
-            "offset": offset,
             "limit": limit,
-            "include_drafted": include_drafted,
+            "cooldown_days": cooldown_days,
+            "permission_boundary": "review_only",
         },
     )
     return (
-        f"exported {len(packet.items)} accepted message queue item(s) to {out}; "
-        f"markdown: {markdown_path}"
+        f"exported {len(packet.items)} browser investigation queue item(s) to {out}; "
+        f"cooldown={cooldown_days} days; markdown: {markdown_path}"
     )
 
 
-def acceptance_launch_codex_research_workers(
+def acceptance_launch_enrichment_workers(
     store: Store,
     *,
-    research_queue: Path,
+    enrichment_queue: Path,
     jobs_dir: Path,
     sources_dir: Path,
     codex_bin: str,
@@ -1527,10 +1596,13 @@ def acceptance_launch_codex_research_workers(
     force: bool,
     fetch_timeout_seconds: float,
 ) -> str:
-    packet = read_model(research_queue, AcceptedResearchQueuePacket)
+    packet = read_model(enrichment_queue, RelationshipEnrichmentQueue)
+    qualification_criterion_ids = _validate_commercial_context_sources(
+        packet.commercial_context
+    )
     items = _select_queue_items(packet.items, offset=offset, limit=limit)
     if not items:
-        raise RuntimeError("no accepted research queue item(s) selected")
+        raise RuntimeError("no relationship enrichment queue item(s) selected")
     jobs_dir.mkdir(parents=True, exist_ok=True)
     sources_dir.mkdir(parents=True, exist_ok=True)
     launched = 0
@@ -1548,28 +1620,32 @@ def acceptance_launch_codex_research_workers(
             skipped += 1
             continue
         job_dir.mkdir(parents=True, exist_ok=True)
-        sources_path = write_research_source_bundle(
+        sources_path = write_enrichment_source_bundle(
             item,
             sources_dir=sources_dir,
             timeout_seconds=fetch_timeout_seconds,
         )
         context = {
-            "research_queue": str(research_queue),
+            "enrichment_queue": str(enrichment_queue),
             "queue_generated_at": packet.generated_at.isoformat(),
+            "commercial_context": packet.commercial_context.model_dump(mode="json"),
+            "qualification_criterion_ids": list(qualification_criterion_ids),
             "item": item.model_dump(mode="json", by_alias=False),
             "sources_path": str(sources_path),
         }
         write_json_atomic(context_path, context)
         packet_path.write_text(
-            render_accepted_codex_research_prompt(
+            render_relationship_enrichment_prompt(
                 item,
                 context_path=context_path,
                 sources_path=sources_path,
+                commercial_context=packet.commercial_context,
+                qualification_criterion_ids=qualification_criterion_ids,
             ),
             encoding="utf-8",
         )
-        write_json_atomic(schema_path, CODEX_RESEARCH_OUTPUT_SCHEMA)
-        command = codex_draft_worker_command(
+        write_json_atomic(schema_path, CODEX_ENRICHMENT_OUTPUT_SCHEMA)
+        command = codex_enrichment_worker_command(
             codex_bin=codex_bin,
             cwd=cwd,
             schema_path=schema_path,
@@ -1591,7 +1667,7 @@ def acceptance_launch_codex_research_workers(
                 text=True,
                 start_new_session=True,
             )
-        job = AcceptedCodexResearchJob(
+        job = CodexRelationshipEnrichmentJob(
             followup_id=item.followup_id,
             candidate_key=item.candidate_key,
             packet_path=str(packet_path),
@@ -1607,9 +1683,9 @@ def acceptance_launch_codex_research_workers(
         write_json_atomic(job_path, job.model_dump(mode="json", by_alias=False))
         launched += 1
     store.append_acceptance_event(
-        "launch-codex-research-workers",
+        "launch-codex-enrichment-workers",
         {
-            "research_queue": str(research_queue),
+            "enrichment_queue": str(enrichment_queue),
             "jobs_dir": str(jobs_dir),
             "sources_dir": str(sources_dir),
             "count": len(items),
@@ -1619,41 +1695,54 @@ def acceptance_launch_codex_research_workers(
             "limit": limit,
             "model": model,
             "reasoning_effort": reasoning_effort,
+            "commercial_context": packet.commercial_context.model_dump(mode="json"),
         },
     )
     return (
-        f"launched {launched} Codex research worker(s) from {research_queue}; "
+        f"launched {launched} Codex enrichment worker(s) from {enrichment_queue}; "
         f"{skipped} existing job(s) skipped; jobs: {jobs_dir}; sources: {sources_dir}"
     )
 
 
-def acceptance_collect_codex_research_workers(
+def acceptance_collect_enrichment_workers(
     store: Store,
     *,
-    research_queue: Path,
+    enrichment_queue: Path,
     jobs_dir: Path,
     out: Path,
     offset: int,
     limit: int,
 ) -> str:
-    packet = read_model(research_queue, AcceptedResearchQueuePacket)
+    packet = read_model(enrichment_queue, RelationshipEnrichmentQueue)
+    qualification_criterion_ids = _validate_commercial_context_sources(
+        packet.commercial_context
+    )
     items = _select_queue_items(packet.items, offset=offset, limit=limit)
     if not items:
-        raise RuntimeError("no accepted research queue item(s) selected")
-    decisions: list[AcceptedResearchDecisionItem] = []
+        raise RuntimeError("no relationship enrichment queue item(s) selected")
+    decisions: list[RelationshipEnrichmentDecision] = []
     pending = 0
     for item in items:
         result_path = jobs_dir / item.followup_id / "result.json"
         if not result_path.exists():
             pending += 1
             continue
-        result = _load_codex_research_result(result_path)
-        decisions.append(_codex_research_result_to_decision(item, result))
+        result = _load_codex_enrichment_result(
+            result_path,
+            expected_criterion_ids=qualification_criterion_ids,
+        )
+        decisions.append(
+            _codex_enrichment_result_to_decision(
+                item,
+                result,
+                expected_commercial_context=packet.commercial_context,
+            )
+        )
     if not decisions and pending:
         store.append_acceptance_event(
-            "collect-codex-research-workers-pending",
+            "collect-codex-enrichment-workers-pending",
             {
-                "research_queue": str(research_queue),
+                "enrichment_queue": str(enrichment_queue),
                 "jobs_dir": str(jobs_dir),
                 "pending": pending,
                 "offset": offset,
@@ -1661,444 +1750,122 @@ def acceptance_collect_codex_research_workers(
             },
         )
         raise RuntimeError(
-            f"no completed Codex research worker result(s); {pending} pending in {jobs_dir}"
+            f"no completed Codex enrichment worker result(s); {pending} pending in {jobs_dir}"
         )
-    artifact = AcceptedResearchDecisionArtifact(
+    artifact = RelationshipEnrichmentArtifact(
         source_path=str(jobs_dir),
+        commercial_context=packet.commercial_context,
         decisions=decisions,
     )
-    validate_accepted_research_decision_artifact(artifact)
+    validate_relationship_enrichment_commercial_contract(artifact)
+    validate_relationship_enrichment_artifact(artifact)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
-    research_ready = sum(
+    enriched = sum(
         1
         for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.RESEARCH_READY
+        if decision.status == RelationshipEnrichmentDecisionStatus.ENRICHED
     )
     needs_review = sum(
         1
         for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.NEEDS_REVIEW
+        if decision.status == RelationshipEnrichmentDecisionStatus.NEEDS_REVIEW
     )
     skipped = sum(
-        1 for decision in decisions if decision.status == AcceptedResearchDecisionStatus.SKIP
+        1 for decision in decisions if decision.status == RelationshipEnrichmentDecisionStatus.SKIP
     )
     store.append_acceptance_event(
-        "collect-codex-research-workers",
+        "collect-codex-enrichment-workers",
         {
-            "research_queue": str(research_queue),
+            "enrichment_queue": str(enrichment_queue),
             "jobs_dir": str(jobs_dir),
             "out": str(out),
             "completed": len(decisions),
             "pending": pending,
-            "research_ready": research_ready,
+            "enriched": enriched,
             "needs_review": needs_review,
             "skipped": skipped,
+            "commercial_context": packet.commercial_context.model_dump(mode="json"),
             "offset": offset,
             "limit": limit,
         },
     )
     return (
-        f"collected {len(decisions)} Codex research worker result(s): "
-        f"{research_ready} research ready, {needs_review} needs review, "
+        f"collected {len(decisions)} Codex enrichment worker result(s): "
+        f"{enriched} enriched, {needs_review} needs review, "
         f"{skipped} skipped, {pending} pending; wrote {out}"
     )
 
 
-def acceptance_launch_codex_draft_workers(
+def acceptance_prepare_welcome_messages(
     store: Store,
     *,
-    message_queue: Path,
-    jobs_dir: Path,
-    codex_bin: str,
-    cwd: Path,
-    model: str,
-    reasoning_effort: str,
-    offset: int,
-    limit: int,
-    force: bool,
-) -> str:
-    packet = read_model(message_queue, AcceptedResearchQueuePacket)
-    items = _select_queue_items(packet.items, offset=offset, limit=limit)
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    launched = 0
-    skipped = 0
-    for item in items:
-        job_dir = jobs_dir / item.followup_id
-        packet_path = job_dir / "packet.md"
-        schema_path = job_dir / "schema.json"
-        result_path = job_dir / "result.json"
-        events_path = job_dir / "events.jsonl"
-        stderr_path = job_dir / "stderr.log"
-        job_path = job_dir / "job.json"
-        if not force and (result_path.exists() or job_path.exists()):
-            skipped += 1
-            continue
-        job_dir.mkdir(parents=True, exist_ok=True)
-        packet_path.write_text(render_accepted_codex_draft_prompt(item), encoding="utf-8")
-        write_json_atomic(schema_path, CODEX_DRAFT_OUTPUT_SCHEMA)
-        command = codex_draft_worker_command(
-            codex_bin=codex_bin,
-            cwd=cwd,
-            schema_path=schema_path,
-            result_path=result_path,
-            model=model,
-            reasoning_effort=reasoning_effort,
-        )
-        with (
-            packet_path.open("r", encoding="utf-8") as stdin,
-            events_path.open("w", encoding="utf-8") as stdout,
-            stderr_path.open("w", encoding="utf-8") as stderr,
-        ):
-            process = subprocess.Popen(
-                command,
-                cwd=str(cwd),
-                stdin=stdin,
-                stdout=stdout,
-                stderr=stderr,
-                text=True,
-                start_new_session=True,
-            )
-        job = AcceptedCodexDraftJob(
-            followup_id=item.followup_id,
-            candidate_key=item.candidate_key,
-            packet_path=str(packet_path),
-            schema_path=str(schema_path),
-            result_path=str(result_path),
-            events_path=str(events_path),
-            stderr_path=str(stderr_path),
-            pid=process.pid,
-            command=command,
-        )
-        write_json_atomic(job_path, job.model_dump(mode="json", by_alias=False))
-        launched += 1
-    store.append_acceptance_event(
-        "launch-codex-draft-workers",
-        {
-            "message_queue": str(message_queue),
-            "jobs_dir": str(jobs_dir),
-            "count": len(items),
-            "launched": launched,
-            "skipped": skipped,
-            "offset": offset,
-            "limit": limit,
-            "model": model,
-            "reasoning_effort": reasoning_effort,
-        },
-    )
-    return (
-        f"launched {launched} Codex draft worker(s) from {message_queue}; "
-        f"{skipped} existing job(s) skipped; jobs: {jobs_dir}"
-    )
-
-
-def acceptance_collect_codex_draft_workers(
-    store: Store,
-    *,
-    message_queue: Path,
-    jobs_dir: Path,
     out: Path,
-    offset: int,
+    report_out: Path | None,
     limit: int,
 ) -> str:
-    packet = read_model(message_queue, AcceptedResearchQueuePacket)
-    decisions, pending, _selected_count = _collect_codex_draft_worker_decisions(
-        packet,
-        jobs_dir=jobs_dir,
-        offset=offset,
-        limit=limit,
-    )
-    if not decisions and pending:
-        store.append_acceptance_event(
-            "collect-codex-draft-workers-pending",
-            {
-                "message_queue": str(message_queue),
-                "jobs_dir": str(jobs_dir),
-                "pending": pending,
-                "offset": offset,
-                "limit": limit,
-            },
-        )
-        raise RuntimeError(
-            f"no completed Codex draft worker result(s); {pending} pending in {jobs_dir}"
-        )
-    artifact = AcceptedResearchDecisionArtifact(
-        source_path=str(jobs_dir),
-        decisions=decisions,
-    )
-    validate_accepted_research_decision_artifact(artifact)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
-    ready = sum(
-        1
-        for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.READY_FOR_DRAFT
-    )
-    needs_review = sum(
-        1
-        for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.NEEDS_REVIEW
-    )
-    store.append_acceptance_event(
-        "collect-codex-draft-workers",
-        {
-            "message_queue": str(message_queue),
-            "jobs_dir": str(jobs_dir),
-            "out": str(out),
-            "completed": len(decisions),
-            "pending": pending,
-            "ready": ready,
-            "needs_review": needs_review,
-            "offset": offset,
-            "limit": limit,
-        },
-    )
-    return (
-        f"collected {len(decisions)} Codex draft worker result(s): {ready} ready, "
-        f"{needs_review} needs review, {pending} pending; wrote {out}"
-    )
+    """Prepare the exact welcome message for every durably accepted connection."""
 
-
-def acceptance_finalize_codex_draft_workers(
-    store: Store,
-    *,
-    message_queue: Path,
-    jobs_dir: Path,
-    message_decisions_out: Path,
-    reviewed_research_out: Path,
-    draft_out: Path,
-    review_out: Path,
-    codex_bin: str,
-    cwd: Path,
-    model: str,
-    reasoning_effort: str,
-    offset: int,
-    limit: int,
-    force: bool,
-    wait_seconds: float,
-    poll_seconds: float,
-    include_drafted: bool,
-    strategy: DraftStrategy,
-) -> str:
-    if wait_seconds < 0:
-        raise ValueError("wait_seconds must be >= 0")
-    if poll_seconds <= 0:
-        raise ValueError("poll_seconds must be > 0")
-    launch_output = acceptance_launch_codex_draft_workers(
-        store,
-        message_queue=message_queue,
-        jobs_dir=jobs_dir,
-        codex_bin=codex_bin,
-        cwd=cwd,
-        model=model,
-        reasoning_effort=reasoning_effort,
-        offset=offset,
-        limit=limit,
-        force=force,
-    )
-    packet = read_model(message_queue, AcceptedResearchQueuePacket)
-    deadline = time.monotonic() + wait_seconds
-    decisions: list[AcceptedResearchDecisionItem] = []
-    pending = 0
-    selected_count = 0
-    while True:
-        decisions, pending, selected_count = _collect_codex_draft_worker_decisions(
-            packet,
-            jobs_dir=jobs_dir,
-            offset=offset,
-            limit=limit,
-        )
-        if selected_count == 0:
-            raise RuntimeError("no accepted message queue item(s) selected")
-        if pending == 0:
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(poll_seconds, remaining))
-    if not decisions:
-        store.append_acceptance_event(
-            "finalize-codex-draft-workers-pending",
-            {
-                "message_queue": str(message_queue),
-                "jobs_dir": str(jobs_dir),
-                "pending": pending,
-                "offset": offset,
-                "limit": limit,
-                "wait_seconds": wait_seconds,
-            },
-        )
-        raise RuntimeError(
-            "no completed Codex draft worker result(s) after waiting "
-            f"{wait_seconds:g} second(s); {pending} pending in {jobs_dir}"
-        )
-    artifact = AcceptedResearchDecisionArtifact(
-        source_path=str(jobs_dir),
-        decisions=decisions,
-    )
-    validate_accepted_research_decision_artifact(artifact)
-    message_decisions_out.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(
-        message_decisions_out,
-        artifact.model_dump(mode="json", by_alias=False),
-    )
-    ready = sum(
-        1
-        for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.READY_FOR_DRAFT
-    )
-    needs_review = sum(
-        1
-        for decision in decisions
-        if decision.status == AcceptedResearchDecisionStatus.NEEDS_REVIEW
-    )
-    acceptance_apply_research_decisions(
-        store,
-        input_path=message_decisions_out,
-        out=reviewed_research_out,
-    )
-    draft_output = acceptance_draft_reviewed_followups(
-        store,
-        reviewed_research=reviewed_research_out,
-        out=draft_out,
-        include_drafted=include_drafted,
-        strategy=strategy,
-        review_out=review_out,
-    )
-    store.append_acceptance_event(
-        "finalize-codex-draft-workers",
-        {
-            "message_queue": str(message_queue),
-            "jobs_dir": str(jobs_dir),
-            "message_decisions_out": str(message_decisions_out),
-            "reviewed_research_out": str(reviewed_research_out),
-            "draft_out": str(draft_out),
-            "review_out": str(review_out),
-            "completed": len(decisions),
-            "pending": pending,
-            "ready": ready,
-            "needs_review": needs_review,
-            "selected": selected_count,
-            "offset": offset,
-            "limit": limit,
-            "wait_seconds": wait_seconds,
-        },
-    )
-    return (
-        "finalized accepted message queue: "
-        f"{launch_output}; collected {len(decisions)} Codex draft worker result(s): "
-        f"{ready} ready, {needs_review} needs review, {pending} pending; "
-        f"message decisions: {message_decisions_out}; "
-        f"reviewed research: {reviewed_research_out}; {draft_output}"
-    )
-
-
-def acceptance_apply_research_decisions(
-    store: Store,
-    *,
-    input_path: Path,
-    out: Path,
-) -> str:
-    artifact = load_accepted_research_decisions(input_path)
-    artifact.source_path = str(input_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
-    ready = sum(
-        1
-        for decision in artifact.decisions
-        if decision.status == AcceptedResearchDecisionStatus.READY_FOR_DRAFT
-    )
-    needs_review = sum(
-        1
-        for decision in artifact.decisions
-        if decision.status == AcceptedResearchDecisionStatus.NEEDS_REVIEW
-    )
-    research_ready = sum(
-        1
-        for decision in artifact.decisions
-        if decision.status == AcceptedResearchDecisionStatus.RESEARCH_READY
-    )
-    skipped = sum(
-        1
-        for decision in artifact.decisions
-        if decision.status == AcceptedResearchDecisionStatus.SKIP
-    )
-    store.append_acceptance_event(
-        "apply-research-decisions",
-        {
-            "input": str(input_path),
-            "out": str(out),
-            "count": len(artifact.decisions),
-            "ready": ready,
-            "research_ready": research_ready,
-            "needs_review": needs_review,
-            "skipped": skipped,
-        },
-    )
-    return (
-        f"applied accepted research decisions: {ready} ready, "
-        f"{research_ready} research ready, {needs_review} needs review, "
-        f"{skipped} skipped; wrote {out}"
-    )
-
-
-def acceptance_draft_reviewed_followups(
-    store: Store,
-    *,
-    reviewed_research: Path,
-    out: Path | None,
-    include_drafted: bool,
-    strategy: DraftStrategy,
-    review_out: Path | None,
-) -> str:
-    artifact = read_model(reviewed_research, AcceptedResearchDecisionArtifact)
     followups = store.load_acceptance_followup_ledger()
-    if include_drafted:
-        selected = artifact
-    else:
-        selected = artifact.model_copy(
-            update={
-                "decisions": [
-                    decision
-                    for decision in artifact.decisions
-                    if not followups.has_draft_for(decision.candidate)
-                ]
-            }
-        )
-    report_path = out or store.default_acceptance_followup_report_path()
-    report = build_draft_report_from_reviewed_research(
-        selected, strategy, str(reviewed_research)
-    )
-    add_lead_review_context_to_draft_report(report, store.load_lead_ledger())
+    followups_by_key = {record.key: record for record in followups.drafts}
+    candidates = []
+    for candidate in store.load_acceptance_ledger().accepted_connections():
+        existing = followups_by_key.get(accepted_followup_candidate_key(candidate))
+        if existing is not None and existing.terminal():
+            continue
+        candidates.append(candidate)
+    if limit > 0:
+        candidates = candidates[:limit]
+    lead_ledger = store.load_lead_ledger()
+    items = [accepted_greeting_eligibility_item(candidate, lead_ledger) for candidate in candidates]
+    approved = AcceptedGreetingEligibilityArtifact(items=items)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(out, approved.model_dump(mode="json", by_alias=False))
+    markdown_out = out.with_suffix(".md")
+    rendered = render_greeting_eligibility_markdown(approved)
+    markdown_out.write_text(rendered, encoding="utf-8")
+
+    for item in items:
+        if item.status == GreetingEligibilityStatus.ELIGIBLE:
+            continue
+        existing = followups_by_key.get(item.candidate_key)
+        if existing is None or existing.terminal():
+            continue
+        existing.greeting_eligibility_status = item.status
+        existing.original_connection_approved_at = item.original_connection_approved_at
+        existing.original_connection_approval_reason = item.original_connection_approval_reason
+        existing.original_connection_review_text = item.original_connection_review_text
+        existing.updated_at = approved.generated_at
+        existing.warnings = list(dict.fromkeys([*existing.warnings, *item.warnings]))
+
+    report_path = report_out or store.default_acceptance_followup_report_path()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(render_draft_markdown(report), encoding="utf-8")
-    review_path = review_out or report_path.with_suffix(".review.json")
-    review_packet = build_reviewed_accepted_followup_review_packet(
-        report,
-        selected,
-        report_path=report_path,
-        research_path=reviewed_research,
-    )
-    review_markdown_path = write_accepted_followup_review_packet(review_packet, review_path)
-    recorded = followups.record_report(report, str(report_path), str(reviewed_research))
+    report_path.write_text(rendered, encoding="utf-8")
+    recorded = followups.record_welcome_messages(approved, str(report_path))
     store.save_acceptance_followup_ledger(followups)
+
+    ready = sum(item.status == GreetingEligibilityStatus.ELIGIBLE for item in items)
+    needs_review = sum(item.status == GreetingEligibilityStatus.NEEDS_REVIEW for item in items)
+    ineligible = sum(item.status == GreetingEligibilityStatus.INELIGIBLE for item in items)
     store.append_acceptance_event(
-        "draft-reviewed-followups",
+        "prepare-welcome-messages",
         {
-            "reviewed_research": str(reviewed_research),
-            "report_path": str(report_path),
-            "review_path": str(review_path),
-            "review_markdown_path": str(review_markdown_path),
-            "draft_count": len(report.items),
+            "out": str(out),
+            "markdown_out": str(markdown_out),
+            "report_out": str(report_path),
+            "eligible": ready,
+            "needs_review": needs_review,
+            "ineligible": ineligible,
             "recorded": recorded,
-            "strategy": strategy.value,
-            "include_drafted": include_drafted,
+            "eligibility_source": "durable accepted first-degree relationship",
+            "relationship_enrichment": "separate and non-blocking",
+            "message": "exact accepted-connection welcome",
         },
     )
     return (
-        f"accepted follow-up drafts from reviewed research: {len(report.items)} "
-        f"written to {report_path}; review packet: {review_path}; "
-        "stopped before dry-run/send for review"
+        f"prepared welcome messages for durable acceptances: {ready} eligible, "
+        f"{needs_review} needs review, {ineligible} ineligible, {recorded} recorded; "
+        f"eligibility: {out}; report: {report_path}"
     )
 
 
@@ -2126,7 +1893,7 @@ def acceptance_send_followup(
     apply_acceptance_followup_send_result(ledger.drafts[index], result, out_path)
     store.save_acceptance_followup_ledger(ledger)
     store.append_acceptance_event(
-        "send-followup",
+        "send-greeting",
         {
             "id": record_id,
             "name": ledger.drafts[index].name,
@@ -2142,6 +1909,121 @@ def acceptance_send_followup(
     )
 
 
+def acceptance_run_welcome_messages(
+    store: Store,
+    browser: BrowserClient,
+    *,
+    run_limit: int,
+    allow_send: bool,
+) -> str:
+    if run_limit <= 0:
+        raise ValueError("run_limit must be > 0")
+    if not allow_send:
+        raise RuntimeError("welcome-message run requires --allow-send")
+
+    ledger = store.load_acceptance_followup_ledger()
+    sent_before = ledger.welcome_message_sent_count()
+
+    messages: list[str] = []
+    processed = 0
+    deferred_ids: set[str] = set()
+    while processed < run_limit:
+        ledger = store.load_acceptance_followup_ledger()
+        candidates = [
+            record
+            for record in ledger.welcome_message_records()
+            if not record.terminal() and record.id not in deferred_ids
+        ]
+        if not candidates:
+            break
+        record = candidates[0]
+        processed += 1
+
+        retryable_dry_run_classification = (
+            record.status
+            in {
+                AcceptanceFollowupStatus.NOT_MESSAGEABLE,
+                AcceptanceFollowupStatus.BLOCKED,
+                AcceptanceFollowupStatus.SEND_FAILED,
+            }
+            and bool(record.attempts)
+            and record.attempts[-1].dry_run
+        )
+        if record.status == AcceptanceFollowupStatus.DRAFTED or retryable_dry_run_classification:
+            messages.append(
+                acceptance_send_followup(
+                    store,
+                    browser,
+                    record_id=record.id,
+                    dry_run=True,
+                    preview_fill=False,
+                    allow_send=False,
+                )
+            )
+            current = store.load_acceptance_followup_ledger()
+            current_index = current.find_by_id(record.id)
+            if current_index is None:
+                raise RuntimeError(f"accepted follow-up {record.id} disappeared after dry-run")
+            record = current.drafts[current_index]
+            if record.status != AcceptanceFollowupStatus.DRY_RUN_READY:
+                messages.append(
+                    f"welcome deferred {record.id}: message dry-run did not reach a verified "
+                    "ready state"
+                )
+                deferred_ids.add(record.id)
+                continue
+
+        if record.status != AcceptanceFollowupStatus.DRY_RUN_READY:
+            messages.append(
+                f"welcome deferred {record.id}: requires review in status {record.status.value}"
+            )
+            deferred_ids.add(record.id)
+            continue
+        messages.append(
+            acceptance_send_followup(
+                store,
+                browser,
+                record_id=record.id,
+                dry_run=False,
+                preview_fill=False,
+                allow_send=True,
+            )
+        )
+        current = store.load_acceptance_followup_ledger()
+        current_index = current.find_by_id(record.id)
+        if current_index is None:
+            raise RuntimeError(f"accepted follow-up {record.id} disappeared after send")
+        if current.drafts[current_index].status not in {
+            AcceptanceFollowupStatus.SENT,
+            AcceptanceFollowupStatus.CONVERSATION_EXISTS,
+        }:
+            messages.append("welcome run stopped: real send did not reach a terminal safe state")
+            break
+
+    ledger = store.load_acceptance_followup_ledger()
+    sent_after = ledger.welcome_message_sent_count()
+    store.append_acceptance_event(
+        "run-welcome-messages",
+        {
+            "run_limit": run_limit,
+            "processed": processed,
+            "sent_before": sent_before,
+            "sent_after": sent_after,
+        },
+    )
+    if processed == 0:
+        messages.append(
+            f"welcome-message run idle: {sent_after} total messages sent; "
+            "no unsent durable acceptances"
+        )
+    else:
+        messages.append(
+            f"welcome-message run complete: {sent_after - sent_before} sent this run, "
+            f"{sent_after} total"
+        )
+    return "\n".join(messages)
+
+
 def acceptance_retry_send_followup(
     store: Store,
     browser: BrowserClient,
@@ -2150,7 +2032,7 @@ def acceptance_retry_send_followup(
     allow_send: bool,
 ) -> str:
     if not allow_send:
-        raise RuntimeError("retry-send-followup requires --allow-send")
+        raise RuntimeError("retry-send-greeting requires --allow-send")
     messages = [
         acceptance_send_followup(
             store,
@@ -2170,7 +2052,7 @@ def acceptance_retry_send_followup(
         return "\n".join(
             messages
             + [
-                "retry-send-followup stopped: dry-run did not make the follow-up ready",
+                "retry-send-greeting stopped: dry-run did not make the greeting ready",
                 _render_acceptance_followup_send_table([record]),
             ]
         )
@@ -2194,7 +2076,7 @@ def acceptance_send_ready_followups(
     store: Store, browser: BrowserClient, *, limit: int, allow_send: bool
 ) -> str:
     if not allow_send:
-        raise RuntimeError("send-ready-followups requires --allow-send")
+        raise RuntimeError("send-ready-greetings requires --allow-send")
     ledger = store.load_acceptance_followup_ledger()
     ready = ledger.ready(limit)
     if not ready:
@@ -2241,9 +2123,10 @@ def _render_acceptance_followup_send_table(records: Sequence[AcceptanceFollowupR
         return " | ".join(value.ljust(widths[index]) for index, value in enumerate(values))
 
     divider = "-+-".join("-" * width for width in widths)
-    return "\n".join(["Accepted follow-up send summary", render_row(headers), divider] + [
-        render_row(row) for row in rows
-    ])
+    return "\n".join(
+        ["Accepted follow-up send summary", render_row(headers), divider]
+        + [render_row(row) for row in rows]
+    )
 
 
 def acceptance_dry_run_followups(
@@ -2274,16 +2157,9 @@ def load_acceptance_check_candidates(path: Path) -> list[AcceptanceCheckCandidat
     ]
 
 
-def load_accepted_draft_candidates(path: Path) -> list[AcceptedDraftCandidate]:
-    return [
-        AcceptedDraftCandidate.model_validate(item)
-        for item in _load_json_list(path, "accepted draft candidates")
-    ]
-
-
 def _select_queue_items(
-    items: list[AcceptedResearchQueueItem], *, offset: int, limit: int
-) -> list[AcceptedResearchQueueItem]:
+    items: list[RelationshipEnrichmentQueueItem], *, offset: int, limit: int
+) -> list[RelationshipEnrichmentQueueItem]:
     if limit > 0:
         return items[offset : offset + limit]
     if offset > 0:
@@ -2291,64 +2167,81 @@ def _select_queue_items(
     return items
 
 
-def _load_codex_draft_result(path: Path) -> AcceptedCodexDraftResult:
-    data = json.loads(path.read_text())
-    result = AcceptedCodexDraftResult.model_validate(data)
-    if result.status not in {
-        AcceptedResearchDecisionStatus.READY_FOR_DRAFT,
-        AcceptedResearchDecisionStatus.NEEDS_REVIEW,
-    }:
-        raise ValueError(f"unexpected Codex draft status in {path}: {result.status.value}")
-    if not _non_empty(result.reason):
-        raise ValueError(f"Codex draft result is missing reason: {path}")
-    return result
-
-
-def _collect_codex_draft_worker_decisions(
-    packet: AcceptedResearchQueuePacket,
+def _load_codex_enrichment_result(
+    path: Path,
     *,
-    jobs_dir: Path,
-    offset: int,
-    limit: int,
-) -> tuple[list[AcceptedResearchDecisionItem], int, int]:
-    items = _select_queue_items(packet.items, offset=offset, limit=limit)
-    decisions: list[AcceptedResearchDecisionItem] = []
-    pending = 0
-    for item in items:
-        result_path = jobs_dir / item.followup_id / "result.json"
-        if not result_path.exists():
-            pending += 1
-            continue
-        result = _load_codex_draft_result(result_path)
-        decisions.append(_codex_result_to_research_decision(item, result))
-    return decisions, pending, len(items)
-
-
-def _load_codex_research_result(path: Path) -> AcceptedCodexResearchResult:
+    expected_criterion_ids: tuple[str, ...],
+) -> CodexRelationshipEnrichmentResult:
     data = json.loads(path.read_text())
-    result = AcceptedCodexResearchResult.model_validate(data)
+    result = CodexRelationshipEnrichmentResult.model_validate(data)
     if result.status not in {
-        AcceptedResearchDecisionStatus.RESEARCH_READY,
-        AcceptedResearchDecisionStatus.NEEDS_REVIEW,
-        AcceptedResearchDecisionStatus.SKIP,
+        RelationshipEnrichmentDecisionStatus.ENRICHED,
+        RelationshipEnrichmentDecisionStatus.NEEDS_REVIEW,
+        RelationshipEnrichmentDecisionStatus.SKIP,
     }:
-        raise ValueError(f"unexpected Codex research status in {path}: {result.status.value}")
-    if result.status == AcceptedResearchDecisionStatus.RESEARCH_READY:
+        raise ValueError(f"unexpected Codex enrichment status in {path}: {result.status.value}")
+    validate_commercial_criterion_evidence(
+        result.criterion_evidence,
+        result.research_evidence,
+        expected_criterion_ids,
+        label=f"Codex enrichment result {path}",
+    )
+    if result.status == RelationshipEnrichmentDecisionStatus.ENRICHED:
         if result.confidence is None:
-            raise ValueError(f"Codex research result is missing confidence: {path}")
+            raise ValueError(f"Codex enrichment result is missing confidence: {path}")
         if not result.research_evidence:
-            raise ValueError(f"Codex research result is missing research_evidence: {path}")
+            raise ValueError(f"Codex enrichment result is missing research_evidence: {path}")
+        if result.relationship_role not in {
+            RelationshipRole.BUYER,
+            RelationshipRole.REFERRAL_PARTNER,
+        }:
+            raise ValueError(
+                f"Codex enrichment result has no active consulting relationship role: {path}"
+            )
+        relationship_fields = {
+            "priority": result.priority,
+            "visible_signal": result.visible_signal,
+            "followup_reason": result.followup_reason,
+            "next_useful_action": result.next_useful_action,
+        }
+        missing = [
+            field
+            for field, value in relationship_fields.items()
+            if value is None or (isinstance(value, str) and not value.strip())
+        ]
+        if missing:
+            raise ValueError(
+                f"Codex enrichment result is missing relationship fields "
+                f"{', '.join(missing)}: {path}"
+            )
+        if result.permission_boundary != "review_only":
+            raise ValueError(
+                f"Codex enrichment result permission boundary is not review_only: {path}"
+            )
+        if (
+            result.signal_type == RelationshipSignalType.LINKEDIN_POST
+            and not (result.signal_url or "").strip()
+        ):
+            raise ValueError(f"Codex enrichment LinkedIn post signal has no URL: {path}")
     return result
 
 
-def _codex_research_result_to_decision(
-    item: AcceptedResearchQueueItem,
-    result: AcceptedCodexResearchResult,
-) -> AcceptedResearchDecisionItem:
+def _codex_enrichment_result_to_decision(
+    item: RelationshipEnrichmentQueueItem,
+    result: CodexRelationshipEnrichmentResult,
+    *,
+    expected_commercial_context: CommercialContextReference,
+) -> RelationshipEnrichmentDecision:
     if result.candidate_key != item.candidate_key:
         raise ValueError(
-            "Codex research result candidate_key mismatch: "
+            "Codex enrichment result candidate_key mismatch: "
             f"expected {item.candidate_key}, got {result.candidate_key}"
+        )
+    if result.commercial_context != expected_commercial_context:
+        raise ValueError(
+            "Codex enrichment result commercial_context mismatch: "
+            f"expected {expected_commercial_context.model_dump(mode='json')}, "
+            f"got {result.commercial_context.model_dump(mode='json')}"
         )
     evidence_urls = list(result.evidence_urls)
     for evidence in result.research_evidence:
@@ -2366,83 +2259,21 @@ def _codex_research_result_to_decision(
         "official_company_url": result.official_company_url,
         "evidence_urls": evidence_urls,
         "research_evidence": result.research_evidence,
+        "commercial_context": result.commercial_context,
+        "criterion_evidence": result.criterion_evidence,
+        "unknowns": result.unknowns,
         "notes": result.notes,
         "warnings": [*item.decision.warnings, *result.warnings],
-        "template_key": result.template_key,
-        "angle": result.angle,
-        "proposed_message": None,
+        "relationship_role": result.relationship_role,
+        "priority": result.priority,
+        "signal_type": result.signal_type,
+        "visible_signal": result.visible_signal,
+        "signal_url": result.signal_url,
+        "followup_reason": result.followup_reason,
+        "next_useful_action": result.next_useful_action,
+        "permission_boundary": result.permission_boundary,
     }
-    return AcceptedResearchDecisionItem.model_validate(payload)
-
-
-def _codex_result_to_research_decision(
-    item: AcceptedResearchQueueItem,
-    result: AcceptedCodexDraftResult,
-) -> AcceptedResearchDecisionItem:
-    if result.candidate_key != item.candidate_key:
-        raise ValueError(
-            "Codex draft result candidate_key mismatch: "
-            f"expected {item.candidate_key}, got {result.candidate_key}"
-        )
-    payload = item.decision.model_dump(mode="python", by_alias=False)
-    payload.update(
-        {
-            "followup_id": item.followup_id,
-            "candidate_key": item.candidate_key,
-            "candidate": item.candidate,
-            "status": result.status,
-            "warnings": [*item.decision.warnings, *result.warnings],
-            "notes": _append_note(item.decision.notes, result.reason),
-        }
-    )
-    if result.status == AcceptedResearchDecisionStatus.READY_FOR_DRAFT:
-        payload["proposed_message"] = normalize_reviewed_proposed_message(result.message)
-    else:
-        payload["proposed_message"] = None
-    return AcceptedResearchDecisionItem.model_validate(payload)
-
-
-def _append_note(existing: str | None, note: str) -> str:
-    cleaned = clean_inline(note)
-    if existing and cleaned:
-        return f"{clean_inline(existing)} Draft worker: {cleaned}"
-    if existing:
-        return clean_inline(existing)
-    return f"Draft worker: {cleaned}" if cleaned else ""
-
-
-def load_accepted_research_decisions(path: Path) -> AcceptedResearchDecisionArtifact:
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        raise ValueError(f"accepted research decisions must be a JSON object: {path}")
-    raw_decisions = data.get("decisions")
-    if raw_decisions is None:
-        raw_decisions = data.get("items")
-    if not isinstance(raw_decisions, list):
-        raise ValueError(f"accepted research decisions must contain items/decisions: {path}")
-    decisions: list[AcceptedResearchDecisionItem] = []
-    for raw_item in raw_decisions:
-        if not isinstance(raw_item, dict):
-            raise ValueError(f"accepted research decision item must be an object: {path}")
-        if "decision" in raw_item:
-            decision = raw_item.get("decision") or {}
-            if not isinstance(decision, dict):
-                raise ValueError(f"accepted research decision must be an object: {path}")
-            payload = {
-                **decision,
-                "followup_id": raw_item.get("followup_id"),
-                "candidate_key": raw_item.get("candidate_key"),
-                "candidate": raw_item.get("candidate"),
-            }
-        else:
-            payload = raw_item
-        decisions.append(AcceptedResearchDecisionItem.model_validate(payload))
-    artifact = AcceptedResearchDecisionArtifact(
-        source_path=str(path),
-        decisions=decisions,
-    )
-    validate_accepted_research_decision_artifact(artifact)
-    return artifact
+    return RelationshipEnrichmentDecision.model_validate(payload)
 
 
 def _load_json_list(path: Path, label: str) -> list[object]:

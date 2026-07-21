@@ -91,7 +91,6 @@ AUTOMATION_SPECS: tuple[AutomationPromptSpec, ...] = (
         old_markers=(
             "linkedin-network-run acceptance",
             "scripts/salesnav-acceptance-outcomes.js",
-            "scripts/salesnav-accepted-research.js",
         ),
         new_markers=(
             "uv run linkedin-tools network",
@@ -233,32 +232,6 @@ AUTOMATION_EDIT_REPLACEMENTS: dict[str, tuple[AutomationCommandReplacement, ...]
             new=f"{NETWORK_CMD} acceptance import /tmp/linkedin-acceptance-outcomes.json",
         ),
         AutomationCommandReplacement(
-            old="scripts/salesnav-accepted-research.js",
-            new=(
-                f"{NETWORK_CMD} acceptance research --session auto "
-                "--in /tmp/linkedin-accepted-followups/accepted-candidates.json "
-                "--out /tmp/linkedin-accepted-followups/research-chunks/chunk-<offset>.json "
-                "--offset <offset> --limit <limit> --max-web-results 5 "
-                "--delay-ms 500"
-            ),
-        ),
-        AutomationCommandReplacement(
-            old="linkedin-network-run acceptance draft-followups --session <session>",
-            new=f"{NETWORK_CMD} acceptance draft-followups --session auto",
-        ),
-        AutomationCommandReplacement(
-            old=(
-                "linkedin-network-run acceptance draft-followups --research "
-                "/tmp/linkedin-accepted-followups/accepted-research.json "
-                "--session <session>"
-            ),
-            new=(
-                f"{NETWORK_CMD} acceptance draft-followups "
-                "--research /tmp/linkedin-accepted-followups/accepted-research.json "
-                "--session auto"
-            ),
-        ),
-        AutomationCommandReplacement(
             old="linkedin-network-run acceptance report --min-age-days 1 --max-age-days 45",
             new=f"{NETWORK_CMD} acceptance report --min-age-days 1 --max-age-days 45",
         ),
@@ -349,7 +322,6 @@ AUTOMATION_EDIT_REMOVE_INSTRUCTIONS: dict[str, tuple[str, ...]] = {
     ),
     "linkedin-acceptance-daily": (
         "Remove direct `salesnav-acceptance-outcomes.js` execution steps.",
-        "Remove direct `salesnav-accepted-research.js` execution steps.",
     ),
     "linkedin-acceptance-weekly": (
         "Keep this job report-only; do not add browser classification or drafting.",
