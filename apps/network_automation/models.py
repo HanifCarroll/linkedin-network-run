@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -185,7 +186,22 @@ class AcceptanceStatus(StrEnum):
 
 class AcceptanceObservationPrecision(StrEnum):
     DAILY_SCAN = "daily_scan"
+    LIST_RECONCILIATION = "list_reconciliation"
     CONTROLLER_CONFIRMATION = "controller_confirmation"
+
+
+class AcceptanceEvidenceGrade(StrEnum):
+    CONTROLLER_CONFIRMED = "controller_confirmed"
+    STRUCTURED_FIRST_DEGREE = "structured_first_degree"
+    CONNECTIONS_LIST_FIRST_DEGREE = "connections_list_first_degree"
+    LEGACY_UNVERIFIED = "legacy_unverified"
+    INVALIDATED = "invalidated"
+
+
+class AcceptanceRelationshipStatus(StrEnum):
+    FIRST_DEGREE = "first_degree"
+    SECOND_DEGREE = "second_degree"
+    UNKNOWN = "unknown"
 
 
 class PendingCleanupState(StrEnum):
@@ -275,8 +291,10 @@ class AcceptanceFollowupStatus(StrEnum):
     INVALID_ACCEPTANCE = "invalid_acceptance"
     EXCLUDED = "excluded"
     NOT_MESSAGEABLE = "not_messageable"
+    DIRECT_MESSAGE_UNAVAILABLE = "direct_message_unavailable"
     BLOCKED = "blocked"
     SEND_FAILED = "send_failed"
+    POSSIBLE_SEND = "possible_send"
 
 
 class AcceptanceLeadListStatus(StrEnum):
@@ -1940,6 +1958,8 @@ class AcceptanceOutcomeEvent(AppModel):
     note: str | None = None
     relationship: str | None = None
     evidence: str | None = None
+    evidence_grade: AcceptanceEvidenceGrade | None = None
+    contract_version: str | None = None
 
 
 DURABLY_CONFIRMED_ACCEPTED_NOTE = "durably confirmed accepted during send"
@@ -1964,6 +1984,11 @@ class AcceptanceInvitation(AppModel):
     first_observed_accepted_at: datetime | None = None
     last_observed_unaccepted_at: datetime | None = None
     acceptance_observation_precision: AcceptanceObservationPrecision | None = None
+    acceptance_evidence_grade: AcceptanceEvidenceGrade | None = None
+    current_relationship_status: AcceptanceRelationshipStatus = (
+        AcceptanceRelationshipStatus.UNKNOWN
+    )
+    current_relationship_observed_at: datetime | None = None
     history: list[AcceptanceOutcomeEvent] = Field(default_factory=list)
 
     def key(self) -> str:
@@ -2016,6 +2041,22 @@ class AcceptanceOutcomeRow(AppModel):
     )
     relationship: str | None = None
     evidence: str | None = None
+    evidence_grade: AcceptanceEvidenceGrade | None = Field(
+        default=None,
+        validation_alias=AliasChoices("evidence_grade", "evidenceGrade"),
+    )
+    contract_version: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("contract_version", "contractVersion"),
+    )
+    expected_lead_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("expected_lead_id", "expectedLeadId"),
+    )
+    loaded_lead_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("loaded_lead_id", "loadedLeadId"),
+    )
     note: str | None = None
 
 
@@ -2035,6 +2076,127 @@ class AcceptanceOutcomeArtifact(AppModel):
     )
     complete: bool | None = None
     rows: list[AcceptanceOutcomeRow] = Field(default_factory=list)
+
+
+class AcceptanceListRow(AppModel):
+    name: str | None = None
+    public_profile_url: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_profile_url", "publicProfileUrl")
+    )
+    public_identifier: str | None = Field(
+        default=None, validation_alias=AliasChoices("public_identifier", "publicIdentifier")
+    )
+    profile_urn: str | None = Field(
+        default=None, validation_alias=AliasChoices("profile_urn", "profileUrn")
+    )
+    member_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("member_id", "memberId")
+    )
+    row_index: int = Field(
+        default=0, validation_alias=AliasChoices("row_index", "rowIndex")
+    )
+
+    def identities(self) -> set[str]:
+        result: set[str] = set()
+        if self.member_id:
+            result.add(f"member:{self.member_id}")
+        identifier = self.public_identifier or public_profile_identifier(
+            self.public_profile_url
+        )
+        if identifier:
+            result.add(f"public:{identifier}")
+        return result
+
+
+class AcceptanceListSection(AppModel):
+    url: str
+    complete: bool
+    loaded_count: int = Field(
+        default=0, validation_alias=AliasChoices("loaded_count", "loadedCount")
+    )
+    load_actions: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("load_actions", "loadActions"),
+    )
+    stop_reason: str | None = Field(
+        default=None, validation_alias=AliasChoices("stop_reason", "stopReason")
+    )
+    sort_order: str | None = Field(
+        default=None, validation_alias=AliasChoices("sort_order", "sortOrder")
+    )
+    identity_missing_count: int = Field(
+        default=0,
+        validation_alias=AliasChoices("identity_missing_count", "identityMissingCount"),
+    )
+    rows: list[AcceptanceListRow] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AcceptanceListArtifact(AppModel):
+    captured_at: datetime = Field(
+        default_factory=now_utc,
+        validation_alias=AliasChoices("captured_at", "capturedAt"),
+    )
+    contract_version: str = Field(
+        validation_alias=AliasChoices("contract_version", "contractVersion")
+    )
+    baseline_only: bool = Field(
+        default=False, validation_alias=AliasChoices("baseline_only", "baselineOnly")
+    )
+    connection_delta_complete: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "connection_delta_complete", "connectionDeltaComplete"
+        ),
+    )
+    previous_watermark: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("previous_watermark", "previousWatermark"),
+    )
+    next_watermark: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("next_watermark", "nextWatermark"),
+    )
+    pending: AcceptanceListSection
+    connections: AcceptanceListSection
+    warnings: list[str] = Field(default_factory=list)
+
+    def blocker(self) -> str | None:
+        blockers: list[str] = []
+        if self.contract_version != "acceptance-list-reconciliation-v1":
+            blockers.append(
+                f"unexpected acceptance list contract {self.contract_version!r}"
+            )
+        if not self.pending.complete:
+            blockers.append(
+                "sent-invitations capture incomplete"
+                + (f": {self.pending.stop_reason}" if self.pending.stop_reason else "")
+            )
+        if not self.connections.complete:
+            blockers.append(
+                "connections capture incomplete"
+                + (
+                    f": {self.connections.stop_reason}"
+                    if self.connections.stop_reason
+                    else ""
+                )
+            )
+        if not self.baseline_only and not self.connection_delta_complete:
+            blockers.append("recent-connections capture did not reach the prior watermark")
+        return "; ".join(blockers) if blockers else None
+
+
+class AcceptanceListState(AppModel):
+    last_successful_capture_at: datetime | None = None
+    watermark: list[str] = Field(default_factory=list)
+
+
+class AcceptanceListReconciliationSummary(AppModel):
+    accepted: int = 0
+    pending: int = 0
+    unchanged_unknown: int = 0
+    missing_identity: int = 0
+    ambiguous: int = 0
 
 
 class AcceptanceImportSummary(AppModel):
@@ -2058,6 +2220,7 @@ class AcceptanceCheckCandidate(AppModel):
     sent_at: datetime
     latest_status: AcceptanceStatus
     latest_checked_at: datetime | None
+    reconciliation: bool = False
 
 
 class SavedSearchRow(AppModel):
@@ -2212,12 +2375,28 @@ class AcceptanceLedger(AppModel):
                     if event.status == CandidateStatus.ACCEPTED
                     else None
                 ),
+                acceptance_evidence_grade=(
+                    AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED
+                    if event.status == CandidateStatus.ACCEPTED
+                    else None
+                ),
+                current_relationship_status=(
+                    AcceptanceRelationshipStatus.FIRST_DEGREE
+                    if event.status == CandidateStatus.ACCEPTED
+                    else AcceptanceRelationshipStatus.UNKNOWN
+                ),
+                current_relationship_observed_at=(
+                    event.at if event.status == CandidateStatus.ACCEPTED else None
+                ),
                 history=(
                     [
                         AcceptanceOutcomeEvent(
                             at=event.at,
                             status=AcceptanceStatus.ACCEPTED,
                             note="durably confirmed accepted during send",
+                            relationship="1st",
+                            evidence_grade=AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED,
+                            contract_version="network-send-controller-v1",
                         )
                     ]
                     if event.status == CandidateStatus.ACCEPTED
@@ -2244,6 +2423,8 @@ class AcceptanceLedger(AppModel):
                     note=sanitized.note,
                     relationship=sanitized.relationship,
                     evidence=sanitized.evidence,
+                    evidence_grade=sanitized.evidence_grade,
+                    contract_version=sanitized.contract_version,
                 )
                 if (
                     sanitized.status == AcceptanceStatus.ACCEPTED
@@ -2266,6 +2447,30 @@ class AcceptanceLedger(AppModel):
                     invitation.last_observed_unaccepted_at = checked_at
                 invitation.latest_status = sanitized.status
                 invitation.latest_checked_at = checked_at
+                if sanitized.status == AcceptanceStatus.ACCEPTED:
+                    invitation.acceptance_evidence_grade = sanitized.evidence_grade
+                    invitation.acceptance_observation_precision = (
+                        AcceptanceObservationPrecision.DAILY_SCAN
+                    )
+                    invitation.current_relationship_status = (
+                        AcceptanceRelationshipStatus.FIRST_DEGREE
+                    )
+                    invitation.current_relationship_observed_at = checked_at
+                elif sanitized.relationship == "2nd":
+                    invitation.acceptance_evidence_grade = AcceptanceEvidenceGrade.INVALIDATED
+                    invitation.current_relationship_status = (
+                        AcceptanceRelationshipStatus.SECOND_DEGREE
+                    )
+                    invitation.current_relationship_observed_at = checked_at
+                elif sanitized.status in {
+                    AcceptanceStatus.UNKNOWN,
+                    AcceptanceStatus.FAILED,
+                    AcceptanceStatus.BLOCKED,
+                }:
+                    invitation.current_relationship_status = (
+                        AcceptanceRelationshipStatus.UNKNOWN
+                    )
+                    invitation.current_relationship_observed_at = checked_at
                 invitation.history.append(event)
                 summary.matched += 1
                 matched = True
@@ -2273,6 +2478,91 @@ class AcceptanceLedger(AppModel):
             if not matched:
                 summary.unmatched += 1
         return summary
+
+    def quarantine_unverified_acceptances(self, *, at: datetime | None = None) -> list[str]:
+        current = at or now_utc()
+        quarantined: list[str] = []
+        for invitation in self.invitations:
+            if invitation.latest_status != AcceptanceStatus.ACCEPTED:
+                continue
+            accepted_event = latest_acceptance_event(invitation)
+            grade = acceptance_event_evidence_grade(accepted_event)
+            if grade in {
+                AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED,
+                AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE,
+                AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE,
+            } and accepted_event is not None:
+                if accepted_event.evidence_grade is None:
+                    accepted_event.evidence_grade = grade
+                if accepted_event.contract_version is None:
+                    accepted_event.contract_version = (
+                        "network-send-controller-v1"
+                        if grade == AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED
+                        else (
+                            "acceptance-list-reconciliation-v1"
+                            if grade
+                            == AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE
+                            else "acceptance-relationship-v2"
+                        )
+                    )
+                invitation.acceptance_evidence_grade = grade
+                invitation.current_relationship_status = (
+                    AcceptanceRelationshipStatus.FIRST_DEGREE
+                )
+                invitation.current_relationship_observed_at = (
+                    invitation.latest_checked_at or accepted_event.at
+                )
+                continue
+            invitation.acceptance_evidence_grade = AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+            if accepted_event is not None:
+                accepted_event.evidence_grade = AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+                accepted_event.contract_version = "legacy-unstructured-v1"
+            invitation.latest_status = AcceptanceStatus.INVALIDATED
+            invitation.current_relationship_status = AcceptanceRelationshipStatus.UNKNOWN
+            invitation.current_relationship_observed_at = None
+            invitation.history.append(
+                AcceptanceOutcomeEvent(
+                    at=current,
+                    status=AcceptanceStatus.INVALIDATED,
+                    relationship=None,
+                    evidence_grade=AcceptanceEvidenceGrade.LEGACY_UNVERIFIED,
+                    contract_version="acceptance-evidence-quarantine-v1",
+                    note=(
+                        "legacy acceptance evidence quarantined pending structured "
+                        "first-degree reconciliation"
+                    ),
+                )
+            )
+            quarantined.append(invitation.key())
+        return quarantined
+
+    def legacy_acceptances_for_reconciliation(self) -> list[AcceptanceInvitation]:
+        return [
+            invitation
+            for invitation in self.invitations
+            if invitation.acceptance_evidence_grade
+            == AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+            and invitation.profile_url is not None
+            and (
+                invitation.current_relationship_observed_at is None
+                or _latest_relationship_contract_was_unavailable(invitation)
+            )
+        ]
+
+    def clear_unavailable_relationship_observations(self) -> list[str]:
+        cleared: list[str] = []
+        for invitation in self.invitations:
+            if (
+                invitation.acceptance_evidence_grade
+                == AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+                and invitation.current_relationship_status
+                == AcceptanceRelationshipStatus.UNKNOWN
+                and invitation.current_relationship_observed_at is not None
+                and _latest_relationship_contract_was_unavailable(invitation)
+            ):
+                invitation.current_relationship_observed_at = None
+                cleared.append(invitation.key())
+        return cleared
 
     def weak_message_acceptances(self) -> list[AcceptanceInvitation]:
         result: list[AcceptanceInvitation] = []
@@ -2296,6 +2586,9 @@ class AcceptanceLedger(AppModel):
             accepted_event = latest_acceptance_event(invitation)
             invitation.latest_status = AcceptanceStatus.INVALIDATED
             invitation.latest_checked_at = current
+            invitation.acceptance_evidence_grade = AcceptanceEvidenceGrade.INVALIDATED
+            invitation.current_relationship_status = AcceptanceRelationshipStatus.UNKNOWN
+            invitation.current_relationship_observed_at = current
             invitation.history.append(
                 AcceptanceOutcomeEvent(
                     at=current,
@@ -2303,6 +2596,8 @@ class AcceptanceLedger(AppModel):
                     note=note,
                     relationship=accepted_event.relationship if accepted_event else None,
                     evidence=accepted_event.evidence if accepted_event else None,
+                    evidence_grade=AcceptanceEvidenceGrade.INVALIDATED,
+                    contract_version="legacy-message-invalidation-v1",
                 )
             )
             invalidated_keys.append(invitation.key())
@@ -2392,10 +2687,12 @@ class AcceptanceLedger(AppModel):
         for invitation in self.invitations:
             if invitation.latest_status != AcceptanceStatus.ACCEPTED:
                 continue
+            accepted_event = latest_acceptance_event(invitation)
+            if not accepted_event or not accepted_event_confirms_followup(accepted_event):
+                continue
             accepted_at = invitation.first_observed_accepted_at
             if accepted_at is None:
-                event = latest_acceptance_event(invitation)
-                accepted_at = event.at if event is not None else None
+                accepted_at = accepted_event.at
             if accepted_at is None:
                 continue
             accepted_date = accepted_at.astimezone(zone).date()
@@ -2481,16 +2778,25 @@ def sanitize_acceptance_outcome(
         if row.note and row.note.strip():
             note = f"{row.note.strip()}; {note}"
         return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
-    if row.evidence is None:
-        note = "accepted outcome did not include candidate identity evidence"
+    if (
+        row.evidence_grade != AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE
+        or row.contract_version != "acceptance-relationship-v2"
+    ):
+        note = "accepted outcome did not include structured first-degree provenance"
         if row.note and row.note.strip():
             note = f"{row.note.strip()}; {note}"
         return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
-    if acceptance_evidence_matches_candidate(
-        row.evidence, row.name
-    ) or acceptance_evidence_matches_candidate(row.evidence, invitation.name):
+    expected_lead_id = sales_nav_lead_id(invitation.profile_url)
+    if (
+        expected_lead_id
+        and row.expected_lead_id == expected_lead_id
+        and row.loaded_lead_id == expected_lead_id
+    ):
         return row
-    note = "accepted outcome evidence did not match candidate identity; downgraded to unknown"
+    note = (
+        "accepted outcome did not match the exact Sales Navigator lead identity; "
+        "downgraded to unknown"
+    )
     if row.note and row.note.strip():
         note = f"{row.note.strip()}; {note}"
     return row.model_copy(update={"status": AcceptanceStatus.UNKNOWN, "note": note})
@@ -2503,16 +2809,61 @@ def latest_acceptance_event(invitation: AcceptanceInvitation) -> AcceptanceOutco
     return None
 
 
-def accepted_event_confirms_followup(event: AcceptanceOutcomeEvent) -> bool:
-    if event.note == DURABLY_CONFIRMED_ACCEPTED_NOTE:
-        return True
-    if event.note == WEAK_MESSAGE_ACCEPTED_NOTE:
+def _latest_relationship_contract_was_unavailable(
+    invitation: AcceptanceInvitation,
+) -> bool:
+    if not invitation.history:
         return False
-    return event.relationship == "1st"
+    event = invitation.history[-1]
+    if event.contract_version != "acceptance-relationship-v2" or not event.evidence:
+        return False
+    try:
+        evidence = json.loads(event.evidence)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(evidence, dict):
+        return False
+    top_card_count: object = evidence.get("topCardCount")
+    return top_card_count != 1
+
+
+def accepted_event_confirms_followup(event: AcceptanceOutcomeEvent) -> bool:
+    return acceptance_event_evidence_grade(event) in {
+        AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED,
+        AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE,
+        AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE,
+    }
+
+
+def acceptance_event_evidence_grade(
+    event: AcceptanceOutcomeEvent | None,
+) -> AcceptanceEvidenceGrade:
+    if event is None:
+        return AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+    if event.evidence_grade is not None:
+        return event.evidence_grade
+    if event.note == DURABLY_CONFIRMED_ACCEPTED_NOTE:
+        return AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED
+    return AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
 
 
 def acceptance_row_confirms_first_degree(row: AcceptanceOutcomeRow) -> bool:
-    return row.relationship == "1st" and row.note != WEAK_MESSAGE_ACCEPTED_NOTE
+    return (
+        row.relationship == "1st"
+        and row.evidence_grade == AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE
+        and row.contract_version == "acceptance-relationship-v2"
+    )
+
+
+def sales_nav_lead_id(profile_url: str | None) -> str | None:
+    if not profile_url:
+        return None
+    path = urlparse(profile_url).path
+    prefix = "/sales/lead/"
+    if not path.startswith(prefix):
+        return None
+    lead_id = path.removeprefix(prefix).split(",", 1)[0].strip()
+    return lead_id or None
 
 
 def acceptance_evidence_matches_candidate(evidence: str, name: str) -> bool:
@@ -2704,6 +3055,9 @@ class AcceptanceFollowupAttempt(AppModel):
     note: str | None = None
     out_path: str
     diagnostics: dict[str, str] = Field(default_factory=dict)
+    transaction_id: str | None = None
+    message_sha256: str | None = None
+    possible_send: bool = False
 
 
 class AcceptanceLeadListAttempt(AppModel):
@@ -2755,6 +3109,7 @@ class AcceptanceFollowupRecord(AppModel):
             AcceptanceFollowupStatus.CONVERSATION_EXISTS,
             AcceptanceFollowupStatus.INVALID_ACCEPTANCE,
             AcceptanceFollowupStatus.EXCLUDED,
+            AcceptanceFollowupStatus.DIRECT_MESSAGE_UNAVAILABLE,
         }
 
 
@@ -2842,6 +3197,31 @@ class AcceptanceFollowupLedger(AppModel):
             record.updated_at = current
             if note not in record.warnings:
                 record.warnings.append(note)
+            updated += 1
+        return updated
+
+    def restore_verified_acceptance_keys(
+        self,
+        keys: set[str],
+        *,
+        at: datetime | None = None,
+    ) -> int:
+        current = at or now_utc()
+        updated = 0
+        for record in self.drafts:
+            if (
+                record.key not in keys
+                or record.status != AcceptanceFollowupStatus.INVALID_ACCEPTANCE
+            ):
+                continue
+            record.status = AcceptanceFollowupStatus.DRAFTED
+            record.updated_at = current
+            record.warnings = [
+                warning
+                for warning in record.warnings
+                if "acceptance evidence" not in warning.lower()
+                and "legacy acceptance" not in warning.lower()
+            ]
             updated += 1
         return updated
 
@@ -3045,6 +3425,9 @@ class AcceptanceFollowupSendResult(AppModel):
     visible_actions: Any = Field(
         default=None, validation_alias=AliasChoices("visible_actions", "visibleActions")
     )
+    profile_identity: Any = Field(
+        default=None, validation_alias=AliasChoices("profile_identity", "profileIdentity")
+    )
     search_row_action: Any = Field(
         default=None, validation_alias=AliasChoices("search_row_action", "searchRowAction")
     )
@@ -3071,7 +3454,34 @@ class AcceptanceFollowupSendResult(AppModel):
     composer_selector: str | None = Field(
         default=None, validation_alias=AliasChoices("composer_selector", "composerSelector")
     )
+    composer_contract: Any = Field(
+        default=None, validation_alias=AliasChoices("composer_contract", "composerContract")
+    )
     body: str | None = None
+    transaction_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("transaction_id", "transactionId")
+    )
+    message_sha256: str | None = Field(
+        default=None, validation_alias=AliasChoices("message_sha256", "messageSha256")
+    )
+    send_confirmation: Any = Field(
+        default=None, validation_alias=AliasChoices("send_confirmation", "sendConfirmation")
+    )
+
+
+class AcceptanceFollowupConfirmationArtifact(AppModel):
+    followup_id: str
+    transaction_id: str
+    candidate_name: str
+    profile_url: str
+    recipient_lead_id: str
+    message_sha256: str
+    exact_message: str
+    exact_match_count: int
+    direction: str
+    observed_at: datetime
+    source: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class AcceptanceLeadListSaveResult(AppModel):
@@ -3125,6 +3535,25 @@ def is_public_linkedin_profile_url(value: str | None) -> bool:
     )
 
 
+def public_profile_identifier(value: str | None) -> str | None:
+    if not is_public_linkedin_profile_url(value):
+        return None
+    parsed = urlparse(value or "")
+    parts = [part for part in parsed.path.split("/") if part]
+    return parts[1] if len(parts) >= 2 and parts[0] == "in" else None
+
+
+def acceptance_invitation_identities(invitation: AcceptanceInvitation) -> set[str]:
+    result: set[str] = set()
+    member_id = sales_nav_lead_id(invitation.profile_url)
+    if member_id:
+        result.add(f"member:{member_id}")
+    identifier = public_profile_identifier(invitation.public_profile_url)
+    if identifier:
+        result.add(f"public:{identifier}")
+    return result
+
+
 def is_sales_nav_profile_url(value: str | None) -> bool:
     if not value:
         return False
@@ -3148,6 +3577,9 @@ def apply_acceptance_followup_send_result(
             note=acceptance_followup_result_note(result),
             out_path=out_path,
             diagnostics=acceptance_followup_diagnostics(result),
+            transaction_id=result.transaction_id,
+            message_sha256=result.message_sha256,
+            possible_send=result.status in {"sent-clicked", "send-confirmation-missing"},
         )
     )
     record.status = acceptance_followup_status_for_result(result)
@@ -3186,10 +3618,14 @@ def acceptance_followup_status_for_result(
 ) -> AcceptanceFollowupStatus:
     if result.status in {"dry-run-messageable", "preview-filled"}:
         return AcceptanceFollowupStatus.DRY_RUN_READY
-    if result.status == "sent-clicked":
+    if result.status == "sent-confirmed":
         return AcceptanceFollowupStatus.SENT
+    if result.status in {"sent-clicked", "send-confirmation-missing"}:
+        return AcceptanceFollowupStatus.POSSIBLE_SEND
     if result.status == "not-messageable":
         return AcceptanceFollowupStatus.NOT_MESSAGEABLE
+    if result.status == "direct-message-unavailable":
+        return AcceptanceFollowupStatus.DIRECT_MESSAGE_UNAVAILABLE
     if result.status == "conversation-exists":
         return AcceptanceFollowupStatus.CONVERSATION_EXISTS
     if result.status == "blocked":
@@ -3211,6 +3647,9 @@ def acceptance_followup_diagnostics(result: AcceptanceFollowupSendResult) -> dic
         "message_containers": result.message_containers,
         "action": result.action,
         "visible_actions": result.visible_actions,
+        "profile_identity": result.profile_identity,
+        "send_confirmation": result.send_confirmation,
+        "composer_contract": result.composer_contract,
     }.items():
         if value is not None:
             diagnostics[key] = compact_json(value)
@@ -3233,6 +3672,8 @@ def acceptance_followup_result_note(result: AcceptanceFollowupSendResult) -> str
         parts.append("body " + compact_json(result.body_fill))
     if result.send is not None:
         parts.append("send " + compact_json(result.send))
+    if result.send_confirmation is not None:
+        parts.append("send_confirmation " + compact_json(result.send_confirmation))
     if not parts:
         return None
     return "; ".join(parts)[:1000]

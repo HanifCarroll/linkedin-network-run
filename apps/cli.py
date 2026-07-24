@@ -6,7 +6,14 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-APP_NAMES = ("network", "recruiter-agency", "opportunity", "comments", "ui", "cutover")
+APP_NAMES = (
+    "incident",
+    "network",
+    "opportunity",
+    "comments",
+    "ui",
+    "cutover",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,9 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     from apps.comment_extractor.cli import main as comments_main
     from apps.cutover.cli import main as cutover_main
+    from apps.incident_cli import main as incident_main
     from apps.network_automation.cli import main as network_main
     from apps.opportunity_intel.cli import main as opportunity_main
-    from apps.recruiter_agency_outreach.cli import main as recruiter_agency_main
     from apps.review_ui.cli import main as ui_main
 
     args = list(sys.argv[1:] if argv is None else argv)
@@ -43,8 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Let the app namespace print its own help whenever possible.
         remaining = ["--help"]
     dispatchers = {
+        "incident": incident_main,
         "network": network_main,
-        "recruiter-agency": recruiter_agency_main,
         "opportunity": opportunity_main,
         "comments": comments_main,
         "ui": ui_main,

@@ -25,18 +25,6 @@ from apps.network_automation.models import (
 from apps.network_automation.store import Store as NetworkStore
 from apps.opportunity_intel.sources import load_query_pack, load_source_registry
 from apps.opportunity_intel.store import OpportunityStore, stable_comment_key
-from apps.recruiter_agency_outreach.models import (
-    AgencyAccount,
-    AgencyAccountStatus,
-    Lead,
-    LeadStatus,
-    LeadType,
-    MessageDraft,
-    MessageStatus,
-    OutreachState,
-    RunEvent,
-)
-from apps.recruiter_agency_outreach.storage import Store as RecruiterStore
 from apps.review_ui import create_app
 from packages.linkedin_ui import ActionResult, ReviewAction, list_review_actions
 
@@ -66,7 +54,6 @@ def client(tmp_path: Path) -> tuple[TestClient, OpportunityStore, str]:
                 access_token=TOKEN,
                 opportunity_store=store,
                 network_store=NetworkStore(tmp_path / "network"),
-                recruiter_store=RecruiterStore(tmp_path / "recruiter"),
             )
         ),
         store,
@@ -80,7 +67,6 @@ def test_review_pages_render_required_surfaces(tmp_path: Path) -> None:
     overview = test_client.get("/")
     opportunities = test_client.get("/opportunities")
     network = test_client.get("/network")
-    recruiter = test_client.get("/recruiter-agency")
     browser = test_client.get("/browser")
     dashboard_alias = test_client.get("/dashboard")
 
@@ -92,43 +78,7 @@ def test_review_pages_render_required_surfaces(tmp_path: Path) -> None:
     assert "Experiment Report" in opportunities.text
     assert "Calibration Queue" in opportunities.text
     assert "Current Run Status" in network.text
-    assert "Lead Queue, Drafts, And Messageability" in recruiter.text
     assert "Latest Playwriter Artifacts And Failed Actions" in browser.text
-
-
-def test_review_ui_reads_network_and_recruiter_state(tmp_path: Path) -> None:
-    opportunity_store, _ = _seed_opportunity_store(tmp_path)
-    network_store = _seed_network_store(tmp_path / "network")
-    recruiter_store = _seed_recruiter_store(tmp_path / "recruiter")
-    test_client = TestClient(
-        create_app(
-            access_token=TOKEN,
-            opportunity_store=opportunity_store,
-            network_store=network_store,
-            recruiter_store=recruiter_store,
-        )
-    )
-
-    overview = test_client.get("/")
-    network = test_client.get("/network")
-    recruiter = test_client.get("/recruiter-agency")
-
-    assert "Stubbed read models" not in overview.text
-    assert "Live read models" in overview.text
-    assert "Sent Founder" in network.text
-    assert "Queued CTO" in network.text
-    assert "Hi Accepted" in network.text
-    assert "Excluded Lead" in network.text
-    assert "not applicable" in network.text
-    assert "LinkedIn profile" in network.text
-    assert "Old Invite" in network.text
-    assert "Thread 4 read model pending" not in network.text
-    assert "Acme Talent" in recruiter.text
-    assert "Riley Recruiter" in recruiter.text
-    assert "Jordan Agency" in recruiter.text
-    assert "Hi Riley" in recruiter.text
-    assert "Hi Jordan" in recruiter.text
-    assert "Thread 5 read model pending" not in recruiter.text
 
 
 def test_opportunity_page_uses_registry_when_sqlite_is_empty(tmp_path: Path) -> None:
@@ -308,111 +258,3 @@ def _seed_network_store(path: Path) -> NetworkStore:
     )
     store.save_pending(pending)
     return store
-
-
-def _seed_recruiter_store(path: Path) -> RecruiterStore:
-    store = RecruiterStore(path)
-    state = OutreachState(
-        leads=[
-            Lead(
-                id="lead_recruiter",
-                source="ASAP - Contract Recruiter Titles",
-                name="Riley Recruiter",
-                first_name="Riley",
-                lead_type=LeadType.CONTRACT_RECRUITER,
-                status=LeadStatus.ELIGIBLE,
-                message_status=MessageStatus.DRAFTED,
-                fit_score=90,
-                profile_url="https://www.linkedin.com/sales/lead/riley",
-                title="Senior Technical Recruiter",
-                company="Riley Recruiting",
-                draft=MessageDraft(
-                    subject="Product engineering support",
-                    body="Hi Riley - I help teams cover product-engineering and AI-product work.",
-                    angle="recruiter",
-                ),
-            ),
-            Lead(
-                id="lead_agency",
-                source="ASAP - Agency Owners Delivery",
-                name="Jordan Agency",
-                first_name="Jordan",
-                lead_type=LeadType.AGENCY_FOUNDER,
-                status=LeadStatus.ELIGIBLE,
-                message_status=MessageStatus.DRY_RUN_READY,
-                fit_score=85,
-                profile_url="https://www.linkedin.com/sales/lead/jordan",
-                title="Founder",
-                company="Acme Talent",
-                agency_account_id="acct_acme",
-                agency_account_name="Acme Talent",
-                draft=MessageDraft(
-                    subject="Extra product build capacity",
-                    body="Hi Jordan - I can help when client product builds need senior execution.",
-                    angle="agency",
-                ),
-            ),
-        ],
-        agency_accounts=[
-            AgencyAccount(
-                id="acct_acme",
-                source="ASAP - Agency Owners Delivery",
-                name="Acme Talent",
-                status=AgencyAccountStatus.QUALIFIED,
-                fit_score=88,
-                account_url="https://www.linkedin.com/sales/company/acme",
-            )
-        ],
-        run_events=[
-            RunEvent(
-                at="2026-06-24T12:00:00Z",
-                phase="daily",
-                run_id="daily-20260624",
-                started_at="2026-06-24T12:00:00Z",
-                result="completed",
-            )
-        ],
-    )
-    store.save(state)
-    return store
-
-
-def _seed_opportunity_store(tmp_path: Path) -> tuple[OpportunityStore, str]:
-    store = OpportunityStore(tmp_path / "opportunity-intel")
-    store.sync_source_registry(load_source_registry())
-    result = extract_comments_from_html_file(
-        PostHTMLInput(
-            post_url="https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/",
-            html_path=FIXTURE_DIR / "linkedin_post_comments.html",
-            source_id="known_high_signal_post_engagement",
-            query_id="known_high_signal_post_engagement",
-        )
-    )
-    run_id = store.start_extraction_run(
-        post_url="https://www.linkedin.com/feed/update/urn:li:activity:7350000000000000001/",
-        source_id="known_high_signal_post_engagement",
-        query_id="known_high_signal_post_engagement",
-        source_kind="known_post",
-        source_url="",
-        search_query="",
-        browser_profile="fixture",
-        safety_limits={},
-    )
-    html_path = FIXTURE_DIR / "linkedin_post_comments.html"
-    raw_path = write_raw_comments_jsonl(result.comments, tmp_path / "raw")
-    store.record_artifact(run_id=run_id, kind="html", path=html_path)
-    store.record_artifact(run_id=run_id, kind="raw_comments", path=raw_path)
-    store.persist_comments(
-        run_id=run_id,
-        comments=result.comments,
-        query_pack=load_query_pack(),
-    )
-    store.finish_extraction_run(
-        run_id,
-        status="extracted",
-        comments_found=len(result.comments),
-        failures=0,
-        warning_count=len(result.warnings),
-        retry_recommendation="No retry needed",
-    )
-    return store, stable_comment_key(result.comments[0])

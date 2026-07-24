@@ -7,10 +7,10 @@ import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -26,11 +26,21 @@ from .commercial_context import (
 from .models import (
     APPROVED_RELATIONSHIP_ROLE_BY_SOURCE,
     WEAK_MESSAGE_ACCEPTED_INVALIDATION_NOTE,
-    AcceptanceCheckCandidate,
     AcceptanceDailyRun,
+    AcceptanceEvidenceGrade,
+    AcceptanceFollowupAttempt,
+    AcceptanceFollowupConfirmationArtifact,
     AcceptanceFollowupRecord,
     AcceptanceFollowupStatus,
+    AcceptanceLedger,
+    AcceptanceListArtifact,
+    AcceptanceListReconciliationSummary,
+    AcceptanceListRow,
+    AcceptanceListState,
+    AcceptanceObservationPrecision,
     AcceptanceOutcomeArtifact,
+    AcceptanceOutcomeEvent,
+    AcceptanceRelationshipStatus,
     AcceptanceStatus,
     AcceptedDraftCandidate,
     AcceptedGreetingEligibilityArtifact,
@@ -51,6 +61,7 @@ from .models import (
     RelationshipSignalType,
     RunState,
     acceptance_followup_id,
+    acceptance_invitation_identities,
     accepted_event_confirms_followup,
     accepted_followup_candidate_key,
     accepted_welcome_message,
@@ -74,12 +85,6 @@ CODEX_ENRICHMENT_REASONING_EFFORT = "xhigh"
 DEFAULT_ACCEPTANCE_TIMEZONE = "America/Argentina/Buenos_Aires"
 
 
-@dataclass(frozen=True)
-class AcceptanceDailyCheckResult:
-    messages: list[str]
-    checked: int
-    coverage_complete: bool
-    blocker: str | None = None
 CODEX_ENRICHMENT_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -745,36 +750,6 @@ def acceptance_seed_history(store: Store) -> str:
     )
 
 
-def acceptance_export(
-    store: Store, *, min_age_days: int, max_age_days: int | None, out: Path
-) -> str:
-    ledger = store.load_acceptance_ledger()
-    candidates = [
-        AcceptanceCheckCandidate(
-            run_id=str(invitation.run_id),
-            run_date=invitation.run_date,
-            source=invitation.source,
-            name=invitation.name,
-            profile_url=invitation.profile_url,
-            sent_at=invitation.sent_at,
-            latest_status=invitation.latest_status,
-            latest_checked_at=invitation.latest_checked_at,
-        )
-        for invitation in ledger.eligible_for_check(min_age_days, max_age_days)
-    ]
-    write_json_atomic(out, [candidate.model_dump(mode="json") for candidate in candidates])
-    store.append_acceptance_event(
-        "export",
-        {
-            "path": str(out),
-            "min_age_days": min_age_days,
-            "max_age_days": max_age_days,
-            "count": len(candidates),
-        },
-    )
-    return f"exported {len(candidates)} acceptance-check candidates to {out}"
-
-
 def acceptance_import(store: Store, path: Path) -> str:
     artifact = read_model(path, AcceptanceOutcomeArtifact)
     ledger = store.load_acceptance_ledger()
@@ -785,6 +760,135 @@ def acceptance_import(store: Store, path: Path) -> str:
         f"imported acceptance outcomes: {summary.rows} rows, "
         f"{summary.matched} matched, {summary.unmatched} unmatched"
     )
+
+
+def reconcile_acceptance_lists(
+    ledger: AcceptanceLedger,
+    artifact: AcceptanceListArtifact,
+) -> AcceptanceListReconciliationSummary:
+    blocker = artifact.blocker()
+    if blocker:
+        raise ValueError(blocker)
+    if artifact.baseline_only:
+        return AcceptanceListReconciliationSummary(
+            unchanged_unknown=_acceptance_unresolved_count(ledger)
+        )
+
+    pending_by_identity = _acceptance_list_rows_by_identity(artifact.pending.rows)
+    connections_by_identity = _acceptance_list_rows_by_identity(
+        artifact.connections.rows
+    )
+    summary = AcceptanceListReconciliationSummary()
+    observed_at = artifact.captured_at
+
+    for invitation in ledger.invitations:
+        if invitation.latest_status in {
+            AcceptanceStatus.ACCEPTED,
+            AcceptanceStatus.WITHDRAWN,
+        }:
+            continue
+        identities = acceptance_invitation_identities(invitation)
+        if not identities:
+            summary.missing_identity += 1
+            summary.unchanged_unknown += 1
+            continue
+        pending_rows = _matching_acceptance_list_rows(identities, pending_by_identity)
+        connection_rows = _matching_acceptance_list_rows(
+            identities, connections_by_identity
+        )
+        if len(pending_rows) > 1 or len(connection_rows) > 1 or (
+            pending_rows and connection_rows
+        ):
+            summary.ambiguous += 1
+            summary.unchanged_unknown += 1
+            continue
+        if connection_rows:
+            row = connection_rows[0]
+            matched = sorted(identities & row.identities())
+            evidence = json.dumps(
+                {
+                    "contractVersion": "acceptance-list-reconciliation-v1",
+                    "source": "recently-added-connections",
+                    "matchedIdentities": matched,
+                    "publicProfileUrl": row.public_profile_url,
+                    "profileUrn": row.profile_urn,
+                },
+                sort_keys=True,
+            )
+            invitation.public_profile_url = (
+                row.public_profile_url or invitation.public_profile_url
+            )
+            if invitation.first_observed_accepted_at is None:
+                invitation.first_observed_accepted_at = observed_at
+                invitation.last_observed_unaccepted_at = (
+                    invitation.last_observed_unaccepted_at
+                    or invitation.latest_checked_at
+                    or invitation.sent_at
+                )
+            invitation.latest_status = AcceptanceStatus.ACCEPTED
+            invitation.latest_checked_at = observed_at
+            invitation.acceptance_observation_precision = (
+                AcceptanceObservationPrecision.LIST_RECONCILIATION
+            )
+            invitation.acceptance_evidence_grade = (
+                AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE
+            )
+            invitation.current_relationship_status = (
+                AcceptanceRelationshipStatus.FIRST_DEGREE
+            )
+            invitation.current_relationship_observed_at = observed_at
+            invitation.history.append(
+                AcceptanceOutcomeEvent(
+                    at=observed_at,
+                    status=AcceptanceStatus.ACCEPTED,
+                    note="exact recently-added Connections list identity match",
+                    relationship="1st",
+                    evidence=evidence,
+                    evidence_grade=(
+                        AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE
+                    ),
+                    contract_version="acceptance-list-reconciliation-v1",
+                )
+            )
+            summary.accepted += 1
+            continue
+        if pending_rows:
+            row = pending_rows[0]
+            invitation.public_profile_url = (
+                row.public_profile_url or invitation.public_profile_url
+            )
+            invitation.latest_status = AcceptanceStatus.PENDING
+            invitation.latest_checked_at = observed_at
+            invitation.last_observed_unaccepted_at = observed_at
+            invitation.current_relationship_status = (
+                AcceptanceRelationshipStatus.UNKNOWN
+            )
+            invitation.current_relationship_observed_at = observed_at
+            summary.pending += 1
+            continue
+        summary.unchanged_unknown += 1
+    return summary
+
+
+def _acceptance_list_rows_by_identity(
+    rows: Sequence[AcceptanceListRow],
+) -> dict[str, list[AcceptanceListRow]]:
+    result: dict[str, list[AcceptanceListRow]] = {}
+    for row in rows:
+        for identity in row.identities():
+            result.setdefault(identity, []).append(row)
+    return result
+
+
+def _matching_acceptance_list_rows(
+    identities: set[str],
+    rows_by_identity: dict[str, list[AcceptanceListRow]],
+) -> list[AcceptanceListRow]:
+    matches: dict[tuple[str | None, str | None], AcceptanceListRow] = {}
+    for identity in identities:
+        for row in rows_by_identity.get(identity, []):
+            matches[(row.member_id, row.public_identifier)] = row
+    return list(matches.values())
 
 
 def acceptance_invalidate_weak_message_acceptances(
@@ -845,46 +949,37 @@ def acceptance_invalidate_weak_message_acceptances(
     return "\n".join(lines)
 
 
-def acceptance_check(
-    store: Store,
-    browser: BrowserClient,
-    *,
-    input_path: Path,
-    out: Path,
-    offset: int,
-    limit: int,
-    delay_ms: int,
-) -> str:
-    candidates = load_acceptance_check_candidates(input_path)
-    input_sha256 = hashlib.sha256(input_path.read_bytes()).hexdigest()
-    artifact, path = browser.check_acceptance_outcomes(
-        candidates=candidates,
-        input_path=input_path,
-        out=out,
-        offset=offset,
-        limit=limit,
-        delay_ms=delay_ms,
+LEGACY_ACCEPTANCE_QUARANTINE_NOTE = (
+    "legacy acceptance evidence quarantined pending structured first-degree reconciliation"
+)
+
+
+def acceptance_quarantine_unverified_acceptances(store: Store) -> str:
+    ledger = store.load_acceptance_ledger()
+    cleared_observation_keys = set(ledger.clear_unavailable_relationship_observations())
+    quarantined_keys = set(ledger.quarantine_unverified_acceptances())
+    followups = store.load_acceptance_followup_ledger()
+    followup_count = followups.invalidate_acceptance_keys(
+        quarantined_keys,
+        note=LEGACY_ACCEPTANCE_QUARANTINE_NOTE,
     )
-    artifact.input_sha256 = input_sha256
-    if Path(path).resolve() == out.resolve():
-        write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
+    store.save_acceptance_ledger(ledger)
+    store.save_acceptance_followup_ledger(followups)
     store.append_acceptance_event(
-        "check",
+        "quarantine-unverified-acceptances",
         {
-            "input": str(input_path),
-            "out": path,
-            "count": len(artifact.rows),
-            "offset": offset,
-            "limit": limit,
-            "complete": artifact.complete,
+            "acceptances": len(quarantined_keys),
+            "followups": followup_count,
+            "unavailable_relationship_observations_cleared": len(
+                cleared_observation_keys
+            ),
+            "evidence_grade": AcceptanceEvidenceGrade.LEGACY_UNVERIFIED.value,
         },
     )
-    statuses: dict[str, int] = {}
-    for row in artifact.rows:
-        statuses[row.status.value] = statuses.get(row.status.value, 0) + 1
     return (
-        f"acceptance outcomes: {len(artifact.rows)} rows written to {path}; "
-        f"statuses={json.dumps(statuses, sort_keys=True)}"
+        f"acceptance evidence quarantine applied: {len(quarantined_keys)} legacy "
+        f"acceptance(s), {followup_count} unsent follow-up record(s), "
+        f"{len(cleared_observation_keys)} unavailable relationship observation(s) cleared"
     )
 
 
@@ -916,74 +1011,152 @@ def acceptance_run_daily_session(
     store: Store,
     browser_factory: Callable[[], BrowserClient],
     *,
-    min_age_days: int,
-    max_age_days: int | None,
-    candidates_out: Path,
-    outcomes_out: Path,
-    chunk_dir: Path,
-    chunk_size: int,
-    chunk_retries: int,
-    check_delay_ms: int,
+    out: Path,
+    max_load_actions: int = 100,
+    watermark_size: int = 25,
     daily_timezone: str = DEFAULT_ACCEPTANCE_TIMEZONE,
     emit: Callable[[str], None] | None = None,
 ) -> str:
     zone = ZoneInfo(daily_timezone)
     started_at = now_utc()
     before_accepted = _durably_accepted_invitation_keys(store)
-    messages = [
-        acceptance_seed_history(store),
-        acceptance_export(
-            store,
-            min_age_days=min_age_days,
-            max_age_days=max_age_days,
-            out=candidates_out,
-        ),
-    ]
-    candidates = load_acceptance_check_candidates(candidates_out)
-    if not candidates:
-        messages.append("no acceptance-check candidates; browser not opened")
-        messages.append(
-            _record_acceptance_daily_run(
-                store,
-                started_at=started_at,
-                timezone=daily_timezone,
-                zone=zone,
-                min_age_days=min_age_days,
-                max_age_days=max_age_days,
-                eligible=0,
-                checked=0,
-                coverage_complete=True,
-                blocker=None,
-                before_accepted=before_accepted,
-            )
-        )
-        messages.append(
-            acceptance_report(
-                store,
-                min_age_days=min_age_days,
-                max_age_days=max_age_days,
-                as_json=False,
-                daily_timezone=daily_timezone,
-            )
-        )
-        return "\n".join(messages)
-
+    messages = [acceptance_seed_history(store)]
+    ledger = store.load_acceptance_ledger()
+    eligible = _acceptance_unresolved_count(ledger)
+    list_state = store.load_acceptance_list_state()
+    notify = emit or (lambda _message: None)
+    notify("acceptance reconciliation: capturing sent invitations and recent connections")
     browser: BrowserClient | None = None
     try:
         browser = browser_factory()
-        check_result = _acceptance_check_and_import_chunks(
-            store,
-            browser,
-            candidates=candidates,
-            candidates_out=candidates_out,
-            outcomes_out=outcomes_out,
-            chunk_dir=chunk_dir,
-            chunk_size=chunk_size,
-            retries=chunk_retries,
-            delay_ms=check_delay_ms,
-            emit=emit,
+        artifact, artifact_path = browser.capture_acceptance_lists(
+            previous_watermark=list_state.watermark,
+            out=out,
+            max_load_actions=max_load_actions,
+            watermark_size=watermark_size,
         )
-        messages.extend(check_result.messages)
+        blocker = artifact.blocker()
+        if artifact.previous_watermark != list_state.watermark:
+            blocker = (
+                "acceptance list artifact watermark does not match durable state; "
+                "stale or unrelated artifact refused"
+            )
+        if Path(artifact_path).resolve() != out.resolve():
+            write_json_atomic(out, artifact.model_dump(mode="json", by_alias=False))
+            artifact_path = str(out)
+        if blocker:
+            store.append_acceptance_event(
+                "acceptance-list-reconciliation-blocked",
+                {
+                    "artifact": artifact_path,
+                    "blocker": blocker,
+                    "pending_complete": artifact.pending.complete,
+                    "connections_complete": artifact.connections.complete,
+                    "connection_delta_complete": artifact.connection_delta_complete,
+                },
+            )
+            messages.append("acceptance list reconciliation stopped: " + blocker)
+            messages.append(
+                _record_acceptance_daily_run(
+                    store,
+                    started_at=started_at,
+                    timezone=daily_timezone,
+                    zone=zone,
+                    min_age_days=0,
+                    max_age_days=None,
+                    eligible=eligible,
+                    checked=0,
+                    coverage_complete=False,
+                    blocker=blocker,
+                    before_accepted=before_accepted,
+                    remaining_unresolved=eligible,
+                )
+            )
+            messages.append(
+                acceptance_report(
+                    store,
+                    min_age_days=0,
+                    max_age_days=None,
+                    as_json=False,
+                    daily_timezone=daily_timezone,
+                )
+            )
+            return "\n".join(messages)
+        if artifact.baseline_only:
+            store.save_acceptance_list_state(
+                AcceptanceListState(
+                    last_successful_capture_at=artifact.captured_at,
+                    watermark=artifact.next_watermark,
+                )
+            )
+            baseline_blocker = (
+                "recent-connections baseline established; acceptance deltas begin "
+                "with the next successful list capture"
+            )
+            store.append_acceptance_event(
+                "acceptance-list-baseline",
+                {
+                    "artifact": artifact_path,
+                    "pending_rows": artifact.pending.loaded_count,
+                    "connection_rows": artifact.connections.loaded_count,
+                    "watermark_size": len(artifact.next_watermark),
+                },
+            )
+            messages.append(baseline_blocker)
+            messages.append(
+                _record_acceptance_daily_run(
+                    store,
+                    started_at=started_at,
+                    timezone=daily_timezone,
+                    zone=zone,
+                    min_age_days=0,
+                    max_age_days=None,
+                    eligible=eligible,
+                    checked=0,
+                    coverage_complete=False,
+                    blocker=baseline_blocker,
+                    before_accepted=before_accepted,
+                    remaining_unresolved=eligible,
+                )
+            )
+            messages.append(
+                acceptance_report(
+                    store,
+                    min_age_days=0,
+                    max_age_days=None,
+                    as_json=False,
+                    daily_timezone=daily_timezone,
+                )
+            )
+            return "\n".join(messages)
+
+        summary = reconcile_acceptance_lists(ledger, artifact)
+        store.save_acceptance_ledger(ledger)
+        store.save_acceptance_list_state(
+            AcceptanceListState(
+                last_successful_capture_at=artifact.captured_at,
+                watermark=artifact.next_watermark,
+            )
+        )
+        checked = summary.accepted + summary.pending
+        remaining_unresolved = _acceptance_unresolved_count(ledger)
+        store.append_acceptance_event(
+            "acceptance-list-reconciliation",
+            {
+                "artifact": artifact_path,
+                "summary": summary.model_dump(mode="json"),
+                "pending_rows": artifact.pending.loaded_count,
+                "connection_rows": artifact.connections.loaded_count,
+                "watermark_size": len(artifact.next_watermark),
+            },
+        )
+        messages.append(
+            "acceptance list reconciliation complete: "
+            f"accepted={summary.accepted}, pending={summary.pending}, "
+            f"unchanged_unknown={summary.unchanged_unknown}, "
+            f"missing_identity={summary.missing_identity}, ambiguous={summary.ambiguous}; "
+            f"artifact={artifact_path}"
+        )
     except Exception as exc:
         messages.append(
             _record_acceptance_daily_run(
@@ -991,13 +1164,14 @@ def acceptance_run_daily_session(
                 started_at=started_at,
                 timezone=daily_timezone,
                 zone=zone,
-                min_age_days=min_age_days,
-                max_age_days=max_age_days,
-                eligible=len(candidates),
+                min_age_days=0,
+                max_age_days=None,
+                eligible=eligible,
                 checked=0,
                 coverage_complete=False,
                 blocker=str(exc),
                 before_accepted=before_accepted,
+                remaining_unresolved=eligible,
             )
         )
         raise
@@ -1012,20 +1186,21 @@ def acceptance_run_daily_session(
             started_at=started_at,
             timezone=daily_timezone,
             zone=zone,
-            min_age_days=min_age_days,
-            max_age_days=max_age_days,
-            eligible=len(candidates),
-            checked=check_result.checked,
-            coverage_complete=check_result.coverage_complete,
-            blocker=check_result.blocker,
+            min_age_days=0,
+            max_age_days=None,
+            eligible=eligible,
+            checked=checked,
+            coverage_complete=True,
+            blocker=None,
             before_accepted=before_accepted,
+            remaining_unresolved=remaining_unresolved,
         )
     )
     messages.append(
         acceptance_report(
             store,
-            min_age_days=min_age_days,
-            max_age_days=max_age_days,
+            min_age_days=0,
+            max_age_days=None,
             as_json=False,
             daily_timezone=daily_timezone,
         )
@@ -1045,6 +1220,14 @@ def _durably_accepted_invitation_keys(store: Store) -> set[str]:
     return keys
 
 
+def _acceptance_unresolved_count(ledger: AcceptanceLedger) -> int:
+    return sum(
+        invitation.latest_status
+        not in {AcceptanceStatus.ACCEPTED, AcceptanceStatus.WITHDRAWN}
+        for invitation in ledger.invitations
+    )
+
+
 def _record_acceptance_daily_run(
     store: Store,
     *,
@@ -1058,11 +1241,10 @@ def _record_acceptance_daily_run(
     coverage_complete: bool,
     blocker: str | None,
     before_accepted: set[str],
+    remaining_unresolved: int,
 ) -> str:
     completed_at = now_utc()
     after_accepted = _durably_accepted_invitation_keys(store)
-    ledger = store.load_acceptance_ledger()
-    remaining_unresolved = len(ledger.eligible_for_check(min_age_days, max_age_days))
     run = AcceptanceDailyRun(
         started_at=started_at,
         completed_at=completed_at,
@@ -1084,243 +1266,6 @@ def _record_acceptance_daily_run(
         f"newly_confirmed_accepted={run.newly_confirmed_accepted}, "
         f"remaining_unresolved={remaining_unresolved}"
     )
-
-
-def _acceptance_check_and_import_chunks(
-    store: Store,
-    browser: BrowserClient,
-    *,
-    candidates: list[AcceptanceCheckCandidate],
-    candidates_out: Path,
-    outcomes_out: Path,
-    chunk_dir: Path,
-    chunk_size: int,
-    retries: int,
-    delay_ms: int,
-    emit: Callable[[str], None] | None = None,
-) -> AcceptanceDailyCheckResult:
-    chunk_size = max(1, chunk_size)
-    retries = max(0, retries)
-    attempts = 1 + retries
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    messages: list[str] = []
-    chunk_paths: list[Path] = []
-    blockers: list[str] = []
-    notify = emit or (lambda _message: None)
-    candidates_sha256 = hashlib.sha256(candidates_out.read_bytes()).hexdigest()
-    chunk_count = (len(candidates) + chunk_size - 1) // chunk_size
-    for offset in range(0, len(candidates), chunk_size):
-        chunk_number = (offset // chunk_size) + 1
-        limit = min(chunk_size, len(candidates) - offset)
-        chunk_path = chunk_dir / f"chunk-{offset}.json"
-        if chunk_path.exists():
-            existing = read_model(chunk_path, AcceptanceOutcomeArtifact)
-            existing_blocked_rows = [
-                row for row in existing.rows if str(getattr(row, "status", "")).lower() == "blocked"
-            ]
-            if (
-                existing.complete is True
-                and existing.input == str(candidates_out)
-                and existing.input_sha256 == candidates_sha256
-                and existing.offset == offset
-                and existing.limit == limit
-                and existing.total_candidates == len(candidates)
-                and len(existing.rows) == limit
-                and not existing_blocked_rows
-            ):
-                store.append_acceptance_event(
-                    "run-daily-session-check-reuse",
-                    {
-                        "input": str(candidates_out),
-                        "out": str(chunk_path),
-                        "offset": offset,
-                        "limit": limit,
-                        "candidates": len(candidates),
-                    },
-                )
-                messages.append(f"reused complete acceptance chunk: {chunk_path}")
-                notify(
-                    f"acceptance check: chunk {chunk_number}/{chunk_count} reused "
-                    f"with {limit} row(s)"
-                )
-                chunk_paths.append(chunk_path)
-                continue
-        store.append_acceptance_event(
-            "run-daily-session-check-start",
-            {
-                "input": str(candidates_out),
-                "out": str(chunk_path),
-                "offset": offset,
-                "limit": limit,
-                "candidates": len(candidates),
-            },
-        )
-        last_exception: Exception | None = None
-        for attempt in range(1, attempts + 1):
-            notify(
-                f"acceptance check: chunk {chunk_number}/{chunk_count}, "
-                f"attempt {attempt}/{attempts}"
-            )
-            if attempt > 1:
-                store.append_acceptance_event(
-                    "run-daily-session-check-retry",
-                    {
-                        "input": str(candidates_out),
-                        "out": str(chunk_path),
-                        "offset": offset,
-                        "limit": limit,
-                        "candidates": len(candidates),
-                        "attempt": attempt,
-                        "attempts": attempts,
-                        "retries": retries,
-                        "previous_error": str(last_exception),
-                    },
-                )
-                messages.append(
-                    f"retrying acceptance chunk: {chunk_path} "
-                    f"(attempt {attempt}/{attempts}) after: {last_exception}"
-                )
-            try:
-                messages.append(
-                    acceptance_check(
-                        store,
-                        browser,
-                        input_path=candidates_out,
-                        out=chunk_path,
-                        offset=offset,
-                        limit=limit,
-                        delay_ms=delay_ms,
-                    )
-                )
-                last_exception = None
-                break
-            except Exception as exc:
-                last_exception = exc
-                if attempt < attempts:
-                    recover = getattr(browser, "recover_after_failure", None)
-                    if callable(recover):
-                        recover()
-        if last_exception is not None:
-            blocker = (
-                f"{chunk_path} failed during acceptance check after {attempts} attempt(s) "
-                f"({retries} retries) "
-                f"(offset={offset}, limit={limit}, candidates={len(candidates)}): "
-                f"{last_exception}"
-            )
-            store.append_acceptance_event(
-                "run-daily-session-blocked",
-                {
-                    "reason": "acceptance chunk check failed",
-                    "blockers": [blocker],
-                    "input": str(candidates_out),
-                    "out": str(chunk_path),
-                    "offset": offset,
-                    "limit": limit,
-                    "candidates": len(candidates),
-                },
-            )
-            messages.append("stopped: " + blocker)
-            return AcceptanceDailyCheckResult(
-                messages=messages,
-                checked=_acceptance_completed_row_count(chunk_paths),
-                coverage_complete=False,
-                blocker=blocker,
-            )
-        artifact = read_model(chunk_path, AcceptanceOutcomeArtifact)
-        notify(
-            f"acceptance check: chunk {chunk_number}/{chunk_count} completed "
-            f"with {len(artifact.rows)} row(s)"
-        )
-        chunk_paths.append(chunk_path)
-        if artifact.complete is not True:
-            blockers.append(f"{chunk_path} is incomplete")
-        if len(artifact.rows) != limit:
-            blockers.append(f"{chunk_path} has {len(artifact.rows)}/{limit} rows")
-        blocked_rows = [
-            row for row in artifact.rows if str(getattr(row, "status", "")).lower() == "blocked"
-        ]
-        if blocked_rows:
-            blockers.append(f"{chunk_path} has {len(blocked_rows)} blocked rows")
-    if blockers:
-        store.append_acceptance_event(
-            "run-daily-session-blocked",
-            {"reason": "incomplete chunks", "blockers": blockers},
-        )
-        blocker = "; ".join(blockers)
-        messages.append("stopped: " + blocker)
-        return AcceptanceDailyCheckResult(
-            messages=messages,
-            checked=_acceptance_completed_row_count(chunk_paths),
-            coverage_complete=False,
-            blocker=blocker,
-        )
-
-    rows = [
-        row
-        for chunk_path in chunk_paths
-        for row in read_model(chunk_path, AcceptanceOutcomeArtifact).rows
-    ]
-    if len(rows) != len(candidates):
-        store.append_acceptance_event(
-            "run-daily-session-blocked",
-            {
-                "reason": "merged row count mismatch",
-                "rows": len(rows),
-                "candidates": len(candidates),
-            },
-        )
-        blocker = (
-            f"merged acceptance row count {len(rows)} "
-            f"does not equal candidate count {len(candidates)}"
-        )
-        messages.append("stopped: " + blocker)
-        return AcceptanceDailyCheckResult(
-            messages=messages,
-            checked=len(rows),
-            coverage_complete=False,
-            blocker=blocker,
-        )
-
-    merged = AcceptanceOutcomeArtifact(
-        captured_at=now_utc().isoformat(),
-        input=str(candidates_out),
-        input_sha256=candidates_sha256,
-        count=len(rows),
-        offset=0,
-        limit=0,
-        total_candidates=len(candidates),
-        complete=True,
-        rows=rows,
-    )
-    write_json_atomic(outcomes_out, merged.model_dump(mode="json", by_alias=False))
-    store.append_acceptance_event(
-        "run-daily-session-merge",
-        {
-            "candidates": len(candidates),
-            "rows": len(rows),
-            "chunks": [str(path) for path in chunk_paths],
-            "out": str(outcomes_out),
-        },
-    )
-    messages.append(f"merged acceptance outcomes: {len(rows)} rows to {outcomes_out}")
-    messages.append(acceptance_import(store, outcomes_out))
-    return AcceptanceDailyCheckResult(
-        messages=messages,
-        checked=len(rows),
-        coverage_complete=True,
-    )
-
-
-def _acceptance_completed_row_count(chunk_paths: Sequence[Path]) -> int:
-    checked = 0
-    for path in chunk_paths:
-        artifact = read_model(path, AcceptanceOutcomeArtifact)
-        if artifact.complete is not True:
-            continue
-        if any(row.status == AcceptanceStatus.BLOCKED for row in artifact.rows):
-            continue
-        checked += len(artifact.rows)
-    return checked
 
 
 def acceptance_export_enrichment_queue(
@@ -1465,119 +1410,6 @@ def acceptance_export_enrichment_queue(
     return (
         f"exported {len(packet.items)} relationship enrichment queue item(s) to {out}; "
         f"original review evidence reused; markdown: {markdown_path}"
-    )
-
-
-def acceptance_export_browser_investigation_queue(
-    store: Store,
-    *,
-    out: Path,
-    markdown_out: Path | None,
-    limit: int,
-    cooldown_days: int,
-) -> str:
-    """Export unresolved radar records for a bounded authenticated-browser pass."""
-
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
-    if cooldown_days <= 0:
-        raise ValueError("cooldown_days must be > 0")
-    from .relationship_radar import RelationshipRadarLedger
-
-    radar_path = store.dir / "relationship-radar" / "ledger.json"
-    radar = (
-        read_model(radar_path, RelationshipRadarLedger)
-        if radar_path.exists()
-        else RelationshipRadarLedger()
-    )
-    candidates = {
-        accepted_followup_candidate_key(candidate): candidate
-        for candidate in store.load_acceptance_ledger().accepted_connections()
-    }
-    lead_ledger = store.load_lead_ledger()
-    current = now_utc()
-    selected: list[RelationshipEnrichmentQueueItem] = []
-    for record in radar.records:
-        if record.review_state != "needs_review":
-            continue
-        if record.browser_investigated_at is not None and (
-            current - record.browser_investigated_at
-        ).days < cooldown_days:
-            continue
-        candidate = candidates.get(record.candidate_key)
-        if candidate is None or not any(
-            (
-                is_public_linkedin_profile_url(candidate.profile_url),
-                is_sales_nav_profile_url(candidate.profile_url),
-                is_sales_nav_profile_url(candidate.sales_nav_profile_url),
-            )
-        ):
-            continue
-        item = build_relationship_enrichment_queue([candidate]).items[0]
-        _lead_key, lead_record = lead_review_record_for_candidate(lead_ledger, candidate)
-        evidence = list(item.evidence)
-        if lead_record is not None:
-            if lead_record.approved_reason:
-                evidence.append(f"Original connection approval: {lead_record.approved_reason}")
-            if lead_record.last_row_text:
-                evidence.append(f"Original connection review row: {lead_record.last_row_text}")
-        decision = item.decision.model_copy(
-            update={
-                "person_summary": record.person_summary,
-                "company_name": record.company_name,
-                "company_summary": record.company_summary,
-                "evidence_urls": list(record.evidence_urls),
-                "research_evidence": list(record.research_evidence),
-                "commercial_context": record.commercial_context,
-                "criterion_evidence": list(record.criterion_evidence),
-                "unknowns": list(record.unknowns),
-                "warnings": list(record.warnings),
-                "relationship_role": record.relationship_role,
-                "priority": record.priority,
-                "signal_type": record.signal_type,
-                "visible_signal": record.visible_signal,
-                "signal_url": record.signal_url,
-                "followup_reason": record.followup_reason,
-                "next_useful_action": record.next_useful_action,
-            }
-        )
-        selected.append(
-            item.model_copy(
-                update={
-                    "evidence": evidence,
-                    "enrichment_status": record.relationship_enrichment_status,
-                    "enrichment_reason": "browser_needs_review",
-                    "original_connection_approved_at": record.original_connection_approved_at,
-                    "original_connection_approval_reason": (
-                        record.original_connection_approval_reason
-                    ),
-                    "decision": decision,
-                }
-            )
-        )
-        if len(selected) >= limit:
-            break
-
-    packet = RelationshipEnrichmentQueue(items=selected)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(out, packet.model_dump(mode="json", by_alias=False))
-    markdown_path = markdown_out or out.with_suffix(".md")
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(render_accepted_enrichment_queue_markdown(packet), encoding="utf-8")
-    store.append_acceptance_event(
-        "export-browser-investigation-queue",
-        {
-            "out": str(out),
-            "markdown_out": str(markdown_path),
-            "count": len(packet.items),
-            "limit": limit,
-            "cooldown_days": cooldown_days,
-            "permission_boundary": "review_only",
-        },
-    )
-    return (
-        f"exported {len(packet.items)} browser investigation queue item(s) to {out}; "
-        f"cooldown={cooldown_days} days; markdown: {markdown_path}"
     )
 
 
@@ -1884,6 +1716,38 @@ def acceptance_send_followup(
         raise RuntimeError(f"unknown acceptance follow-up id {record_id!r}")
     effective_dry_run = dry_run or preview_fill or not allow_send
     validate_acceptance_followup_can_send(ledger.drafts[index], effective_dry_run, allow_send)
+    if not effective_dry_run:
+        record = ledger.drafts[index]
+        started_at = now_utc()
+        message_sha256 = hashlib.sha256(record.draft.encode("utf-8")).hexdigest()
+        transaction_id = hashlib.sha256(
+            f"{record.id}|{message_sha256}|{started_at.isoformat()}".encode()
+        ).hexdigest()[:24]
+        record.attempts.append(
+            AcceptanceFollowupAttempt(
+                at=started_at,
+                dry_run=False,
+                status="send-intent-recorded",
+                out_path=f"pending://acceptance-welcome/{transaction_id}",
+                diagnostics={"phase": "before-browser-send"},
+                transaction_id=transaction_id,
+                message_sha256=message_sha256,
+                possible_send=True,
+            )
+        )
+        record.status = AcceptanceFollowupStatus.POSSIBLE_SEND
+        record.updated_at = started_at
+        store.save_acceptance_followup_ledger(ledger)
+        store.append_acceptance_event(
+            "send-greeting-intent",
+            {
+                "id": record.id,
+                "name": record.name,
+                "transaction_id": transaction_id,
+                "message_sha256": message_sha256,
+                "possible_send": True,
+            },
+        )
     result, out_path = browser.send_acceptance_followup(
         ledger.drafts[index],
         dry_run=effective_dry_run,
@@ -1906,6 +1770,91 @@ def acceptance_send_followup(
     return (
         f"accepted_followup={record_id} status={result.status} "
         f"dry_run={effective_dry_run} out={out_path}"
+    )
+
+
+def acceptance_confirm_possible_send(store: Store, artifact_path: Path) -> str:
+    """Confirm a possible welcome send from exact recipient-bound browser evidence."""
+
+    artifact = read_model(artifact_path, AcceptanceFollowupConfirmationArtifact)
+    ledger = store.load_acceptance_followup_ledger()
+    index = ledger.find_by_id(artifact.followup_id)
+    if index is None:
+        raise RuntimeError(f"unknown acceptance follow-up id {artifact.followup_id!r}")
+    record = ledger.drafts[index]
+    if record.status != AcceptanceFollowupStatus.POSSIBLE_SEND:
+        raise RuntimeError(
+            f"accepted follow-up {record.id} is {record.status.value}; "
+            "confirmation requires possible_send"
+        )
+    transaction_attempt = next(
+        (
+            attempt
+            for attempt in reversed(record.attempts)
+            if attempt.transaction_id == artifact.transaction_id and attempt.possible_send
+        ),
+        None,
+    )
+    if transaction_attempt is None:
+        raise RuntimeError("confirmation transaction does not match a possible-send attempt")
+    expected_sha256 = hashlib.sha256(record.draft.encode("utf-8")).hexdigest()
+    if artifact.message_sha256 != expected_sha256:
+        raise RuntimeError("confirmation message hash does not match the stored welcome")
+    if transaction_attempt.message_sha256 != expected_sha256:
+        raise RuntimeError(
+            "possible-send transaction message hash does not match the stored welcome"
+        )
+    if artifact.exact_message != record.draft:
+        raise RuntimeError("confirmation text does not exactly match the stored welcome")
+    if artifact.exact_match_count != 1 or artifact.direction != "outbound":
+        raise RuntimeError("confirmation requires exactly one outbound message match")
+    expected_profile_url = record.sales_nav_profile_url or record.profile_url or ""
+    expected_lead_id = (
+        urlparse(expected_profile_url).path.removeprefix("/sales/lead/").split(",")[0]
+    )
+    if not expected_lead_id or artifact.recipient_lead_id != expected_lead_id:
+        raise RuntimeError("confirmation recipient does not match the durable Sales Navigator lead")
+    if artifact.candidate_name != record.name:
+        raise RuntimeError("confirmation candidate name does not match the durable record")
+
+    record.attempts.append(
+        AcceptanceFollowupAttempt(
+            at=artifact.observed_at,
+            dry_run=False,
+            status="sent-confirmed-reconciled",
+            result_url=artifact.profile_url,
+            note="exact outbound welcome confirmed in recipient-bound conversation",
+            out_path=str(artifact_path),
+            diagnostics={
+                "source": artifact.source,
+                "direction": artifact.direction,
+                "exact_match_count": str(artifact.exact_match_count),
+                "recipient_lead_id": artifact.recipient_lead_id,
+            },
+            transaction_id=artifact.transaction_id,
+            message_sha256=artifact.message_sha256,
+            possible_send=False,
+        )
+    )
+    record.status = AcceptanceFollowupStatus.SENT
+    record.sent_at = artifact.observed_at
+    record.updated_at = artifact.observed_at
+    store.save_acceptance_followup_ledger(ledger)
+    store.append_acceptance_event(
+        "confirm-possible-welcome-send",
+        {
+            "id": record.id,
+            "name": record.name,
+            "transaction_id": artifact.transaction_id,
+            "message_sha256": artifact.message_sha256,
+            "recipient_lead_id": artifact.recipient_lead_id,
+            "artifact": str(artifact_path),
+            "source": artifact.source,
+        },
+    )
+    return (
+        f"accepted_followup={record.id} status=sent confirmation=reconciled "
+        f"transaction={artifact.transaction_id} artifact={artifact_path}"
     )
 
 
@@ -1993,7 +1942,15 @@ def acceptance_run_welcome_messages(
         current_index = current.find_by_id(record.id)
         if current_index is None:
             raise RuntimeError(f"accepted follow-up {record.id} disappeared after send")
-        if current.drafts[current_index].status not in {
+        current_status = current.drafts[current_index].status
+        if current_status == AcceptanceFollowupStatus.DIRECT_MESSAGE_UNAVAILABLE:
+            messages.append(
+                f"welcome excluded {record.id}: current recipient contract is not "
+                "first-degree direct messaging"
+            )
+            processed -= 1
+            continue
+        if current_status not in {
             AcceptanceFollowupStatus.SENT,
             AcceptanceFollowupStatus.CONVERSATION_EXISTS,
         }:
@@ -2148,13 +2105,6 @@ def acceptance_dry_run_followups(
         for record in pending
     ]
     return "\n".join(messages)
-
-
-def load_acceptance_check_candidates(path: Path) -> list[AcceptanceCheckCandidate]:
-    return [
-        AcceptanceCheckCandidate.model_validate(item)
-        for item in _load_json_list(path, "acceptance candidates")
-    ]
 
 
 def _select_queue_items(

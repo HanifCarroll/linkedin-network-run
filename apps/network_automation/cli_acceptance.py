@@ -11,16 +11,14 @@ from .acceptance_service import (
     CODEX_ENRICHMENT_MODEL,
     CODEX_ENRICHMENT_REASONING_EFFORT,
     DEFAULT_ACCEPTANCE_TIMEZONE,
-    acceptance_check,
     acceptance_collect_enrichment_workers,
+    acceptance_confirm_possible_send,
     acceptance_dry_run_followups,
-    acceptance_export,
-    acceptance_export_browser_investigation_queue,
     acceptance_export_enrichment_queue,
-    acceptance_import,
     acceptance_invalidate_weak_message_acceptances,
     acceptance_launch_enrichment_workers,
     acceptance_prepare_welcome_messages,
+    acceptance_quarantine_unverified_acceptances,
     acceptance_report,
     acceptance_retry_send_followup,
     acceptance_run_daily_session,
@@ -32,17 +30,14 @@ from .acceptance_service import (
 )
 from .browser import DEFAULT_FOLLOWUP_OUT_DIR, BrowserClient
 from .relationship_radar import (
-    apply_browser_investigation,
     save_recommended_watchlist_leads,
     sync_relationship_radar_actions,
     update_relationship_radar,
 )
 from .store import Store
 
-DEFAULT_ACCEPTANCE_CANDIDATES = Path("/tmp/linkedin-acceptance-candidates.json")
-DEFAULT_ACCEPTANCE_OUTCOMES = Path("/tmp/linkedin-acceptance-outcomes.json")
-DEFAULT_ACCEPTANCE_CHUNK_DIR = Path("/tmp/linkedin-acceptance-chunks")
 DEFAULT_ACCEPTANCE_SESSION_OUT_DIR = Path("/tmp/linkedin-acceptance-daily-session")
+DEFAULT_ACCEPTANCE_LISTS = DEFAULT_ACCEPTANCE_SESSION_OUT_DIR / "acceptance-lists.json"
 DEFAULT_ENRICHMENT_DIR = Path("/tmp/linkedin-relationship-radar")
 DEFAULT_ENRICHMENT_QUEUE = DEFAULT_ENRICHMENT_DIR / "enrichment-queue.json"
 DEFAULT_ENRICHMENT_JOBS_DIR = DEFAULT_ENRICHMENT_DIR / "enrichment-jobs"
@@ -61,38 +56,18 @@ def register_acceptance_commands(subparsers: Any) -> None:
 
     daily = commands.add_parser("run-daily-session")
     daily.add_argument("--session", default="auto")
-    daily.add_argument("--min-age-days", type=int, default=1)
-    daily.add_argument("--max-age-days", type=int, default=45)
-    daily.add_argument("--candidates-out", default=str(DEFAULT_ACCEPTANCE_CANDIDATES))
-    daily.add_argument("--outcomes-out", default=str(DEFAULT_ACCEPTANCE_OUTCOMES))
-    daily.add_argument("--chunk-dir", default=str(DEFAULT_ACCEPTANCE_CHUNK_DIR))
-    daily.add_argument("--chunk-size", type=int, default=25)
-    daily.add_argument("--chunk-retries", type=int, default=3)
-    daily.add_argument("--check-delay-ms", type=int, default=750)
+    daily.add_argument("--out", default=str(DEFAULT_ACCEPTANCE_LISTS))
+    daily.add_argument("--max-load-actions", type=int, default=100)
+    daily.add_argument("--watermark-size", type=int, default=25)
     daily.add_argument("--timezone", default=DEFAULT_ACCEPTANCE_TIMEZONE)
     daily.add_argument("--out-dir", default=str(DEFAULT_ACCEPTANCE_SESSION_OUT_DIR))
     daily.add_argument("--fixture-result", default=None)
-
-    export = commands.add_parser("export")
-    export.add_argument("--min-age-days", type=int, default=7)
-    export.add_argument("--max-age-days", type=int, default=None)
-    export.add_argument("--out", default=str(DEFAULT_ACCEPTANCE_CANDIDATES))
-
-    import_outcomes = commands.add_parser("import")
-    import_outcomes.add_argument("path")
 
     invalidate = commands.add_parser("invalidate-weak-message-acceptances")
     invalidate.add_argument("--apply", action="store_true")
     invalidate.add_argument("--sample-limit", type=int, default=10)
 
-    check = commands.add_parser("check")
-    check.add_argument("--session", default="auto")
-    check.add_argument("--in", dest="input", default=str(DEFAULT_ACCEPTANCE_CANDIDATES))
-    check.add_argument("--out", default=str(DEFAULT_ACCEPTANCE_OUTCOMES))
-    check.add_argument("--offset", type=int, default=0)
-    check.add_argument("--limit", type=int, default=0)
-    check.add_argument("--delay-ms", type=int, default=500)
-    check.add_argument("--fixture-result", default=None)
+    commands.add_parser("quarantine-unverified-acceptances")
 
     report = commands.add_parser("report")
     report.add_argument("--min-age-days", type=int, default=0)
@@ -108,12 +83,6 @@ def register_acceptance_commands(subparsers: Any) -> None:
     enrichment_queue.add_argument("--limit", type=int, default=30)
     enrichment_queue.add_argument("--stale-after-days", type=int, default=30)
     enrichment_queue.add_argument("--prioritize-engagement", action="store_true")
-
-    browser_queue = commands.add_parser("export-browser-investigation-queue")
-    browser_queue.add_argument("--out", required=True)
-    browser_queue.add_argument("--markdown-out", default=None)
-    browser_queue.add_argument("--limit", type=int, default=5)
-    browser_queue.add_argument("--cooldown-days", type=int, default=30)
 
     launch_enrichment = commands.add_parser("launch-enrichment-workers")
     launch_enrichment.add_argument("--enrichment-queue", default=str(DEFAULT_ENRICHMENT_QUEUE))
@@ -145,12 +114,6 @@ def register_acceptance_commands(subparsers: Any) -> None:
     radar.add_argument("--out", default=None)
     radar.add_argument("--markdown-out", default=None)
 
-    browser_apply = commands.add_parser("apply-browser-investigation")
-    browser_apply.add_argument("--queue", required=True)
-    browser_apply.add_argument("--enrichment", required=True)
-    browser_apply.add_argument("--out", default=None)
-    browser_apply.add_argument("--markdown-out", default=None)
-
     radar_sync = commands.add_parser("sync-relationship-radar-actions")
     radar_sync.add_argument("--out", default=None)
     radar_sync.add_argument("--markdown-out", default=None)
@@ -181,6 +144,9 @@ def _register_greeting_action_commands(commands: Any) -> None:
     retry.add_argument("--allow-send", action="store_true")
     retry.add_argument("--fixture-result", default=None)
     retry.add_argument("--out-dir", default=str(DEFAULT_FOLLOWUP_OUT_DIR))
+
+    confirm = commands.add_parser("confirm-possible-send")
+    confirm.add_argument("--artifact", required=True)
 
     dry_run = commands.add_parser("dry-run-greetings")
     dry_run.add_argument("--session", default="auto")
@@ -218,41 +184,19 @@ def dispatch_acceptance(
     if command == "run-daily-session":
         return acceptance_run_daily_session(
             store,
-            lambda: browser_from_args(args, acceptance_outcomes=True),
-            min_age_days=args.min_age_days,
-            max_age_days=args.max_age_days,
-            candidates_out=Path(args.candidates_out),
-            outcomes_out=Path(args.outcomes_out),
-            chunk_dir=Path(args.chunk_dir),
-            chunk_size=args.chunk_size,
-            chunk_retries=args.chunk_retries,
-            check_delay_ms=args.check_delay_ms,
+            lambda: browser_from_args(args, acceptance_lists=True),
+            out=Path(args.out),
+            max_load_actions=args.max_load_actions,
+            watermark_size=args.watermark_size,
             daily_timezone=args.timezone,
             emit=emit,
         )
-    if command == "export":
-        return acceptance_export(
-            store,
-            min_age_days=args.min_age_days,
-            max_age_days=args.max_age_days,
-            out=Path(args.out),
-        )
-    if command == "import":
-        return acceptance_import(store, Path(args.path))
     if command == "invalidate-weak-message-acceptances":
         return acceptance_invalidate_weak_message_acceptances(
             store, apply=args.apply, sample_limit=args.sample_limit
         )
-    if command == "check":
-        return acceptance_check(
-            store,
-            browser_from_args(args, acceptance_outcomes=True),
-            input_path=Path(args.input),
-            out=Path(args.out),
-            offset=args.offset,
-            limit=args.limit,
-            delay_ms=args.delay_ms,
-        )
+    if command == "quarantine-unverified-acceptances":
+        return acceptance_quarantine_unverified_acceptances(store)
     if command == "report":
         return acceptance_report(
             store,
@@ -271,14 +215,6 @@ def dispatch_acceptance(
             limit=args.limit,
             stale_after_days=args.stale_after_days,
             prioritize_engagement=args.prioritize_engagement,
-        )
-    if command == "export-browser-investigation-queue":
-        return acceptance_export_browser_investigation_queue(
-            store,
-            out=Path(args.out),
-            markdown_out=Path(args.markdown_out) if args.markdown_out else None,
-            limit=args.limit,
-            cooldown_days=args.cooldown_days,
         )
     if command == "launch-enrichment-workers":
         return acceptance_launch_enrichment_workers(
@@ -314,14 +250,6 @@ def dispatch_acceptance(
     if command == "update-relationship-radar":
         return update_relationship_radar(
             store,
-            enrichment=Path(args.enrichment),
-            out=Path(args.out) if args.out else None,
-            markdown_out=Path(args.markdown_out) if args.markdown_out else None,
-        )
-    if command == "apply-browser-investigation":
-        return apply_browser_investigation(
-            store,
-            queue=Path(args.queue),
             enrichment=Path(args.enrichment),
             out=Path(args.out) if args.out else None,
             markdown_out=Path(args.markdown_out) if args.markdown_out else None,
@@ -364,6 +292,8 @@ def _dispatch_greeting_action(
             record_id=args.id,
             allow_send=args.allow_send,
         )
+    if command == "confirm-possible-send":
+        return acceptance_confirm_possible_send(store, Path(args.artifact))
     if command == "dry-run-greetings":
         return acceptance_dry_run_followups(
             store,

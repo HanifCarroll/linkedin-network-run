@@ -23,6 +23,7 @@ from .models import (
     AcceptanceFollowupLedger,
     AcceptanceHistorySeedSummary,
     AcceptanceLedger,
+    AcceptanceListState,
     CandidateEvent,
     CandidateReservoir,
     CandidateStatus,
@@ -88,6 +89,10 @@ class Store:
     @property
     def acceptance_event_path(self) -> Path:
         return self.dir / "acceptance-events.jsonl"
+
+    @property
+    def acceptance_list_state_path(self) -> Path:
+        return self.dir / "acceptance-list-state.json"
 
     @property
     def reservoir_path(self) -> Path:
@@ -284,6 +289,14 @@ class Store:
 
     def append_acceptance_daily_run(self, run: AcceptanceDailyRun) -> bool:
         return self._state_db.append_acceptance_daily_run(run)
+
+    def load_acceptance_list_state(self) -> AcceptanceListState:
+        if not self.acceptance_list_state_path.exists():
+            return AcceptanceListState()
+        return read_model(self.acceptance_list_state_path, AcceptanceListState)
+
+    def save_acceptance_list_state(self, state: AcceptanceListState) -> None:
+        write_model_atomic(self.acceptance_list_state_path, state)
 
     def load_acceptance_followup_ledger(self) -> AcceptanceFollowupLedger:
         if self._state_db.has_acceptance_followups():

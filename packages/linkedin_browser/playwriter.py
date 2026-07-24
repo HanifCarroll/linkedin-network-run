@@ -14,6 +14,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
+from .incident import (
+    LinkedInIncidentDetectedError,
+    assert_no_active_incident,
+    browser_operation_lock,
+    detect_fatal_incident,
+    inspect_artifact_for_fatal_incident,
+    open_incident,
+)
+
 PLAYWRITER_BIN_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BIN"
 PLAYWRITER_BROWSER_KEY_ENV = "LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY"
 PLAYWRITER_SESSION_ENV = "LINKEDIN_TOOLS_PLAYWRITER_SESSION"
@@ -66,30 +75,61 @@ class PlaywriterRunner:
         staging: StagingMode = "shared",
         progress: bool = False,
     ) -> None:
-        if out_dir is not None:
-            out_dir.mkdir(parents=True, exist_ok=True)
-        if staging == "temporary":
-            self._run_with_temporary_staging(
-                script,
-                config,
-                output_missing_message=output_missing_message,
-                progress=progress,
+        assert_no_active_incident()
+        operation = script.name
+        with browser_operation_lock(operation):
+            try:
+                if out_dir is not None:
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                if staging == "temporary":
+                    self._run_with_temporary_staging(
+                        script,
+                        config,
+                        output_missing_message=output_missing_message,
+                        progress=progress,
+                    )
+                elif staging == "direct":
+                    self._run_with_direct_output(
+                        script,
+                        config,
+                        output_missing_message=output_missing_message,
+                        progress=progress,
+                    )
+                else:
+                    self._run_with_shared_staging(
+                        script,
+                        config,
+                        output_missing_message=output_missing_message,
+                        progress=progress,
+                    )
+            except Exception as exc:
+                detected = detect_fatal_incident(str(exc))
+                if detected is not None:
+                    kind, summary = detected
+                    incident = open_incident(
+                        kind=kind,
+                        source="playwriter-error",
+                        operation=operation,
+                        summary=summary,
+                    )
+                    raise LinkedInIncidentDetectedError(incident) from exc
+                raise
+            final_out = final_output_path(config)
+            detected = (
+                inspect_artifact_for_fatal_incident(final_out)
+                if final_out is not None
+                else None
             )
-            return
-        if staging == "direct":
-            self._run_with_direct_output(
-                script,
-                config,
-                output_missing_message=output_missing_message,
-                progress=progress,
-            )
-            return
-        self._run_with_shared_staging(
-            script,
-            config,
-            output_missing_message=output_missing_message,
-            progress=progress,
-        )
+            if detected is not None:
+                kind, summary = detected
+                incident = open_incident(
+                    kind=kind,
+                    source="playwriter-artifact",
+                    operation=operation,
+                    summary=summary,
+                    evidence_path=str(final_out),
+                )
+                raise LinkedInIncidentDetectedError(incident)
 
     def reset_session(self) -> None:
         self._session = None

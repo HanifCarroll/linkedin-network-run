@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from apps.network_automation.models import (
     AcceptanceDailyRun,
+    AcceptanceEvidenceGrade,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
@@ -13,6 +14,7 @@ from apps.network_automation.models import (
     AcceptanceObservationPrecision,
     AcceptanceOutcomeArtifact,
     AcceptanceOutcomeEvent,
+    AcceptanceRelationshipStatus,
     AcceptanceReport,
     AcceptanceSourceReport,
     AcceptanceStatus,
@@ -121,6 +123,99 @@ def test_acceptance_import_downgrades_message_only_acceptance() -> None:
     )
 
 
+def test_acceptance_quarantine_preserves_only_source_grade_acceptances() -> None:
+    observed_at = datetime(2026, 7, 2, tzinfo=UTC)
+    legacy = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 6, 24),
+        source="source",
+        name="Legacy Lead",
+        profile_url="https://www.linkedin.com/sales/lead/legacy-lead",
+        sent_at=datetime(2026, 6, 24, tzinfo=UTC),
+        latest_status=AcceptanceStatus.ACCEPTED,
+        latest_checked_at=observed_at,
+        first_observed_accepted_at=observed_at,
+        history=[
+            AcceptanceOutcomeEvent(
+                at=observed_at,
+                status=AcceptanceStatus.ACCEPTED,
+                relationship="1st",
+                evidence="generic visible page text",
+                note="lead page shows 1st-degree relationship",
+            )
+        ],
+    )
+    confirmed = legacy.model_copy(
+        update={
+            "name": "Controller Lead",
+            "profile_url": "https://www.linkedin.com/sales/lead/controller-lead",
+            "history": [
+                AcceptanceOutcomeEvent(
+                    at=observed_at,
+                    status=AcceptanceStatus.ACCEPTED,
+                    relationship="1st",
+                    note="durably confirmed accepted during send",
+                )
+            ],
+        },
+        deep=True,
+    )
+    ledger = AcceptanceLedger(invitations=[legacy, confirmed])
+
+    quarantined = ledger.quarantine_unverified_acceptances(at=observed_at)
+
+    assert quarantined == [legacy.key()]
+    assert legacy.latest_status == AcceptanceStatus.INVALIDATED
+    assert legacy.acceptance_evidence_grade == AcceptanceEvidenceGrade.LEGACY_UNVERIFIED
+    assert legacy.current_relationship_status == AcceptanceRelationshipStatus.UNKNOWN
+    assert confirmed.latest_status == AcceptanceStatus.ACCEPTED
+    assert (
+        confirmed.acceptance_evidence_grade
+        == AcceptanceEvidenceGrade.CONTROLLER_CONFIRMED
+    )
+    assert (
+        confirmed.current_relationship_status
+        == AcceptanceRelationshipStatus.FIRST_DEGREE
+    )
+
+
+def test_reconciliation_retries_legacy_row_when_required_top_card_was_unavailable() -> None:
+    observed_at = datetime(2026, 7, 22, tzinfo=UTC)
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 6, 24),
+        source="source",
+        name="Retry Lead",
+        profile_url="https://www.linkedin.com/sales/lead/retry-lead",
+        sent_at=datetime(2026, 6, 24, tzinfo=UTC),
+        latest_status=AcceptanceStatus.UNKNOWN,
+        latest_checked_at=observed_at,
+        acceptance_evidence_grade=AcceptanceEvidenceGrade.LEGACY_UNVERIFIED,
+        current_relationship_status=AcceptanceRelationshipStatus.UNKNOWN,
+        current_relationship_observed_at=observed_at,
+        history=[
+            AcceptanceOutcomeEvent(
+                at=observed_at,
+                status=AcceptanceStatus.UNKNOWN,
+                evidence=(
+                    '{"contractVersion":"acceptance-relationship-v2",'
+                    '"topCardCount":0}'
+                ),
+                contract_version="acceptance-relationship-v2",
+                note="no definitive acceptance state found",
+            )
+        ],
+    )
+
+    ledger = AcceptanceLedger(invitations=[invitation])
+    candidates = ledger.legacy_acceptances_for_reconciliation()
+    cleared = ledger.clear_unavailable_relationship_observations()
+
+    assert candidates == [invitation]
+    assert cleared == [invitation.key()]
+    assert invitation.current_relationship_observed_at is None
+
+
 def test_acceptance_import_records_first_observed_transition_once() -> None:
     sent_at = datetime(2026, 7, 19, 12, tzinfo=UTC)
     first_check = datetime(2026, 7, 20, 12, tzinfo=UTC)
@@ -155,7 +250,22 @@ def test_acceptance_import_records_first_observed_transition_once() -> None:
                             "status": status,
                             "checkedAt": checked_at.isoformat(),
                             "relationship": relationship,
-                            "evidence": "Daily Lead · 1st" if relationship else "Pending",
+                            "evidence": (
+                                '{"contractVersion":"acceptance-relationship-v2",'
+                                '"expectedLeadId":"daily-lead",'
+                                '"loadedLeadId":"daily-lead",'
+                                '"identityMatched":true,"firstDegreeCount":1}'
+                                if relationship
+                                else "Pending"
+                            ),
+                            "evidenceGrade": (
+                                "structured_first_degree" if relationship else None
+                            ),
+                            "contractVersion": (
+                                "acceptance-relationship-v2" if relationship else None
+                            ),
+                            "expectedLeadId": "daily-lead" if relationship else None,
+                            "loadedLeadId": "daily-lead" if relationship else None,
                             "note": note,
                         }
                     ]
@@ -190,7 +300,9 @@ def test_acceptance_report_groups_durable_transitions_and_daily_coverage() -> No
                 at=accepted_at,
                 status=AcceptanceStatus.ACCEPTED,
                 relationship="1st",
-                note="lead page shows 1st-degree relationship",
+                evidence_grade=AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE,
+                contract_version="acceptance-relationship-v2",
+                note="exact structured first-degree relationship evidence",
             )
         ],
     )
@@ -367,6 +479,11 @@ def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None
             "messageLength": 128,
             "status": "not-messageable",
             "reason": "no visible Message or InMail action",
+            "profileIdentity": {
+                "matched": True,
+                "expectedLeadId": "abc",
+                "loadedLeadId": "abc",
+            },
             "visibleActions": [
                 {
                     "label": "Connect",
@@ -393,6 +510,9 @@ def test_acceptance_followup_not_messageable_preserves_visible_actions() -> None
         '[{"ariaLabel":"Connect","disabled":false,"label":"Connect",'
         '"role":null,"tagName":"button"},{"ariaLabel":"","disabled":false,'
         '"label":"Save","role":null,"tagName":"button"}]'
+    )
+    assert diagnostics["profile_identity"] == (
+        '{"expectedLeadId":"abc","loadedLeadId":"abc","matched":true}'
     )
     assert note is not None
     assert "no visible Message or InMail action" in note
@@ -425,6 +545,33 @@ def test_acceptance_followup_conversation_exists_is_terminal() -> None:
     )
     assert note is not None
     assert "existing LinkedIn conversation history is visible" in note
+
+
+def test_acceptance_followup_requires_confirmation_before_sent() -> None:
+    clicked = AcceptanceFollowupSendResult.model_validate(
+        {
+            "dryRun": False,
+            "status": "send-confirmation-missing",
+            "transactionId": "tx-123",
+            "messageSha256": "abc123",
+            "send": {"status": "clicked"},
+            "sendConfirmation": {"confirmed": False, "exactMatchCount": 0},
+        }
+    )
+    confirmed = clicked.model_copy(
+        update={
+            "status": "sent-confirmed",
+            "send_confirmation": {"confirmed": True, "exactMatchCount": 1},
+        }
+    )
+
+    assert acceptance_followup_status_for_result(clicked) == (
+        AcceptanceFollowupStatus.POSSIBLE_SEND
+    )
+    assert acceptance_followup_status_for_result(confirmed) == AcceptanceFollowupStatus.SENT
+    diagnostics = acceptance_followup_diagnostics(clicked)
+    assert diagnostics["send_confirmation"] == '{"confirmed":false,"exactMatchCount":0}'
+    assert "send_confirmation" in (acceptance_followup_result_note(clicked) or "")
 
 
 def test_acceptance_followup_composer_missing_preserves_message_container_diagnostics() -> None:

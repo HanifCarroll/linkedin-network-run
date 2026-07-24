@@ -27,7 +27,6 @@ dev = [
 [project.scripts]
 linkedin-tools = "apps.cli:main"
 linkedin-network-run = "apps.compat:linkedin_network_run"
-recruiter-agency-outreach = "apps.compat:recruiter_agency_outreach"
 linkedin-opportunity-intel = "apps.compat:linkedin_opportunity_intel"
 
 [tool.setuptools]
@@ -35,7 +34,6 @@ packages = [
   "apps",
   "apps.cutover",
   "apps.network_automation",
-  "apps.recruiter_agency_outreach",
   "apps.opportunity_intel",
   "apps.comment_extractor",
   "apps.review_ui",
@@ -50,7 +48,6 @@ packages = [
 "apps.network_automation" = ["playwriter_scripts/*.js"]
 "apps.comment_extractor" = ["playwriter_scripts/*.js"]
 "apps.opportunity_intel" = ["data/*.json", "playwriter_scripts/*.js"]
-"apps.recruiter_agency_outreach" = ["playwriter_scripts/*.js"]
 "apps.review_ui" = ["templates/*.html", "templates/partials/*.html", "static/*.css"]
 
 [tool.pytest.ini_options]

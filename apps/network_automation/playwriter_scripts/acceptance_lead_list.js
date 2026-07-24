@@ -137,11 +137,45 @@ async function findProfileSaveAction(activePage) {
     if (ariaLabel) visible.push(ariaLabel);
     const saved = ariaLabel.match(/^(.+) saved\. Add to a custom list\.$/);
     const save = ariaLabel.match(/^Save (.+) as a lead\. Save to list\.$/);
-    if (saved) matches.push({ button, kind: "saved", ariaLabel, profileName: saved[1] });
-    if (save) matches.push({ button, kind: "save", ariaLabel, profileName: save[1] });
+    const canonicalProfileAction =
+      (await button.getAttribute("data-x--lead-save-cta").catch(() => null)) !== null &&
+      (await button.getAttribute("data-anchor-save-lead-or-account").catch(() => null)) !== null;
+    if (saved) {
+      matches.push({
+        button,
+        kind: "saved",
+        ariaLabel,
+        profileName: saved[1],
+        canonicalProfileAction,
+      });
+    }
+    if (save) {
+      matches.push({
+        button,
+        kind: "save",
+        ariaLabel,
+        profileName: save[1],
+        canonicalProfileAction,
+      });
+    }
+  }
+  const canonicalMatches = matches.filter((match) => match.canonicalProfileAction);
+  if (canonicalMatches.length === 1) {
+    return {
+      ...canonicalMatches[0],
+      visible,
+      ambiguous: false,
+      matchingAriaLabels: matches.map((match) => match.ariaLabel),
+      selectionScope: "profile_cta",
+    };
   }
   if (matches.length === 1) {
-    return { ...matches[0], visible, ambiguous: false };
+    return {
+      ...matches[0],
+      visible,
+      ambiguous: false,
+      selectionScope: "single_accessible_action",
+    };
   }
   return {
     button: null,
@@ -151,6 +185,7 @@ async function findProfileSaveAction(activePage) {
     visible,
     ambiguous: matches.length > 1,
     matchingAriaLabels: matches.map((match) => match.ariaLabel),
+    selectionScope: null,
   };
 }
 
@@ -359,6 +394,39 @@ async function clickExactListSelection(activePage, listName, profileName) {
   };
 }
 
+async function waitForListSelectionConfirmation(
+  activePage,
+  listName,
+  profileName,
+  timeoutMs = 8000,
+) {
+  const startedAt = Date.now();
+  let selection = await listSelectionState(activePage, listName, profileName);
+  while (Date.now() - startedAt < timeoutMs) {
+    if (selection.checked) return selection;
+
+    const saveAction = await findProfileSaveAction(activePage);
+    if (
+      saveAction.button &&
+      saveAction.kind === "saved" &&
+      saveAction.profileName === profileName &&
+      saveAction.canonicalProfileAction === true
+    ) {
+      return {
+        ...selection,
+        found: true,
+        checked: true,
+        visibleLists: [listName],
+        confirmation: "canonical_profile_cta_after_exact_list_click",
+      };
+    }
+
+    await activePage.waitForTimeout(300);
+    selection = await listSelectionState(activePage, listName, profileName);
+  }
+  return selection;
+}
+
 async function clickVisibleCompletionButton(activePage) {
   for (const label of ["Done", "Save", "Apply"]) {
     const buttons = activePage.getByRole("button", { name: label, exact: true });
@@ -502,8 +570,11 @@ async function main() {
       });
       return;
     }
-    await activePage.waitForTimeout(300);
-    selection = await listSelectionState(activePage, listName, record.name);
+    selection = await waitForListSelectionConfirmation(
+      activePage,
+      listName,
+      record.name,
+    );
   }
   if (!selection.checked) {
     write({

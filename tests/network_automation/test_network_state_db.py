@@ -8,6 +8,7 @@ from pathlib import Path
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
     AcceptanceDailyRun,
+    AcceptanceEvidenceGrade,
     AcceptanceFollowupAttempt,
     AcceptanceFollowupLedger,
     AcceptanceFollowupRecord,
@@ -15,13 +16,15 @@ from apps.network_automation.models import (
     AcceptanceInvitation,
     AcceptanceLedger,
     AcceptanceOutcomeEvent,
+    AcceptanceRelationshipStatus,
     AcceptanceStatus,
     CandidateStatus,
     SendLedgerEntry,
 )
 from apps.network_automation.service import network_sends_summary
-from apps.network_automation.state_db import NetworkStateDb
+from apps.network_automation.state_db import MIGRATIONS, NetworkStateDb
 from apps.network_automation.store import Store, write_json_atomic
+from packages.linkedin_storage import apply_migrations
 
 
 def test_network_state_db_schema_migration_is_idempotent(tmp_path: Path) -> None:
@@ -31,10 +34,69 @@ def test_network_state_db_schema_migration_is_idempotent(tmp_path: Path) -> None
     second = state_db.ensure_schema()
     status = state_db.status()
 
-    assert [migration.version for migration in first] == [1, 2]
+    assert [migration.version for migration in first] == [1, 2, 3, 4]
     assert second == []
-    assert status.applied_migrations == (1, 2)
+    assert status.applied_migrations == (1, 2, 3, 4)
     assert status.database_path == tmp_path / "network.sqlite"
+
+
+def test_network_state_db_backfills_legacy_followup_sales_nav_url(tmp_path: Path) -> None:
+    state_db = NetworkStateDb(tmp_path)
+    sales_nav_url = "https://www.linkedin.com/sales/lead/legacy-buyer,NAME_SEARCH,token"
+    record = AcceptanceFollowupRecord(
+        key=f"source|Legacy Buyer|{sales_nav_url}",
+        id="afu_legacy_buyer",
+        source="Consulting - Founder Owner Buyers",
+        name="Legacy Buyer",
+        profile_url=sales_nav_url,
+        sales_nav_profile_url=None,
+        accepted_at=datetime(2026, 6, 22, 12, 0, tzinfo=UTC),
+        draft="Hey, thanks for connecting.",
+        status=AcceptanceFollowupStatus.SENT,
+        sent_at=datetime(2026, 6, 22, 13, 0, tzinfo=UTC),
+        report_path="/tmp/followups.md",
+    )
+    with state_db.connect() as conn:
+        apply_migrations(conn, MIGRATIONS[:2])
+        conn.execute(
+            """
+            INSERT INTO acceptance_followups(
+                id, key, position, source, name, profile_url, sales_nav_profile_url,
+                drafted_at, updated_at, accepted_at, draft, status, sent_at,
+                report_path, raw_json
+            ) VALUES (?, ?, 0, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.id,
+                record.key,
+                record.source,
+                record.name,
+                record.profile_url,
+                record.drafted_at.isoformat(),
+                record.updated_at.isoformat(),
+                record.accepted_at.isoformat(),
+                record.draft,
+                record.status.value,
+                record.sent_at.isoformat() if record.sent_at else None,
+                record.report_path,
+                record.model_dump_json(by_alias=False),
+            ),
+        )
+        conn.commit()
+
+    applied = state_db.ensure_schema()
+    hydrated = state_db.load_acceptance_followup_ledger().drafts[0]
+    with state_db.connect(readonly=True) as conn:
+        row = conn.execute(
+            "SELECT sales_nav_profile_url, raw_json FROM acceptance_followups WHERE id = ?",
+            (record.id,),
+        ).fetchone()
+
+    assert [migration.version for migration in applied] == [3, 4]
+    assert hydrated.sales_nav_profile_url == sales_nav_url
+    assert row is not None
+    assert row["sales_nav_profile_url"] == sales_nav_url
+    assert json.loads(str(row["raw_json"]))["sales_nav_profile_url"] == sales_nav_url
 
 
 def test_acceptance_daily_runs_append_and_hydrate(tmp_path: Path) -> None:
@@ -75,6 +137,37 @@ def test_json_acceptance_ledger_imports_once_without_duplicates(tmp_path: Path) 
     assert status.acceptance_invitations == 1
     assert status.acceptance_outcome_events == 1
     assert hydrated.model_dump(mode="json") == ledger.model_dump(mode="json")
+
+
+def test_acceptance_evidence_provenance_hydrates_from_sqlite(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    invitation = _accepted_invitation("Structured Lead")
+    invitation.acceptance_evidence_grade = (
+        AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE
+    )
+    invitation.current_relationship_status = AcceptanceRelationshipStatus.FIRST_DEGREE
+    invitation.current_relationship_observed_at = invitation.latest_checked_at
+    invitation.history[0].evidence_grade = (
+        AcceptanceEvidenceGrade.STRUCTURED_FIRST_DEGREE
+    )
+    invitation.history[0].contract_version = "acceptance-relationship-v2"
+
+    store.save_acceptance_ledger(AcceptanceLedger(invitations=[invitation]))
+
+    hydrated = store.load_acceptance_ledger().invitations[0]
+    with NetworkStateDb(tmp_path).connect(readonly=True) as conn:
+        row = conn.execute(
+            """
+            SELECT acceptance_evidence_grade, current_relationship_status
+            FROM acceptance_invitations
+            WHERE key = ?
+            """,
+            (invitation.key(),),
+        ).fetchone()
+    assert hydrated.acceptance_evidence_grade == invitation.acceptance_evidence_grade
+    assert hydrated.current_relationship_status == invitation.current_relationship_status
+    assert row["acceptance_evidence_grade"] == "structured_first_degree"
+    assert row["current_relationship_status"] == "first_degree"
 
 
 def test_followup_attempts_and_statuses_hydrate_from_sqlite(tmp_path: Path) -> None:

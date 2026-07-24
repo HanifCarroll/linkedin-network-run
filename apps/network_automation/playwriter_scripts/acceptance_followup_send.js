@@ -1,4 +1,5 @@
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 
 const config = JSON.parse(fs.readFileSync(state.linkedinToolsConfigPath, "utf8"));
 const record = config.record || {};
@@ -21,7 +22,10 @@ function normalizeMessage(text) {
 }
 
 const SALES_NAV_PROFILE_MESSAGE_SELECTOR = "button[data-anchor-send-inmail]";
-const SALES_NAV_COMPOSER_SELECTOR = "textarea[name='message'][aria-label='Type your message here…']";
+const SALES_NAV_DIALOG_SELECTOR = "section[role='dialog'][aria-label^='Conversation with ']";
+const SALES_NAV_COMPOSER_SELECTOR = "form[data-x-conversation-widget='compose-form'] textarea[name='message']";
+const SALES_NAV_MESSAGE_SELECTOR = "article";
+const SALES_NAV_OUTBOUND_MESSAGE_MARKER = "[aria-label='Message from you']";
 
 async function getPage() {
   if (state.linkedinToolsPage && !state.linkedinToolsPage.isClosed()) {
@@ -53,6 +57,9 @@ async function gotoProfilePage(page, profileUrl) {
 
 function basePayload(url) {
   const draft = String(record.draft || "");
+  const intent = Array.isArray(record.attempts)
+    ? [...record.attempts].reverse().find((attempt) => attempt.status === "send-intent-recorded")
+    : null;
   return {
     candidate: {
       id: record.id,
@@ -68,6 +75,10 @@ function basePayload(url) {
     status: "unknown",
     previewFill: Boolean(config.previewFill),
     checkedAt: nowIso(),
+    transactionId: intent ? intent.transaction_id || intent.transactionId || null : null,
+    messageSha256: intent
+      ? intent.message_sha256 || intent.messageSha256 || null
+      : crypto.createHash("sha256").update(draft, "utf8").digest("hex"),
   };
 }
 
@@ -239,12 +250,32 @@ async function clickAction(action, timeout = 8000) {
   return { method: "locator-click" };
 }
 
-async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
-  const expectedAriaLabel = `Message ${normalizeMessage(name)}`;
+function salesNavLeadId(urlValue) {
+  try {
+    const match = new URL(urlValue).pathname.match(/^\/sales\/lead\/([^,/]+)/);
+    return match ? match[1] : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function inspectProfileIdentity(page, expectedProfileUrl) {
+  const expectedLeadId = salesNavLeadId(expectedProfileUrl);
+  const loadedLeadId = salesNavLeadId(page.url());
+  return {
+    matched: Boolean(expectedLeadId) && loadedLeadId === expectedLeadId,
+    expectedLeadId,
+    loadedLeadId,
+  };
+}
+
+async function waitForProfileMessageAction(page, expectedProfileUrl, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   const startedAt = Date.now();
   let visibleActions = [];
+  let profileIdentity = null;
   while (Date.now() < deadline) {
+    profileIdentity = await inspectProfileIdentity(page, expectedProfileUrl);
     const locator = page.locator(SALES_NAV_PROFILE_MESSAGE_SELECTOR);
     const count = await locator.count().catch(() => 0);
     visibleActions = [];
@@ -261,7 +292,8 @@ async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
       if (
         !details.disabled &&
         details.hittable &&
-        normalizeMessage(details.ariaLabel) === expectedAriaLabel
+        profileIdentity.matched &&
+        /^Message(?: .+)?$/.test(normalizeMessage(details.label))
       ) {
         exactActions.push({ item, details, hitTest });
       }
@@ -278,6 +310,7 @@ async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
         },
         visibleActions,
         exactMatchCount: 1,
+        profileIdentity,
         elapsedMs: Date.now() - startedAt,
       };
     }
@@ -286,6 +319,7 @@ async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
         action: null,
         visibleActions,
         exactMatchCount: exactActions.length,
+        profileIdentity,
         elapsedMs: Date.now() - startedAt,
         reason: "multiple exact Sales Navigator Message actions were visible",
       };
@@ -296,8 +330,11 @@ async function waitForProfileMessageAction(page, name, timeoutMs = 15000) {
     action: null,
     visibleActions,
     exactMatchCount: 0,
+    profileIdentity,
     elapsedMs: Date.now() - startedAt,
-    reason: "exact Sales Navigator Message action did not become hittable",
+    reason: profileIdentity && !profileIdentity.matched
+      ? "loaded Sales Navigator lead identity did not match candidate"
+      : "exact Sales Navigator Message action did not become hittable",
   };
 }
 
@@ -312,70 +349,71 @@ async function waitForVisibleActionInRoot(page, root, pattern, timeoutMs = 8000)
   return scan || await scanVisibleActionsFromLocator(root.locator("button,a,[role='button']"), pattern);
 }
 
-async function visibleComposerForRecipient(page, name) {
-  const locator = page.locator(SALES_NAV_COMPOSER_SELECTOR);
-  const count = await locator.count().catch(() => 0);
+async function conversationRootState(root) {
+  return root.evaluate((node) => {
+    const ariaLabel = (node.getAttribute("aria-label") || "").trim();
+    const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
+    const recipientLeadIds = [];
+    for (const link of node.querySelectorAll("a[href^='/sales/lead/']")) {
+      const href = link.getAttribute("href") || "";
+      const match = href.match(/^\/sales\/lead\/([^,/]+)/);
+      if (match && !recipientLeadIds.includes(match[1])) recipientLeadIds.push(match[1]);
+    }
+    return {
+      recipients: recipient ? [recipient] : [],
+      recipientLeadIds,
+    };
+  });
+}
+
+async function visibleConversationRootForRecipient(page, expectedProfileUrl) {
+  const roots = page.locator(SALES_NAV_DIALOG_SELECTOR);
+  const count = await roots.count().catch(() => 0);
   const matches = [];
   for (let index = 0; index < count; index += 1) {
-    const item = locator.nth(index);
-    if (!(await item.isVisible().catch(() => false))) continue;
-    const composer = { locator: item, selector: SALES_NAV_COMPOSER_SELECTOR };
-    if (!await composerRoot(page, composer)) continue;
-    const stateForComposer = await composerState(composer);
-    if (recipientMatches(stateForComposer, name)) {
-      matches.push({ composer, state: stateForComposer });
-    }
+    const root = roots.nth(index);
+    if (!(await root.isVisible().catch(() => false))) continue;
+    const state = await conversationRootState(root).catch((error) => ({
+      recipients: [],
+      recipientLeadIds: [],
+      observationError: error.message,
+    }));
+    if (recipientMatches(state, expectedProfileUrl)) matches.push({ root, state });
   }
   return matches.length === 1 ? matches[0] : null;
 }
 
-async function waitForComposerForRecipient(page, name, timeoutMs = 8000) {
+async function visibleComposerForRecipient(page, expectedProfileUrl) {
+  const rootMatch = await visibleConversationRootForRecipient(page, expectedProfileUrl);
+  if (!rootMatch) return null;
+  const locator = rootMatch.root.locator(SALES_NAV_COMPOSER_SELECTOR);
+  if ((await locator.count().catch(() => 0)) !== 1) return null;
+  if (!(await locator.isVisible().catch(() => false))) return null;
+  const composer = { locator, selector: SALES_NAV_COMPOSER_SELECTOR };
+  const state = await composerState(composer, rootMatch.state);
+  return { root: rootMatch.root, composer, state };
+}
+
+async function waitForComposerForRecipient(page, expectedProfileUrl, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   let match = null;
   while (Date.now() < deadline) {
-    match = await visibleComposerForRecipient(page, name);
+    match = await visibleComposerForRecipient(page, expectedProfileUrl);
     if (match) return match;
     await page.waitForTimeout(250);
   }
-  return match || await visibleComposerForRecipient(page, name);
+  return match || await visibleComposerForRecipient(page, expectedProfileUrl);
 }
 
-async function composerRoot(page, composer) {
-  const form = composer.locator.locator(
-    "xpath=ancestor-or-self::form[@data-x-conversation-widget='compose-form'][1]",
-  );
-  if ((await form.count().catch(() => 0)) !== 1 || !await form.isVisible().catch(() => false)) {
-    return null;
-  }
-  const selector = "xpath=ancestor-or-self::section[contains(concat(' ', normalize-space(@class), ' '), ' thread-container ')][1]";
-  const root = composer.locator.locator(selector);
-  if ((await root.count().catch(() => 0)) === 1 && await root.isVisible().catch(() => false)) {
-    return root;
-  }
-  return null;
+async function composerState(composer, rootState) {
+  const bodyText = await composer.locator.inputValue({ timeout: 8000 });
+  return { ...rootState, bodyText };
 }
 
-async function composerState(composer) {
-  return composer.locator.evaluate((node) => {
-    const form = node.closest("form[data-x-conversation-widget='compose-form']");
-    const root = form ? form.closest("section.thread-container") : null;
-    const recipients = [];
-    for (const recipientNode of root ? root.querySelectorAll("h2[aria-label^='Conversation with ']") : []) {
-      const ariaLabel = (recipientNode.getAttribute("aria-label") || "").trim();
-      const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
-      if (recipient) recipients.push(recipient);
-    }
-    return {
-      bodyText: node.value,
-      recipients,
-    };
-  }).catch(() => ({ bodyText: "", recipients: [] }));
-}
-
-function recipientMatches(state, name) {
-  const normalizedName = normalizeMessage(name);
-  if (!normalizedName) return false;
-  return (state.recipients || []).some((recipient) => normalizeMessage(recipient).includes(normalizedName));
+function recipientMatches(state, expectedProfileUrl) {
+  const expectedLeadId = salesNavLeadId(expectedProfileUrl);
+  if (!expectedLeadId) return false;
+  return (state.recipientLeadIds || []).includes(expectedLeadId);
 }
 
 function bodyFillResult(composer, draft, bodyText) {
@@ -386,6 +424,218 @@ function bodyFillResult(composer, draft, bodyText) {
     actualLength: String(bodyText || "").length,
     lineBreakCount: (draft.match(/\n/g) || []).length,
     source: "value",
+  };
+}
+
+async function fillAndReacquireComposer(page, expectedProfileUrl, draft, stepPrefix = "") {
+  const before = await visibleComposerForRecipient(page, expectedProfileUrl);
+  if (!before) {
+    return {
+      ok: false,
+      status: "composer-observation-failed",
+      reason: "recipient-bound composer was unavailable immediately before fill",
+    };
+  }
+  await before.composer.locator.fill(draft, { timeout: 8000 });
+  progress(`${stepPrefix}body-fill-command-complete`);
+  const after = await waitForComposerForRecipient(page, expectedProfileUrl, 8000);
+  if (!after) {
+    return {
+      ok: false,
+      status: "composer-observation-failed",
+      reason: "recipient-bound composer could not be reacquired after fill",
+    };
+  }
+  let actual;
+  try {
+    actual = await after.composer.locator.inputValue({ timeout: 8000 });
+  } catch (error) {
+    return {
+      ok: false,
+      status: "body-fill-verification-failed",
+      reason: `failed to read recipient-bound composer after fill: ${error.message}`,
+    };
+  }
+  const bodyFill = bodyFillResult(after.composer, draft, actual);
+  progress(`${stepPrefix}body-fill-verified`, bodyFill);
+  if (!bodyFill.matched) {
+    return {
+      ok: false,
+      status: "body-fill-verification-failed",
+      reason: "recipient-bound composer did not contain the exact stored welcome after fill",
+      bodyFill,
+    };
+  }
+  return { ok: true, target: after, bodyFill };
+}
+
+async function recipientMessagingContract(root) {
+  return root.evaluate((node) => {
+    const visibleElement = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const subject = Array.from(node.querySelectorAll("input[aria-label='Subject (required)']"))
+      .find(visibleElement);
+    const secondDegree = node.querySelector("[aria-label='Second-degree connection']");
+    const firstDegree = node.querySelector("[aria-label='First-degree connection']");
+    const saveLead = Array.from(node.querySelectorAll("input[type='checkbox'][aria-label^='Save ']"))
+      .find(visibleElement);
+    const mode = subject ? "inmail" : "direct-message";
+    const currentRelationship = secondDegree
+      ? "second-degree"
+      : firstDegree
+        ? "first-degree"
+        : "not-declared";
+    return {
+      allowed: mode === "direct-message" && currentRelationship !== "second-degree" && !saveLead,
+      mode,
+      currentRelationship,
+      subjectRequired: Boolean(subject),
+      saveLeadControl: saveLead
+        ? {
+            present: true,
+            checked: Boolean(saveLead.checked),
+            ariaLabel: saveLead.getAttribute("aria-label") || "",
+          }
+        : { present: false },
+    };
+  });
+}
+
+async function exactOutboundMessageState(root, draft) {
+  return root.evaluate((node, { selector, outboundMarker, expected }) => {
+    const normalize = (text) => String(text || "").replace(/\s+/g, " ").trim();
+    const visibleElement = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const matches = [];
+    for (const item of node.querySelectorAll(selector)) {
+      if (!visibleElement(item) || !item.querySelector(outboundMarker)) continue;
+      const exactParagraphs = Array.from(item.querySelectorAll("p"))
+        .filter(visibleElement)
+        .filter((paragraph) => normalize(paragraph.textContent) === normalize(expected));
+      if (exactParagraphs.length !== 1) continue;
+      matches.push({
+        direction: "outbound",
+        marker: outboundMarker,
+        text: normalize(exactParagraphs[0].textContent),
+      });
+    }
+    return {
+      confirmed: matches.length === 1,
+      selector,
+      exactMatchCount: matches.length,
+      matches,
+    };
+  }, {
+    selector: SALES_NAV_MESSAGE_SELECTOR,
+    outboundMarker: SALES_NAV_OUTBOUND_MESSAGE_MARKER,
+    expected: draft,
+  });
+}
+
+async function waitForExactOutboundMessage(page, expectedProfileUrl, draft, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = {
+    confirmed: false,
+    selector: SALES_NAV_MESSAGE_SELECTOR,
+    exactMatchCount: 0,
+    reason: "recipient-bound conversation was unavailable after Send",
+  };
+  while (Date.now() < deadline) {
+    const match = await visibleConversationRootForRecipient(page, expectedProfileUrl);
+    if (match) {
+      try {
+        latest = await exactOutboundMessageState(match.root, draft);
+      } catch (error) {
+        latest = {
+          confirmed: false,
+          selector: SALES_NAV_MESSAGE_SELECTOR,
+          exactMatchCount: 0,
+          reason: `failed to inspect recipient-bound conversation after Send: ${error.message}`,
+        };
+      }
+      if (latest.confirmed) return latest;
+    }
+    await page.waitForTimeout(250);
+  }
+  return latest;
+}
+
+async function sendVerifiedWelcome(page, expectedProfileUrl, draft, payload, actionPayload, conversationCleanup, stepPrefix = "") {
+  const initialTarget = await visibleComposerForRecipient(page, expectedProfileUrl);
+  if (!initialTarget) {
+    return {
+      ...payload,
+      status: "composer-observation-failed",
+      reason: "recipient-bound composer was unavailable before send validation",
+      action: actionPayload,
+      conversationCleanup,
+    };
+  }
+  const composerContract = await recipientMessagingContract(initialTarget.root);
+  if (!composerContract.allowed) {
+    return {
+      ...payload,
+      status: "direct-message-unavailable",
+      reason: "recipient composer is not an allowed first-degree direct-message contract",
+      action: actionPayload,
+      conversationCleanup,
+      composerContract,
+    };
+  }
+  const fill = await fillAndReacquireComposer(page, expectedProfileUrl, draft, stepPrefix);
+  const subjectFill = { filled: false };
+  const filledPayload = {
+    ...payload,
+    action: actionPayload,
+    composerSelector: SALES_NAV_COMPOSER_SELECTOR,
+    conversationCleanup,
+    subjectFill,
+    bodyFill: fill.bodyFill || null,
+    composerContract,
+  };
+  if (!fill.ok) {
+    return { ...filledPayload, status: fill.status, reason: fill.reason };
+  }
+  if (config.previewFill) {
+    return { ...filledPayload, status: "preview-filled" };
+  }
+  const sendScan = await waitForVisibleActionInRoot(page, fill.target.root, /^(Send|Send message)$/i, 8000);
+  progress(`${stepPrefix}send-scan-complete`, { found: Boolean(sendScan.action) });
+  if (!sendScan.action) {
+    return { ...filledPayload, status: "send-button-missing", sendButtons: sendScan.visibleActions };
+  }
+  if (!config.allowSend) {
+    return { ...filledPayload, status: "blocked", reason: "real send requires allowSend" };
+  }
+  progress(`${stepPrefix}send-click-intent`, {
+    transactionId: payload.transactionId,
+    messageSha256: payload.messageSha256,
+  });
+  const sendClick = await clickAction(sendScan.action);
+  progress(`${stepPrefix}send-clicked`, sendClick);
+  const sendConfirmation = await waitForExactOutboundMessage(page, expectedProfileUrl, draft, 15000);
+  progress(`${stepPrefix}send-confirmation-complete`, sendConfirmation);
+  const send = { status: "clicked", action: "send-message", ...sendClick };
+  if (!sendConfirmation.confirmed) {
+    return {
+      ...filledPayload,
+      status: "send-confirmation-missing",
+      reason: "Send was clicked but the exact welcome was not confirmed in the recipient-bound conversation",
+      send,
+      sendConfirmation,
+    };
+  }
+  return {
+    ...filledPayload,
+    status: "sent-confirmed",
+    send: { ...send, status: "confirmed" },
+    sendConfirmation,
   };
 }
 
@@ -413,22 +663,20 @@ async function messageContainerDiagnostics(page, name) {
       };
     };
     const rootFor = (element) => (
-      element.closest("section.thread-container")
+      element.closest("section[role='dialog'][aria-label^='Conversation with ']")
     );
-    const rootSelector = "section.thread-container";
+    const rootSelector = "section[role='dialog'][aria-label^='Conversation with ']";
     const roots = new Set(Array.from(document.querySelectorAll(rootSelector)).filter(visibleElement));
-    for (const composer of document.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']")) {
+    for (const composer of document.querySelectorAll("form[data-x-conversation-widget='compose-form'] textarea[name='message']")) {
       const root = rootFor(composer);
       if (root && visibleElement(root)) roots.add(root);
     }
     const describeRoot = (root, index) => {
       const recipients = [];
-      for (const recipientNode of root.querySelectorAll("h2[aria-label^='Conversation with ']")) {
-        const ariaLabel = normalize(recipientNode.getAttribute("aria-label") || "");
-        const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
-        if (recipient) recipients.push(recipient);
-      }
-      const composers = Array.from(root.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']"))
+      const ariaLabel = normalize(root.getAttribute("aria-label") || "");
+      const recipient = ariaLabel.replace(/^Conversation with /, "").trim();
+      if (recipient) recipients.push(recipient);
+      const composers = Array.from(root.querySelectorAll("form[data-x-conversation-widget='compose-form'] textarea[name='message']"))
         .filter(visibleElement)
         .map((composer, composerIndex) => ({
           index: composerIndex,
@@ -460,7 +708,7 @@ async function messageContainerDiagnostics(page, name) {
     return {
       targetName,
       containers: Array.from(roots).map(describeRoot),
-      composerCount: Array.from(document.querySelectorAll("textarea[name='message'][aria-label='Type your message here…']")).filter(visibleElement).length,
+      composerCount: Array.from(document.querySelectorAll("form[data-x-conversation-widget='compose-form'] textarea[name='message']")).filter(visibleElement).length,
     };
   }, name).catch((error) => ({
     targetName: name,
@@ -468,8 +716,8 @@ async function messageContainerDiagnostics(page, name) {
   }));
 }
 
-async function visibleConversationHistory(root, stateForRoot, name) {
-  const matchedRecipient = recipientMatches(stateForRoot, name);
+async function visibleConversationHistory(root, stateForRoot, expectedProfileUrl) {
+  const matchedRecipient = recipientMatches(stateForRoot, expectedProfileUrl);
   if (!matchedRecipient) {
     return {
       exists: false,
@@ -479,8 +727,7 @@ async function visibleConversationHistory(root, stateForRoot, name) {
       recipients: stateForRoot.recipients,
     };
   }
-  return root.evaluate((node) => {
-    const selector = "article [aria-label^='Message from ']";
+  return root.evaluate((node, selector) => {
     const visibleElement = (element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
@@ -494,7 +741,7 @@ async function visibleConversationHistory(root, stateForRoot, name) {
       return { exists: true, scoped: true, matchedRecipient: true, selector, visibleCount: visible };
     }
     return { exists: false, scoped: true, matchedRecipient: true, visibleCount: 0 };
-  }).catch(() => ({
+  }, SALES_NAV_MESSAGE_SELECTOR).catch(() => ({
     exists: false,
     scoped: true,
     matchedRecipient,
@@ -530,14 +777,13 @@ async function main() {
   };
   progress("conversation-cleanup-complete", conversationCleanup.beforeOpen);
   const draft = String(record.draft || "");
-  const existingTargetComposer = await visibleComposerForRecipient(page, record.name);
+  const existingTargetComposer = await visibleComposerForRecipient(page, profileUrl);
   if (existingTargetComposer) {
     progress("existing-target-composer-found");
     const existingComposer = existingTargetComposer.composer;
     const existingState = existingTargetComposer.state;
-    const existingRoot = await composerRoot(page, existingComposer);
     const bodyFill = bodyFillResult(existingComposer, draft, existingState.bodyText);
-    const matchedRecipient = recipientMatches(existingState, record.name);
+    const matchedRecipient = recipientMatches(existingState, profileUrl);
     const actionPayload = {
       kind: "message",
       action_label: "Message",
@@ -545,111 +791,87 @@ async function main() {
       source: "existing-compose",
       opened_page_url: page.url(),
     };
-    if (existingRoot) {
-      const conversationCheck = await visibleConversationHistory(existingRoot, existingState, record.name);
-      progress("existing-composer-conversation-check-complete", conversationCheck);
-      if (conversationCheck.exists) {
-        fs.writeFileSync(config.out, `${JSON.stringify({
-          ...payload,
-          status: "conversation-exists",
-          reason: "existing LinkedIn conversation history is visible",
-          action: actionPayload,
-          conversationCheck,
-          conversationCleanup,
-        }, null, 2)}\n`);
-        return;
-      }
-      if (config.dryRun && !config.previewFill) {
-        fs.writeFileSync(config.out, `${JSON.stringify({
-          ...payload,
-          status: "dry-run-messageable",
-          action: actionPayload,
-          composerSelector: existingComposer.selector,
-          conversationCheck,
-          conversationCleanup,
-          existingComposer: {
-            matchedRecipient,
-            recipients: existingState.recipients,
-          },
-        }, null, 2)}\n`);
-        return;
-      }
-      const hasUnexpectedText = normalizeMessage(existingState.bodyText) !== "" && !bodyFill.matched;
-      if (hasUnexpectedText) {
-        fs.writeFileSync(config.out, `${JSON.stringify({
-          ...payload,
-          status: "blocked",
-          reason: "target message composer has unexpected existing text",
-          action: actionPayload,
-          composerSelector: existingComposer.selector,
-          bodyFill,
-          conversationCleanup,
-          existingComposer: {
-            matchedRecipient,
-            recipients: existingState.recipients,
-          },
-        }, null, 2)}\n`);
-        return;
-      }
-      let finalBodyFill = bodyFill;
-      const subjectFill = { filled: false };
-      if (!bodyFill.matched) {
-        await existingComposer.locator.fill(draft, { timeout: 8000 });
-        progress("existing-composer-body-fill-command-complete");
-        const actual = await existingComposer.locator.evaluate((node) => node.value).catch(() => "");
-        finalBodyFill = bodyFillResult(existingComposer, draft, actual);
-        progress("existing-composer-body-fill-verified", finalBodyFill);
-      }
-      const sendScan = await waitForVisibleActionInRoot(page, existingRoot, /^(Send|Send message)$/i, 8000);
-      progress("existing-composer-send-scan-complete", { found: Boolean(sendScan.action) });
-      const send = sendScan.action;
-      const filledPayload = {
+    const conversationCheck = await visibleConversationHistory(
+      existingTargetComposer.root,
+      existingState,
+      profileUrl,
+    );
+    progress("existing-composer-conversation-check-complete", conversationCheck);
+    if (conversationCheck.exists) {
+      fs.writeFileSync(config.out, `${JSON.stringify({
         ...payload,
+        status: "conversation-exists",
+        reason: "existing LinkedIn conversation history is visible",
+        action: actionPayload,
+        conversationCheck,
+        conversationCleanup,
+      }, null, 2)}\n`);
+      return;
+    }
+    const composerContract = await recipientMessagingContract(existingTargetComposer.root);
+    if (!composerContract.allowed) {
+      fs.writeFileSync(config.out, `${JSON.stringify({
+        ...payload,
+        status: "direct-message-unavailable",
+        reason: "recipient composer is not an allowed first-degree direct-message contract",
         action: actionPayload,
         composerSelector: existingComposer.selector,
-        subjectFill,
-        bodyFill: finalBodyFill,
+        composerContract,
+        conversationCheck,
+        conversationCleanup,
+      }, null, 2)}\n`);
+      return;
+    }
+    if (config.dryRun && !config.previewFill) {
+      fs.writeFileSync(config.out, `${JSON.stringify({
+        ...payload,
+        status: "dry-run-messageable",
+        action: actionPayload,
+        composerSelector: existingComposer.selector,
+        composerContract,
+        conversationCheck,
         conversationCleanup,
         existingComposer: {
           matchedRecipient,
           recipients: existingState.recipients,
+          recipientLeadIds: existingState.recipientLeadIds,
         },
-      };
-      if (!send) {
-        fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "send-button-missing", sendButtons: sendScan.visibleActions }, null, 2)}\n`);
-        return;
-      }
-      if (!config.allowSend) {
-        fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "blocked", reason: "real send requires allowSend" }, null, 2)}\n`);
-        return;
-      }
-      const sendClick = await clickAction(send);
-      await page.waitForTimeout(1000);
-      progress("existing-composer-send-clicked", sendClick);
-      fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "sent-clicked", send: { status: "clicked", action: "send-message", ...sendClick } }, null, 2)}\n`);
+      }, null, 2)}\n`);
       return;
     }
-    fs.writeFileSync(config.out, `${JSON.stringify({
-      ...payload,
-      status: "blocked",
-      reason: "message composer was already open before the scripted Message action",
-      composerSelector: existingComposer.selector,
+    const hasUnexpectedText = normalizeMessage(existingState.bodyText) !== "" && !bodyFill.matched;
+    if (hasUnexpectedText) {
+      fs.writeFileSync(config.out, `${JSON.stringify({
+        ...payload,
+        status: "blocked",
+        reason: "target message composer has unexpected existing text",
+        action: actionPayload,
+        composerSelector: existingComposer.selector,
+        bodyFill,
+        conversationCleanup,
+      }, null, 2)}\n`);
+      return;
+    }
+    const result = await sendVerifiedWelcome(
+      page,
+      profileUrl,
+      draft,
+      payload,
+      actionPayload,
       conversationCleanup,
-      existingComposer: {
-        matchedRecipient,
-        recipients: existingState.recipients,
-      },
-      bodyFill,
-    }, null, 2)}\n`);
+      "existing-composer-",
+    );
+    fs.writeFileSync(config.out, `${JSON.stringify(result, null, 2)}\n`);
     return;
   }
 
-  const actionScan = await waitForProfileMessageAction(page, record.name, 15000);
+  const actionScan = await waitForProfileMessageAction(page, profileUrl, 15000);
   progress("profile-action-scan-complete", {
     found: Boolean(actionScan.action),
     exactMatchCount: actionScan.exactMatchCount,
     elapsedMs: actionScan.elapsedMs,
     reason: actionScan.reason,
+    profileIdentity: actionScan.profileIdentity,
   });
   const action = actionScan.action;
   if (!action) {
@@ -659,6 +881,7 @@ async function main() {
       status: ambiguous ? "blocked" : "not-messageable",
       reason: actionScan.reason,
       visibleActions: actionScan.visibleActions,
+      profileIdentity: actionScan.profileIdentity,
       conversationCleanup,
     }, null, 2)}\n`);
     return;
@@ -674,7 +897,7 @@ async function main() {
   const actionClick = await clickAction(action);
   await page.waitForTimeout(1000);
   progress("profile-action-clicked", { label: action.label, ...actionClick });
-  let targetComposer = await waitForComposerForRecipient(page, record.name, 8000);
+  let targetComposer = await waitForComposerForRecipient(page, profileUrl, 8000);
   progress("target-composer-wait-complete", { found: Boolean(targetComposer) });
   if (!targetComposer) {
     const messageContainers = await messageContainerDiagnostics(page, record.name);
@@ -687,24 +910,14 @@ async function main() {
     }, null, 2)}\n`);
     return;
   }
-  targetComposer = await visibleComposerForRecipient(page, record.name) || targetComposer;
+  targetComposer = await visibleComposerForRecipient(page, profileUrl) || targetComposer;
   const composer = targetComposer.composer;
-  const root = await composerRoot(page, composer);
-  if (!root) {
-    const messageContainers = await messageContainerDiagnostics(page, record.name);
-    fs.writeFileSync(config.out, `${JSON.stringify({
-      ...payload,
-      status: "composer-missing",
-      reason: "active message container missing",
-      action: actionPayload,
-      composerSelector: composer.selector,
-      conversationCleanup,
-      messageContainers,
-    }, null, 2)}\n`);
-    return;
-  }
   const stateForRoot = targetComposer.state;
-  const conversationCheck = await visibleConversationHistory(root, stateForRoot, record.name);
+  const conversationCheck = await visibleConversationHistory(
+    targetComposer.root,
+    stateForRoot,
+    profileUrl,
+  );
   progress("conversation-check-complete", conversationCheck);
   if (conversationCheck.exists) {
     fs.writeFileSync(config.out, `${JSON.stringify({
@@ -718,51 +931,42 @@ async function main() {
     return;
   }
 
+  const composerContract = await recipientMessagingContract(targetComposer.root);
+  if (!composerContract.allowed) {
+    fs.writeFileSync(config.out, `${JSON.stringify({
+      ...payload,
+      status: "direct-message-unavailable",
+      reason: "recipient composer is not an allowed first-degree direct-message contract",
+      action: actionPayload,
+      composerSelector: composer.selector,
+      composerContract,
+      conversationCheck,
+      conversationCleanup,
+    }, null, 2)}\n`);
+    return;
+  }
+
   if (config.dryRun && !config.previewFill) {
     fs.writeFileSync(config.out, `${JSON.stringify({
       ...payload,
       status: "dry-run-messageable",
       action: actionPayload,
       composerSelector: composer.selector,
+      composerContract,
       conversationCheck,
       conversationCleanup,
     }, null, 2)}\n`);
     return;
   }
-  const subjectFill = { filled: false };
-  await composer.locator.fill(draft, { timeout: 8000 });
-  progress("body-fill-command-complete");
-  const actual = await composer.locator.evaluate((node) => node.value).catch(() => "");
-  const bodyFill = bodyFillResult(composer, draft, actual);
-  progress("body-fill-verified", bodyFill);
-  const filledPayload = {
-    ...payload,
-    action: actionPayload,
-    composerSelector: composer.selector,
+  const result = await sendVerifiedWelcome(
+    page,
+    profileUrl,
+    draft,
+    payload,
+    actionPayload,
     conversationCleanup,
-    subjectFill,
-    bodyFill,
-  };
-  if (config.previewFill) {
-    fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "preview-filled" }, null, 2)}\n`);
-    return;
-  }
-
-  const sendScan = await waitForVisibleActionInRoot(page, root, /^(Send|Send message)$/i, 8000);
-  progress("send-scan-complete", { found: Boolean(sendScan.action) });
-  const send = sendScan.action;
-  if (!send) {
-    fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "send-button-missing", sendButtons: sendScan.visibleActions }, null, 2)}\n`);
-    return;
-  }
-  if (!config.allowSend) {
-    fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "blocked", reason: "real send requires allowSend" }, null, 2)}\n`);
-    return;
-  }
-  const sendClick = await clickAction(send);
-  await page.waitForTimeout(1000);
-  progress("send-clicked", sendClick);
-  fs.writeFileSync(config.out, `${JSON.stringify({ ...filledPayload, status: "sent-clicked", send: { status: "clicked", action: "send-message", ...sendClick } }, null, 2)}\n`);
+  );
+  fs.writeFileSync(config.out, `${JSON.stringify(result, null, 2)}\n`);
 }
 
 await main();

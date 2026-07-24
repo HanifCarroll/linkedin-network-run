@@ -1,7 +1,6 @@
 # linkedin-tools Architecture
 
-`linkedin-tools` is a Python monorepo for LinkedIn networking,
-recruiter/agency/advisor outreach, opportunity intelligence, comment extraction,
+`linkedin-tools` is a Python monorepo for LinkedIn networking, opportunity intelligence, comment extraction,
 and local review tools.
 The top-level CLI is `uv run linkedin-tools`.
 
@@ -10,15 +9,12 @@ The top-level CLI is `uv run linkedin-tools`.
 - `apps/network_automation`: Sales Navigator connection-request controller,
   source reservoirs, sent-page audit reconciliation, acceptance tracking,
   accepted follow-ups, and pending-invitation cleanup.
-- `apps/recruiter_agency_outreach`: recruiter, agency, and advisor sourcing,
-  lead capture, drafting, dashboards, guarded message dry-runs, and guarded
-  message sends.
 - `apps/opportunity_intel`: recommend-only source registry, query packs,
   post queues, provider imports, capture batches, scoring, and review exports.
 - `apps/comment_extractor`: browser-backed and saved-HTML extraction for
   LinkedIn post comments.
 - `apps/review_ui`: local FastAPI/Jinja review surfaces for opportunities,
-  networking, recruiter/agency/advisor state, browser artifacts, and guarded
+  networking, browser artifacts, and guarded
   actions.
 
 ## Shared Packages
@@ -36,7 +32,6 @@ Each app owns its namespace:
 
 ```text
 network-automation/
-recruiter-agency-outreach/
 opportunity-intel/
 comment-extractor/
 review-ui/
@@ -55,10 +50,7 @@ be audited after uncertain browser behavior.
 
 - Connection requests are owned by `linkedin-tools network`.
 - Acceptance follow-ups are owned by `linkedin-tools network acceptance`.
-- Recruiter/agency outreach sends drafted messages only; it must not click
-  `Connect`.
-- The network and recruiter/agency/advisor controllers suppress exact-profile
-  overlap across their state dirs before guarded browser actions.
+- The network controller retains exact-profile safeguards before guarded browser actions.
 - Opportunity intelligence is recommend-only.
 - Real sends and withdrawals require explicit flags close to the browser action:
   `--allow-send` or `--allow-withdraw`.

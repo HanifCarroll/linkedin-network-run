@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -9,14 +10,16 @@ import pytest
 
 from apps.network_automation.acceptance_service import (
     acceptance_collect_enrichment_workers,
-    acceptance_export_browser_investigation_queue,
+    acceptance_confirm_possible_send,
     acceptance_export_enrichment_queue,
     acceptance_import,
     acceptance_launch_enrichment_workers,
     acceptance_prepare_welcome_messages,
     acceptance_retry_send_followup,
     acceptance_run_welcome_messages,
+    acceptance_send_followup,
     acceptance_send_ready_followups,
+    reconcile_acceptance_lists,
 )
 from apps.network_automation.browser import BrowserClient
 from apps.network_automation.commercial_context import (
@@ -27,6 +30,7 @@ from apps.network_automation.models import (
     DURABLY_CONFIRMED_ACCEPTED_NOTE,
     FOUNDER_OWNER_BUYERS_LEAD_LIST,
     FOUNDER_OWNER_BUYERS_SOURCE,
+    AcceptanceEvidenceGrade,
     AcceptanceFollowupAttempt,
     AcceptanceFollowupLedger,
     AcceptanceFollowupMessageCandidate,
@@ -37,6 +41,7 @@ from apps.network_automation.models import (
     AcceptanceLeadListSaveResult,
     AcceptanceLeadListStatus,
     AcceptanceLedger,
+    AcceptanceListArtifact,
     AcceptanceOutcomeEvent,
     AcceptanceStatus,
     AcceptedDraftCandidate,
@@ -58,6 +63,36 @@ from apps.network_automation.relationship_radar import (
 from apps.network_automation.store import Store, read_model, write_json_atomic
 
 from .helpers import FIXTURES, SequenceFollowupBrowser, _run_id
+
+
+def _list_artifact(
+    *,
+    pending_rows: list[dict[str, object]],
+    connection_rows: list[dict[str, object]],
+) -> AcceptanceListArtifact:
+    return AcceptanceListArtifact.model_validate(
+        {
+            "capturedAt": "2026-07-24T12:00:00Z",
+            "contractVersion": "acceptance-list-reconciliation-v1",
+            "baselineOnly": False,
+            "connectionDeltaComplete": True,
+            "previousWatermark": ["member:watermark"],
+            "nextWatermark": ["member:watermark"],
+            "pending": {
+                "url": "https://www.linkedin.com/mynetwork/invitation-manager/sent/",
+                "complete": True,
+                "loadedCount": len(pending_rows),
+                "rows": pending_rows,
+            },
+            "connections": {
+                "url": "https://www.linkedin.com/mynetwork/invite-connect/connections/",
+                "complete": True,
+                "loadedCount": len(connection_rows),
+                "sortOrder": "Recently added",
+                "rows": connection_rows,
+            },
+        }
+    )
 
 
 def _active_candidate(name: str = "Active Founder") -> AcceptedDraftCandidate:
@@ -119,6 +154,93 @@ def _store_with_active_accepted_approval(
     lead_record.approved_at = candidate.sent_at - timedelta(days=1)
     store.save_lead_ledger(lead_ledger)
     return store, candidate
+
+
+def test_two_list_reconciliation_accepts_only_exact_connection_identity() -> None:
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 20),
+        source=FOUNDER_OWNER_BUYERS_SOURCE,
+        name="Exact Lead",
+        profile_url="https://www.linkedin.com/sales/lead/ACwExact,SEARCH,result",
+        sent_at=datetime(2026, 7, 20, tzinfo=UTC),
+        latest_status=AcceptanceStatus.SENT,
+    )
+    ledger = AcceptanceLedger(invitations=[invitation])
+
+    summary = reconcile_acceptance_lists(
+        ledger,
+        _list_artifact(
+            pending_rows=[],
+            connection_rows=[
+                {
+                    "name": "Exact Lead",
+                    "publicProfileUrl": "https://www.linkedin.com/in/exact-lead",
+                    "publicIdentifier": "exact-lead",
+                    "profileUrn": "urn:li:fsd_profile:ACwExact",
+                    "memberId": "ACwExact",
+                    "rowIndex": 0,
+                }
+            ],
+        ),
+    )
+
+    assert summary.accepted == 1
+    assert invitation.latest_status == AcceptanceStatus.ACCEPTED
+    assert invitation.acceptance_evidence_grade == (
+        AcceptanceEvidenceGrade.CONNECTIONS_LIST_FIRST_DEGREE
+    )
+    assert invitation.public_profile_url == "https://www.linkedin.com/in/exact-lead"
+
+
+def test_two_list_reconciliation_does_not_infer_from_absence() -> None:
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 20),
+        source=FOUNDER_OWNER_BUYERS_SOURCE,
+        name="Absent Lead",
+        profile_url="https://www.linkedin.com/sales/lead/ACwAbsent,SEARCH,result",
+        sent_at=datetime(2026, 7, 20, tzinfo=UTC),
+        latest_status=AcceptanceStatus.SENT,
+    )
+    ledger = AcceptanceLedger(invitations=[invitation])
+
+    summary = reconcile_acceptance_lists(
+        ledger,
+        _list_artifact(pending_rows=[], connection_rows=[]),
+    )
+
+    assert summary.unchanged_unknown == 1
+    assert invitation.latest_status == AcceptanceStatus.SENT
+    assert invitation.latest_checked_at is None
+
+
+def test_two_list_reconciliation_refuses_ambiguous_exact_identity() -> None:
+    invitation = AcceptanceInvitation(
+        run_id=_run_id(),
+        run_date=date(2026, 7, 20),
+        source=FOUNDER_OWNER_BUYERS_SOURCE,
+        name="Ambiguous Lead",
+        profile_url="https://www.linkedin.com/sales/lead/ACwAmbiguous,SEARCH,result",
+        sent_at=datetime(2026, 7, 20, tzinfo=UTC),
+        latest_status=AcceptanceStatus.SENT,
+    )
+    ledger = AcceptanceLedger(invitations=[invitation])
+    exact = {
+        "name": "Ambiguous Lead",
+        "profileUrn": "urn:li:fsd_profile:ACwAmbiguous",
+        "memberId": "ACwAmbiguous",
+        "rowIndex": 0,
+    }
+
+    summary = reconcile_acceptance_lists(
+        ledger,
+        _list_artifact(pending_rows=[exact], connection_rows=[exact]),
+    )
+
+    assert summary.ambiguous == 1
+    assert summary.unchanged_unknown == 1
+    assert invitation.latest_status == AcceptanceStatus.SENT
 
 
 def _export_active_enrichment_queue(tmp_path: Path) -> tuple[Store, Path, dict[str, object]]:
@@ -475,9 +597,56 @@ class ApprovedPilotBrowser:
                 dry_run=dry_run,
                 url=record.profile_url,
                 message_length=len(record.draft),
-                status="dry-run-messageable" if dry_run else "sent-clicked",
+                status="dry-run-messageable" if dry_run else "sent-confirmed",
+                send_confirmation=None
+                if dry_run
+                else {"confirmed": True, "exactMatchCount": 1},
             ),
             str(self.out_dir / ("dry-run.json" if dry_run else "sent.json")),
+        )
+
+
+class DirectMessageReplacementBrowser(ApprovedPilotBrowser):
+    def send_acceptance_followup(
+        self,
+        record: AcceptanceFollowupRecord,
+        *,
+        dry_run: bool,
+        preview_fill: bool,
+        allow_send: bool,
+    ) -> tuple[AcceptanceFollowupSendResult, str]:
+        if dry_run or record.id != "afu_inmail_only":
+            return super().send_acceptance_followup(
+                record,
+                dry_run=dry_run,
+                preview_fill=preview_fill,
+                allow_send=allow_send,
+            )
+        assert preview_fill is False
+        assert allow_send is True
+        self.calls.append("send-unavailable")
+        return (
+            AcceptanceFollowupSendResult(
+                candidate=AcceptanceFollowupMessageCandidate(
+                    id=record.id,
+                    key=record.key,
+                    name=record.name,
+                    profile_url=record.profile_url or record.sales_nav_profile_url or "",
+                    sales_nav_profile_url=record.sales_nav_profile_url,
+                    source=record.source,
+                ),
+                dry_run=False,
+                url=record.profile_url,
+                message_length=len(record.draft),
+                status="direct-message-unavailable",
+                composer_contract={
+                    "allowed": False,
+                    "mode": "inmail",
+                    "secondDegree": True,
+                    "subjectRequired": True,
+                },
+            ),
+            str(self.out_dir / "direct-message-unavailable.json"),
         )
 
 
@@ -518,6 +687,53 @@ def test_welcome_run_dry_runs_then_sends_without_saving_a_list(
     assert browser.calls == ["dry-run", "send"]
     assert stored.sales_nav_list_status == AcceptanceLeadListStatus.PENDING
     assert stored.status == AcceptanceFollowupStatus.SENT
+    assert "welcome-message run complete: 1 sent this run" in output
+
+
+def test_welcome_run_replaces_direct_message_unavailable_candidate(
+    tmp_path: Path,
+) -> None:
+    inmail_only = AcceptanceFollowupRecord(
+        key="inmail-only-key",
+        id="afu_inmail_only",
+        source=FOUNDER_OWNER_BUYERS_SOURCE,
+        name="InMail Only",
+        profile_url="https://www.linkedin.com/in/inmail-only",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/inmail-only",
+        accepted_at=datetime(2026, 7, 13, tzinfo=UTC),
+        draft=accepted_welcome_message("InMail"),
+        greeting_eligibility_status=GreetingEligibilityStatus.ELIGIBLE,
+        report_path="greetings.md",
+    )
+    replacement = inmail_only.model_copy(
+        update={
+            "key": "replacement-key",
+            "id": "afu_replacement",
+            "name": "Replacement",
+            "profile_url": "https://www.linkedin.com/in/replacement",
+            "sales_nav_profile_url": "https://www.linkedin.com/sales/lead/replacement",
+            "draft": accepted_welcome_message("Replacement"),
+        },
+        deep=True,
+    )
+    store = Store(tmp_path)
+    store.save_acceptance_followup_ledger(
+        AcceptanceFollowupLedger(drafts=[inmail_only, replacement])
+    )
+    browser = DirectMessageReplacementBrowser(tmp_path)
+
+    output = acceptance_run_welcome_messages(
+        store,
+        cast(BrowserClient, browser),
+        run_limit=1,
+        allow_send=True,
+    )
+
+    ledger = store.load_acceptance_followup_ledger()
+    assert browser.calls == ["dry-run", "send-unavailable", "dry-run", "send"]
+    assert ledger.drafts[0].status == AcceptanceFollowupStatus.DIRECT_MESSAGE_UNAVAILABLE
+    assert ledger.drafts[1].status == AcceptanceFollowupStatus.SENT
+    assert "welcome excluded afu_inmail_only" in output
     assert "welcome-message run complete: 1 sent this run" in output
 
 
@@ -603,6 +819,121 @@ def test_welcome_run_does_not_retry_a_failed_real_send_attempt(tmp_path: Path) -
 
     assert browser.calls == []
     assert "requires review in status send_failed" in output
+
+
+def test_real_send_records_possible_send_before_browser_failure(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    record = AcceptanceFollowupRecord(
+        key="possible-send-key",
+        id="afu_possible",
+        source="source",
+        name="Possible Send",
+        profile_url="https://www.linkedin.com/in/possible-send",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/possible-send",
+        accepted_at=datetime(2026, 7, 13, tzinfo=UTC),
+        draft=accepted_welcome_message("Possible"),
+        greeting_eligibility_status=GreetingEligibilityStatus.ELIGIBLE,
+        status=AcceptanceFollowupStatus.DRY_RUN_READY,
+        report_path="greetings.md",
+    )
+    store.save_acceptance_followup_ledger(AcceptanceFollowupLedger(drafts=[record]))
+
+    class FailingBrowser:
+        def send_acceptance_followup(
+            self,
+            active: AcceptanceFollowupRecord,
+            *,
+            dry_run: bool,
+            preview_fill: bool,
+            allow_send: bool,
+        ) -> tuple[AcceptanceFollowupSendResult, str]:
+            assert active.status == AcceptanceFollowupStatus.POSSIBLE_SEND
+            assert active.attempts[-1].status == "send-intent-recorded"
+            assert active.attempts[-1].possible_send is True
+            assert active.attempts[-1].transaction_id
+            assert active.attempts[-1].message_sha256
+            assert dry_run is False
+            assert preview_fill is False
+            assert allow_send is True
+            raise RuntimeError("browser stopped after the possible-send boundary")
+
+    with pytest.raises(RuntimeError, match="possible-send boundary"):
+        acceptance_send_followup(
+            store,
+            cast(BrowserClient, FailingBrowser()),
+            record_id=record.id,
+            dry_run=False,
+            preview_fill=False,
+            allow_send=True,
+        )
+
+    stored = store.load_acceptance_followup_ledger().drafts[0]
+    assert stored.status == AcceptanceFollowupStatus.POSSIBLE_SEND
+    assert stored.attempts[-1].status == "send-intent-recorded"
+    assert stored.attempts[-1].out_path.startswith("pending://acceptance-welcome/")
+
+
+def test_confirm_possible_send_requires_exact_transaction_message_and_recipient(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    draft = accepted_welcome_message("Possible")
+    message_sha256 = hashlib.sha256(draft.encode("utf-8")).hexdigest()
+    record = AcceptanceFollowupRecord(
+        key="possible-confirm-key",
+        id="afu_possible_confirm",
+        source="source",
+        name="Possible Confirm",
+        profile_url="https://www.linkedin.com/in/possible-confirm",
+        sales_nav_profile_url="https://www.linkedin.com/sales/lead/lead-123,NAME_SEARCH,x",
+        accepted_at=datetime(2026, 7, 13, tzinfo=UTC),
+        draft=draft,
+        status=AcceptanceFollowupStatus.POSSIBLE_SEND,
+        attempts=[
+            AcceptanceFollowupAttempt(
+                dry_run=False,
+                status="send-confirmation-missing",
+                out_path="send.json",
+                transaction_id="tx-123",
+                message_sha256=message_sha256,
+                possible_send=True,
+            )
+        ],
+        report_path="greetings.md",
+    )
+    store.save_acceptance_followup_ledger(AcceptanceFollowupLedger(drafts=[record]))
+    confirmation = tmp_path / "confirmation.json"
+    confirmation.write_text(
+        json.dumps(
+            {
+                "followup_id": record.id,
+                "transaction_id": "tx-123",
+                "candidate_name": record.name,
+                "profile_url": record.sales_nav_profile_url,
+                "recipient_lead_id": "lead-123",
+                "message_sha256": message_sha256,
+                "exact_message": draft,
+                "exact_match_count": 1,
+                "direction": "outbound",
+                "observed_at": "2026-07-22T11:31:00Z",
+                "source": "chrome-read-only-dom",
+                "evidence": {
+                    "outbound_marker": "[aria-label='Message from you']",
+                    "body_selector": "article p",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = acceptance_confirm_possible_send(store, confirmation)
+
+    stored = store.load_acceptance_followup_ledger().drafts[0]
+    assert stored.status == AcceptanceFollowupStatus.SENT
+    assert stored.sent_at == datetime(2026, 7, 22, 11, 31, tzinfo=UTC)
+    assert stored.attempts[-1].status == "sent-confirmed-reconciled"
+    assert stored.attempts[-1].possible_send is False
+    assert "confirmation=reconciled" in output
 
 
 def test_welcome_run_handles_multiple_accepted_connections(
@@ -712,51 +1043,6 @@ def test_enrichment_queue_only_refreshes_missing_or_stale(tmp_path: Path) -> Non
         prioritize_engagement=False,
     )
     assert json.loads(queue_path.read_text())["items"][0]["enrichment_status"] == "stale"
-
-
-def test_browser_investigation_queue_uses_its_own_cooldown(tmp_path: Path) -> None:
-    store, _queue_path, _packet = _export_active_enrichment_queue(tmp_path)
-    radar_path = store.dir / "relationship-radar" / "ledger.json"
-    radar = read_model(radar_path, RelationshipRadarLedger)
-    record = radar.records[0]
-    record.relationship_enrichment_status = RelationshipEnrichmentStatus.NEEDS_REVIEW
-    record.enriched_at = datetime.now(UTC)
-    write_json_atomic(radar_path, radar.model_dump(mode="json", by_alias=False))
-    browser_queue = tmp_path / "browser-investigation-queue.json"
-
-    acceptance_export_browser_investigation_queue(
-        store,
-        out=browser_queue,
-        markdown_out=None,
-        limit=5,
-        cooldown_days=30,
-    )
-    packet = json.loads(browser_queue.read_text())
-    assert len(packet["items"]) == 1
-    assert packet["items"][0]["enrichment_reason"] == "browser_needs_review"
-
-    radar = read_model(radar_path, RelationshipRadarLedger)
-    radar.records[0].browser_investigated_at = datetime.now(UTC)
-    write_json_atomic(radar_path, radar.model_dump(mode="json", by_alias=False))
-    acceptance_export_browser_investigation_queue(
-        store,
-        out=browser_queue,
-        markdown_out=None,
-        limit=5,
-        cooldown_days=30,
-    )
-    assert json.loads(browser_queue.read_text())["items"] == []
-
-    radar.records[0].browser_investigated_at = datetime.now(UTC) - timedelta(days=31)
-    write_json_atomic(radar_path, radar.model_dump(mode="json", by_alias=False))
-    acceptance_export_browser_investigation_queue(
-        store,
-        out=browser_queue,
-        markdown_out=None,
-        limit=5,
-        cooldown_days=30,
-    )
-    assert len(json.loads(browser_queue.read_text())["items"]) == 1
 
 
 def test_launch_enrichment_workers_writes_source_bundle_and_command(
@@ -1103,7 +1389,7 @@ def test_retry_send_greeting_dry_runs_then_sends(tmp_path: Path) -> None:
     )
 
     assert "status=preview-filled dry_run=True" in output
-    assert "status=sent-clicked dry_run=False" in output
+    assert "status=sent-confirmed dry_run=False" in output
     assert store.load_acceptance_followup_ledger().drafts[0].status == (
         AcceptanceFollowupStatus.SENT
     )

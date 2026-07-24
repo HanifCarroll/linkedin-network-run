@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -13,11 +12,10 @@ from packages.linkedin_browser import playwriter as playwriter_module
 from packages.linkedin_browser.playwriter import PlaywriterRunner, StagingMode
 
 from .models import (
-    AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
     AcceptanceLeadListSaveResult,
-    AcceptanceOutcomeArtifact,
+    AcceptanceListArtifact,
     AppModel,
     CandidateObservation,
     PendingCandidateObservation,
@@ -29,7 +27,7 @@ from .models import (
     SalesNavSendResult,
     SavedSearchArtifact,
 )
-from .store import read_model, write_json_atomic
+from .store import read_model
 
 DEFAULT_SEND_OUT_DIR = Path("/tmp/linkedin-network-run-send-next")
 DEFAULT_CAPTURE_OUT_DIR = Path("/tmp/linkedin-network-run-capture")
@@ -69,17 +67,15 @@ class SavedSearchBrowser(Protocol):
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]: ...
 
 
-class AcceptanceOutcomeBrowser(Protocol):
-    def check_acceptance_outcomes(
+class AcceptanceListBrowser(Protocol):
+    def capture_acceptance_lists(
         self,
         *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
+        previous_watermark: list[str],
         out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]: ...
+        max_load_actions: int = 100,
+        watermark_size: int = 25,
+    ) -> tuple[AcceptanceListArtifact, str]: ...
 
 
 class PendingInvitationCaptureBrowser(Protocol):
@@ -133,7 +129,7 @@ class BrowserClient(
     SalesNavCaptureBrowser,
     SentInvitationAuditBrowser,
     SavedSearchBrowser,
-    AcceptanceOutcomeBrowser,
+    AcceptanceListBrowser,
     PendingInvitationCaptureBrowser,
     AcceptanceFollowupBrowser,
     AcceptanceLeadListBrowser,
@@ -153,7 +149,7 @@ class FixtureBrowserClient:
         capture: Path | None = None,
         audit: Path | None = None,
         saved_searches: Path | None = None,
-        acceptance_outcomes: Path | None = None,
+        acceptance_lists: Path | None = None,
         pending_capture: Path | None = None,
         followup_result: Path | None = None,
         lead_list_result: Path | None = None,
@@ -164,7 +160,7 @@ class FixtureBrowserClient:
         self.capture = capture
         self.audit = audit
         self.saved_searches = saved_searches
-        self.acceptance_outcomes = acceptance_outcomes
+        self.acceptance_lists = acceptance_lists
         self.pending_capture = pending_capture
         self.followup_result = followup_result
         self.lead_list_result = lead_list_result
@@ -217,47 +213,6 @@ class FixtureBrowserClient:
             raise RuntimeError("saved-search fixture was not provided")
         return read_model(self.saved_searches, SavedSearchArtifact), str(self.saved_searches)
 
-    def check_acceptance_outcomes(
-        self,
-        *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        _ = input_path, delay_ms
-        if self.acceptance_outcomes is None:
-            selected = candidates[offset : offset + limit] if limit else candidates[offset:]
-            payload = {
-                "capturedAt": _now_iso(),
-                "input": str(input_path),
-                "count": len(selected),
-                "offset": offset,
-                "limit": limit,
-                "totalCandidates": len(candidates),
-                "complete": True,
-                "rows": [
-                    {
-                        "source": candidate.source,
-                        "name": candidate.name,
-                        "profileUrl": candidate.profile_url,
-                        "status": "pending",
-                        "checkedAt": _now_iso(),
-                        "relationship": None,
-                        "evidence": "fixture synthesized pending confirmation",
-                        "note": "fixture synthesized pending confirmation",
-                    }
-                    for candidate in selected
-                ],
-            }
-            write_json_atomic(out, payload)
-            return read_model(out, AcceptanceOutcomeArtifact), str(out)
-        return read_model(self.acceptance_outcomes, AcceptanceOutcomeArtifact), str(
-            self.acceptance_outcomes
-        )
-
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]:
@@ -265,6 +220,21 @@ class FixtureBrowserClient:
         if self.pending_capture is None:
             raise RuntimeError("pending-capture fixture was not provided")
         return read_model(self.pending_capture, PendingCapture), str(self.pending_capture)
+
+    def capture_acceptance_lists(
+        self,
+        *,
+        previous_watermark: list[str],
+        out: Path,
+        max_load_actions: int = 100,
+        watermark_size: int = 25,
+    ) -> tuple[AcceptanceListArtifact, str]:
+        _ = previous_watermark, out, max_load_actions, watermark_size
+        if self.acceptance_lists is None:
+            raise RuntimeError("acceptance-lists fixture was not provided")
+        return read_model(self.acceptance_lists, AcceptanceListArtifact), str(
+            self.acceptance_lists
+        )
 
     def send_acceptance_followup(
         self,
@@ -425,27 +395,6 @@ class PlaywriterBrowserClient:
         self._run_script(_playwriter_salesnav_saved_searches_script(), config)
         return read_model(out, SavedSearchArtifact), str(out)
 
-    def check_acceptance_outcomes(
-        self,
-        *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        config = {
-            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-            "input": str(input_path),
-            "out": str(out),
-            "offset": offset,
-            "limit": limit,
-            "delayMs": delay_ms,
-        }
-        self._run_script(_playwriter_acceptance_outcomes_script(), config, staging="direct")
-        return read_model(out, AcceptanceOutcomeArtifact), str(out)
-
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]:
@@ -456,6 +405,23 @@ class PlaywriterBrowserClient:
         }
         self._run_script(_playwriter_pending_capture_script(), config)
         return read_model(out, PendingCapture), str(out)
+
+    def capture_acceptance_lists(
+        self,
+        *,
+        previous_watermark: list[str],
+        out: Path,
+        max_load_actions: int = 100,
+        watermark_size: int = 25,
+    ) -> tuple[AcceptanceListArtifact, str]:
+        config = {
+            "previousWatermark": previous_watermark,
+            "maxLoadActions": max_load_actions,
+            "watermarkSize": watermark_size,
+            "out": str(out),
+        }
+        self._run_script(_playwriter_acceptance_lists_script(), config, staging="direct")
+        return read_model(out, AcceptanceListArtifact), str(out)
 
     def send_acceptance_followup(
         self,
@@ -586,8 +552,8 @@ def _playwriter_browser_diagnostic_script() -> Path:
     return _playwriter_script_dir() / "browser_diagnostic.js"
 
 
-def _playwriter_acceptance_outcomes_script() -> Path:
-    return _playwriter_script_dir() / "acceptance_outcomes.js"
+def _playwriter_acceptance_lists_script() -> Path:
+    return _playwriter_script_dir() / "acceptance_lists.js"
 
 
 def _playwriter_acceptance_followup_send_script() -> Path:
@@ -624,10 +590,6 @@ def _playwriter_salesnav_audit_script() -> Path:
 
 def _playwriter_salesnav_saved_searches_script() -> Path:
     return _playwriter_script_dir() / "salesnav_saved_searches.js"
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _safe_stem(value: str) -> str:

@@ -7,8 +7,12 @@
       "status": "accepted",
       "checkedAt": "2026-06-24T13:00:00Z",
       "relationship": "1st",
-      "evidence": "Basic lead information for Other Person Other Person 1st CEO",
-      "note": "lead page shows 1st-degree relationship"
+      "evidence": "{\"contractVersion\":\"acceptance-relationship-v2\",\"expectedLeadId\":\"dup\",\"loadedLeadId\":\"other\",\"identityMatched\":false,\"firstDegreeCount\":1}",
+      "evidenceGrade": "structured_first_degree",
+      "contractVersion": "acceptance-relationship-v2",
+      "expectedLeadId": "dup",
+      "loadedLeadId": "other",
+      "note": "exact structured first-degree relationship evidence"
     }
   ]
 }

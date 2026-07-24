@@ -13,19 +13,13 @@ from apps.compat import (
     NETWORK_COMMANDS,
     OPPORTUNITY_APP_COMMANDS,
     OPPORTUNITY_COMMANDS,
-    RECRUITER_AGENCY_APP_COMMANDS,
-    RECRUITER_AGENCY_COMMANDS,
     linkedin_network_run,
     linkedin_opportunity_intel,
-    recruiter_agency_outreach,
 )
-from apps.recruiter_agency_outreach.storage import APP_DIR as RECRUITER_AGENCY_APP_DIR
-from apps.recruiter_agency_outreach.storage import Store as RecruiterAgencyStore
 from packages.linkedin_storage.migrations import (
     LEGACY_IMPORTS_DB_NAME,
     import_legacy_network_state,
     import_legacy_opportunity_runs,
-    import_legacy_recruiter_agency_state,
     latest_import_summary,
 )
 
@@ -56,104 +50,6 @@ def test_network_import_preserves_legacy_files(tmp_path: Path) -> None:
     assert summary["artifact_count"] == 2
 
 
-def test_recruiter_agency_import_preserves_json_sqlite_and_table_snapshots(
-    tmp_path: Path,
-) -> None:
-    old_state = tmp_path / "old-outreach"
-    old_state.mkdir()
-    outreach_json = b'{"schema_version":1,"leads":[]}\n'
-    (old_state / "outreach.json").write_bytes(outreach_json)
-    database_path = old_state / "outreach.sqlite"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.execute("CREATE TABLE leads (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
-        connection.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')")
-        connection.execute(
-            "INSERT INTO leads (id, data) VALUES (?, ?)",
-            (
-                "lead-1",
-                json.dumps(
-                    {
-                        "id": "lead-1",
-                        "source": "legacy",
-                        "name": "Grace",
-                        "first_name": "Grace",
-                        "send_attempts": None,
-                    }
-                ),
-            ),
-        )
-        connection.commit()
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    (old_state / "outreach.sqlite-shm").unlink(missing_ok=True)
-    (old_state / "outreach.sqlite-wal").unlink(missing_ok=True)
-
-    target_root = tmp_path / "linkedin-tools"
-    before = _hash_tree(old_state)
-
-    result = import_legacy_recruiter_agency_state(
-        old_state_dir=old_state,
-        target_root=target_root,
-    )
-
-    assert _hash_tree(old_state) == before
-    assert result.artifact_count == 4
-    promoted = RecruiterAgencyStore(target_root / RECRUITER_AGENCY_APP_DIR).load()
-    assert promoted.leads[0].id == "lead-1"
-    assert promoted.leads[0].send_attempts == []
-    assert (target_root / "recruiter-agency-outreach" / "outreach.sqlite").exists()
-    assert _artifact_content(
-        target_root,
-        result.import_id,
-        "recruiter_agency",
-        "outreach.json",
-    ) == outreach_json
-    lead_snapshot = _artifact_content(
-        target_root,
-        result.import_id,
-        "recruiter_agency",
-        "outreach.sqlite::leads.json",
-    )
-    assert b"lead-1" in lead_snapshot
-    assert b"Grace" in lead_snapshot
-
-
-def test_recruiter_agency_import_promotes_json_when_sqlite_is_missing(tmp_path: Path) -> None:
-    old_state = tmp_path / "old-outreach"
-    old_state.mkdir()
-    (old_state / "outreach.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "leads": [
-                    {
-                        "id": "lead-json",
-                        "source": "legacy-json",
-                        "name": "Ada Lovelace",
-                        "first_name": "Ada",
-                        "send_attempts": None,
-                    }
-                ],
-                "agency_accounts": [],
-                "capture_cursors": {},
-                "updated_at": "2026-06-24T00:00:00Z",
-            }
-        )
-    )
-    target_root = tmp_path / "linkedin-tools"
-
-    result = import_legacy_recruiter_agency_state(
-        old_state_dir=old_state,
-        target_root=target_root,
-    )
-
-    assert result.warnings == ()
-    promoted = RecruiterAgencyStore(target_root / RECRUITER_AGENCY_APP_DIR).load()
-    assert [lead.id for lead in promoted.leads] == ["lead-json"]
-    assert promoted.leads[0].send_attempts == []
-
-
 def test_missing_opportunity_import_records_warning_without_source_mutation(
     tmp_path: Path,
 ) -> None:
@@ -172,9 +68,6 @@ def test_missing_opportunity_import_records_warning_without_source_mutation(
 
 def test_compatibility_command_sets_delegate_known_commands() -> None:
     assert set(NETWORK_COMMANDS) - NETWORK_APP_COMMANDS == {"import-legacy-state"}
-    assert set(RECRUITER_AGENCY_COMMANDS) - RECRUITER_AGENCY_APP_COMMANDS == {
-        "import-legacy-state"
-    }
     assert set(OPPORTUNITY_COMMANDS) - OPPORTUNITY_APP_COMMANDS == {"import-legacy-state"}
 
 
@@ -218,33 +111,6 @@ def test_compat_help_and_delegated_command_paths(
         == 0
     )
     assert "captured 3 candidate observations" in capsys.readouterr().out
-
-    assert recruiter_agency_outreach(["dashboard", "--state-dir", str(tmp_path)]) == 0
-    assert "dashboard=" in capsys.readouterr().out
-
-    assert recruiter_agency_outreach(["queue", "--json", "--state-dir", str(tmp_path)]) == 0
-    assert json.loads(capsys.readouterr().out) == []
-
-    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
-    assert (
-        recruiter_agency_outreach(
-            [
-                "serve",
-                "--addr",
-                "127.0.0.1:8767",
-                "--access-token",
-                "compat-token",
-            ]
-        )
-        == 0
-    )
-    assert "compatibility placeholder" not in capsys.readouterr().out
-
-    assert (
-        recruiter_agency_outreach(["run-daily", "--state-dir", str(tmp_path), "--allow-send"])
-        == 1
-    )
-    assert "run-daily is sourcing-only" in capsys.readouterr().err
 
     assert linkedin_opportunity_intel(["status", "--json", "--target-root", str(tmp_path)]) == 0
     opportunity_payload = json.loads(capsys.readouterr().out)

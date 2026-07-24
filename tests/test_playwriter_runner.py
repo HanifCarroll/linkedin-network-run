@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from apps.network_automation.browser import PlaywriterBrowserClient
-from apps.recruiter_agency_outreach.message_browser import PlaywriterMessageBrowserClient
 from packages.linkedin_browser.playwriter import PlaywriterRunner, format_progress_event
 
 
@@ -27,23 +26,6 @@ def test_network_playwriter_browser_uses_runner_progress_config(tmp_path: Path) 
     assert state["expression"].startswith("state.linkedinToolsConfigPath = ")
     assert staged_config["progressOut"] == f"{final_out}.progress.jsonl"
     assert json.loads(final_out.read_text(encoding="utf-8"))["received"] == "network"
-
-
-def test_recruiter_message_browser_uses_message_config_state_key(tmp_path: Path) -> None:
-    state_path = tmp_path / "state.json"
-    playwriter = _fake_playwriter(tmp_path, state_path=state_path)
-    final_out = tmp_path / "message-result.json"
-    client = PlaywriterMessageBrowserClient(
-        out_dir=tmp_path / "message",
-        session="message-session",
-        playwriter_bin=str(playwriter),
-    )
-
-    client._run_script(tmp_path / "message.js", {"out": str(final_out), "value": "message"})
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["expression"].startswith("state.recruiterAgencyMessageConfigPath = ")
-    assert json.loads(final_out.read_text(encoding="utf-8"))["received"] == "message"
 
 
 def test_playwriter_runner_stages_config_and_moves_output(tmp_path: Path) -> None:
@@ -73,31 +55,6 @@ def test_playwriter_runner_stages_config_and_moves_output(tmp_path: Path) -> Non
     assert staged_config["value"] == "kept"
     assert staged_config["out"] != str(final_out)
     assert staged_config["out"].endswith("-out.json")
-
-
-def test_playwriter_runner_preserves_existing_session_and_custom_state_key(
-    tmp_path: Path,
-) -> None:
-    state_path = tmp_path / "state.json"
-    playwriter = _fake_playwriter(tmp_path, state_path=state_path)
-    final_out = tmp_path / "message-result.json"
-    runner = PlaywriterRunner(
-        playwriter_bin=str(playwriter),
-        session="existing-session",
-        config_state_key="state.recruiterAgencyMessageConfigPath",
-    )
-
-    runner.run_script(
-        tmp_path / "message.js",
-        {"out": str(final_out), "value": "message"},
-        output_missing_message="missing message output",
-    )
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["sessions"] == ["existing-session", "existing-session"]
-    assert state["created_sessions"] == 0
-    assert state["expression"].startswith("state.recruiterAgencyMessageConfigPath = ")
-    assert json.loads(final_out.read_text(encoding="utf-8"))["received"] == "message"
 
 
 def test_playwriter_runner_temporary_staging_uses_temp_config(tmp_path: Path) -> None:

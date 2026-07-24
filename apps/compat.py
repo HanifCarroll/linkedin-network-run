@@ -11,13 +11,11 @@ from typing import TextIO
 
 from apps.network_automation.cli import main as network_main
 from apps.opportunity_intel.cli import main as opportunity_main
-from apps.recruiter_agency_outreach.cli import main as recruiter_agency_main
 from packages.linkedin_common.paths import DEFAULT_STATE_ROOT
 from packages.linkedin_storage.migrations import (
     SourceApp,
     import_legacy_network_state,
     import_legacy_opportunity_runs,
-    import_legacy_recruiter_agency_state,
 )
 
 NETWORK_COMMANDS = (
@@ -50,30 +48,6 @@ NETWORK_COMMANDS = (
     "tune-sources",
     "pending-cleanup",
     "old-state",
-    "import-legacy-state",
-)
-
-RECRUITER_AGENCY_COMMANDS = (
-    "run-daily",
-    "capture",
-    "capture-accounts",
-    "import-capture",
-    "import-accounts",
-    "accounts",
-    "agency-pool",
-    "lead",
-    "queue",
-    "draft",
-    "dashboard",
-    "last-run",
-    "recommend-next-run",
-    "revise",
-    "serve",
-    "send-ready",
-    "send-message",
-    "mark-message",
-    "reject",
-    "report",
     "import-legacy-state",
 )
 
@@ -151,30 +125,6 @@ NETWORK_APP_COMMANDS = frozenset(
         "old-state",
     }
 )
-RECRUITER_AGENCY_APP_COMMANDS = frozenset(
-    {
-        "run-daily",
-        "capture",
-        "capture-accounts",
-        "import-capture",
-        "import-accounts",
-        "accounts",
-        "lead",
-        "queue",
-        "draft",
-        "dashboard",
-        "last-run",
-        "recommend-next-run",
-        "serve",
-        "revise",
-        "send-ready",
-        "send-message",
-        "mark-message",
-        "reject",
-        "report",
-        "agency-pool",
-    }
-)
 OPPORTUNITY_APP_COMMANDS = frozenset(
     command for command in OPPORTUNITY_COMMANDS if command != "import-legacy-state"
 )
@@ -185,15 +135,6 @@ def linkedin_network_run(argv: Sequence[str] | None = None) -> int:
         command_name="linkedin-network-run",
         source_app="network",
         commands=NETWORK_COMMANDS,
-        argv=sys.argv[1:] if argv is None else argv,
-    )
-
-
-def recruiter_agency_outreach(argv: Sequence[str] | None = None) -> int:
-    return _dispatch_compat_command(
-        command_name="recruiter-agency-outreach",
-        source_app="recruiter_agency",
-        commands=RECRUITER_AGENCY_COMMANDS,
         argv=sys.argv[1:] if argv is None else argv,
     )
 
@@ -270,11 +211,6 @@ def _import_legacy_state(*, source_app: SourceApp, argv: Sequence[str]) -> int:
             old_state_dir=args.old_state_dir,
             target_root=args.target_root,
         )
-    elif source_app == "recruiter_agency":
-        result = import_legacy_recruiter_agency_state(
-            old_state_dir=args.old_state_dir,
-            target_root=args.target_root,
-        )
     else:
         result = import_legacy_opportunity_runs(
             old_state_dir=args.old_state_dir,
@@ -297,8 +233,6 @@ def _import_legacy_state(*, source_app: SourceApp, argv: Sequence[str]) -> int:
 def _is_app_command(*, source_app: SourceApp, command: str) -> bool:
     if source_app == "network":
         return command in NETWORK_APP_COMMANDS
-    if source_app == "recruiter_agency":
-        return command in RECRUITER_AGENCY_APP_COMMANDS
     return command in OPPORTUNITY_APP_COMMANDS
 
 
@@ -306,8 +240,6 @@ def _dispatch_app_command(*, source_app: SourceApp, argv: Sequence[str]) -> int:
     normalized_argv = _normalize_app_argv(source_app=source_app, argv=argv)
     if source_app == "network":
         return network_main(normalized_argv)
-    if source_app == "recruiter_agency":
-        return recruiter_agency_main(normalized_argv)
     return opportunity_main(normalized_argv)
 
 
@@ -315,7 +247,7 @@ def _normalize_app_argv(*, source_app: SourceApp, argv: Sequence[str]) -> list[s
     args = list(argv)
     if source_app == "opportunity":
         return _strip_compat_target_root(args)
-    if source_app not in {"network", "recruiter_agency"} or not args:
+    if source_app != "network" or not args:
         return args
 
     normalized: list[str] = []
@@ -357,6 +289,4 @@ def _strip_compat_target_root(argv: Sequence[str]) -> list[str]:
 def _command_name_for_source(source_app: SourceApp) -> str:
     if source_app == "network":
         return "linkedin-network-run"
-    if source_app == "recruiter_agency":
-        return "recruiter-agency-outreach"
     return "linkedin-opportunity-intel"

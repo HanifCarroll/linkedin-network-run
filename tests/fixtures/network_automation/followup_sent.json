@@ -7,6 +7,7 @@
     "source": "ASAP - Agency Owners Delivery"
   },
   "dryRun": false,
-  "status": "sent-clicked",
-  "send": {"clicked": true}
+  "status": "sent-confirmed",
+  "send": {"clicked": true, "status": "confirmed"},
+  "sendConfirmation": {"confirmed": true, "exactMatchCount": 1}
 }

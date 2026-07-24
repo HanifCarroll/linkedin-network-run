@@ -16,8 +16,6 @@ from .browser import BrowserClient
 from .browser_supervision import resolve_audited_browser_incident
 from .models import (
     DEFAULT_SOURCE_MIX,
-    AcceptanceCheckCandidate,
-    AcceptanceStatus,
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
@@ -79,7 +77,6 @@ from .store import (
     read_model,
     write_json_atomic,
 )
-from .suppression import skip_outreach_suppressed_observations
 
 __all__ = [
     "network_sends_summary",
@@ -1718,18 +1715,17 @@ def reconcile_audit(
             messages.append(loaded_warning)
         resolved, reverted, unresolved = _resolve_unconfirmed_provisional_sends(
             store,
-            browser,
             store.load_run(),
             latest_audit,
             audit_path=latest_path,
         )
         if resolved:
             messages.append(
-                f"profile-confirmed {len(resolved)} unlisted send(s): {', '.join(resolved)}"
+                f"list-confirmed {len(resolved)} unlisted send(s): {', '.join(resolved)}"
             )
         if reverted:
             messages.append(
-                "profile-confirmed "
+                "list-confirmed "
                 f"{len(reverted)} unlisted send(s) reverted to Connect: "
                 f"{', '.join(reverted)}"
             )
@@ -2028,7 +2024,6 @@ def _audit_absence_coverage_warning(run: Run, audit: SalesNavAudit) -> str | Non
 
 def _resolve_unconfirmed_provisional_sends(
     store: Store,
-    browser: BrowserClient,
     run: Run,
     audit: SalesNavAudit,
     *,
@@ -2053,93 +2048,27 @@ def _resolve_unconfirmed_provisional_sends(
     ]
     if not candidates:
         return [], [], []
-
-    check_candidates = [
-        AcceptanceCheckCandidate(
-            run_id=str(run.id),
-            run_date=run.date,
-            source=candidate.source,
-            name=candidate.name,
-            profile_url=candidate.public_profile_url or candidate.profile_url,
-            sent_at=candidate.at,
-            latest_status=AcceptanceStatus.SENT,
-            latest_checked_at=None,
-        )
-        for candidate in candidates
-    ]
-    input_path = audit_path.with_name(f"{audit_path.stem}-unlisted-candidates.json")
-    outcome_path = audit_path.with_name(f"{audit_path.stem}-unlisted-outcomes.json")
-    write_json_atomic(
-        input_path,
-        [candidate.model_dump(mode="json") for candidate in check_candidates],
-    )
-    artifact, outcome = browser.check_acceptance_outcomes(
-        candidates=check_candidates,
-        input_path=input_path,
-        out=outcome_path,
-        offset=0,
-        limit=len(check_candidates),
-        delay_ms=0,
-    )
-    if len(artifact.rows) != len(candidates):
-        raise RuntimeError(
-            "unlisted send confirmation returned "
-            f"{len(artifact.rows)}/{len(candidates)} outcome row(s)"
-        )
-
-    committer = SendAttemptCommitter(store)
-    resolved: list[str] = []
-    reverted: list[str] = []
-    unresolved: list[str] = []
-    blocked: list[str] = []
-    for candidate, row in zip(candidates, artifact.rows, strict=True):
-        final_status, status_note, is_blocked = _candidate_status_from_confirmation(
-            row,
-            connectable_is_reverted=True,
-        )
-        candidate.status = final_status
+    unresolved = [candidate.name for candidate in candidates]
+    for candidate in candidates:
+        candidate.status = CandidateStatus.PENDING_PROVISIONAL
         candidate.note = "; ".join(
             part
             for part in (
                 candidate.note,
                 f"audit={audit_path}",
-                f"unlisted send profile confirmation {status_note}",
-                f"outcome={outcome}",
+                "sent-page list did not contain an exact invitation identity; "
+                "kept provisional without a profile fallback",
             )
             if part
         )
-        if final_status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
-            resolved.append(candidate.name)
-        elif final_status == CandidateStatus.REVERTED_CONNECT:
-            reverted.append(candidate.name)
-        else:
-            unresolved.append(candidate.name)
-        if is_blocked:
-            blocked.append(candidate.name)
-        committer.commit_confirmation_result(
-            run,
-            candidate,
-            input_path=input_path,
-            outcome_path=outcome,
-            status=final_status,
-            confirmation=status_note,
-        )
-    if blocked:
-        run.state = RunState.BLOCKED
-        run.notes.append(f"unlisted send confirmation blocked for: {', '.join(blocked)}")
-    elif unresolved:
-        run.state = RunState.NEEDS_REAUDIT
-        run.notes.append(
-            "unlisted sends remain inconclusive after sent-page and profile checks: "
-            f"{', '.join(unresolved)}"
-        )
-    else:
-        run.state = (
-            RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
-        )
+    run.state = RunState.NEEDS_REAUDIT
+    run.notes.append(
+        "sent-page list did not confirm these provisional sends, and profile "
+        f"fallbacks are disabled: {', '.join(unresolved)}"
+    )
     run.mark_updated()
     store.save_run(run)
-    return resolved, reverted, unresolved
+    return [], [], unresolved
 
 
 def record_candidate(
@@ -2268,21 +2197,7 @@ def confirm_provisional_send(
     candidate = _find_matching_provisional_event(run.candidates, event)
     if candidate is None:
         raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{len(run.candidates):03d}-{_safe_artifact_stem(event.name)}"
-    input_path = out_dir / f"{stem}-candidate.json"
-    outcome_path = out_dir / f"{stem}-outcome.json"
-    check_candidate = AcceptanceCheckCandidate(
-        run_id=str(run.id),
-        run_date=run.date,
-        source=event.source,
-        name=event.name,
-        profile_url=event.public_profile_url or event.profile_url,
-        sent_at=event.at,
-        latest_status=AcceptanceStatus.SENT,
-        latest_checked_at=None,
-    )
-    write_json_atomic(input_path, [check_candidate.model_dump(mode="json")])
+    _ = out_dir
 
     audit, audit_path = browser.audit_sent_invitations(load_more=audit_load_more)
     run = store.load_run()
@@ -2296,7 +2211,7 @@ def confirm_provisional_send(
             )
         raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
     apply_audit(run, audit.people_count, f"durable sent-page confirmation for {event.name}")
-    promoted = _confirm_audited_recent_sends(
+    _confirm_audited_recent_sends(
         store,
         run,
         audit,
@@ -2310,63 +2225,28 @@ def confirm_provisional_send(
             f"confirmation status: {current.status.value}; "
             f"verified {run.verified_count()}/{run.target}"
         )
-    if not promoted:
-        store.save_run(run)
-
-    artifact, path = browser.check_acceptance_outcomes(
-        candidates=[check_candidate],
-        input_path=input_path,
-        out=outcome_path,
-        offset=0,
-        limit=1,
-        delay_ms=0,
-    )
-    row = artifact.rows[0] if artifact.rows else None
-    final_status, status_note, blocked = _candidate_status_from_confirmation(row)
-    run = store.load_run()
     candidate = _find_matching_provisional_event(run.candidates, event)
     if candidate is None:
-        current = _find_matching_candidate_event(run.candidates, event)
-        if current and current.status in {CandidateStatus.PENDING, CandidateStatus.ACCEPTED}:
-            return (
-                f"confirmation status: {current.status.value}; "
-                f"verified {run.verified_count()}/{run.target}"
-            )
         raise RuntimeError(f"provisional send not found for confirmation: {event.name}")
-    candidate.status = final_status
     candidate.note = "; ".join(
         part
         for part in (
             candidate.note,
-            f"sent-page audit did not confirm pending; audit={audit_path}",
-            f"durable confirmation {status_note}",
-            f"outcome={path}",
+            f"sent-page list did not contain an exact invitation identity; audit={audit_path}",
+            "kept provisional without a profile fallback",
         )
         if part
     )
-    if blocked:
-        run.state = RunState.BLOCKED
-        run.notes.append(f"durable confirmation blocked for {event.name}: {status_note}")
-    elif final_status == CandidateStatus.PENDING_PROVISIONAL:
-        run.state = RunState.NEEDS_REAUDIT
-        run.notes.append(
-            "durable confirmation was inconclusive for "
-            f"{event.name}: {status_note}; sent-page audit required"
-        )
-    elif run.state not in {RunState.DONE, RunState.BLOCKED}:
-        run.state = (
-            RunState.FINAL_RECONCILE if run.verified_count() >= run.target else RunState.SENDING
-        )
-    SendAttemptCommitter(store).commit_confirmation_result(
-        run,
-        candidate,
-        input_path=input_path,
-        outcome_path=path,
-        status=final_status,
-        confirmation=status_note,
+    run.state = RunState.NEEDS_REAUDIT
+    run.notes.append(
+        "sent-page list did not confirm "
+        f"{event.name}; profile fallbacks are disabled and a later list audit is required"
     )
+    run.mark_updated()
+    store.save_run(run)
     return (
-        f"confirmation status: {final_status.value}; verified {run.verified_count()}/{run.target}"
+        "confirmation status: pending-provisional; "
+        f"verified {run.verified_count()}/{run.target}; profile fallback disabled"
     )
 
 
@@ -2390,45 +2270,6 @@ def _find_matching_candidate_event(
         ):
             return candidate
     return None
-
-
-def _candidate_status_from_confirmation(
-    row: object | None,
-    *,
-    connectable_is_reverted: bool = False,
-) -> tuple[CandidateStatus, str, bool]:
-    if row is None:
-        return (
-            CandidateStatus.PENDING_PROVISIONAL,
-            "missing public-profile confirmation row; sent-page audit required",
-            False,
-        )
-    status = getattr(row, "status", None)
-    note = getattr(row, "note", None) or ""
-    if status == AcceptanceStatus.PENDING:
-        return CandidateStatus.PENDING, "pending on public profile", False
-    if status == AcceptanceStatus.ACCEPTED:
-        return CandidateStatus.ACCEPTED, "accepted", False
-    if status == AcceptanceStatus.CONNECTABLE:
-        if connectable_is_reverted:
-            return (
-                CandidateStatus.REVERTED_CONNECT,
-                "connectable after full sent-page audit coverage; invite not durable",
-                False,
-            )
-        return (
-            CandidateStatus.PENDING_PROVISIONAL,
-            "connectable on public profile; sent-page audit required",
-            False,
-        )
-    if status == AcceptanceStatus.BLOCKED:
-        return CandidateStatus.FAILED, f"blocked: {note or 'blocked'}", True
-    value = getattr(status, "value", str(status))
-    return (
-        CandidateStatus.PENDING_PROVISIONAL,
-        f"{value}: {note}; sent-page audit required".strip(),
-        False,
-    )
 
 
 def _safe_artifact_stem(value: str) -> str:
@@ -2481,7 +2322,7 @@ def send_next(
         )
     ledger, _synced = sync_lead_ledger_from_run(store, run)
     lead_suppressed = apply_lead_ledger_suppression(run, ledger)
-    suppressed = skip_outreach_suppressed_observations(run)
+    suppressed = []
     for event in suppressed:
         ledger.apply_candidate_event(event)
     if lead_suppressed or suppressed:
@@ -2555,7 +2396,7 @@ def send_guarded(
         ledger, _synced = sync_lead_ledger_from_run(store, run)
         lead_suppressed = apply_lead_ledger_suppression(run, ledger)
         drained = drain_stale_connectable_candidates(run)
-        suppressed = skip_outreach_suppressed_observations(run)
+        suppressed = []
         for event in [*drained, *suppressed]:
             ledger.apply_candidate_event(event)
         if lead_suppressed or drained or suppressed:
@@ -2693,7 +2534,7 @@ def top_up_reconcile(
             )
         ledger, _synced = sync_lead_ledger_from_run(store, run)
         lead_suppressed = apply_lead_ledger_suppression(run, ledger)
-        suppressed = skip_outreach_suppressed_observations(run)
+        suppressed = []
         for event in suppressed:
             ledger.apply_candidate_event(event)
         if lead_suppressed or suppressed:
@@ -2775,7 +2616,7 @@ def import_capture_path(store: Store, path: Path, only_connectable: bool = False
     capture = read_model(path, SalesNavCapture)
     imported = import_capture(run, capture, only_connectable)
     ledger, synced = sync_lead_ledger_from_run(store, run)
-    suppressed = skip_outreach_suppressed_observations(run)
+    suppressed = []
     for event in suppressed:
         ledger.apply_candidate_event(event)
     lead_suppressed = apply_lead_ledger_suppression(run, ledger)
@@ -2847,7 +2688,7 @@ def capture_source(
     )
     _resume_saved_search_after_fresh_slice(run, capture_source_name, capture, saved_search_row)
     ledger, synced = sync_lead_ledger_from_run(store, run)
-    suppressed = skip_outreach_suppressed_observations(run)
+    suppressed = []
     for event in suppressed:
         ledger.apply_candidate_event(event)
     lead_suppressed = apply_lead_ledger_suppression(run, ledger)
@@ -3095,7 +2936,7 @@ def reservoir_fill_run(store: Store, *, source: str | None = None, limit: int | 
     )
     imported = fill_run_from_reservoir(run, reservoir, fill_source, fill_limit)
     ledger, synced = sync_lead_ledger_from_run(store, run)
-    suppressed = skip_outreach_suppressed_observations(run)
+    suppressed = []
     for event in suppressed:
         ledger.apply_candidate_event(event)
     lead_suppressed = apply_lead_ledger_suppression(run, ledger)

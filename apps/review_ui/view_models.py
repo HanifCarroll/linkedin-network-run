@@ -26,23 +26,6 @@ from apps.network_automation.store import Store as NetworkStore
 from apps.opportunity_intel.post_discovery import discover_posts_from_registry
 from apps.opportunity_intel.sources import load_source_registry
 from apps.opportunity_intel.store import OpportunityStore, post_candidate_key
-from apps.recruiter_agency_outreach.dashboard import (
-    AgencyPoolLeadCounts,
-    agency_pool_lead_counts_by_account,
-    bucket_for_lead,
-    build_agency_pool_account_diagnosis,
-    build_agency_pool_next_action,
-    build_dashboard_report,
-)
-from apps.recruiter_agency_outreach.models import (
-    Lead,
-    LeadStatus,
-    MessageStatus,
-    OutreachState,
-)
-from apps.recruiter_agency_outreach.storage import Store as RecruiterStore
-
-
 @dataclass(frozen=True)
 class IntegrationNotice:
     area: str
@@ -172,38 +155,6 @@ class PendingCleanupRow:
 
 
 @dataclass(frozen=True)
-class RecruiterRunSummary:
-    run_id: str
-    started_at: str
-    result: str
-    next_recommendation: str
-    blockers: str
-
-
-@dataclass(frozen=True)
-class AgencyAccountRow:
-    account_id: str
-    agency: str
-    status: str
-    contactability: str
-    blocker: str
-
-
-@dataclass(frozen=True)
-class RecruiterLeadRow:
-    lead_id: str
-    name: str
-    lead_type: str
-    draft_status: str
-    messageability_status: str
-    send_readiness: str
-    blocker: str
-    profile_url: str
-    draft_subject: str
-    draft_body: str
-
-
-@dataclass(frozen=True)
 class BrowserSessionRow:
     profile_name: str
     session_state: str
@@ -236,9 +187,6 @@ class ReviewSnapshot:
     network_candidates: tuple[NetworkCandidateRow, ...]
     acceptance_greetings: tuple[AcceptanceGreetingRow, ...]
     pending_cleanup: tuple[PendingCleanupRow, ...]
-    recruiter_summary: RecruiterRunSummary
-    agency_accounts: tuple[AgencyAccountRow, ...]
-    recruiter_leads: tuple[RecruiterLeadRow, ...]
     browser_sessions: tuple[BrowserSessionRow, ...]
     browser_artifacts: tuple[BrowserArtifactRow, ...]
 
@@ -258,12 +206,9 @@ class SQLiteReviewReadModelProvider:
         state_dir: str | Path | None = None,
         network_store: NetworkStore | None = None,
         network_state_dir: str | Path | None = None,
-        recruiter_store: RecruiterStore | None = None,
-        recruiter_state_dir: str | Path | None = None,
     ) -> None:
         self.store = store or OpportunityStore(state_dir)
         self.network_store = network_store or NetworkStore(network_state_dir)
-        self.recruiter_store = recruiter_store or RecruiterStore(recruiter_state_dir)
 
     def snapshot(self) -> ReviewSnapshot:
         opportunity_metrics = self._opportunity_metrics()
@@ -271,7 +216,6 @@ class SQLiteReviewReadModelProvider:
         network_reservoir = self._load_network_reservoir()
         acceptance_followups = self._load_acceptance_followups()
         pending_cleanup = self._load_pending_cleanup()
-        recruiter_state = self._load_recruiter_state()
         return ReviewSnapshot(
             notices=(
                 IntegrationNotice(
@@ -283,11 +227,6 @@ class SQLiteReviewReadModelProvider:
                     area="Network Automation",
                     owner="JSON state",
                     dependency="Live run, reservoir, acceptance, and pending-cleanup state.",
-                ),
-                IntegrationNotice(
-                    area="Recruiter/Agency/Advisor Outreach",
-                    owner="SQLite state",
-                    dependency="Live account pool, lead queue, drafts, and send readiness.",
                 ),
                 IntegrationNotice(
                     area="Browser/Artifacts",
@@ -303,7 +242,6 @@ class SQLiteReviewReadModelProvider:
                     "good",
                 ),
                 self._network_metric(network_run, acceptance_followups, pending_cleanup),
-                self._recruiter_metric(recruiter_state),
                 Metric(
                     "Browser artifacts",
                     "SQLite",
@@ -322,9 +260,6 @@ class SQLiteReviewReadModelProvider:
             network_candidates=self._network_candidates(network_run, network_reservoir),
             acceptance_greetings=self._acceptance_greetings(acceptance_followups),
             pending_cleanup=self._pending_cleanup_rows(pending_cleanup),
-            recruiter_summary=self._recruiter_summary(recruiter_state),
-            agency_accounts=self._agency_accounts(recruiter_state),
-            recruiter_leads=self._recruiter_leads(recruiter_state),
             browser_sessions=self._browser_sessions(),
             browser_artifacts=self._browser_artifacts(),
         )
@@ -572,12 +507,6 @@ class SQLiteReviewReadModelProvider:
         except (OSError, ValueError):
             return None
 
-    def _load_recruiter_state(self) -> OutreachState:
-        try:
-            return self.recruiter_store.load()
-        except (OSError, ValueError):
-            return OutreachState()
-
     def _network_metric(
         self,
         run: Run | None,
@@ -601,22 +530,6 @@ class SQLiteReviewReadModelProvider:
                 f"{len(followups.drafts)} follow-up drafts, "
                 f"{pending_count} cleanup withdrawals"
             ),
-            "good",
-        )
-
-    def _recruiter_metric(self, state: OutreachState) -> Metric:
-        if not self.recruiter_store.database_path.exists():
-            return Metric(
-                "Recruiter/agency review",
-                "Not started",
-                "No recruiter/agency/advisor SQLite state file found.",
-                "warning",
-            )
-        drafted = sum(1 for lead in state.leads if lead.draft is not None)
-        return Metric(
-            "Recruiter/agency review",
-            "SQLite",
-            f"{len(state.leads)} leads, {drafted} drafted, {len(state.agency_accounts)} accounts",
             "good",
         )
 
@@ -751,86 +664,6 @@ class SQLiteReviewReadModelProvider:
                 )
             )
         return tuple(rows)
-
-    def _recruiter_summary(self, state: OutreachState) -> RecruiterRunSummary:
-        report = build_dashboard_report(state, str(self.recruiter_store.state_path))
-        latest = state.run_events[-1] if state.run_events else None
-        next_action = build_agency_pool_next_action(state, str(self.recruiter_store.state_path))
-        drafted = sum(1 for lead in state.leads if lead.draft is not None)
-        ready = (
-            report.ready_counts.agencies
-            + report.ready_counts.recruiters
-            + report.ready_counts.advisors
-        )
-        sent = (
-            report.lifetime_counts.agencies
-            + report.lifetime_counts.recruiters
-            + report.lifetime_counts.advisors
-        )
-        backlog = (
-            report.backlog_counts.agencies
-            + report.backlog_counts.recruiters
-            + report.backlog_counts.advisors
-        )
-        blocker = ""
-        if latest and latest.blocker:
-            blocker = latest.blocker
-        elif report.limiting_reason:
-            blocker = report.limiting_reason
-        return RecruiterRunSummary(
-            run_id=(latest.run_id if latest and latest.run_id else "state"),
-            started_at=(latest.started_at or latest.at if latest else state.updated_at),
-            result=(
-                f"{len(state.leads)} leads; {drafted} drafted; {backlog} needs validation; "
-                f"{ready} dry_run_ready; {sent} sent; {len(state.agency_accounts)} accounts"
-            ),
-            next_recommendation=_recruiter_next_action_text(next_action.action, next_action.reason),
-            blockers=blocker,
-        )
-
-    def _agency_accounts(self, state: OutreachState) -> tuple[AgencyAccountRow, ...]:
-        lead_counts_by_account = agency_pool_lead_counts_by_account(state)
-        accounts = sorted(
-            state.agency_accounts,
-            key=lambda item: (item.status.value, -item.fit_score, item.name),
-        )
-        rows: list[AgencyAccountRow] = []
-        for account in accounts:
-            lead_counts = lead_counts_by_account.get(account.id, AgencyPoolLeadCounts())
-            diagnosis = build_agency_pool_account_diagnosis(account, lead_counts)
-            blocker = (
-                diagnosis.next_step
-                if diagnosis.next_step != "no_action"
-                else "; ".join(account.reject_reasons)
-            )
-            if not blocker and account.last_contact_error:
-                blocker = account.last_contact_error
-            rows.append(
-                AgencyAccountRow(
-                    account_id=account.id,
-                    agency=account.name,
-                    status=account.status.value,
-                    contactability=(
-                        f"{lead_counts.contacts} contacts; "
-                        f"{lead_counts.open_leads} open; "
-                        f"{lead_counts.messageable_or_sent} messageable/sent"
-                    ),
-                    blocker=blocker,
-                )
-            )
-        return tuple(rows)
-
-    def _recruiter_leads(self, state: OutreachState) -> tuple[RecruiterLeadRow, ...]:
-        leads = sorted(
-            state.leads,
-            key=lambda item: (
-                bucket_for_lead(item),
-                item.message_status.value,
-                -item.fit_score,
-                item.name,
-            ),
-        )
-        return tuple(_recruiter_lead_row(state, lead) for lead in leads)
 
     def _browser_sessions(self) -> tuple[BrowserSessionRow, ...]:
         session = os.environ.get("LINKEDIN_TOOLS_PLAYWRITER_SESSION", "auto")
@@ -1020,61 +853,3 @@ def _matching_withdrawal_index(
         if event.name == observation.name and event.age_text == observation.age_text:
             return index
     return None
-
-
-def _recruiter_next_action_text(action: str, reason: str) -> str:
-    return f"{action}: {reason}" if reason else action
-
-
-def _recruiter_lead_row(state: OutreachState, lead: Lead) -> RecruiterLeadRow:
-    draft_subject = lead.draft.subject if lead.draft else ""
-    draft_body = lead.draft.body if lead.draft else ""
-    return RecruiterLeadRow(
-        lead_id=lead.id,
-        name=lead.name,
-        lead_type=lead.lead_type.value,
-        draft_status="drafted" if lead.draft else "no draft",
-        messageability_status=lead.message_status.value,
-        send_readiness=_lead_send_readiness(lead),
-        blocker=_lead_blocker(state, lead),
-        profile_url=lead.profile_url or "",
-        draft_subject=draft_subject,
-        draft_body=draft_body,
-    )
-
-
-def _lead_send_readiness(lead: Lead) -> str:
-    if lead.message_status in {MessageStatus.SENT, MessageStatus.MANUALLY_SENT}:
-        return "sent"
-    if lead.message_status == MessageStatus.DRY_RUN_READY:
-        return "ready to send"
-    if lead.message_status == MessageStatus.APPROVED:
-        return "approved"
-    if lead.draft and lead.profile_url and lead.status == LeadStatus.ELIGIBLE:
-        return "needs dry-run"
-    if lead.draft:
-        return "drafted"
-    if lead.status != LeadStatus.ELIGIBLE:
-        return lead.status.value
-    return "needs draft"
-
-
-def _lead_blocker(state: OutreachState, lead: Lead) -> str:
-    if lead.reject_reasons:
-        return "; ".join(lead.reject_reasons)
-    if lead.status != LeadStatus.ELIGIBLE:
-        return lead.status.value
-    if not lead.profile_url:
-        return "missing profile URL"
-    if bucket_for_lead(lead) == "agency" and lead.agency_account_id:
-        account = next(
-            (item for item in state.agency_accounts if item.id == lead.agency_account_id),
-            None,
-        )
-        if account is not None and account.status.value != "qualified":
-            return f"agency account {account.status.value}"
-    if lead.send_attempts:
-        latest = lead.send_attempts[-1]
-        if latest.status in {"not-messageable", "blocked", "send-failed"}:
-            return latest.note or latest.status
-    return ""

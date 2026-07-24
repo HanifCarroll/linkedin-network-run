@@ -37,7 +37,6 @@ from apps.network_automation.relationship_radar import (
     RelationshipRadarLedger,
     RelationshipRadarRecord,
     _watchlist_recommendation,
-    apply_browser_investigation,
     save_recommended_watchlist_leads,
     sync_relationship_radar_actions,
     update_relationship_radar,
@@ -279,90 +278,6 @@ def test_relationship_radar_is_cumulative_and_review_only(
     assert action_record.first_message_sent_at == generated_at
 
 
-def test_browser_investigation_is_queue_bound_and_records_completion(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    generated_at = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
-    commercial_context = _commercial_context_fixture(tmp_path, monkeypatch)
-    candidate = _candidate(
-        name="Needs Review Buyer",
-        source="Consulting - Founder Owner Buyers",
-        accepted_at=generated_at,
-    )
-    candidate_key = "needs-review-buyer"
-    queue_path = tmp_path / "browser-queue.json"
-    queue = RelationshipEnrichmentQueue(
-        commercial_context=commercial_context,
-        items=[
-            RelationshipEnrichmentQueueItem(
-                followup_id="followup-needs-review",
-                candidate_key=candidate_key,
-                candidate=candidate,
-                enrichment_status=RelationshipEnrichmentStatus.NEEDS_REVIEW,
-                enrichment_reason="browser_needs_review",
-            )
-        ],
-    )
-    write_json_atomic(queue_path, queue.model_dump(mode="json", by_alias=False))
-    decision = RelationshipEnrichmentDecision(
-        followup_id="followup-needs-review",
-        candidate_key=candidate_key,
-        candidate=candidate,
-        status=RelationshipEnrichmentDecisionStatus.NEEDS_REVIEW,
-        confidence=RelationshipEnrichmentConfidence.MEDIUM,
-        relationship_role=RelationshipRole.BUYER,
-        priority=RelationshipPriority.PAUSE,
-        permission_boundary="review_only",
-        commercial_context=commercial_context,
-        criterion_evidence=[
-            CommercialCriterionEvidence(
-                criterion_id="operational-friction",
-                assessment=CommercialCriterionAssessment.UNKNOWN,
-                evidence_ids=[],
-                explanation="The authenticated profile did not establish operational pain.",
-            )
-        ],
-        unknowns=["Operational pain remains unknown."],
-    )
-    enrichment_path = tmp_path / "browser-decisions.json"
-    artifact = RelationshipEnrichmentArtifact(
-        generated_at=generated_at,
-        source_path=str(queue_path),
-        commercial_context=commercial_context,
-        decisions=[decision],
-    )
-    _write_artifact(enrichment_path, artifact)
-    store = Store(tmp_path / "state")
-
-    result = apply_browser_investigation(
-        store,
-        queue=queue_path,
-        enrichment=enrichment_path,
-        out=None,
-        markdown_out=None,
-    )
-
-    record = read_model(
-        store.dir / "relationship-radar" / "ledger.json", RelationshipRadarLedger
-    ).records[0]
-    assert "browser investigation applied: 1 record(s)" in result
-    assert record.browser_investigated_at == generated_at
-    assert record.browser_investigation_status == (
-        RelationshipEnrichmentDecisionStatus.NEEDS_REVIEW
-    )
-
-    invalid = artifact.model_copy(update={"source_path": "/tmp/another-queue.json"})
-    _write_artifact(enrichment_path, invalid)
-    with pytest.raises(ValueError, match="source_path must exactly match"):
-        apply_browser_investigation(
-            store,
-            queue=queue_path,
-            enrichment=enrichment_path,
-            out=None,
-            markdown_out=None,
-        )
-
 def test_watchlist_requires_a_source_backed_buyer_and_operating_reason() -> None:
     candidate = _candidate(
         name="Watch Buyer",
@@ -399,13 +314,14 @@ def test_watchlist_requires_a_source_backed_buyer_and_operating_reason() -> None
 def test_watchlist_save_uses_only_the_exact_narrow_list(tmp_path: Path) -> None:
     store = Store(tmp_path)
     accepted_at = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    sales_nav_url = "https://www.linkedin.com/sales/lead/watch-buyer"
     followup = AcceptanceFollowupRecord(
         key="watch-buyer",
         id="followup-watch",
         source="Consulting - Founder Owner Buyers",
         name="Watch Buyer",
-        profile_url="https://www.linkedin.com/in/watch-buyer",
-        sales_nav_profile_url="https://www.linkedin.com/sales/lead/watch-buyer",
+        profile_url=sales_nav_url,
+        sales_nav_profile_url=None,
         accepted_at=accepted_at,
         draft="Welcome",
         report_path="welcome.md",
@@ -422,7 +338,7 @@ def test_watchlist_save_uses_only_the_exact_narrow_list(tmp_path: Path) -> None:
                     name="Watch Buyer",
                     source=followup.source,
                     profile_url=followup.profile_url,
-                    sales_nav_profile_url=followup.sales_nav_profile_url,
+                    sales_nav_profile_url=sales_nav_url,
                     relationship_role=RelationshipRole.BUYER,
                     enrichment_decision_status=RelationshipEnrichmentDecisionStatus.ENRICHED,
                     relationship_enrichment_status=RelationshipEnrichmentStatus.CURRENT,
@@ -454,6 +370,7 @@ def test_watchlist_save_uses_only_the_exact_narrow_list(tmp_path: Path) -> None:
         ) -> tuple[AcceptanceLeadListSaveResult, str]:
             assert allow_save is True
             assert record.sales_nav_list_name == BUSINESS_SYSTEMS_WATCHLIST
+            assert record.sales_nav_profile_url == sales_nav_url
             return (
                 AcceptanceLeadListSaveResult(
                     candidate=AcceptanceFollowupMessageCandidate(

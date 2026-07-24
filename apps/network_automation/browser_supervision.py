@@ -9,11 +9,10 @@ from typing import TypeVar
 
 from .browser import BrowserClient
 from .models import (
-    AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
     AcceptanceLeadListSaveResult,
-    AcceptanceOutcomeArtifact,
+    AcceptanceListArtifact,
     BrowserIncident,
     BrowserIncidentStatus,
     BrowserRecoveryAction,
@@ -121,29 +120,23 @@ class SupervisedBrowserClient:
             action=lambda: self.browser.resolve_saved_searches(url=url, out=out),
         )
 
-    def check_acceptance_outcomes(
+    def capture_acceptance_lists(
         self,
         *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
+        previous_watermark: list[str],
         out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        first = candidates[offset] if candidates and offset < len(candidates) else None
+        max_load_actions: int = 100,
+        watermark_size: int = 25,
+    ) -> tuple[AcceptanceListArtifact, str]:
         return self._call(
-            operation="check_acceptance_outcomes",
+            operation="capture_acceptance_lists",
             possible_send=False,
-            expected_url=first.profile_url if first is not None else None,
-            source=first.source if first is not None else None,
-            action=lambda: self.browser.check_acceptance_outcomes(
-                candidates=candidates,
-                input_path=input_path,
+            expected_url=SENT_INVITATIONS_URL,
+            action=lambda: self.browser.capture_acceptance_lists(
+                previous_watermark=previous_watermark,
                 out=out,
-                offset=offset,
-                limit=limit,
-                delay_ms=delay_ms,
+                max_load_actions=max_load_actions,
+                watermark_size=watermark_size,
             ),
         )
 

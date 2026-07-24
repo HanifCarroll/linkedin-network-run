@@ -1,0 +1,52 @@
+{
+  "capturedAt": "2026-07-24T12:00:00Z",
+  "contractVersion": "acceptance-list-reconciliation-v1",
+  "baselineOnly": false,
+  "connectionDeltaComplete": true,
+  "previousWatermark": [
+    "member:existing-connection"
+  ],
+  "nextWatermark": [
+    "member:duplicate-lead",
+    "member:existing-connection"
+  ],
+  "pending": {
+    "url": "https://www.linkedin.com/mynetwork/invitation-manager/sent/",
+    "complete": true,
+    "loadedCount": 0,
+    "loadActions": [
+      "no-more-content"
+    ],
+    "stopReason": "end-of-list",
+    "identityMissingCount": 0,
+    "rows": []
+  },
+  "connections": {
+    "url": "https://www.linkedin.com/mynetwork/invite-connect/connections/",
+    "complete": true,
+    "loadedCount": 2,
+    "loadActions": [],
+    "stopReason": "prior-watermark-reached",
+    "sortOrder": "Recently added",
+    "identityMissingCount": 0,
+    "rows": [
+      {
+        "name": "Duplicate Lead",
+        "publicProfileUrl": "https://www.linkedin.com/in/duplicate-lead",
+        "publicIdentifier": "duplicate-lead",
+        "profileUrn": "urn:li:fsd_profile:duplicate-lead",
+        "memberId": "duplicate-lead",
+        "rowIndex": 0
+      },
+      {
+        "name": "Existing Connection",
+        "publicProfileUrl": "https://www.linkedin.com/in/existing-connection",
+        "publicIdentifier": "existing-connection",
+        "profileUrn": "urn:li:fsd_profile:existing-connection",
+        "memberId": "existing-connection",
+        "rowIndex": 1
+      }
+    ]
+  },
+  "warnings": []
+}

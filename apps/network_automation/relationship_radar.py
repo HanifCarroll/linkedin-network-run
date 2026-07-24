@@ -77,8 +77,6 @@ class RelationshipRadarRecord(AppModel):
     warnings: list[str] = Field(default_factory=list)
     accepted_at: datetime
     enriched_at: datetime | None = None
-    browser_investigated_at: datetime | None = None
-    browser_investigation_status: RelationshipEnrichmentDecisionStatus | None = None
     updated_at: datetime = Field(default_factory=now_utc)
     last_useful_interaction: str | None = None
     manual_notes: list[str] = Field(default_factory=list)
@@ -187,75 +185,6 @@ def update_relationship_radar(
     )
 
 
-def apply_browser_investigation(
-    store: Store,
-    *,
-    queue: Path,
-    enrichment: Path,
-    out: Path | None,
-    markdown_out: Path | None,
-) -> str:
-    """Apply one complete, queue-bound, read-only browser investigation batch."""
-
-    from .models import RelationshipEnrichmentQueue
-
-    packet = read_model(queue, RelationshipEnrichmentQueue)
-    artifact = read_model(enrichment, RelationshipEnrichmentArtifact)
-    if artifact.source_path != str(queue):
-        raise ValueError(
-            "browser investigation artifact source_path must exactly match the queue path"
-        )
-    queued = {item.candidate_key: item for item in packet.items}
-    decided = {decision.candidate_key: decision for decision in artifact.decisions}
-    if len(decided) != len(artifact.decisions):
-        raise ValueError("browser investigation artifact contains duplicate candidate keys")
-    if set(decided) != set(queued):
-        missing = sorted(set(queued) - set(decided))
-        unexpected = sorted(set(decided) - set(queued))
-        raise ValueError(
-            "browser investigation must cover the exact exported queue; "
-            f"missing={missing}; unexpected={unexpected}"
-        )
-    for key, decision in decided.items():
-        item = queued[key]
-        if (
-            decision.followup_id != item.followup_id
-            or decision.candidate != item.candidate
-            or decision.permission_boundary != "review_only"
-        ):
-            raise ValueError(f"browser investigation identity mismatch for {key}")
-
-    summary = update_relationship_radar(
-        store,
-        enrichment=enrichment,
-        out=out,
-        markdown_out=markdown_out,
-    )
-    ledger_path = out or (store.dir / "relationship-radar" / "ledger.json")
-    ledger = read_model(ledger_path, RelationshipRadarLedger)
-    for record in ledger.records:
-        applied_decision = decided.get(record.candidate_key)
-        if applied_decision is None:
-            continue
-        record.browser_investigated_at = artifact.generated_at
-        record.browser_investigation_status = applied_decision.status
-        record.updated_at = artifact.generated_at
-    ledger.generated_at = artifact.generated_at
-    write_json_atomic(ledger_path, ledger.model_dump(mode="json", by_alias=False))
-    report_path = markdown_out or ledger_path.with_suffix(".md")
-    report_path.write_text(render_relationship_radar_markdown(ledger), encoding="utf-8")
-    store.append_acceptance_event(
-        "apply-browser-investigation",
-        {
-            "queue": str(queue),
-            "enrichment": str(enrichment),
-            "records": len(artifact.decisions),
-            "permission_boundary": "review_only",
-        },
-    )
-    return f"browser investigation applied: {len(artifact.decisions)} record(s); {summary}"
-
-
 def sync_relationship_radar_actions(
     store: Store,
     *,
@@ -361,6 +290,7 @@ def save_recommended_watchlist_leads(
             )
         browser_record = followup.model_copy(
             update={
+                "sales_nav_profile_url": record.sales_nav_profile_url,
                 "sales_nav_list_name": BUSINESS_SYSTEMS_WATCHLIST,
                 "sales_nav_list_status": record.watchlist_status,
             }
@@ -536,10 +466,6 @@ def _record_from_decision(
         warnings=warnings,
         accepted_at=candidate.accepted_at,
         enriched_at=enriched_at,
-        browser_investigated_at=(previous.browser_investigated_at if previous else None),
-        browser_investigation_status=(
-            previous.browser_investigation_status if previous else None
-        ),
         last_useful_interaction=(previous.last_useful_interaction if previous else None),
         manual_notes=list(previous.manual_notes) if previous else [],
         **action_state,
@@ -753,19 +679,6 @@ def _render_record(record: RelationshipRadarRecord) -> list[str]:
     ]
     if record.enriched_at:
         lines.append(f"- Enriched: `{record.enriched_at.isoformat()}`")
-    if record.browser_investigated_at:
-        lines.append(
-            f"- Browser investigated: `{record.browser_investigated_at.isoformat()}`"
-        )
-        lines.append(
-            "- Browser investigation result: `"
-            + (
-                record.browser_investigation_status.value
-                if record.browser_investigation_status
-                else ""
-            )
-            + "`"
-        )
     if record.commercial_context:
         context = record.commercial_context
         lines.extend(

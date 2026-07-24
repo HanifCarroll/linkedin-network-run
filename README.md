@@ -1,6 +1,6 @@
 # linkedin-tools
 
-Python monorepo for Hanif's LinkedIn networking, recruiter/agency/advisor outreach,
+Python monorepo for Hanif's LinkedIn networking,
 opportunity intelligence, comment extraction, and local review UI tools.
 
 ## Current Status
@@ -9,7 +9,6 @@ opportunity intelligence, comment extraction, and local review UI tools.
 - Python package: `linkedin-tools`
 - Runtime: Python, `uv`, SQLite, FastAPI/Jinja, and Playwriter
 - State root: `~/Library/Application Support/linkedin-tools/`
-- Primary namespaces: network automation, recruiter/agency/advisor outreach,
   opportunity intelligence, comment extraction, and review UI
 
 ## Install And Verify
@@ -32,7 +31,6 @@ The primary runtime namespaces are:
 
 ```sh
 uv run linkedin-tools network --help
-uv run linkedin-tools recruiter-agency --help
 uv run linkedin-tools opportunity --help
 uv run linkedin-tools comments --help
 uv run linkedin-tools ui --help
@@ -50,7 +48,6 @@ Namespaces:
 
 ```text
 network-automation/
-recruiter-agency-outreach/
 opportunity-intel/
 comment-extractor/
 review-ui/
@@ -95,7 +92,9 @@ uv run linkedin-tools network \
 
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  acceptance run-daily-session --session auto --min-age-days 1 --max-age-days 45 \
+  acceptance run-daily-session --session auto \
+  --out /tmp/linkedin-acceptance-daily-session/acceptance-lists.json \
+  --max-load-actions 100 --watermark-size 25 \
   --timezone America/Argentina/Buenos_Aires
 
 uv run linkedin-tools network \
@@ -104,13 +103,40 @@ uv run linkedin-tools network \
   --timezone America/Argentina/Buenos_Aires --json
 ```
 
-The daily acceptance run stores an immutable `first_observed_accepted_at`
-transition for each durably confirmed connection and a coverage record for the
-run. Reports group those first observations by local date and show 7-day and
-30-day averages. A blocked or missing scan remains visibly incomplete rather
-than being reported as zero acceptances. The metric is therefore "new
-acceptances confirmed per day"; LinkedIn does not provide a trustworthy exact
-acceptance timestamp through this workflow.
+The daily acceptance run captures two bounded lists: Sent invitations and
+Connections sorted Recently added. It joins those rows to the durable invitation
+ledger by exact public-profile identifier or exact LinkedIn member ID. An exact
+Connections match records `connections_list_first_degree`; an exact Sent match
+records pending. Absence from either list remains unknown, and duplicate or
+contradictory matches remain ambiguous.
+
+The first successful capture establishes a durable Recently added watermark and
+does not classify an acceptance delta. Later captures must load through that
+prior watermark. An incomplete Sent list, incomplete Connections window, missing
+identity, or failure to reach the watermark blocks the run visibly. The workflow
+does not visit profiles and has no profile fallback.
+
+Historical acceptance and current relationship state remain separate. The
+ledger retains the first accepted observation and records the current
+first-degree list observation independently. Legacy evidence can be quarantined,
+but it is never upgraded by opening profiles.
+
+All Playwriter-backed commands share one incident gate and one browser-operation
+lock. A 429, unusual-activity warning, login requirement, checkpoint, security
+verification, weekly limit, or network refusal opens the gate and stops later
+browser work:
+
+```sh
+uv run linkedin-tools incident status --json
+uv run linkedin-tools incident clear \
+  --reason "manual account review completed" \
+  --confirm-account-access \
+  --confirm-warning-cleared
+```
+
+Clearing requires both confirmations. Keep every LinkedIn automation paused
+until account access is manually verified, then reactivate in stages with
+network sends last.
 
 `run-session --daily` owns the local-day decision: it resumes an approved
 unfinished carryover first, then starts or resumes today's 30-send objective.
@@ -167,7 +193,7 @@ Completion requires 30 durable sends, zero provisional sends, and a final
 sent-page reconciliation. The final source distribution is reported for
 visibility but does not block completion. The raw pending-page delta is a
 sanity check rather than a strict equality gate because accepted invitations
-can leave that page; profile evidence may durably confirm those sends. When the
+can leave that page. The controller never opens a profile as a fallback. When the
 controller recorded exactly the full guarded attempt set, nothing failed or
 reverted, and the sent-page delta exactly equals the target, that complete
 aggregate reconciliation also confirms any remaining unmatched provisional
@@ -232,7 +258,7 @@ counts across replaced active runs. `--sync-history` backfills the SQLite
 ledger from older per-run JSONL logs. Existing `send-ledger.jsonl` files remain
 readable migration sources.
 
-Every durably confirmed accepted connection is eligible for the same welcome
+Every source-grade, durably confirmed accepted connection is eligible for the same welcome
 message. Relationship enrichment is a separate, non-blocking process that
 decides whether someone is promising enough for the narrow buyer watchlist.
 
@@ -247,7 +273,8 @@ uv run linkedin-tools network \
   --limit 30
 ```
 
-The controller requires a durable accepted identity, a usable LinkedIn or Sales
+The controller requires `controller_confirmed` or
+`structured_first_degree` acceptance provenance, a usable LinkedIn or Sales
 Navigator profile URL, and the exact welcome copy. Original connection-review
 evidence is retained when available, but it does not gate the welcome.
 Enrichment status starts as `missing` and does not block the message.
@@ -257,7 +284,14 @@ The exact approved first message is:
 > Hey [First name], thanks for connecting. Glad to be in each other’s network, and I’m looking forward to following what you share here.
 
 The guarded welcome run dry-runs the exact stored message and then sends it. It
-does not save the person to any Sales Navigator list:
+binds the loaded Sales Navigator lead ID to the durable candidate before using
+the platform's exact Message action, and records both IDs in browser diagnostics
+when action discovery fails. A real-send transaction is durably recorded as a
+`possible_send` before browser execution, reacquires the recipient-bound dialog
+and editor after each DOM transition, and becomes `sent` only when the exact
+welcome appears in that recipient's conversation after Send. A click without
+that confirmation remains `possible_send` and must not be retried without
+reconciliation. It does not save the person to any Sales Navigator list:
 
 ```sh
 uv run linkedin-tools network \
@@ -317,30 +351,6 @@ The list must already exist. The guarded command saves only exact radar
 recommendations and verifies the resulting list state. Hanif reviews that list
 and comments manually; the system never drafts or posts comments.
 
-Records that remain `needs_review` can enter a separate authenticated-browser
-investigation, capped at five records and one completed check per 30 days:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance export-browser-investigation-queue \
-  --out /tmp/linkedin-prospect-investigation/queue.json \
-  --cooldown-days 30 \
-  --limit 5
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance apply-browser-investigation \
-  --queue /tmp/linkedin-prospect-investigation/queue.json \
-  --enrichment /tmp/linkedin-prospect-investigation/decisions.json
-```
-
-The decisions file uses the normal relationship-enrichment artifact schema and
-must set `source_path` to the exact queue path. Applying it requires complete
-coverage and exact candidate identity. A failed or incomplete Chrome run does
-not start the cooldown. Browser investigation is read-only; only the existing
-guarded watchlist command may perform a subsequent list save.
-
 Enrichment decisions classify each accepted connection as a buyer, referral
 partner, hiring/recruiter relationship, or other. They
 also record priority, the exact visible signal and URL when one exists, the
@@ -394,38 +404,6 @@ invitations left, the command exits successfully with `Finished with count
 warning`; the controller state stays out of `Done` until the count warning is
 reviewed. If stale invitations still remain, the command stops with that
 blocker.
-
-## Recruiter, Agency, And Advisor Outreach
-
-The recruiter/agency namespace owns agency account sourcing, recruiter/advisor
-lead capture, drafting, dashboarding, guarded message dry-runs, and guarded
-sends. It must not send connection requests.
-
-```sh
-uv run linkedin-tools recruiter-agency \
-  --state-dir "$state_root/recruiter-agency-outreach" \
-  dashboard --print-markdown
-
-uv run linkedin-tools recruiter-agency \
-  --state-dir "$state_root/recruiter-agency-outreach" \
-  queue --limit 20 --include-drafts
-
-uv run linkedin-tools recruiter-agency \
-  --state-dir "$state_root/recruiter-agency-outreach" \
-  report --json
-```
-
-Message sends remain guarded:
-
-```sh
-uv run linkedin-tools recruiter-agency \
-  --state-dir "$state_root/recruiter-agency-outreach" \
-  send-message --lead-id <lead-id> --session auto --dry-run
-
-uv run linkedin-tools recruiter-agency \
-  --state-dir "$state_root/recruiter-agency-outreach" \
-  send-message --lead-id <lead-id> --session auto --allow-send
-```
 
 ## Opportunity Intelligence And Comments
 
@@ -560,8 +538,7 @@ and `duplicate`.
 
 - No real LinkedIn sends without `--allow-send`.
 - No real pending-invitation withdrawals without `--allow-withdraw`.
-- Networking and recruiter/agency/advisor outreach suppress exact-profile
-  overlap across their default state dirs before Connect or message actions.
+- Network actions retain their own exact-profile safeguards.
 - Opportunity intelligence is recommend-only.
 - Browser flows should start with dry-runs.
 
@@ -571,7 +548,6 @@ and `duplicate`.
 apps/
   cli.py
   network_automation/
-  recruiter_agency_outreach/
   opportunity_intel/
   comment_extractor/
   review_ui/

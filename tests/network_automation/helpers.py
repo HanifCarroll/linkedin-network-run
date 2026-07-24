@@ -9,11 +9,10 @@ import pytest
 
 import apps.network_automation.cli as network_cli
 from apps.network_automation.models import (
-    AcceptanceCheckCandidate,
     AcceptanceFollowupRecord,
     AcceptanceFollowupSendResult,
     AcceptanceLeadListSaveResult,
-    AcceptanceOutcomeArtifact,
+    AcceptanceListArtifact,
     CandidateObservation,
     PendingCandidateObservation,
     PendingCapture,
@@ -32,8 +31,8 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "network_automatio
 class FakeLiveBrowserClient:
     instances: ClassVar[list[FakeLiveBrowserClient]] = []
     acceptance_status: ClassVar[str] = "accepted"
-    fail_acceptance_check: ClassVar[bool] = False
     acceptance_failures_remaining: ClassVar[int] = 0
+    acceptance_rate_limited: ClassVar[bool] = False
     audit_people_count: ClassVar[int] = 101
     audit_recent_names: ClassVar[list[str]] = ["Duplicate Lead"]
 
@@ -138,60 +137,6 @@ class FakeLiveBrowserClient:
         _write_fake_artifact(out, artifact)
         return artifact, str(out)
 
-    def check_acceptance_outcomes(
-        self,
-        *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        self.calls.append(
-            f"acceptance-check:{len(candidates)}:offset={offset}:limit={limit}:delay={delay_ms}"
-        )
-        if FakeLiveBrowserClient.acceptance_failures_remaining > 0:
-            FakeLiveBrowserClient.acceptance_failures_remaining -= 1
-            raise RuntimeError("browser timed out")
-        if FakeLiveBrowserClient.fail_acceptance_check:
-            raise RuntimeError("browser timed out")
-        selected = candidates[offset : offset + limit] if limit else candidates[offset:]
-        artifact = AcceptanceOutcomeArtifact.model_validate(
-            {
-                "capturedAt": "2026-06-24T12:00:00Z",
-                "input": str(input_path),
-                "count": len(selected),
-                "offset": offset,
-                "limit": limit,
-                "totalCandidates": len(candidates),
-                "complete": True,
-                "rows": [
-                    {
-                        "source": candidate.source,
-                        "name": candidate.name,
-                        "profileUrl": candidate.profile_url,
-                        "status": FakeLiveBrowserClient.acceptance_status,
-                        "checkedAt": "2026-06-24T12:00:00Z",
-                        "relationship": (
-                            "1st"
-                            if FakeLiveBrowserClient.acceptance_status == "accepted"
-                            else None
-                        ),
-                        "evidence": candidate.name,
-                        "note": (
-                            "fixture"
-                            if FakeLiveBrowserClient.acceptance_status == "accepted"
-                            else "security-verification-present"
-                        ),
-                    }
-                    for candidate in selected
-                ],
-            }
-        )
-        _write_fake_artifact(out, artifact)
-        return artifact, str(out)
-
     def capture_pending_invitations(
         self, *, load_more: int = 0, threshold_days: int = 14, out: Path
     ) -> tuple[PendingCapture, str]:
@@ -214,6 +159,18 @@ class FakeLiveBrowserClient:
         )
         _write_fake_artifact(out, artifact)
         return artifact, str(out)
+
+    def capture_acceptance_lists(
+        self,
+        *,
+        previous_watermark: list[str],
+        out: Path,
+        max_load_actions: int = 100,
+        watermark_size: int = 25,
+    ) -> tuple[AcceptanceListArtifact, str]:
+        _ = previous_watermark, out, max_load_actions, watermark_size
+        fixture = FIXTURES / "acceptance_lists_baseline.json"
+        return read_model(fixture, AcceptanceListArtifact), str(fixture)
 
     def send_acceptance_followup(
         self,
@@ -329,32 +286,6 @@ class CandidateCapturingBrowser(FakeLiveBrowserClient):
         )
 
 
-class AcceptanceCandidateCapturingBrowser(FakeLiveBrowserClient):
-    def __init__(self, out_dir: Path) -> None:
-        super().__init__(out_dir=out_dir)
-        self.acceptance_candidates: list[AcceptanceCheckCandidate] = []
-
-    def check_acceptance_outcomes(
-        self,
-        *,
-        candidates: list[AcceptanceCheckCandidate],
-        input_path: Path,
-        out: Path,
-        offset: int = 0,
-        limit: int = 0,
-        delay_ms: int = 500,
-    ) -> tuple[AcceptanceOutcomeArtifact, str]:
-        self.acceptance_candidates = candidates
-        return super().check_acceptance_outcomes(
-            candidates=candidates,
-            input_path=input_path,
-            out=out,
-            offset=offset,
-            limit=limit,
-            delay_ms=delay_ms,
-        )
-
-
 class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
     def resolve_saved_searches(self, *, url: str, out: Path) -> tuple[SavedSearchArtifact, str]:
         self.calls.append(f"saved-searches:{url}")
@@ -460,9 +391,6 @@ def _run_id() -> uuid.UUID:
 
 def _install_fake_live_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeLiveBrowserClient.instances.clear()
-    FakeLiveBrowserClient.acceptance_status = "accepted"
-    FakeLiveBrowserClient.fail_acceptance_check = False
-    FakeLiveBrowserClient.acceptance_failures_remaining = 0
     FakeLiveBrowserClient.audit_people_count = 101
     FakeLiveBrowserClient.audit_recent_names = ["Duplicate Lead"]
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", FakeLiveBrowserClient)

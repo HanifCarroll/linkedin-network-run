@@ -141,24 +141,6 @@ REVIEW_ACTIONS: tuple[ReviewAction, ...] = (
         enabled=False,
         integration_dependency="Thread 4 must expose pending cleanup guarded withdrawals.",
     ),
-    ReviewAction(
-        id="recruiter-send-message",
-        app="recruiter-agency",
-        workflow="Recruiter/agency message send",
-        label="Send one drafted message",
-        safety=ActionSafety.REAL_ACTION,
-        guarded_command=GuardedCommand(
-            argv=(
-                "linkedin-tools",
-                "recruiter-agency",
-                "send-message",
-                "--allow-send",
-            ),
-            approval_flag="--allow-send",
-        ),
-        enabled=False,
-        integration_dependency="Thread 5 must expose guarded message sends.",
-    ),
 )
 
 

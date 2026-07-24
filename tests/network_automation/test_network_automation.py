@@ -84,26 +84,9 @@ from apps.network_automation.service import (
     start_run,
 )
 from apps.network_automation.store import Store
-from apps.recruiter_agency_outreach.models import (
-    Lead as OutreachLead,
-)
-from apps.recruiter_agency_outreach.models import (
-    LeadStatus as OutreachLeadStatus,
-)
-from apps.recruiter_agency_outreach.models import (
-    LeadType as OutreachLeadType,
-)
-from apps.recruiter_agency_outreach.models import (
-    MessageStatus as OutreachMessageStatus,
-)
-from apps.recruiter_agency_outreach.models import (
-    OutreachState,
-)
-from apps.recruiter_agency_outreach.storage import Store as OutreachStore
 
 from .helpers import (
     FIXTURES,
-    AcceptanceCandidateCapturingBrowser,
     CandidateCapturingBrowser,
     FakeLiveBrowserClient,
     ZeroThenNextSourceBrowserClient,
@@ -1788,12 +1771,11 @@ def test_retry_failed_lead_clears_failed_event_for_approved_lead(tmp_path: Path)
     assert browser.candidate.name == observation.name
 
 
-def test_confirmation_prefers_public_profile_url(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_confirmation_does_not_visit_profile_when_sent_list_is_missing(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(FakeLiveBrowserClient, "acceptance_status", "accepted")
-    monkeypatch.setattr(FakeLiveBrowserClient, "audit_people_count", 100)
-    monkeypatch.setattr(FakeLiveBrowserClient, "audit_recent_names", [])
+    FakeLiveBrowserClient.audit_people_count = 100
+    FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
     event = CandidateEvent(
@@ -1807,13 +1789,17 @@ def test_confirmation_prefers_public_profile_url(
     run = store.load_run()
     run.candidates.append(event)
     store.save_run(run)
-    browser = AcceptanceCandidateCapturingBrowser(tmp_path / "browser")
+    browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
 
-    confirm_provisional_send(store, browser, event, delay_ms=0, out_dir=tmp_path)
-
-    assert browser.acceptance_candidates[0].profile_url == (
-        "https://www.linkedin.com/in/duplicate-lead"
+    output = confirm_provisional_send(
+        store, browser, event, delay_ms=0, out_dir=tmp_path
     )
+
+    assert browser.calls == ["audit:load_more=2"]
+    assert "profile fallback disabled" in output
+    run = store.load_run()
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+    assert run.state == RunState.NEEDS_REAUDIT
 
 
 def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> None:
@@ -1840,48 +1826,6 @@ def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> Non
     ]
     assert updated.status == LeadStatus.BLOCKED
     assert suppressed
-
-
-def test_capture_import_skips_outreach_messaged_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    outreach_store = OutreachStore(tmp_path / "outreach")
-    outreach_store.save(
-        OutreachState(
-            leads=[
-                OutreachLead(
-                    id="outreach_dup",
-                    source="outreach",
-                    name="Duplicate Lead",
-                    first_name="Duplicate",
-                    lead_type=OutreachLeadType.AI_ADVISOR_IMPLEMENTATION_PARTNER,
-                    status=OutreachLeadStatus.ELIGIBLE,
-                    message_status=OutreachMessageStatus.SENT,
-                    fit_score=80,
-                    profile_url="https://www.linkedin.com/sales/lead/dup,NAME_SEARCH,token",
-                )
-            ]
-        )
-    )
-    monkeypatch.setenv("LINKEDIN_TOOLS_RECRUITER_AGENCY_STATE_DIR", str(outreach_store.dir))
-
-    store = Store(tmp_path / "network")
-    start_run(store, target=22, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
-
-    message = import_capture_path(
-        store, FIXTURES / "capture_consulting.json", only_connectable=True
-    )
-
-    run = store.load_run()
-    skipped = [event for event in run.candidates if event.status == CandidateStatus.SKIPPED]
-    assert "suppressed 1" in message
-    assert len(skipped) == 1
-    assert skipped[0].name == "Duplicate Lead"
-    assert "cross-workflow suppression" in (skipped[0].note or "")
-    next_candidate = run.next_connectable_observation()
-    assert next_candidate is not None
-    assert next_candidate.name == "URN Lead"
 
 
 def test_cli_drain_stale_candidates_delegates_to_python_app(
@@ -2113,7 +2057,6 @@ def test_send_next_queues_provisional_for_final_audit(
     tmp_path: Path,
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
-    FakeLiveBrowserClient.acceptance_status = "connectable"
     FakeLiveBrowserClient.audit_people_count = 100
     FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
@@ -2239,7 +2182,6 @@ def test_send_next_final_audit_confirms_sent_page_before_public_profile(
     tmp_path: Path,
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
-    FakeLiveBrowserClient.acceptance_status = "connectable"
     FakeLiveBrowserClient.audit_people_count = 101
     FakeLiveBrowserClient.audit_recent_names = ["Duplicate Lead"]
     store = Store(tmp_path)
@@ -2276,7 +2218,6 @@ def test_send_guarded_keeps_provisional_until_final_audit(
     tmp_path: Path,
 ) -> None:
     FakeLiveBrowserClient.instances.clear()
-    FakeLiveBrowserClient.acceptance_status = "connectable"
     FakeLiveBrowserClient.audit_people_count = 100
     FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
@@ -2424,7 +2365,7 @@ def test_reconcile_audit_matches_structured_public_profile_before_name(
     assert run.verified_count() == 2
 
 
-def test_reconcile_audit_profile_confirms_unlisted_provisional_send(
+def test_reconcile_audit_keeps_unlisted_provisional_without_profile_fallback(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path)
@@ -2470,18 +2411,13 @@ def test_reconcile_audit_profile_confirms_unlisted_provisional_send(
     )
 
     run = store.load_run()
-    assert "profile-confirmed 1 unlisted send(s): Stale Provisional Lead" in output
-    assert run.verified_count() == 2
-    assert run.provisional_count() == 0
-    assert run.candidates[-1].status == CandidateStatus.PENDING
-    assert "pending on public profile" in (run.candidates[-1].note or "")
-    entries = store.load_send_ledger_entries()
-    assert len(entries) == 1
-    assert entries[0].name == "Stale Provisional Lead"
-    assert entries[0].status == CandidateStatus.PENDING
-    assert entries[0].durable is True
-    lead_records = list(store.load_lead_ledger().leads.values())
-    assert lead_records[0].status == LeadStatus.PENDING
+    assert "kept 1 unlisted send(s) provisional: Stale Provisional Lead" in output
+    assert run.verified_count() == 1
+    assert run.provisional_count() == 1
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+    assert "without a profile fallback" in (run.candidates[-1].note or "")
+    assert store.load_send_ledger_entries() == []
+    assert run.state == RunState.NEEDS_REAUDIT
 
 
 def test_reconcile_audit_confirms_unmatched_provisional_from_complete_aggregate_delta(
@@ -2544,7 +2480,7 @@ def test_reconcile_audit_confirms_unmatched_provisional_from_complete_aggregate_
     assert summary.provisional_count == 0
 
 
-def test_reconcile_audit_recovers_send_previously_closed_from_absence(
+def test_reconcile_audit_reopens_send_previously_closed_from_absence(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path)
@@ -2580,13 +2516,13 @@ def test_reconcile_audit_recovers_send_previously_closed_from_absence(
     )
 
     run = store.load_run()
-    assert "profile-confirmed 1 unlisted send(s): Recovered Lead" in output
-    assert run.candidates[-1].status == CandidateStatus.PENDING
-    assert run.verified_count() == 1
-    assert run.state == RunState.FINAL_RECONCILE
+    assert "kept 1 unlisted send(s) provisional: Recovered Lead" in output
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+    assert run.verified_count() == 0
+    assert run.state == RunState.NEEDS_REAUDIT
 
 
-def test_reconcile_audit_closes_connectable_send_after_full_audit_coverage(
+def test_reconcile_audit_does_not_infer_failure_from_list_absence(
     tmp_path: Path,
 ) -> None:
     store = Store(tmp_path)
@@ -2609,46 +2545,19 @@ def test_reconcile_audit_closes_connectable_send_after_full_audit_coverage(
         json.dumps({"peopleCount": 100, "recentNames": [], "loadedCount": 1}),
         encoding="utf-8",
     )
-    outcome_path = tmp_path / "outcomes.json"
-    outcome_path.write_text(
-        json.dumps(
-            {
-                "capturedAt": "2026-07-13T12:00:00Z",
-                "input": "fixture",
-                "count": 1,
-                "offset": 0,
-                "limit": 1,
-                "totalCandidates": 1,
-                "complete": True,
-                "rows": [
-                    {
-                        "source": "Consulting - Founder Owner Buyers",
-                        "name": "Inconclusive Lead",
-                        "profileUrl": "https://www.linkedin.com/in/inconclusive",
-                        "status": "connectable",
-                        "checkedAt": "2026-07-13T12:00:00Z",
-                        "evidence": "Connect",
-                        "note": "lead is connectable again",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
     output = reconcile_audit(
         store,
-        FixtureBrowserClient(audit=audit_path, acceptance_outcomes=outcome_path),
+        FixtureBrowserClient(audit=audit_path),
         attempts=1,
         delay_ms=0,
     )
 
     run = store.load_run()
-    assert "profile-confirmed 1 unlisted send(s) reverted to Connect" in output
-    assert run.candidates[-1].status == CandidateStatus.REVERTED_CONNECT
-    assert run.provisional_count() == 0
-    assert run.state == RunState.SENDING
-    assert run.operator_plan().action != "reaudit"
+    assert "kept 1 unlisted send(s) provisional: Inconclusive Lead" in output
+    assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
+    assert run.provisional_count() == 1
+    assert run.state == RunState.NEEDS_REAUDIT
+    assert run.operator_plan().action == "reaudit"
 
 
 def test_reconcile_audit_keeps_unknown_unlisted_send_provisional(
@@ -2674,36 +2583,9 @@ def test_reconcile_audit_keeps_unknown_unlisted_send_provisional(
         json.dumps({"peopleCount": 100, "recentNames": [], "loadedCount": 1}),
         encoding="utf-8",
     )
-    outcome_path = tmp_path / "outcomes.json"
-    outcome_path.write_text(
-        json.dumps(
-            {
-                "capturedAt": "2026-07-13T12:00:00Z",
-                "input": "fixture",
-                "count": 1,
-                "offset": 0,
-                "limit": 1,
-                "totalCandidates": 1,
-                "complete": True,
-                "rows": [
-                    {
-                        "source": "Consulting - Founder Owner Buyers",
-                        "name": "Unknown Lead",
-                        "profileUrl": "https://www.linkedin.com/in/unknown",
-                        "status": "unknown",
-                        "checkedAt": "2026-07-13T12:00:00Z",
-                        "evidence": "no exact relationship control",
-                        "note": "no definitive acceptance state found",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
     output = reconcile_audit(
         store,
-        FixtureBrowserClient(audit=audit_path, acceptance_outcomes=outcome_path),
+        FixtureBrowserClient(audit=audit_path),
         attempts=1,
         delay_ms=0,
     )
@@ -2712,16 +2594,6 @@ def test_reconcile_audit_keeps_unknown_unlisted_send_provisional(
     assert "kept 1 unlisted send(s) provisional: Unknown Lead" in output
     assert run.candidates[-1].status == CandidateStatus.PENDING_PROVISIONAL
     assert run.state == RunState.NEEDS_REAUDIT
-
-
-def test_acceptance_outcomes_uses_remove_connection_as_exact_first_degree_evidence() -> None:
-    script = (
-        Path(__file__).resolve().parents[2]
-        / "apps/network_automation/playwriter_scripts/acceptance_outcomes.js"
-    ).read_text(encoding="utf-8")
-
-    assert "actionLabels.some((label) => /^Remove connection$/i.test(label))" in script
-    assert 'note = "profile action controls show Remove connection"' in script
 
 
 def test_reconcile_audit_keeps_provisional_when_audit_is_too_shallow(

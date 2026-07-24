@@ -192,6 +192,48 @@ MIGRATIONS = (
             ON acceptance_daily_runs(timezone, local_date, completed_at);
         """,
     ),
+    Migration(
+        3,
+        "backfill_acceptance_followup_sales_nav_urls",
+        """
+        UPDATE acceptance_followups
+        SET
+            sales_nav_profile_url = profile_url,
+            raw_json = json_set(raw_json, '$.sales_nav_profile_url', profile_url)
+        WHERE
+            (sales_nav_profile_url IS NULL OR trim(sales_nav_profile_url) = '')
+            AND (
+                lower(profile_url) LIKE 'https://linkedin.com/sales/lead/%'
+                OR lower(profile_url) LIKE 'https://%.linkedin.com/sales/lead/%'
+                OR lower(profile_url) LIKE 'http://linkedin.com/sales/lead/%'
+                OR lower(profile_url) LIKE 'http://%.linkedin.com/sales/lead/%'
+            );
+        """,
+    ),
+    Migration(
+        4,
+        "acceptance_evidence_provenance_and_current_relationship",
+        """
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN acceptance_evidence_grade TEXT;
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN current_relationship_status TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE acceptance_invitations
+            ADD COLUMN current_relationship_observed_at TEXT;
+        ALTER TABLE acceptance_outcome_events
+            ADD COLUMN evidence_grade TEXT;
+        ALTER TABLE acceptance_outcome_events
+            ADD COLUMN contract_version TEXT;
+
+        CREATE INDEX IF NOT EXISTS idx_acceptance_invitations_evidence_grade
+            ON acceptance_invitations(acceptance_evidence_grade, latest_status);
+        CREATE INDEX IF NOT EXISTS idx_acceptance_invitations_relationship
+            ON acceptance_invitations(
+                current_relationship_status,
+                current_relationship_observed_at
+            );
+        """,
+    ),
 )
 
 
@@ -494,8 +536,11 @@ def _insert_acceptance_invitation(
             first_observed_accepted_at,
             last_observed_unaccepted_at,
             acceptance_observation_precision,
+            acceptance_evidence_grade,
+            current_relationship_status,
+            current_relationship_observed_at,
             raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             invitation.key(),
@@ -519,6 +564,13 @@ def _insert_acceptance_invitation(
             else None,
             invitation.acceptance_observation_precision.value
             if invitation.acceptance_observation_precision is not None
+            else None,
+            invitation.acceptance_evidence_grade.value
+            if invitation.acceptance_evidence_grade is not None
+            else None,
+            invitation.current_relationship_status.value,
+            invitation.current_relationship_observed_at.isoformat()
+            if invitation.current_relationship_observed_at is not None
             else None,
             _model_json(invitation),
         ),
@@ -546,9 +598,11 @@ def _insert_acceptance_outcome_event(
             status,
             relationship,
             evidence,
+            evidence_grade,
+            contract_version,
             note,
             raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             stable_hash(
@@ -566,6 +620,8 @@ def _insert_acceptance_outcome_event(
             event.status.value,
             event.relationship,
             event.evidence,
+            event.evidence_grade.value if event.evidence_grade is not None else None,
+            event.contract_version,
             event.note,
             _model_json(event),
         ),

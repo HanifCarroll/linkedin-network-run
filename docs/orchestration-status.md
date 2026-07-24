@@ -3,7 +3,7 @@
 Last updated: 2026-06-25
 
 `linkedin-tools` is the active local toolchain for LinkedIn networking,
-recruiter/agency/advisor outreach, opportunity intelligence, comment extraction, and
+opportunity intelligence, comment extraction, and
 review workflows. Runtime state lives under
 `~/Library/Application Support/linkedin-tools/`.
 
@@ -12,15 +12,11 @@ review workflows. Runtime state lives under
 - `linkedin-tools network`: deterministic Sales Navigator connection-request
   controller, sent-page audit reconciliation, source reservoirs, acceptance
   tracking, accepted follow-ups, and pending-invitation cleanup.
-- `linkedin-tools recruiter-agency`: recruiter, agency, and advisor sourcing,
-  lead capture, drafting, dashboards, guarded message dry-runs, and guarded
-  message sends.
 - `linkedin-tools opportunity`: recommend-only source registry, query packs,
   post queues, provider imports, capture batches, scoring, and review exports.
 - `linkedin-tools comments`: browser-backed and saved-HTML LinkedIn comment
   extraction.
-- `linkedin-tools ui`: local review UI for opportunities, networking state,
-  recruiter/agency/advisor state, browser artifacts, and guarded actions.
+- `linkedin-tools ui`: local review UI for opportunities, networking state, browser artifacts, and guarded actions.
 
 ## Shared Runtime
 
@@ -37,10 +33,7 @@ review workflows. Runtime state lives under
 
 - Connection requests and accepted follow-ups are controller-owned network
   workflows.
-- Recruiter/agency outreach sends drafted messages only and must not send
-  connection requests.
-- The network and recruiter/agency/advisor controllers suppress exact-profile
-  overlap across their state dirs before guarded browser actions.
+- The network controller retains exact-profile safeguards before guarded browser actions.
 - Opportunity intelligence is recommend-only.
 - Real sends require `--allow-send`.
 - Real pending-invitation withdrawals require `--allow-withdraw`.
@@ -54,7 +47,6 @@ behavior moves:
 
 ```sh
 uv run pytest tests/network_automation/test_network_automation.py -q
-uv run pytest tests/test_recruiter_agency_outreach.py -q
 uv run pytest -q
 uv run ruff check .
 uv run mypy apps packages tests

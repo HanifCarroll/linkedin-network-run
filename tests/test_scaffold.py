@@ -16,6 +16,7 @@ def test_top_level_cli_namespaces_are_registered(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert APP_NAMES == (
+        "incident",
         "network",
         "recruiter-agency",
         "opportunity",
