@@ -16,6 +16,7 @@ def test_top_level_cli_namespaces_are_registered(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert APP_NAMES == (
+        "analytics",
         "incident",
         "network",
         "recruiter-agency",
@@ -180,6 +181,7 @@ def test_package_data_includes_runtime_assets() -> None:
     package_data = pyproject["tool"]["setuptools"]["package-data"]
 
     assert package_data["apps.network_automation"] == ["playwriter_scripts/*.js"]
+    assert package_data["apps.content_analytics"] == ["playwriter_scripts/*.js"]
     assert package_data["apps.comment_extractor"] == ["playwriter_scripts/*.js"]
     assert package_data["apps.opportunity_intel"] == [
         "data/*.json",

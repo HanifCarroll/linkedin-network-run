@@ -7,6 +7,7 @@ import sys
 from collections.abc import Sequence
 
 APP_NAMES = (
+    "analytics",
     "incident",
     "network",
     "opportunity",
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from apps.comment_extractor.cli import main as comments_main
+    from apps.content_analytics.cli import main as analytics_main
     from apps.cutover.cli import main as cutover_main
     from apps.incident_cli import main as incident_main
     from apps.network_automation.cli import main as network_main
@@ -50,6 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Let the app namespace print its own help whenever possible.
         remaining = ["--help"]
     dispatchers = {
+        "analytics": analytics_main,
         "incident": incident_main,
         "network": network_main,
         "opportunity": opportunity_main,

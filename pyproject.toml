@@ -32,6 +32,7 @@ linkedin-opportunity-intel = "apps.compat:linkedin_opportunity_intel"
 [tool.setuptools]
 packages = [
   "apps",
+  "apps.content_analytics",
   "apps.cutover",
   "apps.network_automation",
   "apps.opportunity_intel",
@@ -46,6 +47,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "apps.network_automation" = ["playwriter_scripts/*.js"]
+"apps.content_analytics" = ["playwriter_scripts/*.js"]
 "apps.comment_extractor" = ["playwriter_scripts/*.js"]
 "apps.opportunity_intel" = ["data/*.json", "playwriter_scripts/*.js"]
 "apps.review_ui" = ["templates/*.html", "templates/partials/*.html", "static/*.css"]

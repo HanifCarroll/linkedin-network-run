@@ -31,10 +31,32 @@ The primary runtime namespaces are:
 
 ```sh
 uv run linkedin-tools network --help
+uv run linkedin-tools analytics --help
 uv run linkedin-tools opportunity --help
 uv run linkedin-tools comments --help
 uv run linkedin-tools ui --help
 ```
+
+## Content Analytics Export
+
+```sh
+uv run linkedin-tools analytics export \
+  --out /tmp/linkedin-content-analytics.xlsx \
+  --session auto
+```
+
+This read-only command uses the verified combined analytics page at
+`https://www.linkedin.com/analytics/creator/content/`, the exact `Export` link,
+the exact `7 days` control, and the exact confirmation dialog. Chrome writes
+`AggregateAnalytics_<account>_<start>_<end>.xlsx` to its configured Downloads
+folder; the command requires exactly one new matching workbook, validates its
+XLSX container, and moves it to `--out`.
+
+The analytics namespace is deliberately isolated from the networking browser
+runner. It does not invoke `codex-automation-preflight`, networking incident
+state, or send/relationship safety gates. Those gates remain unchanged for
+every existing network, acceptance, cleanup, recruiter/agency, and relationship
+command.
 
 ## State Layout
 
