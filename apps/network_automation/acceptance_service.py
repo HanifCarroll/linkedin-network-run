@@ -154,17 +154,23 @@ CODEX_ENRICHMENT_OUTPUT_SCHEMA = {
             "type": "object",
             "additionalProperties": False,
             "required": [
-                "icp_profile_id",
                 "icp_source_path",
-                "offers_profile_id",
+                "icp_source_sha256",
                 "offers_source_path",
+                "offers_source_sha256",
                 "offer_id",
             ],
             "properties": {
-                "icp_profile_id": {"type": "string", "minLength": 1},
                 "icp_source_path": {"type": "string", "minLength": 1},
-                "offers_profile_id": {"type": "string", "minLength": 1},
+                "icp_source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$",
+                },
                 "offers_source_path": {"type": "string", "minLength": 1},
+                "offers_source_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$",
+                },
                 "offer_id": {"type": "string", "minLength": 1},
             },
         },
@@ -415,14 +421,14 @@ def render_relationship_enrichment_prompt(
         "- Treat the saved-search source as context, not proof. Classify from excerpts.",
         "",
         "Commercial authority:",
-        f"- Read ICP profile `{commercial_context.icp_profile_id}` from "
-        f"{commercial_context.icp_source_path}",
-        f"- Read offers profile `{commercial_context.offers_profile_id}` from "
-        f"{commercial_context.offers_source_path}",
+        f"- Read the ICP profile from {commercial_context.icp_source_path} "
+        f"(SHA-256 `{commercial_context.icp_source_sha256}`).",
+        f"- Read the offers profile from {commercial_context.offers_source_path} "
+        f"(SHA-256 `{commercial_context.offers_source_sha256}`).",
         f"- Evaluate offer `{commercial_context.offer_id}` only under the scope, status, "
         "qualification, and exclusion rules in the offers profile.",
         "- These two files are the only authority for buyer fit and offer routing. If a "
-        "file is unreadable, its profile ID does not match, or a required criterion is "
+        "file is unreadable, its source digest does not match, or a required criterion is "
         "not declared, return `needs_review`, add a warning, and preserve the gap in "
         "`unknowns`.",
         "- Return one `criterion_evidence` entry for every applicable `criterion_id` "
@@ -511,10 +517,10 @@ def render_relationship_enrichment_prompt(
             "    }",
             "  ],",
             '  "commercial_context": {',
-            f'    "icp_profile_id": "{commercial_context.icp_profile_id}",',
             f'    "icp_source_path": "{commercial_context.icp_source_path}",',
-            f'    "offers_profile_id": "{commercial_context.offers_profile_id}",',
+            f'    "icp_source_sha256": "{commercial_context.icp_source_sha256}",',
             f'    "offers_source_path": "{commercial_context.offers_source_path}",',
+            f'    "offers_source_sha256": "{commercial_context.offers_source_sha256}",',
             f'    "offer_id": "{commercial_context.offer_id}"',
             "  },",
             '  "criterion_evidence": [',

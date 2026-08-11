@@ -143,6 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_session.add_argument("--no-fallback", action="store_true")
+    run_session.add_argument(
+        "--trusted-established-sources",
+        action="store_true",
+        help=(
+            "deterministically approve only new connectable observations from the "
+            "configured daily trusted sources; preserve manual review otherwise"
+        ),
+    )
     run_session.add_argument("--saved-searches-url", default=DEFAULT_SAVED_SEARCHES_URL)
     run_session.add_argument("--saved-searches", default=str(DEFAULT_SAVED_SEARCHES))
     run_session.add_argument(
@@ -429,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
     old_inspect.add_argument("--old-state-dir", default=None)
     old_inspect.add_argument("--json", action="store_true")
 
+    parked_carryovers = subparsers.add_parser(
+        "parked-carryovers",
+        help="list unresolved older runs parked by daily orchestration",
+    )
+    parked_carryovers.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -470,7 +484,15 @@ def _controller_operation(args: argparse.Namespace) -> str:
 
 def _is_read_only_command(args: argparse.Namespace) -> bool:
     command = str(args.command)
-    if command in {"next", "next-candidate", "candidates", "plan", "status", "report"}:
+    if command in {
+        "next",
+        "next-candidate",
+        "candidates",
+        "plan",
+        "status",
+        "report",
+        "parked-carryovers",
+    }:
         return True
     if command == "sends":
         return not bool(args.sync_history)
@@ -544,6 +566,7 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
                     if args.review_out
                     else Path(args.out_dir) / "lead-review-candidates.json"
                 ),
+                "trusted_established_sources": args.trusted_established_sources,
                 "emit": _emit_progress,
             }
             if args.daily:
@@ -725,6 +748,22 @@ def dispatch(args: argparse.Namespace, store: Store) -> str | None:
             run_id=str(run.id),
         )
         return render_report(run, send_summary=summary)
+    if command == "parked-carryovers":
+        runs = store.load_parked_runs()
+        if args.json:
+            return json.dumps(
+                [run.model_dump(mode="json") for run in runs],
+                indent=2,
+            )
+        if not runs:
+            return "no parked network carryovers"
+        return "\n".join(
+            f"{run.date.isoformat()} {run.id}: {run.state.value}; "
+            f"durable={run.verified_count()}/{run.target}; "
+            f"provisional={run.provisional_count()}; "
+            f"path={store.parked_run_path(run)}"
+            for run in runs
+        )
     if command == "finish":
         return finish_run(store, force=args.force)
     if command == "tune-sources":

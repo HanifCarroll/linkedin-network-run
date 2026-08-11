@@ -109,7 +109,7 @@ Scheduled browser automations run directly through the controller command:
 ```sh
 uv run linkedin-tools network \
   --state-dir "$state_root/network-automation" \
-  run-session --daily --session auto --target 30 --max-real-sends 30 \
+  run-session --daily --trusted-established-sources --session auto --target 30 --max-real-sends 30 \
   --refresh-saved-searches --no-fallback --allow-send --finish
 
 uv run linkedin-tools network \
@@ -156,26 +156,39 @@ uv run linkedin-tools incident clear \
   --confirm-warning-cleared
 ```
 
-Clearing requires both confirmations. Keep every LinkedIn automation paused
-until account access is manually verified, then reactivate in stages with
-network sends last.
+Clearing requires both confirmations. After account access and warning
+clearance are confirmed, each LinkedIn automation may be reactivated
+individually under its existing permission and controller safeguards. There is
+no dated or staged restart hold.
 
-`run-session --daily` owns the local-day decision: it resumes an approved
-unfinished carryover first, then starts or resumes today's 30-send objective.
-The 15/10/5 source mix is the preferred allocation across the three approved
-sources, not a completion gate. It refuses unapproved source contracts, unclear
-partial-day ledgers, and concurrent mutating controller processes.
+`run-session --daily` owns the local-day decision. It resumes an approved older
+run while that run has a safe continuation. If the older run exhausts its audit
+budget in `NeedsReaudit`, the controller preserves the full run under
+`parked-network-runs/<run-id>.json`, keeps its provisional send unresolved, and
+starts today's 30-send objective instead of blocking a new local day. Inspect
+that backlog with `linkedin-tools network parked-carryovers --json`. A
+current-day `NeedsReaudit` remains terminal. New local-day runs use two exact
+approved sources: 15 from `Consulting - Marketing Agency Owners` and 15 from
+`Consulting - Fractional COOs`. When either is exhausted, its shortfall carries
+to the other source. Historical runs keep their recorded source contract until
+they are audited, reconciled, or parked safely. A prior-day legacy `Sending`
+run can also be parked only when every recorded source is exhausted,
+provisionals remain, no source is available, and there is no browser or
+possible-send incident. The controller never uses this branch for a
+current-day run.
+The controller refuses unapproved source contracts, unclear partial-day
+ledgers, and concurrent mutating controller processes.
 
 Daily source quotas guide selection in declared order. Durable and pending
 provisional sends consume active capacity; a proven failed or reverted send
 releases capacity. When an approved source is exhausted, its shortfall carries
-to the next approved source so the workflow can still reach 30. `--no-fallback`
-continues to exclude every source outside the approved three. `--max-real-sends`
+to the other approved source so the workflow can still reach 30. `--no-fallback`
+continues to exclude every source outside the approved two. `--max-real-sends`
 limits active sends rather than lifetime attempts, so proven failures can be
 replaced while the durable target remains incomplete.
 
-`run-session` pauses at a normal, non-terminal review checkpoint whenever it
-captures new connection candidates. The packet at
+Manual `run-session` modes pause at a normal, non-terminal review checkpoint
+whenever they capture new connection candidates. The packet at
 `/tmp/linkedin-network-session/lead-review-candidates.json` includes a unique
 `packet_id`. Write a fresh decisions artifact with that same id and exactly one
 decision per candidate:
@@ -262,16 +275,15 @@ returned zero connectable rows.
 
 The active consulting mix is 30 connection requests per run:
 
-- 15 from `Consulting - Founder Owner Buyers`
-- 10 from `Consulting - Operations Leader Buyers`
-- 5 from `Consulting - Trusted Referral Partners`
+- 15 from `Consulting - Marketing Agency Owners`
+- 15 from `Consulting - Fractional COOs`
 
-The first two are buyer sources. The third is for complementary referral or
-advisory relationships: fractional COOs and operations or strategy consultants
-who serve founder-led businesses without overlapping Hanif's custom software or
-automation delivery. Historical recruiter, agency-owner, paid-media, and old
-implementation-partner source names remain readable on old acceptance records
-but are not part of the active source mix.
+With `--trusted-established-sources`, the controller deterministically approves
+only NEW connectable observations captured from those exact sources. It retains
+the identity and captured Sales Navigator row requirements, and never
+revalidates historical skipped, blocked, pending, or connected leads. Other
+modes retain packet-by-packet manual review. Historical source contracts remain
+readable and executable only long enough to audit, reconcile, or park safely.
 
 Connection-request counts are stored in `$STATE/network.sqlite` as soon as a
 send attempt is recorded or a provisional send is confirmed. Use

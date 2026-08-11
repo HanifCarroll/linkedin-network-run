@@ -9,6 +9,7 @@ import uuid
 from datetime import UTC, datetime
 from datetime import date as Date
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 from zoneinfo import ZoneInfo
@@ -255,8 +256,6 @@ class CommercialCriterionAssessment(StrEnum):
     UNKNOWN = "unknown"
 
 
-DEFAULT_ICP_PROFILE_ID = "icp-v1"
-DEFAULT_OFFERS_PROFILE_ID = "offers-v1"
 DEFAULT_COMMERCIAL_OFFER_ID = "business-systems-audit"
 DEFAULT_ICP_SOURCE_PATH = (
     "/Users/hanifcarroll/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
@@ -268,11 +267,19 @@ DEFAULT_OFFERS_SOURCE_PATH = (
 )
 
 
+def source_file_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 class CommercialContextReference(AppModel):
-    icp_profile_id: str = DEFAULT_ICP_PROFILE_ID
     icp_source_path: str = DEFAULT_ICP_SOURCE_PATH
-    offers_profile_id: str = DEFAULT_OFFERS_PROFILE_ID
+    icp_source_sha256: str = Field(
+        default_factory=lambda: source_file_sha256(DEFAULT_ICP_SOURCE_PATH)
+    )
     offers_source_path: str = DEFAULT_OFFERS_SOURCE_PATH
+    offers_source_sha256: str = Field(
+        default_factory=lambda: source_file_sha256(DEFAULT_OFFERS_SOURCE_PATH)
+    )
     offer_id: str = DEFAULT_COMMERCIAL_OFFER_ID
 
 
@@ -742,6 +749,7 @@ class Run(AppModel):
     blocked_resume_at: datetime | None = None
     allow_fallback_sources: bool = True
     carry_over_shortfall: bool = True
+    trusted_established_sources: bool = False
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
 
@@ -836,10 +844,12 @@ class Run(AppModel):
             return None
         return self.source_quota_with_carryover(index)
 
-    def primary_shortfall_before(self, source_index: int) -> int:
+    def transferable_shortfall_for(self, source_index: int) -> int:
         total = 0
-        for plan in self.sources[:source_index]:
-            if plan.fallback:
+        for index, plan in enumerate(self.sources):
+            if index == source_index or plan.fallback:
+                continue
+            if not plan.exhausted and not self.source_is_deferred_for_run(plan.name):
                 continue
             active = self.source_active_send_count(plan.name)
             if plan.target > active:
@@ -853,7 +863,7 @@ class Run(AppModel):
             return max(remaining, source.target)
         if not self.carry_over_shortfall:
             return source.target
-        return source.target + self.primary_shortfall_before(source_index)
+        return source.target + self.transferable_shortfall_for(source_index)
 
     def next_source(self) -> NextSource | None:
         if self.state in {
@@ -1123,6 +1133,10 @@ class Run(AppModel):
         ]
 
 
+MARKETING_AGENCY_OWNERS_SOURCE = "Consulting - Marketing Agency Owners"
+FRACTIONAL_COOS_SOURCE = "Consulting - Fractional COOs"
+# These legacy source names remain valid in historical runs until their audit or
+# parking workflow finishes. New runs use the two-source contract below.
 FOUNDER_OWNER_BUYERS_SOURCE = "Consulting - Founder Owner Buyers"
 OPERATIONS_LEADER_BUYERS_SOURCE = "Consulting - Operations Leader Buyers"
 TRUSTED_REFERRAL_PARTNERS_SOURCE = "Consulting - Trusted Referral Partners"
@@ -1133,21 +1147,24 @@ TRUSTED_REFERRAL_PARTNERS_LEAD_LIST = "Accepted - Trusted Referral Partners"
 BUSINESS_SYSTEMS_WATCHLIST = "Watch - Business Systems Prospects"
 
 APPROVED_RELATIONSHIP_ROLE_BY_SOURCE: dict[str, RelationshipRole] = {
+    MARKETING_AGENCY_OWNERS_SOURCE: RelationshipRole.BUYER,
+    FRACTIONAL_COOS_SOURCE: RelationshipRole.REFERRAL_PARTNER,
     FOUNDER_OWNER_BUYERS_SOURCE: RelationshipRole.BUYER,
     OPERATIONS_LEADER_BUYERS_SOURCE: RelationshipRole.BUYER,
     TRUSTED_REFERRAL_PARTNERS_SOURCE: RelationshipRole.REFERRAL_PARTNER,
 }
 
 ACCEPTED_LEAD_LIST_BY_SOURCE: dict[str, str] = {
+    MARKETING_AGENCY_OWNERS_SOURCE: FOUNDER_OWNER_BUYERS_LEAD_LIST,
+    FRACTIONAL_COOS_SOURCE: TRUSTED_REFERRAL_PARTNERS_LEAD_LIST,
     FOUNDER_OWNER_BUYERS_SOURCE: FOUNDER_OWNER_BUYERS_LEAD_LIST,
     OPERATIONS_LEADER_BUYERS_SOURCE: OPERATIONS_LEADER_BUYERS_LEAD_LIST,
     TRUSTED_REFERRAL_PARTNERS_SOURCE: TRUSTED_REFERRAL_PARTNERS_LEAD_LIST,
 }
 
 DEFAULT_SOURCE_MIX: list[tuple[str, int]] = [
-    (FOUNDER_OWNER_BUYERS_SOURCE, 15),
-    (OPERATIONS_LEADER_BUYERS_SOURCE, 10),
-    (TRUSTED_REFERRAL_PARTNERS_SOURCE, 5),
+    (MARKETING_AGENCY_OWNERS_SOURCE, 15),
+    (FRACTIONAL_COOS_SOURCE, 15),
 ]
 
 
@@ -1189,6 +1206,7 @@ def new_run(
     sources: list[SourcePlan] | None = None,
     allow_fallback_sources: bool = True,
     carry_over_shortfall: bool = True,
+    trusted_established_sources: bool = False,
 ) -> Run:
     effective_date = run_date or today()
     return Run(
@@ -1198,6 +1216,7 @@ def new_run(
         sources=sources or default_sources(target),
         allow_fallback_sources=allow_fallback_sources,
         carry_over_shortfall=carry_over_shortfall,
+        trusted_established_sources=trusted_established_sources,
     )
 
 

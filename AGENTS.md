@@ -96,11 +96,15 @@ uv run linkedin-tools --help
 - Poll an active controller process until it exits. Never interrupt or kill it
   while a browser operation is in progress; an interruption during a real-send
   call must be preserved as a possible-send incident and reconciled by audit.
-- Daily completion prioritizes 30 durable sends with zero provisional. The
-  15/10/5 source mix guides selection across the three approved sources; when
-  one is exhausted, its shortfall carries to the next approved source. Proven
+- Daily completion prioritizes 30 durable sends with zero provisional. New
+  local-day runs use `Consulting - Marketing Agency Owners` and `Consulting -
+  Fractional COOs` at 15/15; an exhausted source carries its shortfall into the
+  other. Older runs retain their recorded source contract until audit,
+  reconciliation, or safe parking. `--trusted-established-sources` approves
+  only NEW connectable observations from those exact sources without a review
+  packet; manual modes retain lead review. Proven
   failed or reverted sends release active capacity, and `--no-fallback` still
-  excludes every source outside the approved three.
+  excludes every source outside the approved two.
 - `NeedsBrowserInspection` is a normal controller checkpoint only when the
   active incident says `possible_send=false`. Codex may use Chrome on the exact
   automation-owned tab for actions listed in the incident lease, then must
@@ -113,6 +117,14 @@ uv run linkedin-tools --help
 - Record browser artifacts back into the controller with the matching import or record command.
 - After uncertainty, exhausted transient-load retries, blocked browser state, or
   possible real sends, audit before declaring success.
+- An older run that exhausts its audit budget in `NeedsReaudit` is preserved
+  under `parked-network-runs/` and must not block the next local day's guarded
+  objective. Its provisional send remains unresolved and must not be replaced.
+  A current-day `NeedsReaudit` remains terminal.
+  The daily controller may also park an older legacy `Sending` run only when
+  every recorded source is exhausted, it has provisional sends, no source is
+  available, and no browser or possible-send incident exists. A current-day
+  run remains active in both cases.
 - `finish` must be backed by sent-page audit reconciliation, not row-level confidence alone.
 - When guarded attempts, active sends, and the sent-page delta all exactly equal
   the target with no failed or reverted request, the complete aggregate audit
@@ -151,10 +163,11 @@ Networking controller:
 ```sh
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" status --json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" plan --json
-uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" run-session --daily --session auto --target 30 --max-real-sends 30 --refresh-saved-searches --no-fallback --allow-send --finish --out-dir /tmp/linkedin-network-session
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" run-session --daily --trusted-established-sources --session auto --target 30 --max-real-sends 30 --refresh-saved-searches --no-fallback --allow-send --finish --out-dir /tmp/linkedin-network-session
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" send-guarded --session auto --allow-send --single-pass --max-attempts 30
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" reconcile-audit --session auto --attempts 3 --delay-ms 5000 --finish
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" report
+uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" parked-carryovers --json
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" browser-inspection status
 uv run linkedin-tools network --state-dir "$HOME/Library/Application Support/linkedin-tools/network-automation" browser-inspection apply /tmp/linkedin-network-session/001-browser-incident-recovery-receipt.json
 ```

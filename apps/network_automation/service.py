@@ -92,11 +92,22 @@ class PendingCleanupFinishMismatch(RuntimeError):
     """Raised when pending cleanup cannot prove the final pending count."""
 
 
+class NeedsReauditUnresolved(RuntimeError):
+    """Raised when an audit budget ends with provisional sends unresolved."""
+
+
 def _daily_source_targets(run: Run) -> dict[str, int]:
     return {source.name: source.target for source in run.sources if source.target > 0}
 
 
-def _validate_daily_run_contract(run: Run, *, target: int, max_real_sends: int) -> None:
+def _validate_daily_run_contract(
+    run: Run,
+    *,
+    target: int,
+    max_real_sends: int,
+    require_current_sources: bool,
+    trusted_established_sources: bool | None = None,
+) -> None:
     expected_sources = dict(DEFAULT_SOURCE_MIX)
     problems: list[str] = []
     if run.target != target:
@@ -105,9 +116,18 @@ def _validate_daily_run_contract(run: Run, *, target: int, max_real_sends: int) 
         problems.append(
             f"max_real_sends={run.max_real_sends}, expected {max_real_sends}"
         )
-    if _daily_source_targets(run) != expected_sources:
+    if require_current_sources and _daily_source_targets(run) != expected_sources:
         problems.append(
             f"sources={_daily_source_targets(run)!r}, expected {expected_sources!r}"
+        )
+    if (
+        require_current_sources
+        and trusted_established_sources is not None
+        and run.trusted_established_sources != trusted_established_sources
+    ):
+        problems.append(
+            "trusted_established_sources="
+            f"{run.trusted_established_sources}, expected {trusted_established_sources}"
         )
     if run.allow_fallback_sources:
         problems.append("fallback sources are enabled")
@@ -115,11 +135,35 @@ def _validate_daily_run_contract(run: Run, *, target: int, max_real_sends: int) 
         raise RuntimeError("daily network run contract mismatch: " + "; ".join(problems))
 
 
+def _is_safe_source_exhausted_legacy_carryover(run: Run) -> bool:
+    """Recognize only an older legacy run that cannot make another safe attempt."""
+
+    source_plans = [source for source in run.sources if source.target > 0]
+    if not source_plans:
+        return False
+    if run.state != RunState.SENDING:
+        return False
+    if run.trusted_established_sources or _daily_source_targets(run) == dict(DEFAULT_SOURCE_MIX):
+        return False
+    if run.provisional_count() == 0 or run.active_send_count() >= run.send_attempt_goal():
+        return False
+    if run.active_browser_incident() is not None:
+        return False
+    if any(incident.possible_send for incident in run.browser_incidents):
+        return False
+    if not all(source.exhausted for source in source_plans):
+        return False
+    if run.next_source() is not None:
+        return False
+    return run.operator_plan().action == "blocked"
+
+
 def network_daily_session_action(
     store: Store,
     *,
     target: int,
     max_real_sends: int,
+    trusted_established_sources: bool = False,
 ) -> str:
     """Return the one safe next action for the local calendar day's send objective."""
 
@@ -141,7 +185,13 @@ def network_daily_session_action(
         return "start-today"
 
     if run.date == today():
-        _validate_daily_run_contract(run, target=target, max_real_sends=max_real_sends)
+        _validate_daily_run_contract(
+            run,
+            target=target,
+            max_real_sends=max_real_sends,
+            require_current_sources=True,
+            trusted_established_sources=trusted_established_sources,
+        )
         if run.state != RunState.DONE:
             return "resume-today"
         if (
@@ -156,7 +206,23 @@ def network_daily_session_action(
         )
 
     if run.state != RunState.DONE:
-        _validate_daily_run_contract(run, target=target, max_real_sends=max_real_sends)
+        # A prior-day run owns its recorded source contract. Do not make its
+        # audit, reconciliation, or safe parking depend on a later contract.
+        _validate_daily_run_contract(
+            run,
+            target=target,
+            max_real_sends=max_real_sends,
+            require_current_sources=False,
+        )
+        if summary.entries:
+            raise RuntimeError(
+                "today has send-ledger entries while the active run belongs to "
+                f"{run.date.isoformat()}; refusing to start or resume overlapping daily work"
+            )
+        if run.state == RunState.NEEDS_REAUDIT:
+            return "park-carryover-start-today"
+        if _is_safe_source_exhausted_legacy_carryover(run):
+            return "park-source-exhausted-carryover-start-today"
         return "resume-carryover"
     if summary.entries:
         raise RuntimeError(
@@ -185,9 +251,10 @@ def network_run_daily_session(
     confirm_delay_ms: int = 5000,
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
     review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
+    trusted_established_sources: bool = False,
     emit: Callable[[str], None] | None = None,
 ) -> str:
-    """Resolve an older run first, then continue the current local-day objective."""
+    """Continue today's objective without discarding unresolved older sends."""
 
     if allow_fallback_sources:
         raise ValueError("daily session requires --no-fallback")
@@ -202,70 +269,91 @@ def network_run_daily_session(
         store,
         target=target,
         max_real_sends=max_real_sends,
+        trusted_established_sources=trusted_established_sources,
     )
     add(f"daily objective {today().isoformat()}: {action}")
     if action == "today-complete":
         add("today is complete: 30 durable sends, 0 provisional")
         return "\n".join(messages)
 
-    resume = action in {"resume-today", "resume-carryover"}
-    session_output = network_run_session(
-        store,
-        browser,
-        target=target,
-        max_real_sends=max_real_sends,
-        force=action == "start-today" and store.active_path.exists(),
-        resume=resume,
-        per_source_target=None,
-        allow_fallback_sources=False,
-        saved_searches_url=saved_searches_url,
-        saved_searches_out=saved_searches_out,
-        refresh_saved_searches=(refresh_saved_searches if action == "start-today" else False),
-        audit_attempts=audit_attempts,
-        audit_delay_ms=audit_delay_ms,
-        audit_load_more=audit_load_more,
-        allow_send=allow_send,
-        max_steps=max_steps,
-        finish=finish,
-        confirm_delay_ms=confirm_delay_ms,
-        confirm_out_dir=confirm_out_dir,
-        review_out=review_out,
-        emit=emit,
-    )
-    messages.append(session_output)
-
-    if action == "resume-carryover" and store.load_run().state == RunState.DONE:
-        next_action = network_daily_session_action(
+    def run_phase(*, resume: bool, force: bool, refresh: bool) -> str:
+        return network_run_session(
             store,
+            browser,
             target=target,
             max_real_sends=max_real_sends,
+            force=force,
+            resume=resume,
+            per_source_target=None,
+            allow_fallback_sources=False,
+            saved_searches_url=saved_searches_url,
+            saved_searches_out=saved_searches_out,
+            refresh_saved_searches=refresh,
+            audit_attempts=audit_attempts,
+            audit_delay_ms=audit_delay_ms,
+            audit_load_more=audit_load_more,
+            allow_send=allow_send,
+            max_steps=max_steps,
+            finish=finish,
+            confirm_delay_ms=confirm_delay_ms,
+            confirm_out_dir=confirm_out_dir,
+            review_out=review_out,
+            emit=emit,
+            trusted_established_sources=trusted_established_sources,
         )
-        add(f"carryover resolved; daily objective {today().isoformat()}: {next_action}")
-        if next_action == "start-today":
-            today_output = network_run_session(
-                store,
-                browser,
-                target=target,
-                max_real_sends=max_real_sends,
-                force=True,
-                resume=False,
-                per_source_target=None,
-                allow_fallback_sources=False,
-                saved_searches_url=saved_searches_url,
-                saved_searches_out=saved_searches_out,
-                refresh_saved_searches=refresh_saved_searches,
-                audit_attempts=audit_attempts,
-                audit_delay_ms=audit_delay_ms,
-                audit_load_more=audit_load_more,
-                allow_send=allow_send,
-                max_steps=max_steps,
-                finish=finish,
-                confirm_delay_ms=confirm_delay_ms,
-                confirm_out_dir=confirm_out_dir,
-                review_out=review_out,
-                emit=emit,
+
+    if action in {
+        "park-carryover-start-today",
+        "park-source-exhausted-carryover-start-today",
+    }:
+        carryover = store.load_run()
+        reason = (
+            "older run remains NeedsReaudit after its audit budget"
+            if action == "park-carryover-start-today"
+            else "older legacy run exhausted every source with provisional sends preserved"
+        )
+        parked_path = store.park_active_run(
+            reason
+        )
+        add(
+            f"parked unresolved carryover {carryover.id} from "
+            f"{carryover.date.isoformat()}: {reason}; {parked_path}"
+        )
+        add(f"daily objective {today().isoformat()}: start-today")
+        messages.append(run_phase(resume=False, force=True, refresh=refresh_saved_searches))
+        return "\n".join(messages)
+
+    if action != "resume-carryover":
+        messages.append(
+            run_phase(
+                resume=action == "resume-today",
+                force=action == "start-today" and store.active_path.exists(),
+                refresh=refresh_saved_searches if action == "start-today" else False,
             )
-            messages.append(today_output)
+        )
+        return "\n".join(messages)
+
+    try:
+        messages.append(run_phase(resume=True, force=False, refresh=False))
+    except NeedsReauditUnresolved as exc:
+        add(str(exc))
+
+    carryover = store.load_run()
+    if carryover.state == RunState.DONE:
+        add(f"carryover resolved; daily objective {today().isoformat()}: start-today")
+    elif carryover.state == RunState.NEEDS_REAUDIT:
+        parked_path = store.park_active_run(
+            "older run remains NeedsReaudit after its audit budget"
+        )
+        add(
+            f"parked unresolved carryover {carryover.id} from "
+            f"{carryover.date.isoformat()}: {parked_path}"
+        )
+        add(f"daily objective {today().isoformat()}: start-today")
+    else:
+        return "\n".join(messages)
+
+    messages.append(run_phase(resume=False, force=True, refresh=refresh_saved_searches))
     return "\n".join(messages)
 
 
@@ -279,6 +367,7 @@ def start_run(
     per_source_target: int | None = None,
     allow_fallback_sources: bool = True,
     source_names: Sequence[str] | None = None,
+    trusted_established_sources: bool = False,
 ) -> str:
     if store.active_path.exists() and not force:
         raise RuntimeError("an active run already exists; use --force to replace it")
@@ -311,6 +400,7 @@ def start_run(
         sources=sources,
         allow_fallback_sources=allow_fallback_sources,
         carry_over_shortfall=carry_over_shortfall,
+        trusted_established_sources=trusted_established_sources,
     )
     store.save_run(run)
     store.append_event(
@@ -322,6 +412,7 @@ def start_run(
             "source_names": explicit_source_names,
             "allow_fallback_sources": allow_fallback_sources,
             "carry_over_shortfall": carry_over_shortfall,
+            "trusted_established_sources": trusted_established_sources,
         },
     )
     next_source = run.next_source()
@@ -857,6 +948,82 @@ def reviewable_observations(
     return reviewable
 
 
+def auto_approve_trusted_established_observations(
+    store: Store, *, source: str | None = None
+) -> tuple[int, int]:
+    """Approve only new, current-run observations from the exact trusted sources."""
+
+    run = store.load_run()
+    if not run.trusted_established_sources:
+        return (0, 0)
+    trusted_sources = set(dict(DEFAULT_SOURCE_MIX))
+    ledger = store.load_lead_ledger()
+    approved = 0
+    blocked = 0
+    checkpoint_cleared = run.lead_review_checkpoint is not None
+    if checkpoint_cleared:
+        run.lead_review_checkpoint = None
+    for observation in run.observations:
+        if source is not None and observation.source != source:
+            continue
+        record = ledger.get_for_observation(observation)
+        if record is None:
+            record = ledger.upsert_observation(observation)
+        # Existing decisions and relationship states are immutable in this mode.
+        if record.status != LeadStatus.NEW:
+            continue
+        if observation.source not in trusted_sources:
+            ledger.block(
+                record.lead_key,
+                "trusted established source contract: observation source is not configured",
+            )
+            blocked += 1
+            continue
+        if observation.menu_state != "connectable":
+            ledger.block(
+                record.lead_key,
+                "trusted established source contract: observation is not connectable",
+            )
+            blocked += 1
+            continue
+        if run.has_candidate_event_for_observation(observation):
+            ledger.block(
+                record.lead_key,
+                "trusted established source contract: observation already has a candidate event",
+            )
+            blocked += 1
+            continue
+        blockers = _lead_send_blockers(record, observation)
+        if blockers:
+            ledger.block(
+                record.lead_key,
+                "trusted established source contract: " + "; ".join(blockers),
+            )
+            blocked += 1
+            continue
+        ledger.approve(
+            record.lead_key,
+            "trusted established source: new connectable captured from exact configured source",
+        )
+        approved += 1
+    suppressed = apply_lead_ledger_suppression(run, ledger)
+    if approved or blocked or suppressed or checkpoint_cleared:
+        store.save_lead_ledger(ledger)
+        store.save_run(run)
+        store.append_event(
+            run,
+            "trusted-established-source-auto-approval",
+            {
+                "source": source,
+                "approved": approved,
+                "blocked": blocked,
+                "suppressed": len(suppressed),
+                "review_checkpoint_cleared": checkpoint_cleared,
+            },
+        )
+    return (approved, blocked)
+
+
 def public_profile_url_blocked_observations(
     run: Run, ledger: LeadLedger, source: str | None = None
 ) -> list[CandidateObservation]:
@@ -1040,6 +1207,11 @@ def review_candidates(
     next_commands: list[str] | None = None,
 ) -> str:
     run = store.load_run()
+    if run.trusted_established_sources:
+        auto_approve_trusted_established_observations(store, source=source)
+        raise RuntimeError(
+            "trusted established sources mode does not create lead-review packets"
+        )
     ledger, synced = sync_lead_ledger_from_run(store, run)
     suppressed = apply_lead_ledger_suppression(run, ledger)
     if suppressed:
@@ -1344,6 +1516,7 @@ def network_run_session(
     confirm_out_dir: Path = DEFAULT_CONFIRM_SEND_OUT_DIR,
     review_out: Path = Path("/tmp/linkedin-network-session/lead-review-candidates.json"),
     source_names: Sequence[str] | None = None,
+    trusted_established_sources: bool = False,
     emit: Callable[[str], None] | None = None,
 ) -> str:
     messages: list[str] = []
@@ -1405,6 +1578,7 @@ def network_run_session(
                 per_source_target=per_source_target,
                 allow_fallback_sources=allow_fallback_sources,
                 source_names=source_names,
+                trusted_established_sources=trusted_established_sources,
             )
         )
         add("auditing sent-page count before run")
@@ -1437,6 +1611,15 @@ def network_run_session(
     add(require_saved_search_coverage(store, saved_searches_out))
     zero_capture_streaks: dict[str, int] = {}
     for _ in range(max_steps):
+        run_before_plan = store.load_run()
+        if run_before_plan.trusted_established_sources:
+            auto_approved, auto_blocked = auto_approve_trusted_established_observations(store)
+            if auto_approved or auto_blocked:
+                add(
+                    "trusted established sources: "
+                    f"auto-approved {auto_approved}, blocked {auto_blocked} "
+                    "new current-run observation(s)"
+                )
         plan = store.load_run().operator_plan_with_reservoir(store.load_reservoir())
         add(f"plan: {plan.action}")
         if plan.action == "review-required":
@@ -1494,6 +1677,8 @@ def network_run_session(
             imported = len(after_run.observations) - before_imported
             if imported > 0:
                 zero_capture_streaks[plan.source] = 0
+                if store.load_run().trusted_established_sources:
+                    continue
                 run_after_capture = store.load_run()
                 ledger_after_capture = store.load_lead_ledger()
                 if reviewable_observations(run_after_capture, ledger_after_capture, plan.source):
@@ -1553,9 +1738,13 @@ def network_run_session(
         if plan.action == "send-candidate":
             run_for_send = store.load_run()
             ledger_for_send = store.load_lead_ledger()
-            if next_approved_connectable_observation(
-                run_for_send, ledger_for_send
-            ) is None and reviewable_observations(run_for_send, ledger_for_send):
+            if (
+                not run_for_send.trusted_established_sources
+                and next_approved_connectable_observation(
+                    run_for_send, ledger_for_send
+                ) is None
+                and reviewable_observations(run_for_send, ledger_for_send)
+            ):
                 commands = lead_review_next_commands(
                     store,
                     review_out,
@@ -1606,7 +1795,7 @@ def network_run_session(
             )
             run = store.load_run()
             if run.state == RunState.NEEDS_REAUDIT:
-                raise RuntimeError(
+                raise NeedsReauditUnresolved(
                     "sent-page audit did not resolve provisional send confirmation; "
                     "inspect latest audit before continuing"
                 )

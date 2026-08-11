@@ -69,7 +69,11 @@ async function main() {
   await waitForPageLoad({ page: activePage, timeout: 10000 }).catch(() => null);
   const block = await blockedReason(activePage);
   if (block) throw new Error(`saved searches blocked: ${block}`);
-  const control = await savedSearchesControl(activePage);
+  let control = await savedSearchesControl(activePage);
+  if (!control) {
+    await activePage.waitForTimeout(1500);
+    control = await savedSearchesControl(activePage);
+  }
   if (control) {
     try {
       await control.click({ timeout: 10000 });
@@ -78,7 +82,6 @@ async function main() {
     }
     await activePage.waitForTimeout(1500);
   } else {
-    await activePage.waitForTimeout(1500);
     const existingSearchLinks = await activePage
       .locator("a[href*='savedSearchId=']")
       .count()

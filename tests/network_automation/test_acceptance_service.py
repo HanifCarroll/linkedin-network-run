@@ -268,7 +268,6 @@ def _export_active_enrichment_queue(tmp_path: Path) -> tuple[Store, Path, dict[s
     icp_path.write_text(
         "---\n"
         "status: active\n"
-        "profile_id: icp-v1\n"
         "---\n\n"
         "## Qualification Contract\n\n"
         "| Criterion ID | Qualification question | Evidence that can support a match |\n"
@@ -277,15 +276,21 @@ def _export_active_enrichment_queue(tmp_path: Path) -> tuple[Store, Path, dict[s
         encoding="utf-8",
     )
     offers_path.write_text(
-        "---\nstatus: active\nprofile_id: offers-v1\n---\n\n"
-        "## Active Catalog\n\n"
+        "---\nstatus: active\n---\n\n"
+        "## Offer Catalog\n\n"
         "| Offer ID | Offer | Status | Commercial shape |\n"
         "| --- | --- | --- | --- |\n"
         "| `business-systems-audit` | Business Systems Audit | active | Starts at $750. |\n",
         encoding="utf-8",
     )
     packet["commercial_context"]["icp_source_path"] = str(icp_path)
+    packet["commercial_context"]["icp_source_sha256"] = hashlib.sha256(
+        icp_path.read_bytes()
+    ).hexdigest()
     packet["commercial_context"]["offers_source_path"] = str(offers_path)
+    packet["commercial_context"]["offers_source_sha256"] = hashlib.sha256(
+        offers_path.read_bytes()
+    ).hexdigest()
     queue_path.write_text(json.dumps(packet), encoding="utf-8")
     return store, queue_path, packet
 
@@ -309,7 +314,7 @@ def _patch_commercial_source_paths(
 def _commercial_context_fixture(
     tmp_path: Path,
     *,
-    icp_frontmatter: str = "status: active\nprofile_id: icp-v1",
+    icp_frontmatter: str = "status: active",
     qualification_rows: str = (
         "| `criterion-one` | Is criterion one supported? | Source evidence. |"
     ),
@@ -330,8 +335,8 @@ def _commercial_context_fixture(
         encoding="utf-8",
     )
     offers_path.write_text(
-        "---\nstatus: active\nprofile_id: offers-v1\n---\n\n"
-        "## Active Catalog\n\n"
+        "---\nstatus: active\n---\n\n"
+        "## Offer Catalog\n\n"
         "| Offer ID | Offer | Status | Commercial shape |\n"
         "| --- | --- | --- | --- |\n"
         f"{offer_rows}\n",
@@ -339,7 +344,9 @@ def _commercial_context_fixture(
     )
     return CommercialContextReference(
         icp_source_path=str(icp_path),
+        icp_source_sha256=hashlib.sha256(icp_path.read_bytes()).hexdigest(),
         offers_source_path=str(offers_path),
+        offers_source_sha256=hashlib.sha256(offers_path.read_bytes()).hexdigest(),
     )
 
 
@@ -376,7 +383,7 @@ def test_validate_commercial_context_requires_exact_active_frontmatter(
         ),
         (
             "| `business-systems-build` | Business Systems Build | active | Scoped later. |",
-            "offer business-systems-audit is missing from the Offers Active Catalog",
+            "offer business-systems-audit is missing from the Offers Offer Catalog",
         ),
     ],
 )
@@ -396,10 +403,10 @@ def test_validate_commercial_context_requires_selected_offer_to_be_active(
 @pytest.mark.parametrize(
     ("icp_frontmatter", "message"),
     [
-        ("profile_id: icp-v1", "frontmatter is missing status"),
-        ("status: paused\nprofile_id: icp-v1", "profile is not active"),
-        ("status: active\nprofile_id: icp-v2", "profile id mismatch"),
-        ("status: active\nprofile_id:", "malformed profile_id"),
+        ("", "frontmatter is missing status"),
+        ("status: paused", "profile is not active"),
+        ("status:", "malformed status"),
+        ("status: active\nstatus: active", "duplicate status"),
     ],
 )
 def test_validate_commercial_context_rejects_bad_profile_frontmatter(
@@ -421,6 +428,18 @@ def test_validate_commercial_context_rejects_noncanonical_source_path(
     context = _commercial_context_fixture(tmp_path)
 
     with pytest.raises(ValueError, match="ICP source path mismatch"):
+        validate_commercial_context_sources(context)
+
+
+def test_validate_commercial_context_rejects_source_digest_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _commercial_context_fixture(tmp_path)
+    _patch_context_paths(monkeypatch, context)
+    context = context.model_copy(update={"icp_source_sha256": "0" * 64})
+
+    with pytest.raises(ValueError, match="ICP source digest mismatch"):
         validate_commercial_context_sources(context)
 
 
@@ -1107,8 +1126,9 @@ def test_launch_enrichment_workers_writes_source_bundle_and_command(
     assert "Your job is relationship enrichment" in prompt
     assert "not greeting eligibility or message drafting" in prompt
     assert "`enriched` requires `confidence` = `high`" in prompt
-    assert "ICP profile `icp-v1`" in prompt
-    assert "offers profile `offers-v1`" in prompt
+    assert "Read the ICP profile from" in prompt
+    assert "Read the offers profile from" in prompt
+    assert "SHA-256" in prompt
     assert "offer `business-systems-audit`" in prompt
     assert "Do not classify from keyword or regex scores" in prompt
     assert str(source_manifest) in prompt
@@ -1236,8 +1256,8 @@ def test_collect_enrichment_workers_writes_current_decision(
     decision = json.loads(out.read_text())["decisions"][0]
     assert decision["status"] == "enriched"
     assert decision["research_evidence"][0]["evidence_id"] == "E1"
-    assert decision["commercial_context"]["icp_profile_id"] == "icp-v1"
-    assert decision["commercial_context"]["offers_profile_id"] == "offers-v1"
+    assert len(decision["commercial_context"]["icp_source_sha256"]) == 64
+    assert len(decision["commercial_context"]["offers_source_sha256"]) == 64
     assert decision["commercial_context"]["offer_id"] == "business-systems-audit"
     assert decision["criterion_evidence"][0]["evidence_ids"] == ["E1"]
     assert decision["unknowns"] == ["Budget authority is not established."]

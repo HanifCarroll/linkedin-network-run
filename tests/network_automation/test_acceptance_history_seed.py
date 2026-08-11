@@ -23,7 +23,7 @@ def test_history_seed_uses_latest_durable_confirmation(tmp_path: Path) -> None:
 
     provisional = CandidateEvent(
         at=sent_at,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Confirmed Lead",
         profile_url=profile_url,
         status=CandidateStatus.PENDING_PROVISIONAL,
@@ -75,7 +75,7 @@ def test_history_seed_excludes_send_reverted_after_confirmation(tmp_path: Path) 
     sent_at = datetime(2026, 7, 14, 11, 37, tzinfo=UTC)
     provisional = CandidateEvent(
         at=sent_at,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Reverted Lead",
         profile_url="https://www.linkedin.com/sales/lead/reverted-lead",
         status=CandidateStatus.PENDING_PROVISIONAL,

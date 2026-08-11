@@ -71,6 +71,10 @@ class Store:
         return self.dir / "active.json"
 
     @property
+    def parked_runs_dir(self) -> Path:
+        return self.dir / "parked-network-runs"
+
+    @property
     def pending_active_path(self) -> Path:
         return self.dir / "pending-cleanup-active.json"
 
@@ -264,6 +268,29 @@ class Store:
     def save_run(self, run: Run) -> None:
         run.normalize()
         write_model_atomic(self.active_path, run)
+
+    def parked_run_path(self, run: Run) -> Path:
+        return self.parked_runs_dir / f"{run.id}.json"
+
+    def park_active_run(self, reason: str) -> Path:
+        run = self.load_run()
+        note = f"parked carryover: {reason}"
+        if note not in run.notes:
+            run.notes.append(note)
+        run.mark_updated()
+        self.save_run(run)
+        self.append_event(run, "park-carryover", {"reason": reason})
+        path = self.parked_run_path(run)
+        write_model_atomic(path, run)
+        return path
+
+    def load_parked_runs(self) -> list[Run]:
+        if not self.parked_runs_dir.exists():
+            return []
+        runs = [read_model(path, Run) for path in sorted(self.parked_runs_dir.glob("*.json"))]
+        for run in runs:
+            run.normalize()
+        return runs
 
     def load_pending(self) -> PendingCleanupRun:
         run = read_model(self.pending_active_path, PendingCleanupRun)

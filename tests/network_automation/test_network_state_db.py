@@ -46,7 +46,7 @@ def test_network_state_db_backfills_legacy_followup_sales_nav_url(tmp_path: Path
     record = AcceptanceFollowupRecord(
         key=f"source|Legacy Buyer|{sales_nav_url}",
         id="afu_legacy_buyer",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Legacy Buyer",
         profile_url=sales_nav_url,
         sales_nav_profile_url=None,

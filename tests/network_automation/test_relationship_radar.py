@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -67,7 +68,7 @@ def _commercial_context_fixture(
     icp_path = tmp_path / "ICP.md"
     offers_path = tmp_path / "OFFERS.md"
     icp_path.write_text(
-        "---\nstatus: active\nprofile_id: icp-v1\n---\n\n"
+        "---\nstatus: active\n---\n\n"
         "## Qualification Contract\n\n"
         "| Criterion ID | Qualification question | Evidence that can support a match |\n"
         "| --- | --- | --- |\n"
@@ -75,8 +76,8 @@ def _commercial_context_fixture(
         encoding="utf-8",
     )
     offers_path.write_text(
-        "---\nstatus: active\nprofile_id: offers-v1\n---\n\n"
-        "## Active Catalog\n\n"
+        "---\nstatus: active\n---\n\n"
+        "## Offer Catalog\n\n"
         "| Offer ID | Offer | Status | Commercial shape |\n"
         "| --- | --- | --- | --- |\n"
         "| `business-systems-audit` | Business Systems Audit | active | Starts at $750. |\n",
@@ -92,7 +93,9 @@ def _commercial_context_fixture(
     )
     return CommercialContextReference(
         icp_source_path=str(icp_path),
+        icp_source_sha256=hashlib.sha256(icp_path.read_bytes()).hexdigest(),
         offers_source_path=str(offers_path),
+        offers_source_sha256=hashlib.sha256(offers_path.read_bytes()).hexdigest(),
     )
 
 
@@ -104,7 +107,7 @@ def test_relationship_radar_is_cumulative_and_review_only(
     commercial_context = _commercial_context_fixture(tmp_path, monkeypatch)
     buyer = _candidate(
         name="Buyer One",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         accepted_at=generated_at,
     )
     recruiter = _candidate(
@@ -199,8 +202,12 @@ def test_relationship_radar_is_cumulative_and_review_only(
     )
     assert records["buyer-one"].proposed_message is None
     assert records["buyer-one"].commercial_context is not None
-    assert records["buyer-one"].commercial_context.icp_profile_id == "icp-v1"
-    assert records["buyer-one"].commercial_context.offers_profile_id == "offers-v1"
+    assert records["buyer-one"].commercial_context.icp_source_sha256 == (
+        commercial_context.icp_source_sha256
+    )
+    assert records["buyer-one"].commercial_context.offers_source_sha256 == (
+        commercial_context.offers_source_sha256
+    )
     assert records["buyer-one"].commercial_context.offer_id == "business-systems-audit"
     assert records["buyer-one"].unknowns == ["Budget authority is not established."]
     assert records["recruiter-one"].review_state == "paused"
@@ -240,7 +247,7 @@ def test_relationship_radar_is_cumulative_and_review_only(
                 AcceptanceFollowupRecord(
                     key="buyer-one",
                     id="followup-buyer",
-                    source="Consulting - Founder Owner Buyers",
+                    source="Consulting - Marketing Agency Owners",
                     name="Buyer One",
                     profile_url=buyer.profile_url,
                     accepted_at=generated_at,
@@ -281,7 +288,7 @@ def test_relationship_radar_is_cumulative_and_review_only(
 def test_watchlist_requires_a_source_backed_buyer_and_operating_reason() -> None:
     candidate = _candidate(
         name="Watch Buyer",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         accepted_at=datetime(2026, 7, 13, 12, 0, tzinfo=UTC),
     )
     decision = RelationshipEnrichmentDecision(
@@ -318,7 +325,7 @@ def test_watchlist_save_uses_only_the_exact_narrow_list(tmp_path: Path) -> None:
     followup = AcceptanceFollowupRecord(
         key="watch-buyer",
         id="followup-watch",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Watch Buyer",
         profile_url=sales_nav_url,
         sales_nav_profile_url=None,
@@ -408,7 +415,7 @@ def test_watchlist_save_skips_selection_ambiguity_and_continues(tmp_path: Path) 
         AcceptanceFollowupRecord(
             key=f"watch-buyer-{index}",
             id=f"followup-watch-{index}",
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name=name,
             profile_url=f"https://www.linkedin.com/in/watch-buyer-{index}",
             sales_nav_profile_url=f"https://www.linkedin.com/sales/lead/watch-buyer-{index}",
@@ -532,7 +539,7 @@ def test_update_relationship_radar_rejects_handwritten_artifact_bypassing_contra
     commercial_context = _commercial_context_fixture(tmp_path, monkeypatch)
     candidate = _candidate(
         name="Bypass Buyer",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         accepted_at=generated_at,
     )
     artifact = RelationshipEnrichmentArtifact(
@@ -573,7 +580,7 @@ def test_update_relationship_radar_rejects_incomplete_handwritten_enriched_decis
     commercial_context = _commercial_context_fixture(tmp_path, monkeypatch)
     candidate = _candidate(
         name="Incomplete Buyer",
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         accepted_at=generated_at,
     )
     artifact = RelationshipEnrichmentArtifact(

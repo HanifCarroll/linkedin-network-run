@@ -118,17 +118,17 @@ class FakeLiveBrowserClient:
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     },
                     {
                         "savedSearchId": "def",
-                        "name": "Consulting - Operations Leader Buyers",
+                        "name": "Consulting - Fractional COOs",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
                     },
                     {
                         "savedSearchId": "ghi",
-                        "name": "Consulting - Trusted Referral Partners",
+                        "name": "Unrelated Saved Search",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     }
                 ],
@@ -296,17 +296,17 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     },
                     {
                         "savedSearchId": "def",
-                        "name": "Consulting - Operations Leader Buyers",
+                        "name": "Consulting - Fractional COOs",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
                     },
                     {
                         "savedSearchId": "ghi",
-                        "name": "Consulting - Trusted Referral Partners",
+                        "name": "Unrelated Saved Search",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=ghi",
                     },
                 ],
@@ -330,7 +330,7 @@ class ZeroThenNextSourceBrowserClient(FakeLiveBrowserClient):
             f"capture:{source}:pages={pages}:limit={limit}:only={only_connectable}:url={url}"
         )
         _ = stop_after_connectable, row_scroll_delay_ms
-        if source == "Consulting - Founder Owner Buyers":
+        if source == "Consulting - Marketing Agency Owners":
             artifact = SalesNavCapture.model_validate(
                 {
                     "capturedAt": "2026-06-24T12:00:00Z",

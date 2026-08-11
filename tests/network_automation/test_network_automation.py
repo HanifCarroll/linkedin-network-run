@@ -20,15 +20,19 @@ from apps.network_automation.browser_supervision import (
 )
 from apps.network_automation.cli import main as network_main
 from apps.network_automation.models import (
+    ACCEPTED_LEAD_LIST_BY_SOURCE,
+    APPROVED_RELATIONSHIP_ROLE_BY_SOURCE,
     DEFAULT_SOURCE_MIX,
     BrowserIncidentStatus,
     CandidateEvent,
     CandidateObservation,
     CandidateStatus,
+    LeadReviewCheckpoint,
     LeadStatus,
     PendingCandidateObservation,
     PendingCapture,
     PendingCleanupState,
+    RelationshipRole,
     Run,
     RunState,
     SalesNavAudit,
@@ -53,6 +57,7 @@ from apps.network_automation.old_state import inspect_old_state
 from apps.network_automation.reports import render_report
 from apps.network_automation.service import (
     apply_lead_review_decisions,
+    auto_approve_trusted_established_observations,
     capture_saved_searches,
     capture_source,
     confirm_provisional_send,
@@ -61,6 +66,7 @@ from apps.network_automation.service import (
     import_capture_path,
     network_daily_session_action,
     network_run_daily_session,
+    network_run_session,
     network_sends_summary,
     pending_cleanup_finish,
     pending_cleanup_import_audit,
@@ -132,7 +138,87 @@ def test_daily_session_action_resumes_approved_carryover(tmp_path: Path) -> None
     )
 
 
-def test_daily_session_action_rejects_carryover_source_mismatch(tmp_path: Path) -> None:
+def test_daily_session_action_parks_needs_reaudit_carryover(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    run = store.load_run()
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+
+    assert (
+        network_daily_session_action(store, target=30, max_real_sends=30)
+        == "park-carryover-start-today"
+    )
+
+
+def test_daily_session_action_parks_safe_source_exhausted_legacy_carryover(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        per_source_target=10,
+        allow_fallback_sources=False,
+        source_names=[
+            "Consulting - Founder Owner Buyers",
+            "Consulting - Operations Leader Buyers",
+            "Consulting - Trusted Referral Partners",
+        ],
+    )
+    record_candidate(
+        store,
+        source="Consulting - Trusted Referral Partners",
+        name="Legacy Provisional",
+        profile_url="https://www.linkedin.com/in/legacy-provisional",
+        status=CandidateStatus.PENDING_PROVISIONAL,
+        note="source exhausted before audit",
+    )
+    run = store.load_run()
+    run.state = RunState.SENDING
+    for source in run.sources:
+        source.exhausted = True
+    store.save_run(run)
+
+    assert (
+        network_daily_session_action(store, target=30, max_real_sends=30)
+        == "park-source-exhausted-carryover-start-today"
+    )
+
+
+def test_daily_session_action_does_not_park_source_exhausted_current_day(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today(),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    run = store.load_run()
+    run.state = RunState.SENDING
+    for source in run.sources:
+        source.exhausted = True
+    store.save_run(run)
+
+    assert network_daily_session_action(store, target=30, max_real_sends=30) == "resume-today"
+    assert store.load_parked_runs() == []
+
+
+def test_daily_session_action_preserves_legacy_carryover_source_contract(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(
         store,
@@ -144,8 +230,10 @@ def test_daily_session_action_rejects_carryover_source_mismatch(tmp_path: Path) 
         source_names=["Unapproved Source", "Other Source", "Third Source"],
     )
 
-    with pytest.raises(RuntimeError, match="daily network run contract mismatch"):
+    assert (
         network_daily_session_action(store, target=30, max_real_sends=30)
+        == "resume-carryover"
+    )
 
 
 def test_daily_session_action_accepts_source_shortfall_carryover(tmp_path: Path) -> None:
@@ -165,6 +253,27 @@ def test_daily_session_action_accepts_source_shortfall_carryover(tmp_path: Path)
     )
 
 
+def test_daily_session_action_keeps_today_needs_reaudit_active(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today(),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    run = store.load_run()
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+
+    assert (
+        network_daily_session_action(store, target=30, max_real_sends=30)
+        == "resume-today"
+    )
+    assert store.load_parked_runs() == []
+
+
 def test_daily_session_action_accepts_complete_today_ledger_with_source_spillover(
     tmp_path: Path,
 ) -> None:
@@ -178,7 +287,7 @@ def test_daily_session_action_accepts_complete_today_ledger_with_source_spillove
         allow_fallback_sources=False,
     )
     source_counts = {
-        "Consulting - Founder Owner Buyers": 6,
+        "Consulting - Marketing Agency Owners": 6,
         "Consulting - Operations Leader Buyers": 19,
         "Consulting - Trusted Referral Partners": 5,
     }
@@ -281,6 +390,250 @@ def test_daily_session_resolves_carryover_then_starts_today(
     assert _source_targets(store.load_run()) == dict(DEFAULT_SOURCE_MIX)
 
 
+def test_daily_session_parks_needs_reaudit_carryover_then_starts_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    record_candidate(
+        store,
+        source="Consulting - Marketing Agency Owners",
+        name="Ari Lewis",
+        profile_url="https://www.linkedin.com/in/ari-lewis",
+        status=CandidateStatus.PENDING_PROVISIONAL,
+        note="sent-list confirmation unresolved",
+    )
+    carryover = store.load_run()
+    carryover.state = RunState.NEEDS_REAUDIT
+    store.save_run(carryover)
+    calls: list[tuple[bool, bool, bool]] = []
+
+    def fake_run_session(*args: object, **kwargs: object) -> str:
+        _ = args
+        resume = bool(kwargs["resume"])
+        force = bool(kwargs["force"])
+        refresh_saved_searches = bool(kwargs["refresh_saved_searches"])
+        calls.append((resume, force, refresh_saved_searches))
+        start_run(
+            store,
+            target=30,
+            run_date=today(),
+            force=True,
+            max_real_sends=30,
+            allow_fallback_sources=False,
+        )
+        return "today session started"
+
+    monkeypatch.setattr(network_service, "network_run_session", fake_run_session)
+
+    output = network_run_daily_session(
+        store,
+        FixtureBrowserClient(),
+        target=30,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+        saved_searches_url="https://www.linkedin.com/sales/search/people",
+        saved_searches_out=tmp_path / "saved-searches.json",
+        refresh_saved_searches=True,
+        audit_attempts=3,
+        audit_delay_ms=0,
+        allow_send=True,
+        max_steps=100,
+        finish=True,
+    )
+
+    assert calls == [(False, True, True)]
+    assert store.load_run().date == today()
+    parked = store.load_parked_runs()
+    assert len(parked) == 1
+    assert parked[0].id == carryover.id
+    assert parked[0].state == RunState.NEEDS_REAUDIT
+    assert parked[0].provisional_count() == 1
+    assert parked[0].candidates[-1].name == "Ari Lewis"
+    assert str(store.parked_run_path(carryover)) in output
+
+
+def test_daily_session_parks_source_exhausted_legacy_carryover_then_starts_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        per_source_target=10,
+        allow_fallback_sources=False,
+        source_names=[
+            "Consulting - Founder Owner Buyers",
+            "Consulting - Operations Leader Buyers",
+            "Consulting - Trusted Referral Partners",
+        ],
+    )
+    record_candidate(
+        store,
+        source="Consulting - Trusted Referral Partners",
+        name="Legacy Provisional",
+        profile_url="https://www.linkedin.com/in/legacy-provisional",
+        status=CandidateStatus.PENDING_PROVISIONAL,
+        note="source exhausted before audit",
+    )
+    carryover = store.load_run()
+    carryover.state = RunState.SENDING
+    for source in carryover.sources:
+        source.exhausted = True
+    store.save_run(carryover)
+    calls: list[tuple[bool, bool, bool]] = []
+
+    def fake_run_session(*args: object, **kwargs: object) -> str:
+        _ = args
+        calls.append(
+            (
+                bool(kwargs["resume"]),
+                bool(kwargs["force"]),
+                bool(kwargs["refresh_saved_searches"]),
+            )
+        )
+        start_run(
+            store,
+            target=30,
+            run_date=today(),
+            force=True,
+            max_real_sends=30,
+            allow_fallback_sources=False,
+        )
+        return "today session started"
+
+    monkeypatch.setattr(network_service, "network_run_session", fake_run_session)
+
+    output = network_run_daily_session(
+        store,
+        FixtureBrowserClient(),
+        target=30,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+        saved_searches_url="https://www.linkedin.com/sales/search/people",
+        saved_searches_out=tmp_path / "saved-searches.json",
+        refresh_saved_searches=True,
+        audit_attempts=3,
+        audit_delay_ms=0,
+        allow_send=True,
+        max_steps=100,
+        finish=True,
+    )
+
+    assert calls == [(False, True, True)]
+    parked = store.load_parked_runs()
+    assert len(parked) == 1
+    assert parked[0].id == carryover.id
+    assert parked[0].state == RunState.SENDING
+    assert parked[0].provisional_count() == 1
+    assert "exhausted every source" in output
+    assert store.load_run().date == today()
+
+
+def test_parked_carryovers_command_reports_preserved_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    run = store.load_run()
+    run.state = RunState.NEEDS_REAUDIT
+    store.save_run(run)
+    parked_path = store.park_active_run("test unresolved carryover")
+
+    assert (
+        network_main(
+            [
+                "--state-dir",
+                str(tmp_path),
+                "parked-carryovers",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload) == 1
+    assert payload[0]["id"] == str(run.id)
+    assert payload[0]["state"] == RunState.NEEDS_REAUDIT.value
+    assert parked_path.exists()
+
+
+def test_daily_session_parks_carryover_that_becomes_needs_reaudit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        run_date=today() - timedelta(days=1),
+        force=True,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+    )
+    calls: list[tuple[bool, bool, bool]] = []
+
+    def fake_run_session(*args: object, **kwargs: object) -> str:
+        _ = args
+        resume = bool(kwargs["resume"])
+        force = bool(kwargs["force"])
+        refresh_saved_searches = bool(kwargs["refresh_saved_searches"])
+        calls.append((resume, force, refresh_saved_searches))
+        if resume:
+            run = store.load_run()
+            run.state = RunState.NEEDS_REAUDIT
+            store.save_run(run)
+            raise network_service.NeedsReauditUnresolved("carryover audit exhausted")
+        start_run(
+            store,
+            target=30,
+            run_date=today(),
+            force=True,
+            max_real_sends=30,
+            allow_fallback_sources=False,
+        )
+        return "today session started"
+
+    monkeypatch.setattr(network_service, "network_run_session", fake_run_session)
+
+    output = network_run_daily_session(
+        store,
+        FixtureBrowserClient(),
+        target=30,
+        max_real_sends=30,
+        allow_fallback_sources=False,
+        saved_searches_url="https://www.linkedin.com/sales/search/people",
+        saved_searches_out=tmp_path / "saved-searches.json",
+        refresh_saved_searches=True,
+        audit_attempts=3,
+        audit_delay_ms=0,
+        allow_send=True,
+        max_steps=100,
+        finish=True,
+    )
+
+    assert calls == [(True, False, False), (False, True, True)]
+    assert store.load_run().date == today()
+    assert len(store.load_parked_runs()) == 1
+    assert "carryover audit exhausted" in output
+
+
 def _source_targets(run: Run) -> dict[str, int]:
     return {
         source.name: source.target
@@ -323,12 +676,248 @@ def _approve_all_observed_leads(store: Store, reason: str = "test approved") -> 
 
 def test_default_source_mix_matches_current_contract() -> None:
     sources = default_sources(30)
-    assert [(source.name, source.target) for source in sources[:3]] == [
-        ("Consulting - Founder Owner Buyers", 15),
-        ("Consulting - Operations Leader Buyers", 10),
-        ("Consulting - Trusted Referral Partners", 5),
+    assert [(source.name, source.target) for source in sources] == [
+        ("Consulting - Marketing Agency Owners", 15),
+        ("Consulting - Fractional COOs", 15),
     ]
-    assert len(sources) == 3
+    assert len(sources) == 2
+
+
+def test_trusted_established_sources_auto_approve_only_new_connectable_rows(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    source = "Consulting - Marketing Agency Owners"
+    start_run(
+        store,
+        target=1,
+        run_date=date(2026, 8, 1),
+        force=True,
+        trusted_established_sources=True,
+    )
+    run = store.load_run()
+    new_observation = CandidateObservation(
+        source=source,
+        index=1,
+        name="New Agency Owner",
+        profile_url="https://www.linkedin.com/sales/lead/new-owner",
+        public_profile_url="https://www.linkedin.com/in/new-agency-owner",
+        search_url="https://www.linkedin.com/sales/search/people?savedSearchId=agency",
+        menu_state="connectable",
+    )
+    skipped_observation = CandidateObservation(
+        source=source,
+        index=2,
+        name="Historical Skip",
+        profile_url="https://www.linkedin.com/sales/lead/historical-skip",
+        public_profile_url="https://www.linkedin.com/in/historical-skip",
+        search_url="https://www.linkedin.com/sales/search/people?savedSearchId=agency",
+        menu_state="connectable",
+    )
+    run.observations.extend([new_observation, skipped_observation])
+    store.save_run(run)
+    ledger = store.load_lead_ledger()
+    skipped_record = ledger.upsert_observation(skipped_observation)
+    ledger.skip(skipped_record.lead_key, "historical decision")
+    store.save_lead_ledger(ledger)
+
+    assert auto_approve_trusted_established_observations(store, source=source) == (1, 0)
+
+    ledger = store.load_lead_ledger()
+    assert ledger.require(lead_key_for_observation(new_observation)).status == LeadStatus.APPROVED
+    assert ledger.require(skipped_record.lead_key).status == LeadStatus.SKIPPED
+
+
+def test_trusted_established_sources_block_new_unusable_rows_without_review_packet(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    source = "Consulting - Marketing Agency Owners"
+    start_run(
+        store,
+        target=1,
+        run_date=date(2026, 8, 1),
+        force=True,
+        trusted_established_sources=True,
+    )
+    run = store.load_run()
+    observation = CandidateObservation(
+        source=source,
+        index=1,
+        name="Missing Send Identity",
+        profile_url="https://www.linkedin.com/sales/lead/missing-identity",
+        menu_state="connectable",
+    )
+    run.observations.append(observation)
+    store.save_run(run)
+
+    assert auto_approve_trusted_established_observations(store, source=source) == (0, 1)
+
+    ledger = store.load_lead_ledger()
+    assert ledger.require(lead_key_for_observation(observation)).status == LeadStatus.BLOCKED
+    run = store.load_run()
+    assert run.has_candidate_event_for_observation(observation)
+    assert run.candidates[-1].status == CandidateStatus.SKIPPED
+    assert "trusted established source contract" in (run.candidates[-1].note or "")
+
+
+def test_trusted_established_sources_reconcile_all_new_rows_and_clear_stale_packet(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=1,
+        run_date=date(2026, 8, 1),
+        force=True,
+        trusted_established_sources=True,
+    )
+    run = store.load_run()
+    approved = CandidateObservation(
+        source="Consulting - Marketing Agency Owners",
+        index=1,
+        name="Approved New Row",
+        profile_url="https://www.linkedin.com/sales/lead/approved-new-row",
+        public_profile_url="https://www.linkedin.com/in/approved-new-row",
+        search_url="https://www.linkedin.com/sales/search/people?savedSearchId=agency",
+        menu_state="connectable",
+    )
+    unconfigured = CandidateObservation(
+        source="Unexpected Source",
+        index=2,
+        name="Unconfigured New Row",
+        profile_url="https://www.linkedin.com/sales/lead/unconfigured-new-row",
+        public_profile_url="https://www.linkedin.com/in/unconfigured-new-row",
+        search_url="https://www.linkedin.com/sales/search/people?savedSearchId=unexpected",
+        menu_state="connectable",
+    )
+    nonconnectable = CandidateObservation(
+        source="Consulting - Fractional COOs",
+        index=3,
+        name="Nonconnectable New Row",
+        profile_url="https://www.linkedin.com/sales/lead/nonconnectable-new-row",
+        menu_state="already_pending",
+    )
+    run.observations.extend([approved, unconfigured, nonconnectable])
+    run.lead_review_checkpoint = LeadReviewCheckpoint(
+        packet_id=uuid.uuid4(),
+        packet_path=str(tmp_path / "stale-review.json"),
+        markdown_path=str(tmp_path / "stale-review.md"),
+        decisions_path=str(tmp_path / "stale-review-decisions.json"),
+    )
+    store.save_run(run)
+
+    assert auto_approve_trusted_established_observations(store) == (1, 2)
+
+    ledger = store.load_lead_ledger()
+    assert ledger.require(lead_key_for_observation(approved)).status == LeadStatus.APPROVED
+    assert ledger.require(lead_key_for_observation(unconfigured)).status == LeadStatus.BLOCKED
+    assert ledger.require(lead_key_for_observation(nonconnectable)).status == LeadStatus.BLOCKED
+    assert store.load_run().lead_review_checkpoint is None
+    assert store.load_run().has_candidate_event_for_observation(unconfigured)
+
+
+def test_trusted_established_sources_resume_never_waits_for_stale_review_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=1,
+        run_date=date(2026, 8, 1),
+        force=True,
+        max_real_sends=1,
+        trusted_established_sources=True,
+    )
+    run = store.load_run()
+    observation = CandidateObservation(
+        source="Consulting - Marketing Agency Owners",
+        index=1,
+        name="Resumed Trusted Row",
+        profile_url="https://www.linkedin.com/sales/lead/resumed-trusted-row",
+        public_profile_url="https://www.linkedin.com/in/resumed-trusted-row",
+        search_url="https://www.linkedin.com/sales/search/people?savedSearchId=agency",
+        menu_state="connectable",
+    )
+    run.observations.append(observation)
+    run.start_audit = 100
+    run.latest_audit = 100
+    run.lead_review_checkpoint = LeadReviewCheckpoint(
+        packet_id=uuid.uuid4(),
+        packet_path=str(tmp_path / "stale-review.json"),
+        markdown_path=str(tmp_path / "stale-review.md"),
+        decisions_path=str(tmp_path / "stale-review-decisions.json"),
+    )
+    store.save_run(run)
+    saved_searches = tmp_path / "saved-searches.json"
+    saved_searches.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(network_service, "seed_run_source_progress", lambda *_args: "seeded")
+    monkeypatch.setattr(network_service, "require_saved_search_coverage", lambda *_args: "covered")
+
+    output = network_run_session(
+        store,
+        FixtureBrowserClient(),
+        target=1,
+        max_real_sends=1,
+        force=False,
+        resume=True,
+        per_source_target=None,
+        allow_fallback_sources=False,
+        saved_searches_url="https://www.linkedin.com/sales/search/people",
+        saved_searches_out=saved_searches,
+        refresh_saved_searches=False,
+        audit_attempts=1,
+        audit_delay_ms=0,
+        allow_send=False,
+        max_steps=1,
+        finish=False,
+    )
+
+    assert "plan: send-candidate" in output
+    assert "lead review checkpoint" not in output
+    assert store.load_run().lead_review_checkpoint is None
+    assert (
+        store.load_lead_ledger().require(lead_key_for_observation(observation)).status
+        == LeadStatus.APPROVED
+    )
+
+
+def test_new_sources_have_acceptance_and_relationship_mappings() -> None:
+    assert (
+        APPROVED_RELATIONSHIP_ROLE_BY_SOURCE["Consulting - Marketing Agency Owners"]
+        == RelationshipRole.BUYER
+    )
+    assert (
+        APPROVED_RELATIONSHIP_ROLE_BY_SOURCE["Consulting - Fractional COOs"]
+        == RelationshipRole.REFERRAL_PARTNER
+    )
+    assert (
+        ACCEPTED_LEAD_LIST_BY_SOURCE["Consulting - Marketing Agency Owners"]
+        == "Accepted - Founder Owner Buyers"
+    )
+    assert (
+        ACCEPTED_LEAD_LIST_BY_SOURCE["Consulting - Fractional COOs"]
+        == "Accepted - Trusted Referral Partners"
+    )
+
+
+def test_daily_session_action_rejects_same_day_trusted_mode_mismatch(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        max_real_sends=30,
+        run_date=today(),
+        force=True,
+        allow_fallback_sources=False,
+        trusted_established_sources=False,
+    )
+
+    with pytest.raises(RuntimeError, match="trusted_established_sources=False, expected True"):
+        network_daily_session_action(
+            store,
+            target=30,
+            max_real_sends=30,
+            trusted_established_sources=True,
+        )
 
 
 def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallback(
@@ -345,26 +934,24 @@ def test_per_source_target_sets_exact_primary_quotas_without_carryover_or_fallba
     )
 
     run = store.load_run()
-    assert "target 6" in output
-    assert target_for_per_source_target(2) == 6
-    assert [source.target for source in sources_for_per_source_target(2)[:3]] == [2, 2, 2]
-    assert run.target == 6
-    assert run.max_real_sends == 6
+    assert "target 4" in output
+    assert target_for_per_source_target(2) == 4
+    assert [source.target for source in sources_for_per_source_target(2)] == [2, 2]
+    assert run.target == 4
+    assert run.max_real_sends == 4
     assert run.carry_over_shortfall is False
     assert run.allow_fallback_sources is False
-    assert [(source.name, source.target) for source in run.sources[:3]] == [
-        ("Consulting - Founder Owner Buyers", 2),
-        ("Consulting - Operations Leader Buyers", 2),
-        ("Consulting - Trusted Referral Partners", 2),
+    assert [(source.name, source.target) for source in run.sources] == [
+        ("Consulting - Marketing Agency Owners", 2),
+        ("Consulting - Fractional COOs", 2),
     ]
 
     run.sources[0].exhausted = True
     run.sources[1].exhausted = True
-    run.sources[2].exhausted = True
     store.save_run(run)
 
     exhausted = store.load_run()
-    assert exhausted.source_quota("Consulting - Trusted Referral Partners") == 2
+    assert exhausted.source_quota("Consulting - Fractional COOs") == 2
     assert exhausted.next_source() is None
 
 
@@ -381,40 +968,31 @@ def test_daily_mix_transfers_exhausted_source_shortfall_and_reuses_reverted_capa
         allow_fallback_sources=False,
     )
     run = store.load_run()
-    founder, operations, referral = [source.name for source in run.sources]
+    agency, fractional_coo = [source.name for source in run.sources]
     run.sources[0].exhausted = True
     for index in range(6):
         run.candidates.append(
             CandidateEvent(
-                source=founder,
-                name=f"Founder {index}",
-                profile_url=f"https://www.linkedin.com/sales/lead/founder-{index}",
+                source=agency,
+                name=f"Agency {index}",
+                profile_url=f"https://www.linkedin.com/sales/lead/agency-{index}",
                 status=CandidateStatus.PENDING_PROVISIONAL,
             )
         )
-    for index in range(16):
+    for index in range(21):
         run.candidates.append(
             CandidateEvent(
-                source=operations,
-                name=f"Operations {index}",
-                profile_url=f"https://www.linkedin.com/sales/lead/operations-{index}",
-                status=CandidateStatus.PENDING_PROVISIONAL,
-            )
-        )
-    for index in range(5):
-        run.candidates.append(
-            CandidateEvent(
-                source=referral,
-                name=f"Referral {index}",
-                profile_url=f"https://www.linkedin.com/sales/lead/referral-{index}",
+                source=fractional_coo,
+                name=f"Fractional COO {index}",
+                profile_url=f"https://www.linkedin.com/sales/lead/fractional-coo-{index}",
                 status=CandidateStatus.PENDING_PROVISIONAL,
             )
         )
     run.candidates.append(
         CandidateEvent(
-            source=operations,
-            name="Reverted operations lead",
-            profile_url="https://www.linkedin.com/sales/lead/reverted-operations",
+            source=fractional_coo,
+            name="Reverted fractional COO lead",
+            profile_url="https://www.linkedin.com/sales/lead/reverted-fractional-coo",
             status=CandidateStatus.REVERTED_CONNECT,
         )
     )
@@ -425,12 +1003,64 @@ def test_daily_mix_transfers_exhausted_source_shortfall_and_reuses_reverted_capa
     assert resumed.real_send_attempt_count() == 28
     assert resumed.active_send_count() == 27
     assert resumed.real_send_capacity_remaining() == 3
-    assert resumed.source_quota(operations) == 19
-    assert resumed.source_active_send_count(operations) == 16
+    assert resumed.source_quota(fractional_coo) == 24
+    assert resumed.source_active_send_count(fractional_coo) == 21
     next_source = resumed.next_source()
     assert next_source is not None
-    assert next_source.name == operations
+    assert next_source.name == fractional_coo
     assert next_source.remaining_for_source == 3
+
+
+def test_daily_mix_transfers_later_source_shortfall_back_to_earlier_source(
+    tmp_path: Path,
+) -> None:
+    store = Store(tmp_path)
+    start_run(
+        store,
+        target=30,
+        max_real_sends=30,
+        run_date=date(2026, 8, 1),
+        force=True,
+        allow_fallback_sources=False,
+    )
+    run = store.load_run()
+    agency, fractional_coo = [source.name for source in run.sources]
+    for index in range(15):
+        run.candidates.append(
+            CandidateEvent(
+                source=agency,
+                name=f"Agency {index}",
+                profile_url=f"https://www.linkedin.com/sales/lead/agency-{index}",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+            )
+        )
+    for index in range(2):
+        run.candidates.append(
+            CandidateEvent(
+                source=fractional_coo,
+                name=f"Fractional COO {index}",
+                profile_url=f"https://www.linkedin.com/sales/lead/fractional-coo-{index}",
+                status=CandidateStatus.PENDING_PROVISIONAL,
+            )
+        )
+    store.save_run(run)
+
+    reserved = store.load_run()
+    next_source = reserved.next_source()
+    assert next_source is not None
+    assert next_source.name == fractional_coo
+    assert next_source.remaining_for_source == 13
+    assert reserved.source_quota(agency) == 15
+
+    reserved.sources[1].exhausted = True
+    store.save_run(reserved)
+
+    transferred = store.load_run()
+    assert transferred.source_quota(agency) == 28
+    next_source = transferred.next_source()
+    assert next_source is not None
+    assert next_source.name == agency
+    assert next_source.remaining_for_source == 13
 
 
 def test_per_source_target_can_use_explicit_source_names(tmp_path: Path) -> None:
@@ -472,7 +1102,7 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=def",
                     },
                     {
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     },
                     {
@@ -488,7 +1118,7 @@ def test_network_source_url_uses_saved_searches_for_network_sources(tmp_path: Pa
     contract_url = resolve_network_source_url(
         saved_searches, "Consulting - Operations Leader Buyers"
     )
-    agency_url = resolve_network_source_url(saved_searches, "Consulting - Founder Owner Buyers")
+    agency_url = resolve_network_source_url(saved_searches, "Consulting - Marketing Agency Owners")
     advisor_url = resolve_network_source_url(
         saved_searches, "Consulting - Trusted Referral Partners"
     )
@@ -508,7 +1138,7 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
         run_date=date(2026, 7, 3),
         force=True,
         allow_fallback_sources=False,
-        source_names=["Consulting - Founder Owner Buyers"],
+        source_names=["Consulting - Marketing Agency Owners"],
     )
     run = store.load_run()
     run.sources[0].exhausted = True
@@ -516,8 +1146,8 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
     store.save_source_progress(
         SourceScanProgressLedger(
             sources={
-                "Consulting - Founder Owner Buyers": SourceScanProgress(
-                    source="Consulting - Founder Owner Buyers",
+                "Consulting - Marketing Agency Owners": SourceScanProgress(
+                    source="Consulting - Marketing Agency Owners",
                     saved_search_id="abc",
                     saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     next_url="https://www.linkedin.com/sales/search/people?page=2&savedSearchId=abc",
@@ -534,7 +1164,7 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                         "freshUrl": (
                             "https://www.linkedin.com/sales/search/people?"
@@ -551,8 +1181,8 @@ def test_seed_source_progress_resets_exhausted_source_with_fresh_results(
     output = seed_run_source_progress(store, saved_searches)
 
     run = store.load_run()
-    progress = store.load_source_progress().sources["Consulting - Founder Owner Buyers"]
-    cursor = run.capture_cursors["Consulting - Founder Owner Buyers"]
+    progress = store.load_source_progress().sources["Consulting - Marketing Agency Owners"]
+    cursor = run.capture_cursors["Consulting - Marketing Agency Owners"]
     assert output == "source progress seeded; resumed=1; ended=0"
     assert run.sources[0].exhausted is False
     assert progress.end_of_results is False
@@ -774,7 +1404,7 @@ def test_seed_source_progress_keeps_current_run_end_closed_without_fresh_results
 def test_seed_source_progress_reopens_nonterminal_exhausted_source(
     tmp_path: Path,
 ) -> None:
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(
         store,
@@ -849,7 +1479,7 @@ class _TransientSavedSearchBrowser(FakeLiveBrowserClient):
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     }
                 ],
@@ -1040,7 +1670,7 @@ def test_capture_saved_searches_does_not_retry_login_blocker(tmp_path: Path) -> 
 def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=22, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
 
     message = import_capture_path(
         store, FIXTURES / "capture_consulting.json", only_connectable=True
@@ -1060,7 +1690,7 @@ def test_capture_import_dedupes_and_derives_salesnav_profile_url(tmp_path: Path)
     plan = run.operator_plan()
     assert plan.action == "send-candidate"
     assert plan.name == "Duplicate Lead"
-    resume_url = run.capture_cursors["Consulting - Founder Owner Buyers"].resume_url
+    resume_url = run.capture_cursors["Consulting - Marketing Agency Owners"].resume_url
     assert resume_url is not None
     assert resume_url.endswith("page=2")
 
@@ -1070,12 +1700,12 @@ def test_capture_import_preserves_public_profile_url_for_normal_profile_fallback
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     capture_path = tmp_path / "capture-public-profile.json"
     capture_path.write_text(
         json.dumps(
             {
-                "source": "Consulting - Founder Owner Buyers",
+                "source": "Consulting - Marketing Agency Owners",
                 "rows": [
                     {
                         "index": 1,
@@ -1105,7 +1735,7 @@ def test_capture_import_preserves_public_profile_url_for_normal_profile_fallback
 def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=2, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     run = store.load_run()
     run.observations[0].public_profile_url = "https://www.linkedin.com/in/duplicate-lead"
@@ -1116,7 +1746,11 @@ def test_lead_review_packet_and_decisions_gate_connection_sends(tmp_path: Path) 
     store.save_run(run)
 
     review_path = tmp_path / "review.json"
-    output = review_candidates(store, source="Consulting - Founder Owner Buyers", out=review_path)
+    output = review_candidates(
+        store,
+        source="Consulting - Marketing Agency Owners",
+        out=review_path,
+    )
 
     packet = json.loads(review_path.read_text())
     assert "lead review packet: 2 candidate(s)" in output
@@ -1202,13 +1836,13 @@ def test_lead_review_rejects_stale_and_incomplete_decision_artifacts(
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=2, run_date=date(2026, 7, 10), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     review_path = tmp_path / "review.json"
 
-    review_candidates(store, source="Consulting - Founder Owner Buyers", out=review_path)
+    review_candidates(store, source="Consulting - Marketing Agency Owners", out=review_path)
     stale_packet = json.loads(review_path.read_text())
-    review_candidates(store, source="Consulting - Founder Owner Buyers", out=review_path)
+    review_candidates(store, source="Consulting - Marketing Agency Owners", out=review_path)
     current_packet = json.loads(review_path.read_text())
 
     assert stale_packet["packet_id"] != current_packet["packet_id"]
@@ -1264,7 +1898,7 @@ def test_lead_review_rejects_stale_and_incomplete_decision_artifacts(
 def test_failed_send_can_top_up_through_second_review_packet_and_reach_done(
     tmp_path: Path,
 ) -> None:
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(
         store,
@@ -1384,7 +2018,7 @@ def test_manual_durable_record_writes_send_ledger_summary(tmp_path: Path) -> Non
 
     record_candidate(
         store,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Manual Lead",
         profile_url="https://www.linkedin.com/in/manual-lead",
         status=CandidateStatus.PENDING,
@@ -1395,7 +2029,7 @@ def test_manual_durable_record_writes_send_ledger_summary(tmp_path: Path) -> Non
     summary = network_sends_summary(store, date_arg=event_date, timezone_name="UTC")
 
     assert summary.durable_sent_count == 1
-    assert summary.by_source == {"Consulting - Founder Owner Buyers": 1}
+    assert summary.by_source == {"Consulting - Marketing Agency Owners": 1}
     assert summary.entries[0].name == "Manual Lead"
     assert summary.entries[0].durable is True
 
@@ -1408,7 +2042,7 @@ def test_run_send_ledger_summary_includes_confirmations_after_run_date(
     run = store.load_run()
     record_candidate(
         store,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Cross-Midnight Lead",
         profile_url="https://www.linkedin.com/in/cross-midnight-lead",
         status=CandidateStatus.PENDING,
@@ -1481,7 +2115,7 @@ def test_provisional_confirmation_collapses_send_ledger_to_durable_latest(
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
 
@@ -1518,7 +2152,7 @@ def test_send_guarded_commits_send_result_for_final_audit(
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
 
@@ -1561,7 +2195,7 @@ def test_send_ledger_history_sync_counts_confirmed_sends(tmp_path: Path) -> None
     attempted_at = datetime(2026, 7, 2, 10, 0, tzinfo=UTC)
     provisional = CandidateEvent(
         at=attempted_at,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Synced Lead",
         profile_url="https://www.linkedin.com/in/synced-lead",
         status=CandidateStatus.PENDING_PROVISIONAL,
@@ -1625,7 +2259,7 @@ def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     run = store.load_run()
     for observation in run.observations:
@@ -1636,7 +2270,7 @@ def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
         record.search_url = None
     store.save_lead_ledger(ledger)
     review_path = tmp_path / "review.json"
-    review_candidates(store, source="Consulting - Founder Owner Buyers", out=review_path)
+    review_candidates(store, source="Consulting - Marketing Agency Owners", out=review_path)
     packet = json.loads(review_path.read_text())
     decisions_path = tmp_path / "decisions.json"
     decisions_path.write_text(
@@ -1677,7 +2311,7 @@ def test_lead_review_blocks_approval_without_public_profile_url_or_search_url(
 def test_send_next_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     run = store.load_run()
     observation = run.observations[0]
@@ -1705,7 +2339,7 @@ def test_send_next_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
 def test_send_guarded_uses_backfilled_public_profile_url(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     run = store.load_run()
     observation = run.observations[0]
@@ -1736,7 +2370,7 @@ def test_send_guarded_uses_backfilled_public_profile_url(tmp_path: Path) -> None
 def test_retry_failed_lead_clears_failed_event_for_approved_lead(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     run = store.load_run()
@@ -1779,7 +2413,7 @@ def test_confirmation_does_not_visit_profile_when_sent_list_is_missing(
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
     event = CandidateEvent(
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Duplicate Lead",
         profile_url="https://www.linkedin.com/sales/lead/dup,SEARCH,y",
         public_profile_url="https://www.linkedin.com/in/duplicate-lead",
@@ -1805,7 +2439,7 @@ def test_confirmation_does_not_visit_profile_when_sent_list_is_missing(
 def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=2, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     ledger = store.load_lead_ledger()
     urn_record = next(record for record in ledger.leads.values() if record.name == "URN Lead")
@@ -1814,7 +2448,7 @@ def test_lead_ledger_suppression_preserves_blocked_status(tmp_path: Path) -> Non
 
     review_candidates(
         store,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         out=tmp_path / "review.json",
     )
 
@@ -1832,7 +2466,7 @@ def test_cli_drain_stale_candidates_delegates_to_python_app(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
     record_candidate(store, source=source, name="Sent Lead", status=CandidateStatus.PENDING)
@@ -1877,7 +2511,7 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
     record_audit(store, 100, "starting count")
     record_candidate(
         store,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Original Send",
         status=CandidateStatus.PENDING,
     )
@@ -1885,7 +2519,7 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
     run = store.load_run()
     run.observations.append(
         CandidateObservation(
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             index=1,
             name="Top Up Candidate",
             profile_url="https://www.linkedin.com/sales/lead/topup,NAME_SEARCH,x",
@@ -1899,7 +2533,7 @@ def test_cli_top_up_reconcile_confirms_durable_shortfall_with_fixtures(
         json.dumps(
             {
                 "candidate": {
-                    "source": "Consulting - Founder Owner Buyers",
+                    "source": "Consulting - Marketing Agency Owners",
                     "name": "Top Up Candidate",
                     "profileUrl": "https://www.linkedin.com/sales/lead/topup,NAME_SEARCH,x",
                 },
@@ -1958,7 +2592,7 @@ def test_report_surfaces_reconciliation_shortfall_after_top_ups(tmp_path: Path) 
     for index in range(3):
         record_candidate(
             store,
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name=f"Verified {index}",
             status=CandidateStatus.PENDING,
         )
@@ -1991,7 +2625,7 @@ def test_report_names_uncertain_send_recovery_for_active_audit_gap(tmp_path: Pat
     run.candidates.append(
         CandidateEvent(
             at=datetime(2026, 6, 29, tzinfo=UTC),
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name="Verified Lead",
             status=CandidateStatus.PENDING,
         ),
@@ -2035,7 +2669,7 @@ def test_finish_error_names_current_reconcile_command(tmp_path: Path) -> None:
 def test_guarded_connection_send_preserves_real_send_gate(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     browser = FixtureBrowserClient(send_result=FIXTURES / "send_pending_consulting.json")
@@ -2061,7 +2695,7 @@ def test_send_next_queues_provisional_for_final_audit(
     FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 29), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
@@ -2088,7 +2722,7 @@ def test_send_next_queues_provisional_for_final_audit(
 def test_operator_plan_final_audit_after_target_send_attempts(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 6), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
 
@@ -2108,7 +2742,7 @@ def test_operator_plan_final_audit_after_target_send_attempts(tmp_path: Path) ->
 
 def test_operator_plan_replaces_proven_failed_send_before_final_audit(tmp_path: Path) -> None:
     store = Store(tmp_path)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     start_run(
         store,
         per_source_target=2,
@@ -2186,7 +2820,7 @@ def test_send_next_final_audit_confirms_sent_page_before_public_profile(
     FakeLiveBrowserClient.audit_recent_names = ["Duplicate Lead"]
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 6), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
@@ -2222,7 +2856,7 @@ def test_send_guarded_keeps_provisional_until_final_audit(
     FakeLiveBrowserClient.audit_recent_names = []
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 7, 3), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     browser = FakeLiveBrowserClient(out_dir=tmp_path / "browser")
@@ -2251,21 +2885,21 @@ def test_reconcile_audit_promotes_recent_name_false_negatives(tmp_path: Path) ->
     run.candidates.extend(
         [
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Provisional Lead",
                 profile_url="https://www.linkedin.com/sales/lead/provisional",
                 status=CandidateStatus.PENDING_PROVISIONAL,
                 note="salesnav-send-one saw immediate Connect - Pending",
             ),
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Reverted Lead",
                 profile_url="https://www.linkedin.com/sales/lead/reverted",
                 status=CandidateStatus.REVERTED_CONNECT,
                 note="connectable on public profile",
             ),
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Failed Lead",
                 profile_url="https://www.linkedin.com/sales/lead/failed",
                 status=CandidateStatus.FAILED,
@@ -2313,7 +2947,7 @@ def test_reconcile_audit_matches_structured_public_profile_before_name(
     run.candidates.extend(
         [
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Duplicate Name",
                 profile_url="https://www.linkedin.com/sales/lead/wrong",
                 public_profile_url="https://www.linkedin.com/in/wrong-person",
@@ -2321,7 +2955,7 @@ def test_reconcile_audit_matches_structured_public_profile_before_name(
                 note="already confirmed from prior audit",
             ),
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Duplicate Name",
                 profile_url="https://www.linkedin.com/sales/lead/right",
                 public_profile_url="https://www.linkedin.com/in/right-person",
@@ -2375,14 +3009,14 @@ def test_reconcile_audit_keeps_unlisted_provisional_without_profile_fallback(
     run.candidates.extend(
         [
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Confirmed Lead",
                 profile_url="https://www.linkedin.com/sales/lead/confirmed",
                 status=CandidateStatus.PENDING,
                 note="sent-page audit confirmed pending",
             ),
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Stale Provisional Lead",
                 profile_url="https://www.linkedin.com/sales/lead/stale-provisional",
                 status=CandidateStatus.PENDING_PROVISIONAL,
@@ -2430,7 +3064,7 @@ def test_reconcile_audit_confirms_unmatched_provisional_from_complete_aggregate_
     run.candidates.extend(
         [
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Name-matched Lead",
                 profile_url="https://www.linkedin.com/sales/lead/name-matched",
                 status=CandidateStatus.PENDING,
@@ -2489,7 +3123,7 @@ def test_reconcile_audit_reopens_send_previously_closed_from_absence(
     run = store.load_run()
     run.candidates.append(
         CandidateEvent(
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name="Recovered Lead",
             profile_url="https://www.linkedin.com/sales/lead/recovered",
             public_profile_url="https://www.linkedin.com/in/recovered",
@@ -2531,7 +3165,7 @@ def test_reconcile_audit_does_not_infer_failure_from_list_absence(
     run = store.load_run()
     run.candidates.append(
         CandidateEvent(
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name="Inconclusive Lead",
             profile_url="https://www.linkedin.com/sales/lead/inconclusive",
             public_profile_url="https://www.linkedin.com/in/inconclusive",
@@ -2569,7 +3203,7 @@ def test_reconcile_audit_keeps_unknown_unlisted_send_provisional(
     run = store.load_run()
     run.candidates.append(
         CandidateEvent(
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             name="Unknown Lead",
             profile_url="https://www.linkedin.com/sales/lead/unknown",
             public_profile_url="https://www.linkedin.com/in/unknown",
@@ -2606,14 +3240,14 @@ def test_reconcile_audit_keeps_provisional_when_audit_is_too_shallow(
     run.candidates.extend(
         [
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Confirmed Lead",
                 profile_url="https://www.linkedin.com/sales/lead/confirmed",
                 status=CandidateStatus.PENDING,
                 note="sent-page audit confirmed pending",
             ),
             CandidateEvent(
-                source="Consulting - Founder Owner Buyers",
+                source="Consulting - Marketing Agency Owners",
                 name="Stale Provisional Lead",
                 profile_url="https://www.linkedin.com/sales/lead/stale-provisional",
                 status=CandidateStatus.PENDING_PROVISIONAL,
@@ -2657,7 +3291,7 @@ def test_reconcile_audit_recovers_approved_observation_without_send_event(
     run = store.load_run()
     run.observations.append(
         CandidateObservation(
-            source="Consulting - Founder Owner Buyers",
+            source="Consulting - Marketing Agency Owners",
             index=7,
             name="Interrupted Lead",
             profile_url="https://www.linkedin.com/sales/lead/interrupted",
@@ -2690,7 +3324,7 @@ def test_reconcile_audit_recovers_approved_observation_without_send_event(
 def test_source_yield_report_prioritizes_email_required_skips(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=3, run_date=date(2026, 6, 30), force=True)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     for index in range(3):
         record_candidate(
             store,
@@ -2713,7 +3347,7 @@ def test_source_yield_report_prioritizes_email_required_skips(tmp_path: Path) ->
 def test_source_yield_report_prioritizes_non_durable_send_attempts(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=3, run_date=date(2026, 6, 30), force=True)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     for index in range(3):
         record_candidate(
             store,
@@ -2736,7 +3370,7 @@ def test_source_yield_report_prioritizes_non_durable_send_attempts(tmp_path: Pat
 def test_finish_uses_durable_confirmation_and_seeds_acceptance(tmp_path: Path) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     record_audit(store, 100, "starting count")
@@ -2780,7 +3414,7 @@ def test_finish_requires_final_sent_page_audit_reconciliation(tmp_path: Path) ->
     start_run(store, target=1, run_date=date(2026, 7, 2), force=True)
     record_candidate(
         store,
-        source="Consulting - Founder Owner Buyers",
+        source="Consulting - Marketing Agency Owners",
         name="Durable Lead",
         profile_url="https://www.linkedin.com/in/durable-lead",
         status=CandidateStatus.PENDING,
@@ -2809,7 +3443,7 @@ def test_record_send_result_preserves_public_profile_url(tmp_path: Path) -> None
     result = SalesNavSendResult.model_validate(
         {
             "candidate": {
-                "source": "Consulting - Founder Owner Buyers",
+                "source": "Consulting - Marketing Agency Owners",
                 "name": "Public Lead",
                 "profileUrl": "https://www.linkedin.com/sales/lead/public-lead,NAME_SEARCH,x",
             },
@@ -3205,7 +3839,7 @@ def test_cli_send_next_uses_live_browser_when_fixture_is_absent(
     _install_fake_live_browser(monkeypatch)
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     _approve_all_observed_leads(store)
     out_dir = tmp_path / "send-browser"
@@ -3282,7 +3916,7 @@ def test_cli_saved_searches_uses_live_browser(
         "saved-searches:https://www.linkedin.com/sales/search/people"
     ]
     payload = json.loads(out.read_text())
-    assert payload["searches"][0]["name"] == "Consulting - Founder Owner Buyers"
+    assert payload["searches"][0]["name"] == "Consulting - Marketing Agency Owners"
 
 
 def test_cli_passes_explicit_playwriter_session_to_browser(
@@ -3622,7 +4256,7 @@ def test_cli_network_run_session_reuses_one_live_browser(
             "--per-source-target",
             "1",
             "--source",
-            "Consulting - Founder Owner Buyers",
+            "Consulting - Marketing Agency Owners",
             "--max-real-sends",
             "1",
             "--force",
@@ -3645,7 +4279,7 @@ def test_cli_network_run_session_reuses_one_live_browser(
         "audit:load_more=2",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
-            "capture:Consulting - Founder Owner Buyers:pages=3:limit=0:only=True:"
+            "capture:Consulting - Marketing Agency Owners:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
         ),
     ]
@@ -3670,7 +4304,7 @@ def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
                 "searches": [
                     {
                         "savedSearchId": "abc",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     }
                 ],
@@ -3686,7 +4320,7 @@ def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
             "--per-source-target",
             "1",
             "--source",
-            "Consulting - Founder Owner Buyers",
+            "Consulting - Marketing Agency Owners",
             "--max-real-sends",
             "1",
             "--force",
@@ -3706,7 +4340,7 @@ def test_cli_network_run_session_uses_existing_saved_searches_on_new_run(
     assert FakeLiveBrowserClient.instances[0].calls == [
         "audit:load_more=2",
         (
-            "capture:Consulting - Founder Owner Buyers:pages=3:limit=0:only=True:"
+            "capture:Consulting - Marketing Agency Owners:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
         ),
     ]
@@ -3726,7 +4360,7 @@ def test_cli_network_run_session_can_refresh_existing_saved_searches(
                 "searches": [
                     {
                         "savedSearchId": "stale",
-                        "name": "Consulting - Founder Owner Buyers",
+                        "name": "Consulting - Marketing Agency Owners",
                         "viewUrl": "https://www.linkedin.com/sales/search/people?savedSearchId=stale",
                     }
                 ],
@@ -3742,7 +4376,7 @@ def test_cli_network_run_session_can_refresh_existing_saved_searches(
             "--per-source-target",
             "1",
             "--source",
-            "Consulting - Founder Owner Buyers",
+            "Consulting - Marketing Agency Owners",
             "--max-real-sends",
             "1",
             "--force",
@@ -3764,7 +4398,7 @@ def test_cli_network_run_session_can_refresh_existing_saved_searches(
         "audit:load_more=2",
         "saved-searches:https://www.linkedin.com/sales/search/people",
         (
-            "capture:Consulting - Founder Owner Buyers:pages=3:limit=0:only=True:"
+            "capture:Consulting - Marketing Agency Owners:pages=3:limit=0:only=True:"
             "url=https://www.linkedin.com/sales/search/people?savedSearchId=abc"
         ),
     ]
@@ -4113,7 +4747,7 @@ def test_cli_network_run_session_blocks_when_targeted_saved_search_is_missing(
         client: FakeLiveBrowserClient, *, url: str, out: Path
     ) -> tuple[SavedSearchArtifact, str]:
         artifact, artifact_path = original_resolver(client, url=url, out=out)
-        artifact.searches = artifact.searches[:2]
+        artifact.searches = artifact.searches[:1]
         _write_fake_artifact(out, artifact)
         return artifact, artifact_path
 
@@ -4150,7 +4784,7 @@ def test_cli_network_run_session_blocks_when_targeted_saved_search_is_missing(
     assert exit_code == 1
     assert run.state == RunState.BLOCKED
     assert "saved-search coverage missing" in captured.err
-    assert "Consulting - Trusted Referral Partners" in captured.err
+    assert "Consulting - Fractional COOs" in captured.err
 
 
 def test_cli_review_candidates_json_reports_decision_and_next_commands(
@@ -4158,7 +4792,7 @@ def test_cli_review_candidates_json_reports_decision_and_next_commands(
 ) -> None:
     store = Store(tmp_path)
     start_run(store, target=1, run_date=date(2026, 6, 24), force=True)
-    _make_source_current(store, "Consulting - Founder Owner Buyers")
+    _make_source_current(store, "Consulting - Marketing Agency Owners")
     import_capture_path(store, FIXTURES / "capture_consulting.json", only_connectable=True)
     review_out = tmp_path / "review.json"
 
@@ -4196,8 +4830,8 @@ def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
     store.save_source_progress(
         SourceScanProgressLedger(
             sources={
-                "Consulting - Founder Owner Buyers": SourceScanProgress(
-                    source="Consulting - Founder Owner Buyers",
+                "Consulting - Marketing Agency Owners": SourceScanProgress(
+                    source="Consulting - Marketing Agency Owners",
                     saved_search_id="abc",
                     saved_search_url="https://www.linkedin.com/sales/search/people?savedSearchId=abc",
                     next_url="https://www.linkedin.com/sales/search/people?page=4&savedSearchId=abc",
@@ -4233,7 +4867,7 @@ def test_cli_network_run_session_seeds_capture_from_durable_source_progress(
     assert any(
         call.endswith("url=https://www.linkedin.com/sales/search/people?page=4&savedSearchId=abc")
         for call in FakeLiveBrowserClient.instances[0].calls
-        if call.startswith("capture:Consulting - Founder Owner Buyers")
+        if call.startswith("capture:Consulting - Marketing Agency Owners")
     )
     run = store.load_run()
     assert any("seeded source progress" in note for note in run.notes)
@@ -4243,7 +4877,7 @@ def test_cli_network_run_session_resume_seeds_existing_saved_searches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_live_browser(monkeypatch)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(
         store,
@@ -4365,7 +4999,7 @@ def test_cli_network_run_session_defers_stalled_zero_import_cursor(
 ) -> None:
     StalledCursorBrowserClient.instances.clear()
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", StalledCursorBrowserClient)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(
         store,
@@ -4451,7 +5085,7 @@ def test_cli_network_run_session_defers_wrong_page_capture(
 ) -> None:
     WrongPageCaptureBrowserClient.instances.clear()
     monkeypatch.setattr(network_cli, "PlaywriterBrowserClient", WrongPageCaptureBrowserClient)
-    source = "Consulting - Founder Owner Buyers"
+    source = "Consulting - Marketing Agency Owners"
     store = Store(tmp_path)
     start_run(
         store,
@@ -4541,7 +5175,7 @@ def test_cli_network_run_session_exhausts_source_at_end_of_results(
 
     assert exit_code == 0
     run = Store(tmp_path).load_run()
-    assert run.sources[0].name == "Consulting - Founder Owner Buyers"
+    assert run.sources[0].name == "Consulting - Marketing Agency Owners"
     assert run.sources[0].exhausted is True
     assert any(
         "reached end of saved-search results with no usable candidates" in note
@@ -4550,8 +5184,11 @@ def test_cli_network_run_session_exhausts_source_at_end_of_results(
     assert run.verified_count() == 0
     assert (tmp_path / "network-session" / "lead-review-candidates.json").exists()
     calls = ZeroThenNextSourceBrowserClient.instances[0].calls
-    assert sum(call.startswith("capture:Consulting - Founder Owner Buyers") for call in calls) == 1
-    assert any(call.startswith("capture:Consulting - Operations Leader Buyers") for call in calls)
+    assert (
+        sum(call.startswith("capture:Consulting - Marketing Agency Owners") for call in calls)
+        == 1
+    )
+    assert any(call.startswith("capture:Consulting - Fractional COOs") for call in calls)
     assert not any(
         call.startswith("send:Consulting - Operations Leader Buyers Lead") for call in calls
     )
@@ -4585,7 +5222,7 @@ def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
     assert capture_exit == 0
     assert FakeLiveBrowserClient.instances[-1].out_dir == capture_out
     assert (
-        "capture:Consulting - Founder Owner Buyers:pages=2:limit=4:only=True"
+        "capture:Consulting - Marketing Agency Owners:pages=2:limit=4:only=True"
         in (FakeLiveBrowserClient.instances[-1].calls[0])
     )
     assert [observation.name for observation in store.load_run().observations] == [
@@ -4620,7 +5257,7 @@ def test_cli_capture_reconcile_and_reservoir_capture_use_live_browser(
             "reservoir",
             "capture",
             "--source",
-            "Consulting - Founder Owner Buyers",
+            "Consulting - Marketing Agency Owners",
             "--url",
             "https://www.linkedin.com/sales/search/people?savedSearchId=1",
             "--only-connectable",

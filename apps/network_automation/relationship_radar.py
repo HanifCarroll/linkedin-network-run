@@ -683,9 +683,10 @@ def _render_record(record: RelationshipRadarRecord) -> list[str]:
         context = record.commercial_context
         lines.extend(
             [
-                f"- ICP profile: `{context.icp_profile_id}` ({context.icp_source_path})",
-                f"- Offers profile: `{context.offers_profile_id}` "
-                f"({context.offers_source_path})",
+                f"- ICP source: `{context.icp_source_path}` "
+                f"(SHA-256 `{context.icp_source_sha256}`)",
+                f"- Offers source: `{context.offers_source_path}` "
+                f"(SHA-256 `{context.offers_source_sha256}`)",
                 f"- Evaluated offer: `{context.offer_id}`",
             ]
         )

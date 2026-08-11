@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from pathlib import Path
 
 from .models import (
     DEFAULT_COMMERCIAL_OFFER_ID,
-    DEFAULT_ICP_PROFILE_ID,
     DEFAULT_ICP_SOURCE_PATH,
-    DEFAULT_OFFERS_PROFILE_ID,
     DEFAULT_OFFERS_SOURCE_PATH,
     CommercialContextReference,
     CommercialCriterionAssessment,
@@ -31,21 +30,19 @@ def validate_commercial_context_sources(
     profiles = (
         (
             "ICP",
-            context.icp_profile_id,
-            DEFAULT_ICP_PROFILE_ID,
             context.icp_source_path,
+            context.icp_source_sha256,
             DEFAULT_ICP_SOURCE_PATH,
         ),
         (
             "offers",
-            context.offers_profile_id,
-            DEFAULT_OFFERS_PROFILE_ID,
             context.offers_source_path,
+            context.offers_source_sha256,
             DEFAULT_OFFERS_SOURCE_PATH,
         ),
     )
     qualification_criterion_ids: tuple[str, ...] | None = None
-    for label, profile_id, expected_id, source_path, expected_path in profiles:
+    for label, source_path, source_sha256, expected_path in profiles:
         if source_path != expected_path:
             raise ValueError(
                 f"commercial context {label} source path mismatch: "
@@ -55,11 +52,11 @@ def validate_commercial_context_sources(
         if not path.is_file():
             raise FileNotFoundError(f"commercial context {label} source is missing: {path}")
         frontmatter = read_required_profile_frontmatter(path, label=label)
-        declared_id = frontmatter["profile_id"]
-        if profile_id != expected_id or declared_id != expected_id:
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if source_sha256 != actual_sha256:
             raise ValueError(
-                f"commercial context {label} profile id mismatch: expected {expected_id}, "
-                f"context has {profile_id}, frontmatter has {declared_id}"
+                f"commercial context {label} source digest mismatch: "
+                f"expected {actual_sha256}, context has {source_sha256}"
             )
         if frontmatter["status"] != "active":
             raise ValueError(
@@ -69,12 +66,12 @@ def validate_commercial_context_sources(
         if label == "ICP":
             qualification_criterion_ids = read_qualification_contract_ids(path)
         if label == "offers":
-            offer_catalog = read_active_offer_catalog(path)
+            offer_catalog = read_offer_catalog(path)
             offer_status = offer_catalog.get(context.offer_id)
             if offer_status is None:
                 raise ValueError(
                     f"commercial context offer {context.offer_id} is missing from "
-                    f"the Offers Active Catalog: {path}"
+                    f"the Offers Offer Catalog: {path}"
                 )
             if offer_status != "active":
                 raise ValueError(
@@ -97,7 +94,7 @@ def read_required_profile_frontmatter(path: Path, *, label: str) -> dict[str, st
             f"commercial context {label} has unterminated frontmatter: {path}"
         ) from error
 
-    required = {"profile_id", "status"}
+    required = {"status"}
     values: dict[str, str] = {}
     for line_number, line in enumerate(lines[1:closing_index], start=2):
         for key in required:
@@ -195,9 +192,9 @@ def read_qualification_contract_ids(path: Path) -> tuple[str, ...]:
     return tuple(criterion_ids)
 
 
-def read_active_offer_catalog(path: Path) -> dict[str, str]:
+def read_offer_catalog(path: Path) -> dict[str, str]:
     lines = path.read_text(encoding="utf-8").splitlines()
-    heading = "## Active Catalog"
+    heading = "## Offer Catalog"
     heading_indexes = [index for index, line in enumerate(lines) if line == heading]
     if len(heading_indexes) != 1:
         raise ValueError(
@@ -220,13 +217,13 @@ def read_active_offer_catalog(path: Path) -> dict[str, str]:
     ]
     if len(table_header_indexes) != 1:
         raise ValueError(
-            "commercial context Offers Active Catalog must contain exactly one "
+            "commercial context Offers Offer Catalog must contain exactly one "
             f"expected header: {path}"
         )
     header_index = table_header_indexes[0]
     if header_index + 1 >= len(lines) or lines[header_index + 1] != separator:
         raise ValueError(
-            f"commercial context Offers Active Catalog separator is malformed: {path}"
+            f"commercial context Offers Offer Catalog separator is malformed: {path}"
         )
 
     offers: dict[str, str] = {}
@@ -235,13 +232,13 @@ def read_active_offer_catalog(path: Path) -> dict[str, str]:
             break
         if not (line.startswith("|") and line.endswith("|")):
             raise ValueError(
-                "commercial context Offers Active Catalog row is malformed at "
+                "commercial context Offers Offer Catalog row is malformed at "
                 f"{path}:{line_number}"
             )
         cells = [cell.strip() for cell in line[1:-1].split("|")]
         if len(cells) != 4 or any(not cell for cell in cells[1:]):
             raise ValueError(
-                "commercial context Offers Active Catalog row is malformed at "
+                "commercial context Offers Offer Catalog row is malformed at "
                 f"{path}:{line_number}"
             )
         offer_match = re.fullmatch(r"`([a-z0-9][a-z0-9._-]*)`", cells[0])
@@ -263,7 +260,7 @@ def read_active_offer_catalog(path: Path) -> dict[str, str]:
             )
         offers[offer_id] = status
     if not offers:
-        raise ValueError(f"commercial context Offers Active Catalog has no offers: {path}")
+        raise ValueError(f"commercial context Offers Offer Catalog has no offers: {path}")
     return offers
 
 
