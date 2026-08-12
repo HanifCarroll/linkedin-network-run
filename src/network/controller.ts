@@ -39,7 +39,7 @@ export interface NetworkBrowserPort {
     budget: number,
     pacingMs: number,
   ): Promise<BrowserPortResult<unknown>>;
-  captureSentList(): Promise<BrowserPortResult<unknown>>;
+  captureSentList(confirmNames?: readonly string[]): Promise<BrowserPortResult<unknown>>;
 }
 
 export type DurableControllerAttempt = {
@@ -301,8 +301,13 @@ export class NetworkController {
     | { readonly value: { readonly invocationId: string; readonly evidence: SentListEvidence } }
     | TickResult
   > {
+    const durable = this.readState(runId);
+    if ("state" in durable) return durable;
+    const pendingNames = durable.value.openAttempts
+      .filter((attempt) => attempt.state === "possible")
+      .map((attempt) => attempt.candidate.name);
     const capture = await this.browserCall(runId, "capture_sent_list", () =>
-      this.browser.captureSentList(),
+      this.browser.captureSentList(pendingNames),
     );
     if ("state" in capture) return capture;
     try {

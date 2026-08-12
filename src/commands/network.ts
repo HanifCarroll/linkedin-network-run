@@ -601,11 +601,16 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
     return first;
   }
 
-  async captureSentList(): Promise<BrowserPortResult<unknown>> {
+  async captureSentList(confirmNames?: readonly string[]): Promise<BrowserPortResult<unknown>> {
     const url = "https://www.linkedin.com/mynetwork/invitation-manager/sent/";
     const navigation = await this.invokeVoid("navigate-sent-list", { url });
     if (navigation.status !== "succeeded") return navigation;
-    return this.invokeData("capture-sent-list", { url });
+    return this.invokeData("capture-sent-list", {
+      url,
+      ...(confirmNames !== undefined && confirmNames.length > 0
+        ? { confirmNames: [...confirmNames] }
+        : {}),
+    });
   }
 
   private async invokeVoid(
@@ -632,7 +637,7 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
 
   private async invokeData(
     command: NetworkCommand,
-    input: { readonly url?: string },
+    input: { readonly url?: string; readonly confirmNames?: readonly string[] },
   ): Promise<BrowserPortResult<unknown>> {
     try {
       const invocation = await this.operations.invoke(this.client, command, this.sessionId, input);
