@@ -7,8 +7,11 @@ This is the canonical Bun/TypeScript `linkedin-tools` repository, promoted
 implementation it replaced is retired; migration from legacy state is dry-run
 and proposal-only.
 
-The only product workflows are deterministic daily networking and read-only content analytics
-export.
+The product workflows are deterministic daily networking, read-only content
+analytics export, and interactive jobs collection/outreach. The `jobs` workflow
+collects postings from a LinkedIn jobs search (read-only XHR + direct-view
+reads), stores them locally with their listed hiring team, and sends drafted
+messages to hiring team members only with the explicit `--allow-send` flag.
 
 ## Invariants
 
@@ -33,7 +36,10 @@ export.
   a browser session; reconcile that exact earlier date before starting the new day.
 - Never replace a possible send or infer failure from absence.
 - Migration never applies or writes legacy state.
-- Do not add acceptance, radar, recruiter, opportunity, Python, uv, or a web UI.
+- Do not add the retired acceptance, radar, recruiter, opportunity, Python, uv,
+  or web UI workflows. The `jobs` workflow is a distinct, approved workflow for
+  hiring-team outreach on job postings; it is not a re-add of the retired
+  recruiter workflow.
 
 ## Verification
 

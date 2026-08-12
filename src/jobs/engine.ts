@@ -70,7 +70,8 @@ export class JobsEngine {
   }
 
   favoriteJobs(ids: readonly string[], now: string): JobRow[] {
-    if (ids.length === 0) throw new CliError("INVALID_ARGUMENT", "favorite requires at least one --id");
+    if (ids.length === 0)
+      throw new CliError("INVALID_ARGUMENT", "favorite requires at least one --id");
     const tx = this.database.transaction(() => {
       for (const id of ids) this.setStatus(id, "favorite", now);
     });
@@ -83,9 +84,7 @@ export class JobsEngine {
       throw new CliError("INVALID_ARGUMENT", "draft requires a non-empty --message");
     this.requireJob(id);
     this.database
-      .prepare(
-        `UPDATE jobs SET status = 'drafted', message = ?, updated_at = ? WHERE id = ?`,
-      )
+      .prepare(`UPDATE jobs SET status = 'drafted', message = ?, updated_at = ? WHERE id = ?`)
       .run(message.trim(), now, id);
     return this.requireJob(id);
   }
@@ -105,9 +104,7 @@ export class JobsEngine {
   }
 
   requireJob(id: string): JobRow {
-    const row = this.database
-      .query<JobRowRaw, [string]>(`SELECT * FROM jobs WHERE id = ?`)
-      .get(id);
+    const row = this.database.query<JobRowRaw, [string]>(`SELECT * FROM jobs WHERE id = ?`).get(id);
     if (row === null)
       throw new CliError("JOB_NOT_FOUND", `no collected job with id ${id}`, { exitCode: 2 });
     return rowToJob(row);

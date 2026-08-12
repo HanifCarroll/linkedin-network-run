@@ -61,7 +61,8 @@ function lastJsonLine(stdout: string): { ok: boolean; data?: unknown } | null {
     if (!cleaned.startsWith("{")) continue;
     try {
       const value = JSON.parse(cleaned) as { ok?: unknown; data?: unknown };
-      if (typeof value === "object" && value !== null) return value as { ok: boolean; data?: unknown };
+      if (typeof value === "object" && value !== null)
+        return value as { ok: boolean; data?: unknown };
     } catch {
       // not JSON; keep scanning
     }

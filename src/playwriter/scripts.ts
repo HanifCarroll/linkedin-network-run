@@ -136,10 +136,9 @@ const usablePage = (key: string) =>
 // A self-contained walk must run on an extension-tracked page. The playwriter
 // extension only tracks pages it attached listeners to (its session page and
 // popups); pages created via context.newPage() are NOT tracked and get closed
-// (executor.js). So prefer the session's open tracked pages; create a new
-// tracked page only when none are open.
+// (executor.js). Prefer the stored session page, then any open tracked page.
 const freshWalkPage = (key: string) =>
-  `let p=null;{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??page;state[${literal(key)}]=p;}`;
+  `let p=null;{const stored=state[${literal(key)}];if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??page;state[${literal(key)}]=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");}`;
 const exactPage = (key: string, url: string) => {
   const expected = new URL(url);
   if (expected.pathname === "/sales/search/people" && expected.searchParams.has("savedSearchId"))
@@ -231,12 +230,17 @@ function walkListBody(
     `const hdrRequests=[];const leadSearchRequests=[];const hdrListener=async(req)=>{try{const u=req.url();if(!/sales-api\\//.test(u))return;const headers=req.headers();hdrRequests.push({headers,url:u});if(u.includes("salesApiLeadSearch"))leadSearchRequests.push({headers,url:u});}catch{}};p.on("request",hdrListener);`,
     `const maxPages=10;`,
     `const acquireFirstPage=async()=>{`,
-    `await p.goto(${literal(url)},{waitUntil:"domcontentloaded",timeout:60000});`,
+    `if(!p.url().startsWith("https://www.linkedin.com/sales/search/people")){`,
+    `await p.goto(${literal(url)},{waitUntil:"domcontentloaded"});`,
     progress("navigation_returned"),
+    `}`,
+    // The SPA soft-navigates after domcontentloaded; settle briefly so the
+    // replay's execution context is stable. (Container selectors vary across
+    // Sales Nav builds, so rely on timing + captured headers instead.)
+    `await p.waitForTimeout(2500);`,
     `let hdrs=null;`,
     `for(let waitAttempt=0;waitAttempt<60&&hdrs===null;waitAttempt+=1){const lead=leadSearchRequests[leadSearchRequests.length-1];if(lead&&lead.headers&&lead.headers["csrf-token"]){hdrs=lead.headers;break;}const boot=hdrRequests[hdrRequests.length-1];if(hdrs===null&&boot&&boot.headers&&boot.headers["csrf-token"]){hdrs=boot.headers;}await p.waitForTimeout(500);}`,
     `if(hdrs===null)throw new Error("XHR_NO_HEADERS");`,
-    `await p.waitForTimeout(2000);`,
     `const LEAD_SEARCH_BASE="https://www.linkedin.com/sales-api/salesApiLeadSearch?q=savedSearchId&count=25&savedSearchId="+encodeURIComponent(sourceContract.savedSearchId)+"&decorationId=com.linkedin.sales.deco.desktop.searchv2.LeadSearchResult-14";`,
     `const replaySearch=async(start)=>{const url=new URL(LEAD_SEARCH_BASE);url.searchParams.set("start",String(start));const h=hdrs;return p.evaluate(async ({u,hdr})=>{const res=await fetch(u,{headers:{"csrf-token":hdr["csrf-token"],"x-restli-protocol-version":hdr["x-restli-protocol-version"],"x-li-track":hdr["x-li-track"],referer:hdr["referer"],"user-agent":hdr["user-agent"]}});const text=await res.text();if(res.status!==200)throw new Error("XHR_REPLAY_"+res.status+":"+text.slice(0,120));try{return JSON.parse(text);}catch{throw new Error("XHR_REPLAY_PARSE:"+text.slice(0,120));}},{u:url.href,hdr:h});};`,
     `const firstPage=await replaySearch(0);`,

@@ -1,7 +1,13 @@
 import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
-import { JobsEngine, buildSearchScript, buildSearchUrl, buildSendScript, runJobsScript } from "../jobs/index.ts";
+import {
+  buildSearchScript,
+  buildSearchUrl,
+  buildSendScript,
+  JobsEngine,
+  runJobsScript,
+} from "../jobs/index.ts";
 import type { CollectedJob } from "../jobs/types.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
@@ -129,7 +135,7 @@ export async function jobsSend(
     playwriterBin: input.playwriterBin,
   });
   const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
-  let targets;
+  let targets: ReturnType<JobsEngine["draftedJobs"]>;
   try {
     const engine = new JobsEngine(opened.database);
     targets = input.id === undefined ? engine.draftedJobs() : [engine.requireJob(input.id)];
@@ -141,13 +147,17 @@ export async function jobsSend(
 
   const results: unknown[] = [];
   for (const job of targets) {
-    if (job.hiringTeam.length === 0)
-      throw new CliError("JOBS_NO_HIRING_TEAM", `job ${job.id} has no hiring team member to message`, {
-        exitCode: 2,
-      });
+    const member = job.hiringTeam[0];
+    if (member === undefined)
+      throw new CliError(
+        "JOBS_NO_HIRING_TEAM",
+        `job ${job.id} has no hiring team member to message`,
+        {
+          exitCode: 2,
+        },
+      );
     if (job.message === null || job.message.trim().length === 0)
       throw new CliError("JOBS_NO_DRAFT", `job ${job.id} has no drafted message`, { exitCode: 2 });
-    const member = job.hiringTeam[0]!;
     const { script, timeoutMs } = buildSendScript({
       jobId: job.id,
       memberName: member.name,
@@ -179,7 +189,11 @@ export async function jobsSend(
   };
 }
 
-function parseSearchResult(data: Record<string, unknown>): { jobs: CollectedJob[]; pagesCollected: number; cardsTotal: number } {
+function parseSearchResult(data: Record<string, unknown>): {
+  jobs: CollectedJob[];
+  pagesCollected: number;
+  cardsTotal: number;
+} {
   const jobsRaw = Array.isArray(data.jobs) ? data.jobs : [];
   const jobs: CollectedJob[] = [];
   for (const raw of jobsRaw) {
@@ -204,7 +218,9 @@ function parseSearchResult(data: Record<string, unknown>): { jobs: CollectedJob[
       hasHiringTeam: raw.hasHiringTeam === true || hiringTeam.length > 0,
     });
   }
-  const pagesCollected = Number.isSafeInteger(data.pagesCollected) ? Number(data.pagesCollected) : 0;
+  const pagesCollected = Number.isSafeInteger(data.pagesCollected)
+    ? Number(data.pagesCollected)
+    : 0;
   const cardsTotal = Number.isSafeInteger(data.cardsTotal) ? Number(data.cardsTotal) : 0;
   return { jobs, pagesCollected, cardsTotal };
 }

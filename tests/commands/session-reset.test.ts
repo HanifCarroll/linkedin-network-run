@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { networkSessionReset } from "../../src/commands/session-reset.ts";
 import { openDatabase } from "../../src/db/database.ts";
 import { NetworkEngine } from "../../src/network/index.ts";
-import { networkSessionReset } from "../../src/commands/session-reset.ts";
 
 const NOW = "2026-08-09T12:00:00.000Z";
 

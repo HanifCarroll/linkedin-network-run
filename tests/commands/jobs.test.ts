@@ -62,8 +62,10 @@ describe("jobs engine", () => {
 
       // Re-upsert refreshes enrichment but keeps status.
       engine.favoriteJobs(["4450256825"], NOW);
+      const first = sampleJobs()[0];
+      if (first === undefined) throw new Error("sample job missing");
       const refreshed: CollectedJob = {
-        ...sampleJobs()[0]!,
+        ...first,
         company: "BizAthletes (updated)",
       };
       engine.upsertJobs([refreshed], NOW);
@@ -118,7 +120,7 @@ describe("jobs commands", () => {
         {
           resolveSession: async () => 7,
           runScript: async (options) => {
-            ran.push(options.script.slice(0, 120));
+            ran.push(options.script);
             return {
               ok: true,
               data: {
@@ -203,13 +205,25 @@ describe("jobs commands", () => {
       opened.database.close();
       await expect(
         jobsSend(
-          { stateDir: dir, playwriterBin: "/fake", sessionId: 7, allowSend: true, id: "4450337999" },
+          {
+            stateDir: dir,
+            playwriterBin: "/fake",
+            sessionId: 7,
+            allowSend: true,
+            id: "4450337999",
+          },
           { resolveSession: async () => 7 },
         ),
       ).rejects.toThrow(/hiring team/);
       await expect(
         jobsSend(
-          { stateDir: dir, playwriterBin: "/fake", sessionId: 7, allowSend: true, id: "4450256825" },
+          {
+            stateDir: dir,
+            playwriterBin: "/fake",
+            sessionId: 7,
+            allowSend: true,
+            id: "4450256825",
+          },
           { resolveSession: async () => 7 },
         ),
       ).rejects.toThrow(/no drafted message/);
@@ -225,13 +239,19 @@ describe("jobs argument parsing", () => {
   test("jobs search requires keywords and validates posted-within", () => {
     expect(() => parseInvocation(["jobs", "search"], context)).toThrow(/--keywords/);
     expect(() =>
-      parseInvocation(
-        ["jobs", "search", "--keywords", "x", "--posted-within", "5"],
-        context,
-      ),
+      parseInvocation(["jobs", "search", "--keywords", "x", "--posted-within", "5"], context),
     ).toThrow(/--posted-within/);
     const parsed = parseInvocation(
-      ["jobs", "search", "--keywords", "product engineer", "--location", "United States"],
+      [
+        "jobs",
+        "search",
+        "--keywords",
+        "product engineer",
+        "--location",
+        "United States",
+        "--session",
+        "9",
+      ],
       context,
     );
     expect(parsed).toMatchObject({ kind: "command", command: "jobs search" });
@@ -252,5 +272,3 @@ describe("jobs argument parsing", () => {
     }
   });
 });
-
-

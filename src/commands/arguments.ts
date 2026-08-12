@@ -357,9 +357,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       }
       const input: JobsListInput = {
         stateDir: stateDir(options, context),
-        ...(status === undefined
-          ? {}
-          : { status: status as NonNullable<JobsListInput["status"]> }),
+        ...(status === undefined ? {} : { status: status as NonNullable<JobsListInput["status"]> }),
         withHiringTeam: options.booleans.has("--with-hiring-team"),
       };
       return { kind: "command", command: "jobs list", input };
@@ -414,7 +412,9 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "--session",
       ),
       allowSend: true,
-      ...(options.values.get("--id") === undefined ? {} : { id: options.values.get("--id")! }),
+      ...(options.values.get("--id") === undefined
+        ? {}
+        : { id: options.values.get("--id") as string }),
     };
     return { kind: "command", command: "jobs send", input };
   }
@@ -687,8 +687,6 @@ function boundedInteger(value: string, label: string, minimum: number, maximum: 
   }
   return parsed;
 }
-
-
 
 function absolutePath(value: string, label: string): string {
   if (value.includes("\0") || value.trim().length === 0) invalid(`${label} is invalid`);

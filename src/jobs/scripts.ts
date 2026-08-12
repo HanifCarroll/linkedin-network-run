@@ -14,7 +14,12 @@ export function buildSearchUrl(spec: JobsSearchSpec): string {
   if (spec.keywords.trim().length > 0) url.searchParams.set("keywords", spec.keywords.trim());
   if (spec.location.trim().length > 0) url.searchParams.set("location", spec.location.trim());
   if (spec.postedWithinDays !== undefined) {
-    const byDays: Readonly<Record<number, string>> = { 1: "r86400", 7: "r604800", 14: "r1209600", 30: "r2592000" };
+    const byDays: Readonly<Record<number, string>> = {
+      1: "r86400",
+      7: "r604800",
+      14: "r1209600",
+      30: "r2592000",
+    };
     const token = byDays[spec.postedWithinDays];
     if (token === undefined) throw new TypeError("postedWithinDays must be 1, 7, 14, or 30");
     url.searchParams.set("f_TPR", token);
@@ -23,8 +28,11 @@ export function buildSearchUrl(spec: JobsSearchSpec): string {
   return url.toString();
 }
 
+// Jobs scripts own a dedicated page. Never reuse the user's open LinkedIn
+// tabs: navigating them interrupts the user's own work and races scheduled
+// automations (observed: goto interrupted by another navigation).
 const PAGE_PICKUP = `
-let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&candidate.url().includes("linkedin.com"))??candidates[0]??page??(await context.newPage());}state.jobsPage=p;}`;
+let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed())p=stored;else p=await context.newPage();state.jobsPage=p;}`;
 
 const EXTRACT_VIEW = `
 () => {
@@ -32,8 +40,8 @@ const EXTRACT_VIEW = `
   const parts = docTitle.split(" | ");
   const last = parts.length > 0 ? parts[parts.length - 1] : "";
   if (last === "LinkedIn") parts.pop();
-  const company = parts.length >= 2 ? parts[parts.length - 2] : "";
-  const title = parts.length >= 3 ? parts.slice(0, -1).join(" | ") : (parts[0] ?? "");
+  const company = parts.length >= 2 ? parts[parts.length - 1] : "";
+  const title = parts.length >= 2 ? parts.slice(0, -1).join(" | ") : (parts[0] ?? "");
   const lines = document.body.innerText.split("\\n").map(l => l.trim()).filter(Boolean);
   const postedIdx = lines.findIndex(l => l.includes("·") && /ago|applicant|today|hour/i.test(l));
   const location = postedIdx >= 0 ? (lines[postedIdx].split("·")[0] ?? "").trim() : "";
@@ -145,7 +153,8 @@ export function buildSearchScript(config: {
     hiringTeamLimit: config.hiringTeamLimit,
     jobCountTarget,
   };
-  const source = `const CONFIG=${JSON.stringify(cfg)};const VIEW_EXTRACT=${EXTRACT_VIEW};\n(async()=>{${PAGE_PICKUP}\n${SEARCH_RESULT}\n})();`;
+  // Top-level awaits only: the playwriter executor does not await an async IIFE.
+  const source = `const CONFIG=${JSON.stringify(cfg)};const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${SEARCH_RESULT}`;
   return { script: source, timeoutMs: SEARCH_TIMEOUT_MS };
 }
 
@@ -209,6 +218,7 @@ export function buildSendScript(config: {
   if (!/^https:\/\/www\.linkedin\.com\/in\//.test(config.profileUrl))
     throw new TypeError("profileUrl must be a linkedin.com/in/ profile URL");
   if (config.message.trim().length === 0) throw new TypeError("message must not be empty");
-  const source = `const CONFIG=${JSON.stringify(config)};\n(async()=>{${PAGE_PICKUP}\n${SEND_RESULT}\n})();`;
+  // Top-level awaits only: the playwriter executor does not await an async IIFE.
+  const source = `const CONFIG=${JSON.stringify(config)};\n${PAGE_PICKUP}\n${SEND_RESULT}`;
   return { script: source, timeoutMs: SEND_TIMEOUT_MS };
 }

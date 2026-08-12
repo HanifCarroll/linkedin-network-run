@@ -1,5 +1,5 @@
-import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { type OpenDatabase, openDatabase } from "../db/database.ts";
 import { NetworkEngine } from "../network/index.ts";
