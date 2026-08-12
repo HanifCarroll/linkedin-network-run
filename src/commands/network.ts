@@ -246,15 +246,10 @@ export async function networkTick(
       });
     }
 
-    const fresh = engine.readControllerState(run.id);
-    if (fresh.baseline === null && fresh.openAttempts.length > 0) {
-      return output("checkpoint", {
-        checkpoint: {
-          kind: "engine_state_invalid",
-          evidence: "an open attempt exists without a durable sent-list baseline",
-        },
-      });
-    }
+    // No pre-run baseline gate: acfb5f5 dropped the pre-run sent-list baseline
+    // audit in favor of per-attempt exact-match reconciliation (baseline_id is
+    // nullable). A run may hold open attempts with no baseline and still
+    // reconcile correctly.
 
     for (
       let orchestrationStep = 0;
