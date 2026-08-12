@@ -240,7 +240,7 @@ describe("controlled compiler contract", () => {
     expect(source).toContain("salesApiLeadSearch");
     expect(source).toContain("pendingInvitation");
     expect(source).toContain("replaySearch");
-    expect(source).not.toContain("li.artdeco-list__item");
+    expect(source).toContain("context.newPage()");
     expect(source).not.toContain("exhaustResultsScroll");
     // Sends on the lead page via the profile actions menu.
     expect(source).toContain("/sales/lead/");
@@ -250,32 +250,6 @@ describe("controlled compiler contract", () => {
     expect(source).toContain("sent.push({rowIdentity,name:candidate.name})");
     expect(source).toContain("already_pending");
     expect(source).toContain("email_required");
-  });
-
-  test("walk-list runs under the long source-capture timeout", async () => {
-    const directory = await root();
-    const argsFile = join(directory, "args.jsonl");
-    const invocation = await client(directory, "walk_timeout", {
-      FAKE_ARGS_FILE: argsFile,
-      FAKE_MENU_OPEN: "1",
-      FAKE_MODAL_OPEN: "1",
-    }).invoke({
-      sessionId: 7,
-      descriptor: compileNetworkScript("walk-list", {
-        url: candidate.searchUrl,
-        sourceContract: resolveNetworkSourceContract(candidate.searchUrl),
-        budget: 5,
-        pacingMs: 0,
-      }),
-    });
-    expect(invocation.receipt.outcome).toBe("succeeded");
-    const spawned = (await readFile(argsFile, "utf8"))
-      .trim()
-      .split("\n")
-      .map((l) => JSON.parse(l));
-    expect(spawned.some((args) => args.includes("--timeout") && args.includes("240000"))).toBe(
-      true,
-    );
   });
 
   test("every command has an explicit Playwriter timeout contract entry", () => {

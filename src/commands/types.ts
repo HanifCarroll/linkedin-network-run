@@ -31,6 +31,10 @@ export type NetworkTickInput = NetworkReadInput & {
   readonly maxRealSends: number;
   readonly playwriterBin: string;
   readonly sessionId: PlaywriterSessionSelection;
+  /** Optional per-source send mechanism override (A/B comparison). */
+  readonly sendModes?: Partial<
+    Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">
+  >;
 };
 
 export type NetworkReconcileInput = NetworkReadInput & {

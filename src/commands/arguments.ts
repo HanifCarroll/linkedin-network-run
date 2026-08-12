@@ -48,7 +48,7 @@ const NETWORK_HELP = `Usage:
   linkedin-tools [--json] network status [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network report [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network tick --allow-send [--batch-size 1..5]
-    [--target 30] [--max-real-sends 1..30]
+    [--target 30] [--max-real-sends 1..30] [--send-mode <sourceId>:<mode>]
     [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH] [--session ID|auto]
     [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] network reconcile [--date YYYY-MM-DD]
@@ -197,6 +197,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "--batch-size": "value",
         "--target": "value",
         "--max-real-sends": "value",
+        "--send-mode": "value",
         "--date": "value",
         "--state-dir": "value",
         "--session": "value",
@@ -382,6 +383,7 @@ function networkTickInput(options: ParsedOptions, context: ParseContext): Networ
       1,
       30,
     ),
+    sendModes: parseSendModes(options.repeated.get("--send-mode") ?? []),
     playwriterBin: playwriterBin(options, context),
     sessionId: requiredWorkflowSession(
       options.values.get("--session"),
@@ -532,6 +534,30 @@ function boundedInteger(value: string, label: string, minimum: number, maximum: 
     invalid(`${label} must be between ${minimum} and ${maximum}`);
   }
   return parsed;
+}
+
+function parseSendModes(
+  values: readonly string[],
+): Partial<Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">> {
+  const result: Partial<
+    Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">
+  > = {};
+  for (const value of values) {
+    const separator = value.indexOf(":");
+    if (separator <= 0 || separator === value.length - 1) {
+      invalid("--send-mode must be <sourceId>:<lead-page|search-row>");
+    }
+    const sourceId = value.slice(0, separator);
+    const mode = value.slice(separator + 1);
+    if (sourceId !== "hubspot-agency-ops" && sourceId !== "hubspot-b2b-revops") {
+      invalid(`--send-mode unknown source '${sourceId}'`);
+    }
+    if (mode !== "lead-page" && mode !== "search-row") {
+      invalid(`--send-mode for ${sourceId} must be lead-page or search-row`);
+    }
+    result[sourceId] = mode;
+  }
+  return result;
 }
 
 function absolutePath(value: string, label: string): string {
