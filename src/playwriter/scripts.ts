@@ -235,12 +235,12 @@ function walkListBody(
     `const maxPages=10;`,
     `const acquireFirstPage=async()=>{`,
     `if(!p.url().startsWith("https://www.linkedin.com/sales/search/people")){`,
-    `await p.goto(${literal(url)},{waitUntil:"domcontentloaded"});`,
+    `await p.goto(${literal(url)},{waitUntil:"domcontentloaded",timeout:60000});`,
     `}else{`,
     // Already on the search URL, but a settled SPA page does not refire the
     // sales-api boot requests our header listener needs. Reload to force
     // fresh salesApiLeadSearch/sales-api traffic without a full goto.
-    `await p.reload({waitUntil:"domcontentloaded"});`,
+    `await p.reload({waitUntil:"domcontentloaded",timeout:60000});`,
     `}`,
     progress("navigation_returned"),
     // The SPA soft-navigates after domcontentloaded; settle briefly so the
@@ -527,7 +527,7 @@ export function compileNetworkScript(
           "observation_after",
           "logs_captured",
         ],
-        `${before}${progress("navigation_started")}${usablePage(WORKFLOW_STATE_KEYS.sentInvitations)}if(p.url()!==${literal(sentUrl)}){await p.goto(${literal(sentUrl)},{waitUntil:"domcontentloaded"});}${progress("navigation_returned")}if(p.url()!==${literal(sentUrl)})throw new Error("WRONG_PAGE");${after}${finish(command, "data:{url:p.url()}")}`,
+        `${before}${progress("navigation_started")}${usablePage(WORKFLOW_STATE_KEYS.sentInvitations)}if(p.url()!==${literal(sentUrl)}){await p.goto(${literal(sentUrl)},{waitUntil:"domcontentloaded",timeout:60000});}${progress("navigation_returned")}if(p.url()!==${literal(sentUrl)})throw new Error("WRONG_PAGE");${after}${finish(command, "data:{url:p.url()}")}`,
       );
     case "capture-sent-list":
       return networkIssue(
