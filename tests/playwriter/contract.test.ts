@@ -273,6 +273,24 @@ describe("controlled compiler contract", () => {
     );
   });
 
+  test("walk-list recovers when the stored candidate-results page is closed", async () => {
+    const directory = await root();
+    const invocation = await client(directory, "walk_closed", {
+      FAKE_PAGE_CLOSED: "1",
+      FAKE_MENU_OPEN: "1",
+      FAKE_MODAL_OPEN: "1",
+    }).invoke({
+      sessionId: 7,
+      descriptor: compileNetworkScript("walk-list", {
+        url: candidate.searchUrl,
+        sourceContract: resolveNetworkSourceContract(candidate.searchUrl),
+        budget: 5,
+        pacingMs: 0,
+      }),
+    });
+    expect(invocation.receipt.outcome).toBe("succeeded");
+  });
+
   test("every command has an explicit Playwriter timeout contract entry", () => {
     for (const command of NETWORK_COMMANDS) {
       expect(COMMAND_TIMEOUT_MS[command], `missing timeout entry for ${command}`).toBeDefined();

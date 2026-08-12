@@ -415,9 +415,16 @@ class Locator {
 }
 
 class FakePage {
-  constructor(private current: string) {}
+  constructor(
+    private current: string,
+    private alwaysOpen = false,
+  ) {}
 
   readonly keyboard = { press: async (_key: string): Promise<void> => {} };
+
+  isClosed(): boolean {
+    return !this.alwaysOpen && process.env.FAKE_PAGE_CLOSED === "1";
+  }
 
   /** Compiled scripts may arm response listeners (e.g. salesApiLeadSearch capture). */
   on(_event: string, _listener: unknown): void {}
@@ -427,6 +434,7 @@ class FakePage {
   }
 
   async goto(url: string): Promise<null> {
+    if (this.isClosed()) throw new Error("Target page, context or browser has been closed");
     this.current = url;
     return null;
   }
@@ -472,6 +480,11 @@ class FakePage {
 const candidatePage = new FakePage(candidateUrl);
 const catalogPage = new FakePage(catalogUrl);
 const sentPage = new FakePage(sentUrl);
+const freshPage = new FakePage("about:blank", true);
+const context = {
+  pages: () => [candidatePage, catalogPage, sentPage],
+  newPage: async () => freshPage,
+};
 const stateFile = process.env.FAKE_STATE_FILE;
 const persisted =
   stateFile && existsSync(stateFile)
@@ -506,7 +519,6 @@ if (process.env.FAKE_SOURCE_STATE_MISMATCH === "1")
       },
     },
   };
-const context = { pages: () => [candidatePage, catalogPage, sentPage] };
 const getLatestLogs = async () => {
   switch (process.env.FAKE_DIAGNOSTIC_MODE) {
     case "repeated-generic":
