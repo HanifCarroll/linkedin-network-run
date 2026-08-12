@@ -9,6 +9,7 @@ import {
   type SendPreparationReceipt,
   type SentListEvidence,
   type WalkListResult,
+  type WalkSkippedRow,
 } from "./results.ts";
 import type {
   AuditBaselineInput,
@@ -69,11 +70,7 @@ export interface NetworkControllerEngine {
     sourceId: SourceId,
     rows: {
       readonly sent: readonly { readonly rowIdentity: string; readonly name: string }[];
-      readonly skipped: readonly {
-        readonly rowIdentity: string;
-        readonly name: string;
-        readonly reason: "already_pending" | "email_required" | "unreachable";
-      }[];
+      readonly skipped: readonly WalkSkippedRow[];
     },
     now: string,
   ): { readonly sent: number; readonly skipped: number };

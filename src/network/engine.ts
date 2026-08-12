@@ -7,6 +7,7 @@ import {
   type NetworkCandidate,
   parsePrepareSendReceipt,
   type SendPreparationReceipt,
+  type WalkSkipReason,
 } from "./results.ts";
 import type {
   AuditBaselineInput,
@@ -1212,7 +1213,7 @@ export class NetworkEngine {
       readonly skipped: readonly {
         readonly rowIdentity: string;
         readonly name: string;
-        readonly reason: "already_pending" | "email_required" | "unreachable";
+        readonly reason: WalkSkipReason;
       }[];
     },
     now: string,

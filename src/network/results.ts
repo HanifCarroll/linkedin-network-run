@@ -816,7 +816,12 @@ export function parseCommitSendEvidence(
   };
 }
 
-export type WalkSkipReason = "already_pending" | "email_required" | "unreachable";
+export type WalkSkipReason =
+  | "already_pending"
+  | "email_required"
+  | "unreachable"
+  | "api_error"
+  | `api_${number}`;
 
 export type WalkSentRow = {
   readonly rowIdentity: string;
@@ -841,6 +846,7 @@ const WALK_SKIP_REASONS = new Set<WalkSkipReason>([
   "already_pending",
   "email_required",
   "unreachable",
+  "api_error",
 ]);
 
 export function parseWalkResult(value: unknown, source: { readonly id: SourceId }): WalkListResult {
