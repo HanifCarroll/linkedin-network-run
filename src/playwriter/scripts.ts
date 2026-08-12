@@ -29,7 +29,6 @@ export interface NetworkScriptInput {
   readonly sourceContract?: NetworkSourceContract;
   readonly budget?: number;
   readonly pacingMs?: number;
-  readonly sendMode?: "lead-page" | "search-row";
 }
 
 export type AdapterPlanStep =
@@ -134,6 +133,13 @@ export function isControlledCompiledScript(v: unknown): v is CompiledScriptDescr
 
 const usablePage = (key: string) =>
   `let p=null;{const stored=state[${literal(key)}];if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages();const open=candidates.find((candidate)=>!candidate.isClosed());p=open??(await context.newPage());}state[${literal(key)}]=p;}`;
+// A self-contained walk must run on an extension-tracked page. The playwriter
+// extension only tracks pages it attached listeners to (its session page and
+// popups); pages created via context.newPage() are NOT tracked and get closed
+// (executor.js). So prefer the session's open tracked pages; create a new
+// tracked page only when none are open.
+const freshWalkPage = (key: string) =>
+  `let p=null;{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??page;state[${literal(key)}]=p;}`;
 const exactPage = (key: string, url: string) => {
   const expected = new URL(url);
   if (expected.pathname === "/sales/search/people" && expected.searchParams.has("savedSearchId"))
@@ -169,128 +175,33 @@ const sourceRowEligibility = () =>
 
 const exhaustResultsScroll = `let scrollPasses=0;let stagnantPasses=0;for(;scrollPasses<50;scrollPasses+=1){${scrollResultsStep}if(scrollState.after===scrollState.before){stagnantPasses+=1;if(stagnantPasses>=3)break;}else stagnantPasses=0;await p.waitForTimeout(700);}`;
 
-// One candidate on its Sales Navigator lead page: open the profile actions
-// menu, click Connect, then send. Returns a status string used to classify the
-// walk row (sent vs skipped). Each send runs on a FRESH temp page that is
-// closed afterward, so the stored candidate-results page is never navigated
-// away (which previously destabilized it and caused page-closure failures).
-const leadPageSendCandidate = (c: string) =>
-  `let sendStatus="unreachable";` +
-  `let sp=null;` +
-  `try{` +
-  `sp=await context.newPage();` +
-  `await sp.setViewportSize({width:1440,height:900}).catch(()=>{});` +
-  `await sp.goto("https://www.linkedin.com/sales/lead/"+(${c}).id,{waitUntil:"domcontentloaded",timeout:60000});` +
-  `await sp.waitForTimeout(1500);` +
-  `let trigger=sp.locator('button[aria-label="Open actions overflow menu"]').first();` +
-  `if(await trigger.count()===0)trigger=sp.locator('button[aria-label^="See more actions for"]').first();` +
-  `if(await trigger.count()!==1)throw new Error("MISSING_MORE_ACTIONS");` +
-  `const clickAction=async(target)=>{try{await target.click({timeout:8000});}catch{try{await target.click({timeout:3000,force:true});}catch{await target.evaluate((element)=>element.click());}}};` +
-  `const menuId=await trigger.getAttribute("aria-controls");` +
-  `await clickAction(trigger);` +
-  `await sp.waitForTimeout(500);` +
-  `let menu=menuId?sp.locator("#"+menuId).first():sp.locator("[data-popper-placement]").last();` +
-  `if(await menu.count()===0)menu=sp.locator("[data-popper-placement]").last();` +
-  `if(await menu.count()===0)throw new Error("MISSING_CONNECT_MENU");` +
-  `let connectItem=null;let pending=false;let emailRequired=false;` +
-  `for(const item of await menu.locator("button,a,[role=menuitem]").all()){` +
-  `const text=String(await item.textContent()??"").replace(/\\s+/g," ").trim();` +
-  `const aria=String(await item.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
-  `const label=text||aria;` +
-  `if(/^Connect$/i.test(label))connectItem=item;` +
-  `if(/^(Connect\\s*[-–—]\\s*)?Pending$/i.test(label))pending=true;` +
-  `if(/email/i.test(label)&&/required|connect/i.test(label))emailRequired=true;` +
-  `}` +
-  `if(pending){sendStatus="already_pending";}` +
-  `else if(emailRequired||connectItem===null){sendStatus=emailRequired?"email_required":"unreachable";}` +
-  `else{` +
-  `await clickAction(connectItem);` +
-  `await sp.waitForTimeout(500);` +
-  `let send=null;const sendDeadline=Date.now()+6000;` +
-  `for(let sendAttempt=0;sendAttempt<25&&Date.now()<=sendDeadline&&send===null;sendAttempt+=1){` +
-  `if((await sp.locator("input[type='email'], input[name*='email' i]").first().count().catch(()=>0))>0){sendStatus="email_required";break;}` +
-  `for(const candidateModal of await sp.locator(${literal(LINKEDIN_DIALOG_SELECTOR)}).all()){` +
-  `if(!(await candidateModal.isVisible()))continue;` +
-  `for(const button of await candidateModal.locator("button").all()){` +
-  `if(!(await button.isVisible()))continue;` +
-  `const text=String(await button.textContent()??"").replace(/\\s+/g," ").trim();` +
-  `const aria=String(await button.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
-  `if(${SEND_INVITATION_LABEL}.test(text||aria)){send=button;}` +
-  `}` +
-  `}` +
-  `if(send===null)await sp.waitForTimeout(250);` +
-  `}` +
-  `if(sendStatus==="email_required"){await sp.keyboard.press("Escape");}` +
-  `else if(send!==null){await send.click();sendStatus="sent";}` +
-  `else{await sp.keyboard.press("Escape");sendStatus="unreachable";}` +
-  `}` +
-  `await sp.keyboard.press("Escape");` +
-  `}catch(e){sendStatus=String((e&&e.message)||e).includes("EMAIL_REQUIRED")?"email_required":"unreachable";}` +
-  `finally{try{if(sp&&!sp.isClosed())await sp.close();}catch{}}` +
-  `const rowIdentity="urn:li:fs_salesProfile:"+candidate.id;` +
-  `if(sendStatus==="sent"){sent.push({rowIdentity,name:candidate.name});}` +
-  `else{skipped.push({rowIdentity,name:candidate.name,reason:sendStatus});}`;
-
-// One candidate on the saved-search results page: find its row by lead URL,
-// open the row's "See more actions" overflow menu, click Connect, then Send.
-// No new tabs; the stored candidate-results page is navigated back to the
-// search URL first so the row is present.
-const searchRowSendCandidate = (c: string) =>
+// Send a connection request to one candidate via the LinkedIn Voyager API,
+// fired as an in-page fetch from the already-loaded search page. Session
+// cookies attach automatically (credentials:'include'); csrf-token and
+// x-restli-protocol-version come from the captured sales-api request headers.
+// No DOM clicks, no navigation, no new tabs — the search page is never
+// disturbed, so the extension-tracked page stays stable. Classifies each row
+// as sent / already_pending / skipped.
+const sendApiCandidate = (c: string) =>
   `let sendStatus="unreachable";` +
   `try{` +
-  `await p.goto(sourceContract.searchUrl,{waitUntil:"domcontentloaded",timeout:60000});` +
-  `await p.waitForTimeout(1500);` +
-  `let row=null;` +
-  `const leadHref="https://www.linkedin.com/sales/lead/"+(${c}).id;` +
-  `for(let pageAttempt=0;pageAttempt<10&&row===null;pageAttempt+=1){` +
-  `const resultRows=p.locator("li.artdeco-list__item:has(a[href*='/sales/lead/'])");` +
-  `for(let waitAttempt=0;waitAttempt<30&&(await resultRows.count())===0;waitAttempt+=1)await p.waitForTimeout(1000);` +
-  `for(const r of await resultRows.all()){await r.scrollIntoViewIfNeeded();const link=r.locator("a[href*='/sales/lead/']").first();if(await link.count()===1&&String(await link.getAttribute("href")??"").endsWith("/sales/lead/"+(${c}).id)){row=r;break;}}` +
-  `}` +
-  `if(row===null)throw new Error("MISSING_ROW");` +
-  `const trigger=row.locator('button[aria-label^="See more actions for"]').first();` +
-  `if(await trigger.count()!==1)throw new Error("MISSING_MORE_ACTIONS");` +
-  `const clickAction=async(target)=>{try{await target.click({timeout:8000});}catch{try{await target.click({timeout:3000,force:true});}catch{await target.evaluate((element)=>element.click());}}};` +
-  `const menuId=await trigger.getAttribute("aria-controls");` +
-  `await clickAction(trigger);` +
-  `await p.waitForTimeout(500);` +
-  `let menu=menuId?p.locator("#"+menuId).first():p.locator("[data-popper-placement]").last();` +
-  `if(await menu.count()===0)menu=p.locator("[data-popper-placement]").last();` +
-  `if(await menu.count()===0)throw new Error("MISSING_CONNECT_MENU");` +
-  `let connectItem=null;let pending=false;let emailRequired=false;` +
-  `for(const item of await menu.locator("button,a,[role=menuitem]").all()){` +
-  `const text=String(await item.textContent()??"").replace(/\\s+/g," ").trim();` +
-  `const aria=String(await item.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
-  `const label=text||aria;` +
-  `if(/^Connect$/i.test(label))connectItem=item;` +
-  `if(/^(Connect\\s*[-–—]\\s*)?Pending$/i.test(label))pending=true;` +
-  `if(/email/i.test(label)&&/required|connect/i.test(label))emailRequired=true;` +
-  `}` +
-  `if(pending){sendStatus="already_pending";}` +
-  `else if(emailRequired||connectItem===null){sendStatus=emailRequired?"email_required":"unreachable";}` +
-  `else{` +
-  `await clickAction(connectItem);` +
-  `await p.waitForTimeout(500);` +
-  `let send=null;const sendDeadline=Date.now()+6000;` +
-  `for(let sendAttempt=0;sendAttempt<25&&Date.now()<=sendDeadline&&send===null;sendAttempt+=1){` +
-  `if((await p.locator("input[type='email'], input[name*='email' i]").first().count().catch(()=>0))>0){sendStatus="email_required";break;}` +
-  `for(const candidateModal of await p.locator(${literal(LINKEDIN_DIALOG_SELECTOR)}).all()){` +
-  `if(!(await candidateModal.isVisible()))continue;` +
-  `for(const button of await candidateModal.locator("button").all()){` +
-  `if(!(await button.isVisible()))continue;` +
-  `const text=String(await button.textContent()??"").replace(/\\s+/g," ").trim();` +
-  `const aria=String(await button.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
-  `if(${SEND_INVITATION_LABEL}.test(text||aria)){send=button;}` +
-  `}` +
-  `}` +
-  `if(send===null)await p.waitForTimeout(250);` +
-  `}` +
-  `if(sendStatus==="email_required"){await p.keyboard.press("Escape");}` +
-  `else if(send!==null){await send.click();sendStatus="sent";}` +
-  `else{await p.keyboard.press("Escape");sendStatus="unreachable";}` +
-  `}` +
-  `await p.keyboard.press("Escape");` +
-  `}catch(e){sendStatus=String((e&&e.message)||e).includes("EMAIL_REQUIRED")?"email_required":"unreachable";}` +
+  `const memberProfile="urn:li:fsd_profile:"+(${c}).id;` +
+  `const inviteUrl="https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2&decorationId=com.linkedin.voyager.dash.deco.relationships.InvitationCreationResultWithInvitee-2";` +
+  `const payload={invitee:{inviteeUnion:{memberProfile}},customMessage:""};` +
+  `const res=await p.evaluate(async ({u,body,csrf})=>{` +
+  `const response=await fetch(u,{` +
+  `method:"POST",` +
+  `credentials:"include",` +
+  `headers:{"csrf-token":csrf,"x-restli-protocol-version":"2.0.0","content-type":"application/json","accept":"application/vnd.linkedin.normalized+json+2.1"},` +
+  `body:JSON.stringify(body)` +
+  `});` +
+  `const text=await response.text();` +
+  `return {status:response.status,text:text.slice(0,400)};` +
+  `},{u:inviteUrl,body:payload,csrf:(hdrs&&hdrs["csrf-token"])||""});` +
+  `if(res.status>=200&&res.status<300){sendStatus="sent";}` +
+  `else if(/CANT_RESEND_YET|already.*invit|pending/i.test(res.text)){sendStatus="already_pending";}` +
+  `else{sendStatus="api_"+res.status;}` +
+  `}catch(e){sendStatus=String((e&&e.message)||e).includes("CANT_RESEND_YET")?"already_pending":"api_error";}` +
   `const rowIdentity="urn:li:fs_salesProfile:"+candidate.id;` +
   `if(sendStatus==="sent"){sent.push({rowIdentity,name:candidate.name});}` +
   `else{skipped.push({rowIdentity,name:candidate.name,reason:sendStatus});}`;
@@ -300,7 +211,6 @@ function walkListBody(
   sourceContract: NetworkSourceContract,
   budget: number,
   pacingMs: number,
-  sendMode: "lead-page" | "search-row",
 ): string {
   return [
     before,
@@ -308,8 +218,7 @@ function walkListBody(
     `const sourceContract=${literal(sourceContract)};`,
     `const budget=${literal(budget)};`,
     `const pacingMs=${literal(pacingMs)};`,
-    `const sendMode=${literal(sendMode)};`,
-    usablePage(WORKFLOW_STATE_KEYS.candidateResults),
+    freshWalkPage(WORKFLOW_STATE_KEYS.candidateResults),
     // Capture sales-api request headers (csrf-token, x-li-track, referer,
     // UA — identical across the API). We need at least one to replay the
     // search fetch; we wait for the natural salesApiLeadSearch request as a
@@ -353,11 +262,11 @@ function walkListBody(
     `addCandidates(pageData.elements);`,
     `nextStart=nextStart+pageData.elements.length;`,
     `}`,
-    // Send to each connectable candidate (lead-page uses a fresh tab per send;
-    // search-row sends from the search results page row).
+    // Send to each connectable candidate via the Voyager invite API (in-page
+    // fetch, no DOM clicks, no navigation).
     `for(const candidate of candidates){`,
     `if(sent.length>=budget)break;`,
-    `if(sendMode==="search-row"){${searchRowSendCandidate("candidate")}}else{${leadPageSendCandidate("candidate")}}`,
+    sendApiCandidate("candidate"),
     `if(sent.length<budget)await p.waitForTimeout(pacingMs);`,
     `}`,
     `if(sent.length>=budget||candidates.length===0)complete=true;`,
@@ -615,9 +524,6 @@ export function compileNetworkScript(
       const sourceContract = needSourceContract();
       const budget = input.budget;
       const pacingMs = input.pacingMs;
-      const sendMode = input.sendMode ?? "lead-page";
-      if (sendMode !== "lead-page" && sendMode !== "search-row")
-        throw new TypeError("walk-list requires sendMode 'lead-page' or 'search-row'");
       if (!Number.isSafeInteger(budget) || (budget as number) < 1 || (budget as number) > 30)
         throw new TypeError("walk-list requires budget 1..30");
       if (!Number.isSafeInteger(pacingMs) || (pacingMs as number) < 0)
@@ -632,7 +538,7 @@ export function compileNetworkScript(
           "observation_after",
           "logs_captured",
         ],
-        walkListBody(u, sourceContract, budget as number, pacingMs as number, sendMode),
+        walkListBody(u, sourceContract, budget as number, pacingMs as number),
         undefined,
         undefined,
         sourceContract,

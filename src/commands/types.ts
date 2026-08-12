@@ -31,10 +31,6 @@ export type NetworkTickInput = NetworkReadInput & {
   readonly maxRealSends: number;
   readonly playwriterBin: string;
   readonly sessionId: PlaywriterSessionSelection;
-  /** Optional per-source send mechanism override (A/B comparison). */
-  readonly sendModes?: Partial<
-    Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">
-  >;
 };
 
 export type NetworkReconcileInput = NetworkReadInput & {
@@ -68,6 +64,43 @@ export type AnalyticsExportInput = {
   readonly maxPolls?: number;
 };
 
+export type JobsSearchInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  readonly keywords: string;
+  readonly location: string;
+  readonly postedWithinDays?: number;
+  readonly remote?: boolean;
+  readonly pages: number;
+  readonly hiringTeamLimit: number;
+};
+
+export type JobsListInput = {
+  readonly stateDir: string;
+  readonly status?: "collected" | "favorite" | "drafted" | "sent";
+  readonly withHiringTeam: boolean;
+};
+
+export type JobsFavoriteInput = {
+  readonly stateDir: string;
+  readonly ids: readonly string[];
+};
+
+export type JobsDraftInput = {
+  readonly stateDir: string;
+  readonly id: string;
+  readonly message: string;
+};
+
+export type JobsSendInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  readonly id?: string;
+  readonly allowSend: true;
+};
+
 export type MigrationDryRunInput = {
   readonly sourceRoot: string;
 };
@@ -84,6 +117,11 @@ export interface CliOperations {
   networkIncidentClear(input: NetworkIncidentClearInput): Promise<unknown>;
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
   migrationDryRun(input: MigrationDryRunInput): Promise<unknown>;
+  jobsSearch(input: JobsSearchInput): Promise<unknown>;
+  jobsList(input: JobsListInput): Promise<unknown>;
+  jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
+  jobsDraft(input: JobsDraftInput): Promise<unknown>;
+  jobsSend(input: JobsSendInput): Promise<unknown>;
 }
 
 export type ParsedInvocation =
@@ -130,4 +168,13 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "network incident-clear";
       readonly input: NetworkIncidentClearInput;
-    };
+    }
+  | { readonly kind: "command"; readonly command: "jobs search"; readonly input: JobsSearchInput }
+  | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs favorite";
+      readonly input: JobsFavoriteInput;
+    }
+  | { readonly kind: "command"; readonly command: "jobs draft"; readonly input: JobsDraftInput }
+  | { readonly kind: "command"; readonly command: "jobs send"; readonly input: JobsSendInput };

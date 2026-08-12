@@ -93,6 +93,16 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.analyticsExport(invocation.input);
     case "migration dry-run":
       return operations.migrationDryRun(invocation.input);
+    case "jobs search":
+      return operations.jobsSearch(invocation.input);
+    case "jobs list":
+      return operations.jobsList(invocation.input);
+    case "jobs favorite":
+      return operations.jobsFavorite(invocation.input);
+    case "jobs draft":
+      return operations.jobsDraft(invocation.input);
+    case "jobs send":
+      return operations.jobsSend(invocation.input);
   }
 }
 

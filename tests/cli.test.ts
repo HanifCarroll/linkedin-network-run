@@ -23,6 +23,11 @@ function harness(override: Partial<CliOperations> = {}) {
     networkIncidentClear: operation("networkIncidentClear"),
     analyticsExport: operation("analyticsExport"),
     migrationDryRun: operation("migrationDryRun"),
+    jobsSearch: operation("jobsSearch"),
+    jobsList: operation("jobsList"),
+    jobsFavorite: operation("jobsFavorite"),
+    jobsDraft: operation("jobsDraft"),
+    jobsSend: operation("jobsSend"),
     ...override,
   };
   const stdout: string[] = [];

@@ -5,7 +5,7 @@ import { PlaywriterClient } from "../playwriter/client.ts";
 import type { SessionInfo } from "../playwriter/types.ts";
 import type { PlaywriterSessionSelection } from "./types.ts";
 
-export type SessionWorkflow = "network" | "analytics";
+export type SessionWorkflow = "network" | "analytics" | "jobs";
 
 export type SessionClient = {
   readonly listSessions: () => Promise<readonly SessionInfo[]>;
@@ -46,18 +46,22 @@ export async function resolvePlaywriterSession(
 
   try {
     const binding = await readBinding(request.stateDir, request.workflow);
-    const otherBinding = await readBinding(request.stateDir, otherWorkflow(request.workflow));
+    const otherBindings = otherWorkflows(request.workflow).map((workflow) => ({
+      workflow,
+      binding: readBindingNullable(request.stateDir, workflow),
+    }));
+    const others = await Promise.all(otherBindings.map((entry) => entry.binding));
     const client = (dependencies.createClient ?? defaultCreateClient)(request);
     const active = await client.listSessions();
 
     if (binding !== null && active.some((session) => session.id === binding.sessionId)) {
-      assertDedicated(binding.sessionId, request.workflow, otherBinding);
+      for (const other of others) assertDedicated(binding.sessionId, request.workflow, other);
       return binding.sessionId;
     }
 
     const sessionId = await client.createSession();
     assertSessionId(sessionId);
-    assertDedicated(sessionId, request.workflow, otherBinding);
+    for (const other of others) assertDedicated(sessionId, request.workflow, other);
     const verified = await client.listSessions();
     if (!verified.some((session) => session.id === sessionId)) {
       throw new TypeError("new Playwriter session was not present in the active session list");
@@ -176,8 +180,15 @@ function assertSessionId(value: unknown): asserts value is number {
   }
 }
 
-function otherWorkflow(workflow: SessionWorkflow): SessionWorkflow {
-  return workflow === "network" ? "analytics" : "network";
+function otherWorkflows(workflow: SessionWorkflow): readonly SessionWorkflow[] {
+  return (["network", "analytics", "jobs"] as const).filter((candidate) => candidate !== workflow);
+}
+
+function readBindingNullable(
+  stateDir: string,
+  workflow: SessionWorkflow,
+): Promise<SessionBinding | null> {
+  return readBinding(stateDir, workflow);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

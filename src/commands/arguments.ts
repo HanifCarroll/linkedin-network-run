@@ -3,6 +3,11 @@ import { CliError } from "../core/errors.ts";
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsDraftInput,
+  JobsFavoriteInput,
+  JobsListInput,
+  JobsSearchInput,
+  JobsSendInput,
   MigrationDryRunInput,
   NetworkIncidentClearInput,
   NetworkIncidentStatusInput,
@@ -33,6 +38,11 @@ Commands:
   network incident-clear Clear the active incident after dual human confirmation
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
+  jobs search            Collect jobs from a LinkedIn search and check hiring teams
+  jobs list              List collected jobs from the local store
+  jobs favorite          Mark collected jobs for review
+  jobs draft             Store a drafted outreach message for a job
+  jobs send              Send drafted messages to listed hiring team members (--allow-send)
 
 Browser boundary:
   Playwriter is the only browser boundary: no Playwright import, direct CDP,
@@ -48,7 +58,7 @@ const NETWORK_HELP = `Usage:
   linkedin-tools [--json] network status [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network report [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network tick --allow-send [--batch-size 1..5]
-    [--target 30] [--max-real-sends 1..30] [--send-mode <sourceId>:<mode>]
+    [--target 30] [--max-real-sends 1..30]
     [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH] [--session ID|auto]
     [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] network reconcile [--date YYYY-MM-DD]
@@ -86,6 +96,25 @@ const MIGRATION_HELP = `Usage:
   linkedin-tools [--json] migration dry-run --source-root ABSOLUTE_PATH
 
 This command reads legacy state and returns proposals. It has no apply mode.
+`;
+
+const JOBS_HELP = `Usage:
+  linkedin-tools [--json] jobs search --keywords "product engineer"
+    --location "United States" [--posted-within 1|7|14|30] [--remote]
+    [--pages 1..10] [--hiring-team-limit 1..50]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs list [--status collected|favorite|drafted|sent]
+    [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+
+jobs search collects postings from a LinkedIn jobs search (via the
+voyagerJobsDashJobCards XHR), loads each posting's direct view to read the
+"Meet the hiring team" section, and stores the jobs locally. jobs send opens
+the first listed hiring team member's profile, composes the drafted message,
+and sends it — it requires the explicit --allow-send flag.
 `;
 
 type OptionKind = "boolean" | "value" | "repeatable";
@@ -197,7 +226,6 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "--batch-size": "value",
         "--target": "value",
         "--max-real-sends": "value",
-        "--send-mode": "value",
         "--date": "value",
         "--state-dir": "value",
         "--session": "value",
@@ -296,7 +324,132 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     return { kind: "command", command: "migration dry-run", input };
   }
 
+  if (argv[0] === "jobs") {
+    if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: JOBS_HELP };
+    const verb = argv[1];
+    if (!["search", "list", "favorite", "draft", "send"].includes(verb ?? "")) {
+      invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
+    }
+    if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
+    if (verb === "search") {
+      const options = parseOptions(argv.slice(2), {
+        "--keywords": "value",
+        "--location": "value",
+        "--posted-within": "value",
+        "--remote": "boolean",
+        "--pages": "value",
+        "--hiring-team-limit": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      return { kind: "command", command: "jobs search", input: jobsSearchInput(options, context) };
+    }
+    if (verb === "list") {
+      const options = parseOptions(argv.slice(2), {
+        "--status": "value",
+        "--with-hiring-team": "boolean",
+        "--state-dir": "value",
+      });
+      const status = options.values.get("--status");
+      if (status !== undefined && !["collected", "favorite", "drafted", "sent"].includes(status)) {
+        invalid("--status must be collected, favorite, drafted, or sent");
+      }
+      const input: JobsListInput = {
+        stateDir: stateDir(options, context),
+        ...(status === undefined
+          ? {}
+          : { status: status as NonNullable<JobsListInput["status"]> }),
+        withHiringTeam: options.booleans.has("--with-hiring-team"),
+      };
+      return { kind: "command", command: "jobs list", input };
+    }
+    if (verb === "favorite") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "repeatable",
+        "--state-dir": "value",
+      });
+      const ids = options.repeated.get("--id") ?? [];
+      if (ids.length === 0) invalid("jobs favorite requires at least one --id");
+      const input: JobsFavoriteInput = { stateDir: stateDir(options, context), ids };
+      return { kind: "command", command: "jobs favorite", input };
+    }
+    if (verb === "draft") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--message": "value",
+        "--state-dir": "value",
+      });
+      const message = options.values.get("--message");
+      if (message === undefined || message.trim().length === 0) {
+        invalid("jobs draft requires a non-empty --message");
+      }
+      const input: JobsDraftInput = {
+        stateDir: stateDir(options, context),
+        id: required(options, "--id"),
+        message: message.trim(),
+      };
+      return { kind: "command", command: "jobs draft", input };
+    }
+    const options = parseOptions(argv.slice(2), {
+      "--allow-send": "boolean",
+      "--id": "value",
+      "--state-dir": "value",
+      "--session": "value",
+      "--playwriter-bin": "value",
+    });
+    if (!options.booleans.has("--allow-send")) {
+      throw new CliError(
+        "SEND_NOT_AUTHORIZED",
+        "jobs send requires the explicit --allow-send flag",
+        { exitCode: 3 },
+      );
+    }
+    const input: JobsSendInput = {
+      stateDir: stateDir(options, context),
+      playwriterBin: playwriterBin(options, context),
+      sessionId: requiredWorkflowSession(
+        options.values.get("--session"),
+        context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+        "--session",
+      ),
+      allowSend: true,
+      ...(options.values.get("--id") === undefined ? {} : { id: options.values.get("--id")! }),
+    };
+    return { kind: "command", command: "jobs send", input };
+  }
+
   invalid(`unknown command: ${argv[0]}`);
+}
+
+function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSearchInput {
+  const keywords = required(options, "--keywords");
+  const postedRaw = options.values.get("--posted-within");
+  const postedWithinDays =
+    postedRaw === undefined ? undefined : boundedInteger(postedRaw, "--posted-within", 1, 30);
+  if (postedWithinDays !== undefined && ![1, 7, 14, 30].includes(postedWithinDays)) {
+    invalid("--posted-within must be 1, 7, 14, or 30");
+  }
+  return {
+    stateDir: stateDir(options, context),
+    playwriterBin: playwriterBin(options, context),
+    sessionId: requiredWorkflowSession(
+      options.values.get("--session"),
+      context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+      "--session",
+    ),
+    keywords,
+    location: options.values.get("--location") ?? "",
+    ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
+    ...(options.booleans.has("--remote") ? { remote: true } : {}),
+    pages: boundedInteger(options.values.get("--pages") ?? "1", "--pages", 1, 10),
+    hiringTeamLimit: boundedInteger(
+      options.values.get("--hiring-team-limit") ?? "25",
+      "--hiring-team-limit",
+      1,
+      50,
+    ),
+  };
 }
 
 function parseOptions(argv: readonly string[], spec: OptionSpec): ParsedOptions {
@@ -383,7 +536,6 @@ function networkTickInput(options: ParsedOptions, context: ParseContext): Networ
       1,
       30,
     ),
-    sendModes: parseSendModes(options.repeated.get("--send-mode") ?? []),
     playwriterBin: playwriterBin(options, context),
     sessionId: requiredWorkflowSession(
       options.values.get("--session"),
@@ -536,29 +688,7 @@ function boundedInteger(value: string, label: string, minimum: number, maximum: 
   return parsed;
 }
 
-function parseSendModes(
-  values: readonly string[],
-): Partial<Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">> {
-  const result: Partial<
-    Record<"hubspot-agency-ops" | "hubspot-b2b-revops", "lead-page" | "search-row">
-  > = {};
-  for (const value of values) {
-    const separator = value.indexOf(":");
-    if (separator <= 0 || separator === value.length - 1) {
-      invalid("--send-mode must be <sourceId>:<lead-page|search-row>");
-    }
-    const sourceId = value.slice(0, separator);
-    const mode = value.slice(separator + 1);
-    if (sourceId !== "hubspot-agency-ops" && sourceId !== "hubspot-b2b-revops") {
-      invalid(`--send-mode unknown source '${sourceId}'`);
-    }
-    if (mode !== "lead-page" && mode !== "search-row") {
-      invalid(`--send-mode for ${sourceId} must be lead-page or search-row`);
-    }
-    result[sourceId] = mode;
-  }
-  return result;
-}
+
 
 function absolutePath(value: string, label: string): string {
   if (value.includes("\0") || value.trim().length === 0) invalid(`${label} is invalid`);

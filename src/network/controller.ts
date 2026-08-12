@@ -37,7 +37,6 @@ export interface NetworkBrowserPort {
     source: (typeof NETWORK_SOURCES)[number],
     budget: number,
     pacingMs: number,
-    sendMode?: "lead-page" | "search-row",
   ): Promise<BrowserPortResult<unknown>>;
   captureSentList(): Promise<BrowserPortResult<unknown>>;
 }
@@ -184,7 +183,6 @@ export class NetworkController {
     sourceId: SourceId,
     budget: number,
     pacingMs: number,
-    sendMode?: "lead-page" | "search-row",
   ): Promise<TickResult> {
     const durable = this.readState(runId);
     if ("state" in durable) return durable;
@@ -193,7 +191,7 @@ export class NetworkController {
     }
     const source = this.source(sourceId);
     const walk = await this.browserCall(runId, "walk_list", () =>
-      this.browser.walkList(source, budget, pacingMs, sendMode),
+      this.browser.walkList(source, budget, pacingMs),
     );
     if ("state" in walk) return walk;
     let parsed: WalkListResult;

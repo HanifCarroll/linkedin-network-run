@@ -92,6 +92,27 @@ try {
       calls.push("migration dry-run");
       return { proposalOnly: true };
     },
+    jobsSearch: async () => {
+      calls.push("jobs search");
+      return { collected: 0 };
+    },
+    jobsList: async () => {
+      calls.push("jobs list");
+      return { count: 0, jobs: [] };
+    },
+    jobsFavorite: async () => {
+      calls.push("jobs favorite");
+      return { favorited: 0 };
+    },
+    jobsDraft: async () => {
+      calls.push("jobs draft");
+      return { job: null };
+    },
+    jobsSend: async (input) => {
+      if (input.sessionId !== "auto") throw new Error("jobs send did not parse auto");
+      calls.push("jobs send");
+      return { sent: 0, skipped: 0, results: [] };
+    },
   };
   const common = {
     operations: fakeOperations,

@@ -266,6 +266,27 @@ const migrations: readonly Migration[] = [
       ALTER TABLE reconciliations_new RENAME TO reconciliations;
     `,
   },
+  {
+    id: 3,
+    name: "jobs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        company TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        posting_url TEXT NOT NULL,
+        hiring_team_json TEXT NOT NULL DEFAULT '[]',
+        has_hiring_team INTEGER NOT NULL DEFAULT 0 CHECK(has_hiring_team IN (0, 1)),
+        status TEXT NOT NULL DEFAULT 'collected'
+          CHECK(status IN ('collected', 'favorite', 'drafted', 'sent')),
+        message TEXT,
+        collected_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sent_at TEXT
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {

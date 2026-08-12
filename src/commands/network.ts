@@ -331,13 +331,7 @@ export async function networkTick(
           continue;
         }
 
-        const walked = await controller.walkList(
-          run.id,
-          source,
-          sourceBudget,
-          pacingMs,
-          input.sendModes?.[source],
-        );
+        const walked = await controller.walkList(run.id, source, sourceBudget, pacingMs);
         steps.push(walked);
         if (walked.state === "terminal") {
           return output("terminal", { terminal: walked.terminal });
@@ -559,7 +553,6 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
     source: (typeof NETWORK_SOURCES)[number],
     budget: number,
     pacingMs: number,
-    sendMode?: "lead-page" | "search-row",
   ): Promise<BrowserPortResult<unknown>> {
     try {
       const contract = networkSourceContract(source.id);
@@ -576,7 +569,6 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
         sourceContract: contract,
         budget,
         pacingMs,
-        ...(sendMode ? { sendMode } : {}),
       });
       if (
         invocation.receipt.outcome !== "succeeded" ||
