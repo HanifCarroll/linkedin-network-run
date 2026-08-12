@@ -1,0 +1,634 @@
+import { isAbsolute, join, resolve } from "node:path";
+import { CliError } from "../core/errors.ts";
+import type {
+  AnalyticsExportInput,
+  DoctorInput,
+  MigrationDryRunInput,
+  NetworkIncidentClearInput,
+  NetworkIncidentStatusInput,
+  NetworkReadInput,
+  NetworkReconcileInput,
+  NetworkRunEndInput,
+  NetworkSessionResetInput,
+  NetworkTickInput,
+  ParsedInvocation,
+} from "./types.ts";
+
+const PLAYWRITER_DEFAULT = "/Users/hanifcarroll/.bun/bin/playwriter";
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export const HELP = `linkedin-tools — deterministic LinkedIn operations
+
+Usage:
+  linkedin-tools [--json] <command> [options]
+
+Commands:
+  doctor                 Check Bun, Playwriter, sessions, state paths, and SQLite
+  network status         Read the current local-day network state
+  network report         Read the deterministic current local-day report
+  network tick           Finish today's guarded 30-request run; requires --allow-send
+  network reconcile      Audit possible sends and finish only after complete reconciliation
+  network run-end        End an active day's run so the next day can start cleanly
+  network incident-status  Show the active LinkedIn browser incident, if any
+  network incident-clear Clear the active incident after dual human confirmation
+  analytics export       Export and validate one exact seven-day analytics workbook
+  migration dry-run      Build a read-only, proposal-only legacy migration report
+
+Browser boundary:
+  Playwriter is the only browser boundary: no Playwright import, direct CDP,
+  Chrome-control fallback, browser lease, or cross-automation lock; no browser lease is used.
+
+Global options:
+  --json                  Emit one stable JSON envelope to stdout
+  -h, --help              Show help
+  -v, --version           Show version
+`;
+
+const NETWORK_HELP = `Usage:
+  linkedin-tools [--json] network status [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] network report [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] network tick --allow-send [--batch-size 1..5]
+    [--target 30] [--max-real-sends 1..30]
+    [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH] [--session ID|auto]
+    [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] network reconcile [--date YYYY-MM-DD]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] network run-end --date YYYY-MM-DD --reason "..."
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] network session-reset [--state-dir ABSOLUTE_PATH]
+    [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] network incident-status [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] network incident-clear
+    --account-access-confirmed --warning-cleared-confirmed --reason "..."
+    [--state-dir ABSOLUTE_PATH]
+
+One tick continues serially through audited microbatches until Done or a typed
+checkpoint/terminal blocker. Audits cannot be disabled. The daily target is
+fixed at 30 and total durable commit starts can never exceed 30. At a new local
+day, older active runs without planned or possible sends are parked as missed;
+older runs with either require an exact-date reconciliation first. An active
+incident blocks all browser automation until cleared with dual confirmation.
+`;
+
+const ANALYTICS_HELP = `Usage:
+  linkedin-tools [--json] analytics export --out ABSOLUTE_PATH.xlsx
+    --account NAME --download-root ABSOLUTE_PATH --session ID|auto
+    (--period previous-7-days | --start-date YYYY-MM-DD --end-date YYYY-MM-DD)
+    [--receipt ABSOLUTE_PATH.json] [--recovery-state ABSOLUTE_PATH.json]
+    [--poll-interval-ms 100..60000] [--max-polls 1..120]
+    [--state-dir ABSOLUTE_PATH] [--playwriter-bin ABSOLUTE_PATH]
+
+  --download-root may be repeated. Output and receipt paths may contain
+  {startDate} and {endDate}; expansion occurs before path validation.
+`;
+
+const MIGRATION_HELP = `Usage:
+  linkedin-tools [--json] migration dry-run --source-root ABSOLUTE_PATH
+
+This command reads legacy state and returns proposals. It has no apply mode.
+`;
+
+type OptionKind = "boolean" | "value" | "repeatable";
+type OptionSpec = Readonly<Record<string, OptionKind>>;
+type ParsedOptions = {
+  readonly booleans: ReadonlySet<string>;
+  readonly values: ReadonlyMap<string, string>;
+  readonly repeated: ReadonlyMap<string, readonly string[]>;
+};
+
+export type ParseContext = {
+  readonly now: Date;
+  readonly env: Readonly<Record<string, string | undefined>>;
+};
+
+export function extractJsonMode(argv: readonly string[]): {
+  readonly json: boolean;
+  readonly argv: readonly string[];
+} {
+  const count = argv.filter((argument) => argument === "--json").length;
+  if (count > 1) invalid("--json may be provided only once");
+  return { json: count === 1, argv: argv.filter((argument) => argument !== "--json") };
+}
+
+export function parseInvocation(argv: readonly string[], context: ParseContext): ParsedInvocation {
+  if (argv.length === 0 || isHelp(argv[0])) return { kind: "help", text: HELP };
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    if (argv.length !== 1) invalid("--version cannot be combined with another argument");
+    return { kind: "version" };
+  }
+
+  if (argv[0] === "doctor") {
+    if (isHelp(argv[1])) return { kind: "help", text: doctorHelp() };
+    const options = parseOptions(argv.slice(1), {
+      "--state-dir": "value",
+      "--playwriter-bin": "value",
+      "--network-session": "value",
+      "--analytics-session": "value",
+    });
+    return { kind: "command", command: "doctor", input: doctorInput(options, context) };
+  }
+
+  if (argv[0] === "network") {
+    if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: NETWORK_HELP };
+    const verb = argv[1];
+    if (
+      ![
+        "status",
+        "report",
+        "tick",
+        "reconcile",
+        "run-end",
+        "session-reset",
+        "incident-status",
+        "incident-clear",
+      ].includes(verb ?? "")
+    ) {
+      invalid(`unknown network command: ${verb ?? "(missing)"}`);
+    }
+    if (isHelp(argv[2])) return { kind: "help", text: NETWORK_HELP };
+    if (verb === "status" || verb === "report") {
+      const options = parseOptions(argv.slice(2), {
+        "--date": "value",
+        "--state-dir": "value",
+      });
+      return {
+        kind: "command",
+        command: `network ${verb}`,
+        input: networkReadInput(options, context),
+      };
+    }
+    if (verb === "incident-status") {
+      const options = parseOptions(argv.slice(2), {
+        "--state-dir": "value",
+      });
+      const input: NetworkIncidentStatusInput = {
+        stateDir: stateDir(options, context),
+      };
+      return { kind: "command", command: "network incident-status", input };
+    }
+    if (verb === "incident-clear") {
+      const options = parseOptions(argv.slice(2), {
+        "--state-dir": "value",
+        "--reason": "value",
+        "--account-access-confirmed": "boolean",
+        "--warning-cleared-confirmed": "boolean",
+      });
+      if (!options.booleans.has("--account-access-confirmed")) {
+        invalid("incident-clear requires --account-access-confirmed");
+      }
+      if (!options.booleans.has("--warning-cleared-confirmed")) {
+        invalid("incident-clear requires --warning-cleared-confirmed");
+      }
+      const reason = options.values.get("--reason");
+      if (reason === undefined || reason.trim().length === 0) {
+        invalid("incident-clear requires a non-empty --reason");
+      }
+      const input: NetworkIncidentClearInput = {
+        stateDir: stateDir(options, context),
+        reason: reason.trim(),
+        accountAccessConfirmed: true,
+        warningClearedConfirmed: true,
+      };
+      return { kind: "command", command: "network incident-clear", input };
+    }
+    if (verb === "tick") {
+      const options = parseOptions(argv.slice(2), {
+        "--allow-send": "boolean",
+        "--batch-size": "value",
+        "--target": "value",
+        "--max-real-sends": "value",
+        "--date": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      if (!options.booleans.has("--allow-send")) {
+        throw new CliError(
+          "SEND_NOT_AUTHORIZED",
+          "network tick requires the explicit --allow-send flag",
+          { exitCode: 3 },
+        );
+      }
+      return {
+        kind: "command",
+        command: "network tick",
+        input: networkTickInput(options, context),
+      };
+    }
+    if (verb === "run-end") {
+      const options = parseOptions(argv.slice(2), {
+        "--date": "value",
+        "--state-dir": "value",
+        "--reason": "value",
+      });
+      const reason = options.values.get("--reason");
+      if (reason === undefined || reason.trim().length === 0) {
+        invalid("run-end requires a non-empty --reason");
+      }
+      const input: NetworkRunEndInput = {
+        stateDir: stateDir(options, context),
+        localDate: parseDate(required(options, "--date"), "--date"),
+        reason: reason.trim(),
+      };
+      return { kind: "command", command: "network run-end", input };
+    }
+    if (verb === "session-reset") {
+      const options = parseOptions(argv.slice(2), {
+        "--state-dir": "value",
+        "--playwriter-bin": "value",
+      });
+      const input: NetworkSessionResetInput = {
+        stateDir: stateDir(options, context),
+        playwriterBin: playwriterBin(options, context),
+      };
+      return { kind: "command", command: "network session-reset", input };
+    }
+    const options = parseOptions(argv.slice(2), {
+      "--date": "value",
+      "--state-dir": "value",
+      "--session": "value",
+      "--playwriter-bin": "value",
+    });
+    return {
+      kind: "command",
+      command: "network reconcile",
+      input: networkReconcileInput(options, context),
+    };
+  }
+
+  if (argv[0] === "analytics") {
+    if (argv.length === 1 || isHelp(argv[1]) || isHelp(argv[2])) {
+      return { kind: "help", text: ANALYTICS_HELP };
+    }
+    if (argv[1] !== "export") invalid(`unknown analytics command: ${argv[1]}`);
+    const options = parseOptions(argv.slice(2), {
+      "--out": "value",
+      "--receipt": "value",
+      "--recovery-state": "value",
+      "--account": "value",
+      "--start-date": "value",
+      "--end-date": "value",
+      "--period": "value",
+      "--download-root": "repeatable",
+      "--poll-interval-ms": "value",
+      "--max-polls": "value",
+      "--state-dir": "value",
+      "--session": "value",
+      "--playwriter-bin": "value",
+    });
+    return {
+      kind: "command",
+      command: "analytics export",
+      input: analyticsInput(options, context),
+    };
+  }
+
+  if (argv[0] === "migration") {
+    if (argv.length === 1 || isHelp(argv[1]) || isHelp(argv[2])) {
+      return { kind: "help", text: MIGRATION_HELP };
+    }
+    if (argv[1] !== "dry-run") invalid(`unknown migration command: ${argv[1]}`);
+    const options = parseOptions(argv.slice(2), { "--source-root": "value" });
+    const input: MigrationDryRunInput = {
+      sourceRoot: absolutePath(required(options, "--source-root"), "--source-root"),
+    };
+    return { kind: "command", command: "migration dry-run", input };
+  }
+
+  invalid(`unknown command: ${argv[0]}`);
+}
+
+function parseOptions(argv: readonly string[], spec: OptionSpec): ParsedOptions {
+  const booleans = new Set<string>();
+  const values = new Map<string, string>();
+  const repeated = new Map<string, string[]>();
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (option === undefined || !option.startsWith("--")) {
+      invalid(`unexpected positional argument: ${option ?? "(missing)"}`);
+    }
+    if (option.includes("=")) invalid(`use a separate value after ${option.split("=")[0]}`);
+    const kind = spec[option];
+    if (kind === undefined) invalid(`unknown option: ${option}`);
+    if (kind === "boolean") {
+      if (booleans.has(option)) invalid(`${option} may be provided only once`);
+      booleans.add(option);
+      continue;
+    }
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("--")) invalid(`${option} requires a value`);
+    index += 1;
+    if (kind === "value") {
+      if (values.has(option)) invalid(`${option} may be provided only once`);
+      values.set(option, value);
+    } else {
+      const existing = repeated.get(option) ?? [];
+      existing.push(value);
+      repeated.set(option, existing);
+    }
+  }
+  return { booleans, values, repeated };
+}
+
+function doctorInput(options: ParsedOptions, context: ParseContext): DoctorInput {
+  const networkSession = optionalSession(
+    options.values.get("--network-session"),
+    context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
+    "--network-session",
+  );
+  const analyticsSession = optionalSession(
+    options.values.get("--analytics-session"),
+    context.env.LINKEDIN_TOOLS_ANALYTICS_SESSION,
+    "--analytics-session",
+  );
+  return {
+    stateDir: stateDir(options, context),
+    playwriterBin: playwriterBin(options, context),
+    ...(networkSession === undefined ? {} : { networkSessionId: networkSession }),
+    ...(analyticsSession === undefined ? {} : { analyticsSessionId: analyticsSession }),
+    ...(context.env.HOME === undefined
+      ? {}
+      : {
+          automationPromptPath: join(
+            context.env.HOME,
+            ".codex",
+            "automations",
+            "linkedin-network",
+            "automation.toml",
+          ),
+        }),
+  };
+}
+
+function networkReadInput(options: ParsedOptions, context: ParseContext): NetworkReadInput {
+  return {
+    stateDir: stateDir(options, context),
+    localDate: parseDate(options.values.get("--date") ?? localDate(context.now), "--date"),
+  };
+}
+
+function networkTickInput(options: ParsedOptions, context: ParseContext): NetworkTickInput {
+  const read = networkReadInput(options, context);
+  const target = options.values.get("--target") ?? "30";
+  if (target !== "30") invalid("--target must be exactly 30");
+  return {
+    ...read,
+    allowSend: true,
+    target: 30,
+    batchSize: boundedInteger(options.values.get("--batch-size") ?? "5", "--batch-size", 1, 5),
+    maxRealSends: boundedInteger(
+      options.values.get("--max-real-sends") ?? "30",
+      "--max-real-sends",
+      1,
+      30,
+    ),
+    playwriterBin: playwriterBin(options, context),
+    sessionId: requiredWorkflowSession(
+      options.values.get("--session"),
+      context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
+      "--session",
+    ),
+  };
+}
+
+function networkReconcileInput(
+  options: ParsedOptions,
+  context: ParseContext,
+): NetworkReconcileInput {
+  return {
+    ...networkReadInput(options, context),
+    playwriterBin: playwriterBin(options, context),
+    sessionId: requiredWorkflowSession(
+      options.values.get("--session"),
+      context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
+      "--session",
+    ),
+  };
+}
+
+function analyticsInput(options: ParsedOptions, context: ParseContext): AnalyticsExportInput {
+  const period = options.values.get("--period");
+  const explicitStart = options.values.get("--start-date");
+  const explicitEnd = options.values.get("--end-date");
+  if (period !== undefined && (explicitStart !== undefined || explicitEnd !== undefined)) {
+    invalid("--period conflicts with --start-date and --end-date");
+  }
+  let startDate: string;
+  let endDate: string;
+  if (period !== undefined) {
+    if (period !== "previous-7-days") invalid("--period must be previous-7-days");
+    ({ startDate, endDate } = previousSevenDays(context.now));
+  } else {
+    if (explicitStart === undefined || explicitEnd === undefined) {
+      invalid("analytics export requires --period or both --start-date and --end-date");
+    }
+    startDate = parseDate(explicitStart, "--start-date");
+    endDate = parseDate(explicitEnd, "--end-date");
+    assertSevenInclusiveDays(startDate, endDate);
+  }
+
+  const state = stateDir(options, context);
+  const template = { startDate, endDate };
+  const outputPath = analyticsPath(
+    expandPathTemplate(required(options, "--out"), template),
+    "--out",
+    ".xlsx",
+  );
+  const receiptValue =
+    options.values.get("--receipt") ??
+    join(state, "receipts", "analytics", `content-analytics-${startDate}-${endDate}.json`);
+  const recoveryValue = options.values.get("--recovery-state");
+  const roots =
+    options.repeated.get("--download-root") ??
+    splitPathList(context.env.LINKEDIN_TOOLS_ANALYTICS_DOWNLOAD_ROOTS);
+  if (roots.length === 0) invalid("analytics export requires at least one --download-root");
+  const account = options.values.get("--account") ?? context.env.LINKEDIN_TOOLS_ANALYTICS_ACCOUNT;
+  if (account === undefined || account.trim().length === 0) {
+    invalid("analytics export requires a non-empty --account");
+  }
+  const poll = options.values.get("--poll-interval-ms");
+  const maxPolls = options.values.get("--max-polls");
+  return {
+    stateDir: state,
+    playwriterBin: playwriterBin(options, context),
+    sessionId: requiredWorkflowSession(
+      options.values.get("--session"),
+      context.env.LINKEDIN_TOOLS_ANALYTICS_SESSION,
+      "--session",
+    ),
+    downloadRoots: roots.map((path) => absolutePath(path, "--download-root")),
+    outputPath,
+    receiptPath: analyticsPath(expandPathTemplate(receiptValue, template), "--receipt", ".json"),
+    ...(recoveryValue === undefined
+      ? {}
+      : {
+          recoveryStatePath: analyticsPath(
+            expandPathTemplate(recoveryValue, template),
+            "--recovery-state",
+            ".json",
+          ),
+        }),
+    expectedAccount: account.trim(),
+    expectedStartDate: startDate,
+    expectedEndDate: endDate,
+    ...(poll === undefined
+      ? {}
+      : { pollIntervalMs: boundedInteger(poll, "--poll-interval-ms", 100, 60_000) }),
+    ...(maxPolls === undefined
+      ? {}
+      : { maxPolls: boundedInteger(maxPolls, "--max-polls", 1, 120) }),
+  };
+}
+
+function stateDir(options: ParsedOptions, context: ParseContext): string {
+  const configured =
+    options.values.get("--state-dir") ??
+    context.env.LINKEDIN_TOOLS_STATE_DIR ??
+    join(requiredHome(context.env), "Library", "Application Support", "linkedin-tools-next");
+  return absolutePath(configured, "--state-dir");
+}
+
+function playwriterBin(options: ParsedOptions, context: ParseContext): string {
+  return absolutePath(
+    options.values.get("--playwriter-bin") ??
+      context.env.LINKEDIN_TOOLS_PLAYWRITER_BIN ??
+      PLAYWRITER_DEFAULT,
+    "--playwriter-bin",
+  );
+}
+
+function required(options: ParsedOptions, name: string): string {
+  const value = options.values.get(name);
+  if (value === undefined) invalid(`${name} is required`);
+  return value;
+}
+
+function requiredWorkflowSession(
+  explicit: string | undefined,
+  configured: string | undefined,
+  label: string,
+): number | "auto" {
+  const value = explicit ?? configured;
+  if (value === undefined) {
+    invalid(`${label} is required or its workflow session environment variable must be set`);
+  }
+  if (value === "auto") return value;
+  return boundedInteger(value, label, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function optionalSession(
+  explicit: string | undefined,
+  configured: string | undefined,
+  label: string,
+): number | undefined {
+  const value = explicit ?? configured;
+  return value === undefined ? undefined : boundedInteger(value, label, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function boundedInteger(value: string, label: string, minimum: number, maximum: number): number {
+  if (!/^[1-9]\d*$/.test(value)) invalid(`${label} must be an integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    invalid(`${label} must be between ${minimum} and ${maximum}`);
+  }
+  return parsed;
+}
+
+function absolutePath(value: string, label: string): string {
+  if (value.includes("\0") || value.trim().length === 0) invalid(`${label} is invalid`);
+  if (!isAbsolute(value)) invalid(`${label} must be an absolute path`);
+  const normalized = resolve(value);
+  if (normalized === "/") invalid(`${label} must not be the filesystem root`);
+  return normalized;
+}
+
+function analyticsPath(value: string, label: string, extension: string): string {
+  const path = absolutePath(value, label);
+  if (!path.toLowerCase().endsWith(extension)) {
+    invalid(`${label} must end with ${extension}`);
+  }
+  return path;
+}
+
+function expandPathTemplate(
+  value: string,
+  fields: { readonly startDate: string; readonly endDate: string },
+): string {
+  const expanded = value
+    .replaceAll("{startDate}", fields.startDate)
+    .replaceAll("{endDate}", fields.endDate);
+  if (/[{}]/.test(expanded)) invalid("path contains an unknown template field");
+  return expanded;
+}
+
+function splitPathList(value: string | undefined): readonly string[] {
+  return value
+    ? value
+        .split(":")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function parseDate(value: string, label: string): string {
+  if (!DATE.test(value)) invalid(`${label} must use YYYY-MM-DD`);
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year ?? 0, (month ?? 0) - 1, day ?? 0));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() + 1 !== month ||
+    date.getUTCDate() !== day
+  ) {
+    invalid(`${label} is not a valid calendar date`);
+  }
+  return value;
+}
+
+function assertSevenInclusiveDays(startDate: string, endDate: string): void {
+  const difference = Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`);
+  if (difference !== 6 * 24 * 60 * 60 * 1_000) {
+    invalid("analytics date range must contain exactly seven inclusive days");
+  }
+}
+
+function previousSevenDays(now: Date): { readonly startDate: string; readonly endDate: string } {
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(today - 24 * 60 * 60 * 1_000);
+  const start = new Date(today - 7 * 24 * 60 * 60 * 1_000);
+  return { startDate: utcDate(start), endDate: utcDate(end) };
+}
+
+function localDate(now: Date): string {
+  return [now.getFullYear(), now.getMonth() + 1, now.getDate()]
+    .map((value, index) =>
+      index === 0 ? String(value).padStart(4, "0") : String(value).padStart(2, "0"),
+    )
+    .join("-");
+}
+
+function utcDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function requiredHome(env: Readonly<Record<string, string | undefined>>): string {
+  const value = env.HOME;
+  if (value === undefined || !isAbsolute(value)) invalid("HOME must be an absolute path");
+  return value;
+}
+
+function isHelp(value: string | undefined): boolean {
+  return value === "--help" || value === "-h";
+}
+
+function doctorHelp(): string {
+  return `Usage:
+  linkedin-tools [--json] doctor [--state-dir ABSOLUTE_PATH]
+    [--playwriter-bin ABSOLUTE_PATH] [--network-session ID] [--analytics-session ID]
+
+Doctor performs local prerequisite checks only. It does not navigate to or open LinkedIn.
+`;
+}
+
+function invalid(message: string): never {
+  throw new CliError("INVALID_ARGUMENT", message, { exitCode: 2 });
+}

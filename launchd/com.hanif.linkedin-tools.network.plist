@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hanif.linkedin-tools.network</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/hanifcarroll/.bun/bin/bun</string>
+    <string>/Users/hanifcarroll/projects/linkedin-tools/src/cli.ts</string>
+    <string>--json</string>
+    <string>network</string>
+    <string>tick</string>
+    <string>--allow-send</string>
+    <string>--batch-size</string>
+    <string>5</string>
+    <string>--target</string>
+    <string>30</string>
+    <string>--max-real-sends</string>
+    <string>30</string>
+    <string>--state-dir</string>
+    <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next</string>
+    <string>--session</string>
+    <string>auto</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/hanifcarroll/projects/linkedin-tools</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/hanifcarroll/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LINKEDIN_TOOLS_PLAYWRITER_BIN</key>
+    <string>/Users/hanifcarroll/.bun/bin/playwriter</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/logs/network.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/logs/network.stderr.log</string>
+</dict>
+</plist>

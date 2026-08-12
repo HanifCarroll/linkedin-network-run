@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hanif.linkedin-tools.analytics</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/hanifcarroll/.bun/bin/bun</string>
+    <string>/Users/hanifcarroll/projects/linkedin-tools/src/cli.ts</string>
+    <string>--json</string>
+    <string>analytics</string>
+    <string>export</string>
+    <string>--period</string>
+    <string>previous-7-days</string>
+    <string>--account</string>
+    <string>Hanif</string>
+    <string>--download-root</string>
+    <string>/Users/hanifcarroll/Downloads</string>
+    <string>--out</string>
+    <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/downloads/content-analytics-{startDate}-{endDate}.xlsx</string>
+    <string>--receipt</string>
+    <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/receipts/content-analytics-{startDate}-{endDate}.json</string>
+    <string>--state-dir</string>
+    <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next</string>
+    <string>--session</string>
+    <string>auto</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/hanifcarroll/projects/linkedin-tools</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/hanifcarroll/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LINKEDIN_TOOLS_PLAYWRITER_BIN</key>
+    <string>/Users/hanifcarroll/.bun/bin/playwriter</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>1</integer>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/logs/analytics.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hanifcarroll/Library/Application Support/linkedin-tools-next/logs/analytics.stderr.log</string>
+</dict>
+</plist>

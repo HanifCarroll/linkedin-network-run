@@ -1,595 +1,171 @@
-# linkedin-tools
+# LinkedIn Tools
 
-Python monorepo for Hanif's LinkedIn networking,
-opportunity intelligence, comment extraction, and local review UI tools.
+A single-package Bun/TypeScript implementation for two workflows:
 
-## Current Status
+- Daily LinkedIn network automation.
+- Weekly seven-day content analytics export.
 
-- Active CLI: `uv run linkedin-tools`
-- Python package: `linkedin-tools`
-- Runtime: Python, `uv`, SQLite, FastAPI/Jinja, and Playwriter
-- State root: `~/Library/Application Support/linkedin-tools/`
-  opportunity intelligence, comment extraction, and review UI
+Promoted 2026-08-11 from `linkedin-tools-next` to the canonical repository
+path. The former Python implementation (acceptance tracking, Relationship
+Radar, welcome messages, pending cleanup, recruiter outreach, opportunity
+intel, review UI) was retired on the same date; its code remains in git
+history before the promotion commit.
 
-## Install And Verify
+## Operating contract
 
-```sh
-uv sync
-uv sync --extra dev
-uv run linkedin-tools --help
-uv run pytest
-uv run ruff check apps packages tests
-uv run mypy apps packages tests
-```
+Networking uses only these exact Sales Navigator saved searches:
 
-`uv sync` installs runtime dependencies. Use `uv sync --extra dev` before
-running tests, lint, or type checks.
+| Source | Saved search ID | Preferred allocation |
+| --- | --- | ---: |
+| Consulting - HubSpot Agency Ops | 1980844577 | 15 |
+| Consulting - HubSpot B2B RevOps | 1980870185 | 15 |
 
-## CLI Namespaces
+The daily target is exactly 30 durable requests, shared across the two configured sources
+(15/15, with bidirectional carryover). Completion requires exactly 30 durable, zero provisional
+or planned attempts, and a complete final sent-list reconciliation. A possible send is reserved
+until reconciliation proves its outcome.
 
-The primary runtime namespaces are:
+Playwriter is the only browser boundary. The repository does not directly import Playwright, use
+direct CDP, use a Chrome-control fallback, or implement browser leases or cross-automation locks.
+Networking and analytics have distinct, command-bound Playwriter sessions and non-overlapping
+schedules.
 
-```sh
-uv run linkedin-tools network --help
-uv run linkedin-tools analytics --help
-uv run linkedin-tools opportunity --help
-uv run linkedin-tools comments --help
-uv run linkedin-tools ui --help
-```
-
-## Content Analytics Export
+## Install and verify
 
 ```sh
-uv run linkedin-tools analytics export \
-  --out /tmp/linkedin-content-analytics.xlsx \
-  --session auto
+bun install
+bun run test:cli
+bun run check:cli
+bun run typecheck
+bun run build
+bun run smoke
 ```
 
-This read-only command uses the verified combined analytics page at
-`https://www.linkedin.com/analytics/creator/content/`, the exact `Export` link,
-the exact `7 days` control, and the exact confirmation dialog. Chrome writes
-`AggregateAnalytics_<account>_<start>_<end>.xlsx` to its configured Downloads
-folder; the command requires exactly one new matching workbook, validates its
-XLSX container, and moves it to `--out`.
+The package exposes `linkedin-tools` from `dist/cli.js`. It is not installed globally by this
+repository.
 
-The analytics namespace is deliberately isolated from the networking browser
-runner. It does not invoke `codex-automation-preflight`, networking incident
-state, or send/relationship safety gates. Those gates remain unchanged for
-every existing network, acceptance, cleanup, recruiter/agency, and relationship
-command.
+## Configuration
 
-## State Layout
-
-Runtime state lives under:
+Default fresh state:
 
 ```text
-~/Library/Application Support/linkedin-tools/
+~/Library/Application Support/linkedin-tools-next/
+  linkedin-tools.db
+  downloads/
+  logs/
+  receipts/
+  reports/
 ```
 
-Namespaces:
+Supported environment variables:
 
-```text
-network-automation/
-opportunity-intel/
-comment-extractor/
-review-ui/
-```
+- `LINKEDIN_TOOLS_STATE_DIR`
+- `LINKEDIN_TOOLS_PLAYWRITER_BIN`
+- `LINKEDIN_TOOLS_NETWORK_SESSION`
+- `LINKEDIN_TOOLS_ANALYTICS_SESSION`
+- `LINKEDIN_TOOLS_ANALYTICS_ACCOUNT`
+- `LINKEDIN_TOOLS_ANALYTICS_DOWNLOAD_ROOTS`
 
-Most runtime examples below use this shell variable:
+Run the local-only prerequisite check first:
 
 ```sh
-state_root="$HOME/Library/Application Support/linkedin-tools"
+bun run src/cli.ts --json doctor \
+  --network-session 7 \
+  --analytics-session 8
 ```
 
-## Network Automation
+Doctor checks Bun, the configured Playwriter executable and version, configured session IDs, active
+session listing, state-directory writability, and SQLite migrations. It does not navigate to or open
+LinkedIn.
 
-The network namespace owns Sales Navigator connection-request runs, audit
-reconciliation, candidate reservoirs, acceptance tracking, welcome messages,
-and pending-invitation cleanup.
+## Commands
 
 ```sh
-uv run linkedin-tools network --state-dir "$state_root/network-automation" status --json
-uv run linkedin-tools network --state-dir "$state_root/network-automation" plan --json
-uv run linkedin-tools network --state-dir "$state_root/network-automation" report
-uv run linkedin-tools network --state-dir "$state_root/network-automation" sends --date today --timezone local --json
-uv run linkedin-tools network --state-dir "$state_root/network-automation" saved-searches --session auto
-uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance run-daily-session --session auto
-uv run linkedin-tools network --state-dir "$state_root/network-automation" acceptance prepare-welcome-messages --limit 30
-uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup audit --session auto
-uv run linkedin-tools network --state-dir "$state_root/network-automation" pending-cleanup capture --session auto --load-more 40
+linkedin-tools --json doctor
+linkedin-tools --json network status
+linkedin-tools --json network report
+linkedin-tools --json network tick --allow-send --batch-size 5 \
+  --target 30 --max-real-sends 30 --session auto
+linkedin-tools --json network reconcile --session auto
+linkedin-tools --json network incident-status
+linkedin-tools --json network incident-clear \
+  --account-access-confirmed --warning-cleared-confirmed \
+  --reason "weekly limit cleared after manual review"
+
+linkedin-tools --json analytics export \
+  --session auto \
+  --period previous-7-days \
+  --account Hanif \
+  --download-root /Users/hanifcarroll/Downloads \
+  --out '/absolute/path/content-{startDate}-{endDate}.xlsx'
+
+linkedin-tools --json migration dry-run \
+  --source-root '/Users/hanifcarroll/Library/Application Support/linkedin-tools/network-automation'
 ```
 
-Browser-backed network commands use Playwriter only. To reuse a specific
-Playwriter session, set `LINKEDIN_TOOLS_PLAYWRITER_SESSION=<id>`. To create a
-new Playwriter session in a specific browser profile, set
-`LINKEDIN_TOOLS_PLAYWRITER_BROWSER_KEY=<key>` before running the command.
+`network tick` refuses to dispatch without the exact `--allow-send` flag. One invocation continues
+serially until the run is Done or returns a typed checkpoint or terminal blocker. `--batch-size` is
+capped at five, the target is fixed at 30, and `--max-real-sends` cannot exceed 30. The controller
+walks each saved-search list in order: it opens the list, scrolls to load every row, sends a
+connection request to each connectable person (5s pacing between sends), and paginates until the
+source's share or the daily target is met, then moves to the next list. After the send phase it
+waits 60 seconds for invitations to settle, audits the sent-invitations page, and confirms which
+sends appear. Unconfirmed sends after the settle wait are marked proven-no-send, and the tick sends
+more to top up until 30 are confirmed on the sent page, then finishes. Audits cannot be disabled.
 
-Scheduled browser automations run directly through the controller command:
+When a new local day starts, the controller checks older active runs first. It parks an older run as
+missed only when it has no planned or possible sends, then starts the new day. If an older run still
+has a planned or possible send, the controller returns `NETWORK_PRIOR_DAY_NEEDS_AUDIT` before any
+browser session is created; reconcile that exact earlier date before sending on the new day.
 
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  run-session --daily --trusted-established-sources --session auto --target 30 --max-real-sends 30 \
-  --refresh-saved-searches --no-fallback --allow-send --finish
+`analytics export` accepts either `--period previous-7-days` or exact `--start-date` and
+`--end-date`, never both. The range must contain exactly seven inclusive days. Repeat
+`--download-root` for more than one native download location. Current optional export controls are
+`--receipt`, `--recovery-state`, `--poll-interval-ms`, and `--max-polls`.
 
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance run-daily-session --session auto \
-  --out /tmp/linkedin-acceptance-daily-session/acceptance-lists.json \
-  --max-load-actions 100 --watermark-size 25 \
-  --timezone America/Argentina/Buenos_Aires
+`migration dry-run` is proposal-only. It reads legacy state and exposes no apply/import command.
 
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance report --daily-days 30 \
-  --timezone America/Argentina/Buenos_Aires --json
-```
+Unknown, duplicate, conflicting, malformed, or out-of-range flags fail before an operation runs.
+Paths for state, exports, downloads, receipts, recovery state, Playwriter, and legacy sources must
+be absolute.
 
-The daily acceptance run captures two bounded lists: Sent invitations and
-Connections sorted Recently added. It joins those rows to the durable invitation
-ledger by exact public-profile identifier or exact LinkedIn member ID. An exact
-Connections match records `connections_list_first_degree`; an exact Sent match
-records pending. Absence from either list remains unknown, and duplicate or
-contradictory matches remain ambiguous.
+A shared incident gate guards every browser operation. Fatal account signals (weekly limit, rate
+limit, unusual activity, checkpoint or security-verification walls, login walls) open
+`linkedin-incident.json` in the state directory and block all further browser automation with
+`INCIDENT_ACTIVE` (exit 7) until a human clears it. Clearing requires both confirmation flags and a
+reason; partial clears fail with exit 2. `doctor` reports an active incident as a failing check.
 
-The first successful capture establishes a durable Recently added watermark and
-does not classify an acceptance delta. Later captures must load through that
-prior watermark. An incomplete Sent list, incomplete Connections window, missing
-identity, or failure to reach the watermark blocks the run visibly. The workflow
-does not visit profiles and has no profile fallback.
+For browser-capable commands, `--session auto` uses the exact workflow binding in
+`sessions/network.json` or `sessions/analytics.json`. It reuses the bound ID only while Playwriter
+reports it active. A missing or stale binding creates and verifies a new persistent session through
+Playwriter's supported client API, then writes the binding atomically. Auto mode never adopts an
+unbound active session or shares one session between workflows. Numeric session IDs remain
+supported for explicit operator control. Tests fake this boundary and never create a live session.
 
-Historical acceptance and current relationship state remain separate. The
-ledger retains the first accepted observation and records the current
-first-degree list observation independently. Legacy evidence can be quarantined,
-but it is never upgraded by opening profiles.
+## JSON contract
 
-All Playwriter-backed commands share one incident gate and one browser-operation
-lock. A 429, unusual-activity warning, login requirement, checkpoint, security
-verification, weekly limit, or network refusal opens the gate and stops later
-browser work:
-
-```sh
-uv run linkedin-tools incident status --json
-uv run linkedin-tools incident clear \
-  --reason "manual account review completed" \
-  --confirm-account-access \
-  --confirm-warning-cleared
-```
-
-Clearing requires both confirmations. After account access and warning
-clearance are confirmed, each LinkedIn automation may be reactivated
-individually under its existing permission and controller safeguards. There is
-no dated or staged restart hold.
-
-`run-session --daily` owns the local-day decision. It resumes an approved older
-run while that run has a safe continuation. If the older run exhausts its audit
-budget in `NeedsReaudit`, the controller preserves the full run under
-`parked-network-runs/<run-id>.json`, keeps its provisional send unresolved, and
-starts today's 30-send objective instead of blocking a new local day. Inspect
-that backlog with `linkedin-tools network parked-carryovers --json`. A
-current-day `NeedsReaudit` remains terminal. New local-day runs use two exact
-approved sources: 15 from `Consulting - Marketing Agency Owners` and 15 from
-`Consulting - Fractional COOs`. When either is exhausted, its shortfall carries
-to the other source. Historical runs keep their recorded source contract until
-they are audited, reconciled, or parked safely. A prior-day legacy `Sending`
-run can also be parked only when every recorded source is exhausted,
-provisionals remain, no source is available, and there is no browser or
-possible-send incident. The controller never uses this branch for a
-current-day run.
-The controller refuses unapproved source contracts, unclear partial-day
-ledgers, and concurrent mutating controller processes.
-
-Daily source quotas guide selection in declared order. Durable and pending
-provisional sends consume active capacity; a proven failed or reverted send
-releases capacity. When an approved source is exhausted, its shortfall carries
-to the other approved source so the workflow can still reach 30. `--no-fallback`
-continues to exclude every source outside the approved two. `--max-real-sends`
-limits active sends rather than lifetime attempts, so proven failures can be
-replaced while the durable target remains incomplete.
-
-Manual `run-session` modes pause at a normal, non-terminal review checkpoint
-whenever they capture new connection candidates. The packet at
-`/tmp/linkedin-network-session/lead-review-candidates.json` includes a unique
-`packet_id`. Write a fresh decisions artifact with that same id and exactly one
-decision per candidate:
+With `--json`, stdout contains exactly one envelope and diagnostics use stable error codes.
 
 ```json
-{
-  "packet_id": "<current packet id>",
-  "decisions": [
-    {
-      "lead_key": "linkedin:https://www.linkedin.com/sales/lead/...",
-      "status": "approved",
-      "reason": "Evidence from the current packet"
-    }
-  ]
-}
+{"ok":true,"data":{"command":"network status","state":"not_started"}}
 ```
 
-Apply the decisions, then resume with `--finish`. Repeat for every new packet
-until `network report` shows `State: Done` and the durable target is verified:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  apply-lead-decisions /tmp/linkedin-network-session/lead-review-candidates-decisions.json
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  run-session --daily --session auto --target 30 --max-real-sends 30 \
-  --no-fallback --allow-send --finish \
-  --out-dir /tmp/linkedin-network-session
+```json
+{"ok":false,"error":{"code":"SEND_NOT_AUTHORIZED","message":"network tick requires the explicit --allow-send flag"}}
 ```
 
-Decisions with a stale packet id, missing candidate, extra candidate, or
-duplicate candidate are rejected before any send can continue.
+## Scheduling templates
 
-Completion requires 30 durable sends, zero provisional sends, and a final
-sent-page reconciliation. The final source distribution is reported for
-visibility but does not block completion. The raw pending-page delta is a
-sanity check rather than a strict equality gate because accepted invitations
-can leave that page. The controller never opens a profile as a fallback. When the
-controller recorded exactly the full guarded attempt set, nothing failed or
-reverted, and the sent-page delta exactly equals the target, that complete
-aggregate reconciliation also confirms any remaining unmatched provisional
-request instead of leaving the day open for an unsafe replacement.
+Uninstalled templates are in `launchd/`:
 
-Browser failures during `run-session` produce a controller-owned incident JSON,
-Markdown packet, structured Playwriter diagnostic, and screenshot in the
-session output directory. A non-send failure moves the run to
-`NeedsBrowserInspection`; the packet contains a lease limited to inspection,
-reload, expected-URL navigation, ordinary obstruction dismissal, session
-reconnection, and retry. Use Chrome only on the exact automation-owned tab,
-capture before/after artifacts, write the packet-bound receipt, and apply it:
+- `com.hanif.linkedin-tools.network.plist`: one completion-capable daily run at 09:05.
+- `com.hanif.linkedin-tools.analytics.plist`: Sunday at 06:15.
 
-While a controller process is active, poll that exact process until it exits;
-never interrupt or kill it during a browser operation. If an external
-interruption reaches a real-send call, the supervisor records the candidate as
-a possible send and moves the run to the audit-only recovery path before
-returning control.
+Both templates are configuration-complete and use `--session auto`; they contain no replacement
+tokens. They use distinct windows and log files, an explicit working directory and PATH, and no
+`KeepAlive` or lease. This repository does not install or load them.
 
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  browser-inspection status
+## Safety
 
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  browser-inspection apply \
-  /tmp/linkedin-network-session/001-browser-incident-recovery-receipt.json
-```
-
-The controller validates the incident and lease ids, allowed actions, specific
-evidence, and existing before/after files before restoring the prior run state.
-A browser exception during a real send is instead recorded as a provisional
-attempt and moves to `NeedsReaudit`; it cannot accept a Chrome recovery receipt
-or be replaced by another candidate.
-
-For network sends, Sales Navigator saved searches are the source of truth for
-each configured source. The controller stores durable per-source scan progress
-in `source-progress.json` and seeds new forced runs from that file when the
-saved-search id still matches. That makes daily runs continue forward through a
-stable saved search instead of restarting at page 1. A source is exhausted only
-when capture reaches the end of results, not merely because a few captures
-returned zero connectable rows.
-
-The active consulting mix is 30 connection requests per run:
-
-- 15 from `Consulting - Marketing Agency Owners`
-- 15 from `Consulting - Fractional COOs`
-
-With `--trusted-established-sources`, the controller deterministically approves
-only NEW connectable observations captured from those exact sources. It retains
-the identity and captured Sales Navigator row requirements, and never
-revalidates historical skipped, blocked, pending, or connected leads. Other
-modes retain packet-by-packet manual review. Historical source contracts remain
-readable and executable only long enough to audit, reconcile, or park safely.
-
-Connection-request counts are stored in `$STATE/network.sqlite` as soon as a
-send attempt is recorded or a provisional send is confirmed. Use
-`network sends --date today --timezone local --json` to answer daily send
-counts across replaced active runs. `--sync-history` backfills the SQLite
-ledger from older per-run JSONL logs. Existing `send-ledger.jsonl` files remain
-readable migration sources.
-
-Every source-grade, durably confirmed accepted connection is eligible for the same welcome
-message. Relationship enrichment is a separate, non-blocking process that
-decides whether someone is promising enough for the narrow buyer watchlist.
-
-Prepare and record eligible greetings immediately after the acceptance import:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance prepare-welcome-messages \
-  --out /tmp/linkedin-accepted-greetings/eligibility.json \
-  --report-out /tmp/linkedin-accepted-greetings/greetings.md \
-  --limit 30
-```
-
-The controller requires `controller_confirmed` or
-`structured_first_degree` acceptance provenance, a usable LinkedIn or Sales
-Navigator profile URL, and the exact welcome copy. Original connection-review
-evidence is retained when available, but it does not gate the welcome.
-Enrichment status starts as `missing` and does not block the message.
-
-The exact approved first message is:
-
-> Hey [First name], thanks for connecting. Glad to be in each other’s network, and I’m looking forward to following what you share here.
-
-The guarded welcome run dry-runs the exact stored message and then sends it. It
-binds the loaded Sales Navigator lead ID to the durable candidate before using
-the platform's exact Message action, and records both IDs in browser diagnostics
-when action discovery fails. A real-send transaction is durably recorded as a
-`possible_send` before browser execution, reacquires the recipient-bound dialog
-and editor after each DOM transition, and becomes `sent` only when the exact
-welcome appears in that recipient's conversation after Send. A click without
-that confirmation remains `possible_send` and must not be retried without
-reconciliation. It does not save the person to any Sales Navigator list:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance run-welcome-messages \
-  --session auto \
-  --limit 30 \
-  --allow-send
-```
-
-Relationship enrichment runs afterward. It reuses original connection-review
-evidence and queues only records whose enrichment is missing, at least 30 days
-old, or explicitly selected with `--prioritize-engagement`:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance export-enrichment-queue \
-  --out /tmp/linkedin-relationship-radar/enrichment-queue.json \
-  --stale-after-days 30 \
-  --limit 30
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance launch-enrichment-workers \
-  --enrichment-queue /tmp/linkedin-relationship-radar/enrichment-queue.json \
-  --sources-dir "$state_root/network-automation/relationship-radar/source-bundles" \
-  --jobs-dir /tmp/linkedin-relationship-radar/enrichment-jobs
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance collect-enrichment-workers \
-  --enrichment-queue /tmp/linkedin-relationship-radar/enrichment-queue.json \
-  --jobs-dir /tmp/linkedin-relationship-radar/enrichment-jobs \
-  --out /tmp/linkedin-relationship-radar/enrichment-decisions.json
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance update-relationship-radar \
-  --enrichment /tmp/linkedin-relationship-radar/enrichment-decisions.json
-```
-
-After research updates the radar, source-backed buyers with a supported
-operating reason can be saved to the single narrow list
-`Watch - Business Systems Prospects`:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  acceptance save-watchlist-leads \
-  --session auto \
-  --limit 30 \
-  --allow-save
-```
-
-The list must already exist. The guarded command saves only exact radar
-recommendations and verifies the resulting list state. Hanif reviews that list
-and comments manually; the system never drafts or posts comments.
-
-Enrichment decisions classify each accepted connection as a buyer, referral
-partner, hiring/recruiter relationship, or other. They
-also record priority, the exact visible signal and URL when one exists, the
-follow-up reason, the next useful action, and the fixed `review_only`
-permission boundary. The cumulative radar is written to
-`$STATE/relationship-radar/ledger.json` and `.md`; updating it performs no
-LinkedIn action.
-
-Research remains `review_only`; it cannot send messages or comments. Welcome
-messages and exact-list saves are separate guarded commands with explicit
-authorization flags.
-
-Browser-backed commands default to guarded dry-run behavior unless the explicit
-real-action flag is provided:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  send-next --session auto --dry-run
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  send-guarded --session auto --single-pass --max-attempts 30 --allow-send
-```
-
-Pending cleanup also requires an explicit approval flag for real withdrawals:
-
-```sh
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  pending-cleanup withdraw-next --session auto --dry-run
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  pending-cleanup withdraw-next --session auto --allow-withdraw
-
-uv run linkedin-tools network \
-  --state-dir "$state_root/network-automation" \
-  pending-cleanup run-session --session auto --capture-load-more 40 --withdraw-limit 1 --allow-withdraw
-```
-
-The normal `pending-cleanup run-session` path audits, captures with deep
-scrolling, then withdraws from the already-loaded bottom rows. This avoids
-reopening the sent page and trying to find one stale candidate from the top of
-LinkedIn's virtualized invitation list. Use `withdraw-next` only for focused
-one-person debugging.
-
-If final finish count does not match the verified withdrawals, `run-session`
-runs one read-only post-check capture. When that post-check finds no stale
-invitations left, the command exits successfully with `Finished with count
-warning`; the controller state stays out of `Done` until the count warning is
-reviewed. If stale invitations still remain, the command stops with that
-blocker.
-
-## Opportunity Intelligence And Comments
-
-Opportunity intelligence is recommend-only. It ranks and reviews buyer-signal
-comments but does not send messages, connect, withdraw, or otherwise take
-LinkedIn actions.
-
-```sh
-uv run linkedin-tools opportunity status --json
-uv run linkedin-tools opportunity sources --json
-uv run linkedin-tools opportunity post-queue --out /tmp/linkedin-opportunity-posts.csv
-```
-
-Search/watchlist rows become concrete post URLs through the Playwriter-backed
-search capture command. It writes post URLs incrementally and prints progress
-lines to stderr while it runs:
-
-```sh
-uv run linkedin-tools opportunity capture-search-posts \
-  --post-queue /tmp/linkedin-opportunity-posts.csv \
-  --out /tmp/linkedin-opportunity-search-posts.csv \
-  --max-results-per-search 50
-```
-
-Run preflight before collection. This validates the configured source batch,
-syncs sources and post candidates into SQLite, checks the configured Chrome
-profile path, and writes a browser preflight artifact without collecting
-comments:
-
-```sh
-uv run linkedin-tools opportunity preflight \
-  --state-dir "$state_root/opportunity-intel" \
-  --json
-```
-
-Known-post URL extraction uses the local LinkedIn browser profile and persists
-the run, artifacts, comments, people, rankings, errors, and status transitions
-to SQLite:
-
-```sh
-uv run linkedin-tools comments extract-url \
-  --post-url <linkedin-post-url> \
-  --source-id <source-id> \
-  --query-id <query-id> \
-  --state-dir "$state_root/opportunity-intel" \
-  --out-dir "$state_root/opportunity-intel/artifacts"
-```
-
-Live extraction prints progress lines to stderr for each expansion pass and
-records why the post stopped expanding. Queue extraction also writes its
-checkpoint after each processed URL.
-
-Useful browser safety limits are configurable on `extract-url`:
-
-```sh
---max-scrolls 6 \
---max-comment-control-clicks 12 \
---max-reply-control-clicks 8 \
---navigation-timeout-ms 30000 \
---action-timeout-ms 5000 \
---max-runtime-seconds 90 \
---max-no-progress-passes 2
-```
-
-The scroll and click limits are ceilings. Extraction stops earlier when recent
-passes produce no new comment nodes, no usable expansion controls, and no
-meaningful scroll-height or scroll-position change.
-
-Post queues can be narrowed after a measured extraction pass. The prefilter
-reads the URL queue manifest, keeps only posts whose measured `comments_found`
-meets the threshold, and writes a metrics CSV with every keep/reject reason:
-
-```sh
-uv run linkedin-tools opportunity prefilter-post-queue \
-  --post-queue /tmp/linkedin-opportunity-posts.csv \
-  --manifest /tmp/linkedin-opportunity-live/extract_url_queue_manifest.jsonl \
-  --min-comments 10 \
-  --out /tmp/linkedin-opportunity-posts.filtered.csv \
-  --metrics-out /tmp/linkedin-opportunity-posts.prefilter-metrics.csv
-```
-
-Saved HTML extraction remains available and can also persist to SQLite:
-
-```sh
-uv run linkedin-tools comments extract \
-  --post-url <linkedin-post-url> \
-  --html /path/to/post.html \
-  --source-id <source-id> \
-  --query-id <query-id> \
-  --state-dir "$state_root/opportunity-intel" \
-  --out-dir /tmp/linkedin-comments
-```
-
-The scoring model is:
-
-- `0-4` problem fit
-- `0-4` buying signal
-- `0-3` buyer fit
-- `0-2` actionability
-- `0-2` immediacy
-
-Classification is `strong` for 11-15, `possible` for 7-10, `weak` for 4-6,
-and `irrelevant` for 0-3. Recruiter, agency, vendor, and job-seeker signals
-are rejected regardless of score.
-
-Source experiments:
-
-```sh
-uv run linkedin-tools opportunity run-experiment \
-  --comments-csv /path/to/comments.csv \
-  --out-dir /tmp/linkedin-opportunity-intel \
-  --run-id source-test
-```
-
-## Local Review UI
-
-```sh
-uv run linkedin-tools ui \
-  --host 127.0.0.1 \
-  --port 8787 \
-  --opportunity-state-dir "$state_root/opportunity-intel"
-```
-
-The UI exposes review surfaces for opportunities, networking state,
-recruiter/agency/advisor state, browser artifacts, and guarded action paths.
-Opportunity review labels persist to SQLite: `strong`, `possible`, `weak`,
-`reject`, `needs research`, and `ready for outreach`. Reject reasons are
-`recruiter`, `agency`, `vendor`, `job seeker`, `not buyer`, `not relevant`,
-and `duplicate`.
-
-## Safety Rules
-
-- No real LinkedIn sends without `--allow-send`.
-- No real pending-invitation withdrawals without `--allow-withdraw`.
-- Network actions retain their own exact-profile safeguards.
-- Opportunity intelligence is recommend-only.
-- Browser flows should start with dry-runs.
-
-## Project Layout
-
-```text
-apps/
-  cli.py
-  network_automation/
-  opportunity_intel/
-  comment_extractor/
-  review_ui/
-packages/
-  linkedin_common/
-  linkedin_browser/
-  linkedin_storage/
-  linkedin_ui/
-tests/
-docs/
-```
+Tests and `bun run smoke` use dependency injection, temporary state, and fake commands. They do not
+exercise a live browser, LinkedIn, launchd, the old Python repository, or legacy state.
