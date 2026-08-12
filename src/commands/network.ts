@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { type OpenDatabase, openDatabase } from "../db/database.ts";
 import { PREFERRED_PER_SOURCE, SEND_PACING_MS } from "../network/config.ts";
@@ -26,6 +27,7 @@ import type {
   NetworkCommand,
   NetworkSourceContract,
 } from "../playwriter/types.ts";
+import { type ExtensionHealth, extensionHealth } from "./incident.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
   NetworkReadInput,
@@ -144,6 +146,7 @@ export async function networkTick(
     });
   }
   assertTickBounds(input);
+  const tickStartedAt = dependencies.now();
   const opened = dependencies.openDatabase(databasePath(input.stateDir));
   try {
     const engine = new NetworkEngine(opened.database);
@@ -193,14 +196,15 @@ export async function networkTick(
     const settleWaitMs = dependencies.settleWaitMs ?? DEFAULT_SETTLE_WAIT_MS;
     const exhaustedSources = new Set<SourceId>();
 
-    const output = (
+    let logsDirReady = false;
+    const output = async (
       state: "checkpoint" | "terminal" | "done",
       extra?: Readonly<Record<string, unknown>>,
-    ): unknown => {
+    ): Promise<unknown> => {
       if (state !== "done") {
         engine.recordTickStop(run.id, state, extra, dependencies.now(), dependencies.createId());
       }
-      return tickOutput(
+      const payload = await tickOutput(
         input,
         state,
         sendsThisTick,
@@ -211,6 +215,17 @@ export async function networkTick(
         completedMicrobatches,
         { ...dayTransition, ...(extra ?? {}) },
       );
+      try {
+        const lastTickPath = join(input.stateDir, "logs", "last-tick.json");
+        if (!logsDirReady) {
+          await mkdir(dirname(lastTickPath), { recursive: true });
+          logsDirReady = true;
+        }
+        await writeFile(lastTickPath, `${JSON.stringify(payload, null, 2)}\n`);
+      } catch {
+        // best-effort diagnostics only
+      }
+      return payload;
     };
 
     const audit = async (
@@ -223,14 +238,17 @@ export async function networkTick(
       steps.push(result);
       if (result.state === "checkpoint") {
         return {
-          stopped: output("checkpoint", { checkpoint: result.checkpoint }),
+          stopped: await output("checkpoint", { checkpoint: result.checkpoint }),
           auditId: null,
         };
       }
       if (result.state === "terminal") {
-        return { stopped: output("terminal", { terminal: result.terminal }), auditId: null };
+        return {
+          stopped: await output("terminal", { terminal: result.terminal }),
+          auditId: null,
+        };
       }
-      if (result.state === "done") return { stopped: output("done"), auditId: null };
+      if (result.state === "done") return { stopped: await output("done"), auditId: null };
       if (result.state === "progress" && result.outcome.kind === "reconciled") {
         return { stopped: null, auditId: result.outcome.auditId };
       }
@@ -238,10 +256,10 @@ export async function networkTick(
     };
 
     if (projection.run.status === "done") {
-      return output("done");
+      return await output("done");
     }
     if (projection.run.status === "blocked") {
-      return output("checkpoint", {
+      return await output("checkpoint", {
         checkpoint: { kind: "run_blocked", runId: run.id },
       });
     }
@@ -256,8 +274,30 @@ export async function networkTick(
       orchestrationStep < MAX_ORCHESTRATION_STEPS;
       orchestrationStep += 1
     ) {
+      try {
+        const heartbeatPath = join(input.stateDir, "logs", "tick-heartbeat.json");
+        if (!logsDirReady) {
+          await mkdir(dirname(heartbeatPath), { recursive: true });
+          logsDirReady = true;
+        }
+        await writeFile(
+          heartbeatPath,
+          `${JSON.stringify(
+            {
+              startedAt: tickStartedAt,
+              at: dependencies.now(),
+              orchestrationStep,
+              phase: "loop",
+            },
+            null,
+            2,
+          )}\n`,
+        );
+      } catch {
+        // best-effort diagnostics only
+      }
       projection = controller.status(run.id);
-      if (projection.run.status === "done") return output("done");
+      if (projection.run.status === "done") return await output("done");
 
       if (isCompletionCandidate(projection)) {
         if (!projection.finalReconciliation) {
@@ -267,9 +307,9 @@ export async function networkTick(
         }
         if (isCompletionCandidate(projection) && projection.finalReconciliation) {
           engine.finish(run.id, dependencies.now());
-          return output("done");
+          return await output("done");
         }
-        return output("checkpoint", {
+        return await output("checkpoint", {
           checkpoint: { kind: "final_reconciliation_incomplete" },
         });
       }
@@ -280,7 +320,13 @@ export async function networkTick(
         throw new CliError(
           "NETWORK_PROTOCOL_ERROR",
           "durable commit-start count exceeds the daily hard cap",
-          { details: { runId: run.id }, exitCode: 4 },
+          {
+            details: {
+              runId: run.id,
+              nextAction: `network status --date ${input.localDate}; then run network tick again — completion audits still run past the cap, or network run-end --date ${input.localDate} --reason ... if the run must close without more sends`,
+            },
+            exitCode: 4,
+          },
         );
       }
 
@@ -297,7 +343,7 @@ export async function networkTick(
           projection = controller.status(run.id);
           if (isCompletionCandidate(projection)) continue;
         }
-        return output("checkpoint", {
+        return await output("checkpoint", {
           checkpoint: {
             kind: "max_real_sends_reached",
             limit: input.maxRealSends,
@@ -331,11 +377,11 @@ export async function networkTick(
         const walked = await controller.walkList(run.id, source, sourceBudget, pacingMs);
         steps.push(walked);
         if (walked.state === "terminal") {
-          return output("terminal", { terminal: walked.terminal });
+          return await output("terminal", { terminal: walked.terminal });
         }
-        if (walked.state === "done") return output("done");
+        if (walked.state === "done") return await output("done");
         if (walked.state === "checkpoint") {
-          return output("checkpoint", { checkpoint: walked.checkpoint });
+          return await output("checkpoint", { checkpoint: walked.checkpoint });
         }
         if (walked.state !== "progress" || walked.outcome.kind !== "walked") {
           throw new CliError(
@@ -398,7 +444,7 @@ export async function networkTick(
       if (isCompletionCandidate(projection)) continue;
 
       if (!walkProgressed && exhaustedSources.size >= NETWORK_SOURCES.length) {
-        return output("checkpoint", {
+        return await output("checkpoint", {
           checkpoint: {
             kind: "source_refresh_no_progress",
             sourceIds: NETWORK_SOURCES.map((source) => source.id),
@@ -407,7 +453,7 @@ export async function networkTick(
       }
 
       if (realSends >= input.maxRealSends) {
-        return output("checkpoint", {
+        return await output("checkpoint", {
           checkpoint: {
             kind: "max_real_sends_reached",
             limit: input.maxRealSends,
@@ -415,9 +461,8 @@ export async function networkTick(
           },
         });
       }
-
       if (!anyConnectable && exhaustedSources.size >= NETWORK_SOURCES.length) {
-        return output("terminal", {
+        return await output("terminal", {
           terminal: {
             kind: "no_eligible_capacity",
             remainingCapacity: projection.remainingCapacity,
@@ -427,7 +472,7 @@ export async function networkTick(
       }
 
       if (!walkProgressed) {
-        return output("checkpoint", {
+        return await output("checkpoint", {
           checkpoint: {
             kind: "source_refresh_no_progress",
             sourceIds: NETWORK_SOURCES.map((source) => source.id),
@@ -436,7 +481,7 @@ export async function networkTick(
       }
     }
 
-    return output("checkpoint", {
+    return await output("checkpoint", {
       checkpoint: {
         kind: "orchestration_step_limit",
         limit: MAX_ORCHESTRATION_STEPS,
@@ -561,46 +606,17 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
     ) {
       throw new TypeError("command source does not match the exact Playwriter source contract");
     }
-    const invokeOnce = async (): Promise<BrowserPortResult<unknown>> => {
-      try {
-        const invocation = await this.operations.invoke(this.client, "walk-list", this.sessionId, {
-          url: contract.searchUrl,
-          sourceContract: contract,
-          budget,
-          pacingMs,
-        });
-        if (
-          invocation.receipt.outcome !== "succeeded" ||
-          invocation.receipt.blocker !== undefined ||
-          invocation.receipt.result === null ||
-          !("data" in invocation.receipt.result)
-        ) {
-          return preCommitInvocationFailure(invocation, "walk_list");
-        }
-        return {
-          status: "succeeded",
-          invocationId: invocation.receipt.invocationId,
-          value: invocation.receipt.result.data,
-        };
-      } catch (error) {
-        return preCommitException("walk_list", error);
-      }
-    };
-    const first = await invokeOnce();
-    // The playwriter extension drops its CDP connection mid-walk (page closed,
-    // session lost). One reset + retry recovers without human intervention.
-    if (
-      first.status === "failed" &&
-      (first.blocker.kind === "page_closed" || first.blocker.kind === "session_lost")
-    ) {
-      try {
-        await this.client.resetSession(this.sessionId);
-      } catch {
-        return first;
-      }
-      return invokeOnce();
-    }
-    return first;
+    return this.invokeWithRetry(
+      "walk-list",
+      {
+        url: contract.searchUrl,
+        sourceContract: contract,
+        budget,
+        pacingMs,
+      },
+      "walk_list",
+      true,
+    );
   }
 
   async captureSentList(confirmNames?: readonly string[]): Promise<BrowserPortResult<unknown>> {
@@ -622,43 +638,81 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
       readonly sourceContract?: NetworkSourceContract;
     },
   ): Promise<BrowserPortResult<void>> {
-    try {
-      const invocation = await this.operations.invoke(this.client, command, this.sessionId, input);
-      if (invocation.receipt.outcome !== "succeeded" || invocation.receipt.blocker !== undefined) {
-        return preCommitInvocationFailure(invocation, command);
-      }
-      return {
-        status: "succeeded",
-        invocationId: invocation.receipt.invocationId,
-        value: undefined,
-      };
-    } catch (error) {
-      return preCommitException(command, error);
-    }
+    const result = await this.invokeWithRetry(command, input, command, false);
+    if (result.status !== "succeeded") return result;
+    return {
+      status: "succeeded",
+      invocationId: result.invocationId,
+      value: undefined,
+    };
   }
 
   private async invokeData(
     command: NetworkCommand,
     input: { readonly url?: string; readonly confirmNames?: readonly string[] },
   ): Promise<BrowserPortResult<unknown>> {
-    try {
-      const invocation = await this.operations.invoke(this.client, command, this.sessionId, input);
-      if (
-        invocation.receipt.outcome !== "succeeded" ||
-        invocation.receipt.blocker !== undefined ||
-        invocation.receipt.result === null ||
-        !("data" in invocation.receipt.result)
-      ) {
-        return preCommitInvocationFailure(invocation, command);
+    return this.invokeWithRetry(command, input, command, true);
+  }
+
+  private async invokeWithRetry(
+    command: NetworkCommand,
+    input: {
+      readonly url?: string;
+      readonly sourceContract?: NetworkSourceContract;
+      readonly budget?: number;
+      readonly pacingMs?: number;
+      readonly confirmNames?: readonly string[];
+    },
+    phase: string,
+    expectData: boolean,
+  ): Promise<BrowserPortResult<unknown>> {
+    const invokeOnce = async (): Promise<BrowserPortResult<unknown>> => {
+      try {
+        const invocation = await this.operations.invoke(
+          this.client,
+          command,
+          this.sessionId,
+          input,
+        );
+        if (
+          invocation.receipt.outcome !== "succeeded" ||
+          invocation.receipt.blocker !== undefined
+        ) {
+          return preCommitInvocationFailure(invocation, phase);
+        }
+        if (
+          expectData &&
+          (invocation.receipt.result === null || !("data" in invocation.receipt.result))
+        ) {
+          return preCommitInvocationFailure(invocation, phase);
+        }
+        return {
+          status: "succeeded",
+          invocationId: invocation.receipt.invocationId,
+          value:
+            expectData && invocation.receipt.result !== null && "data" in invocation.receipt.result
+              ? invocation.receipt.result.data
+              : undefined,
+        };
+      } catch (error) {
+        return preCommitException(phase, error);
       }
-      return {
-        status: "succeeded",
-        invocationId: invocation.receipt.invocationId,
-        value: invocation.receipt.result.data,
-      };
-    } catch (error) {
-      return preCommitException(command, error);
+    };
+    const first = await invokeOnce();
+    // The playwriter extension drops its CDP connection mid-walk (page closed,
+    // session lost). One reset + retry recovers without human intervention.
+    if (
+      first.status === "failed" &&
+      (first.blocker.kind === "page_closed" || first.blocker.kind === "session_lost")
+    ) {
+      try {
+        await this.client.resetSession(this.sessionId);
+      } catch {
+        return first;
+      }
+      return invokeOnce();
     }
+    return first;
   }
 }
 
@@ -830,7 +884,7 @@ function notStarted(localDate: string): unknown {
   };
 }
 
-function tickOutput(
+async function tickOutput(
   input: NetworkTickInput,
   state: "checkpoint" | "terminal" | "done",
   sendsThisTick: number,
@@ -840,21 +894,35 @@ function tickOutput(
   auditsThisTick: number,
   completedMicrobatches: number,
   extra?: Readonly<Record<string, unknown>>,
-): unknown {
-  const checkpoint = extra?.checkpoint as
-    | {
-        readonly phase?: string;
-        readonly blocker?: { readonly kind?: string; readonly evidence?: string };
-      }
-    | undefined;
+): Promise<unknown> {
+  const checkpoint = extra?.checkpoint as TickSummaryCheckpoint | undefined;
   const terminal = extra?.terminal as { readonly reason?: string } | undefined;
+  const durable =
+    projection !== null &&
+    typeof projection === "object" &&
+    "durable" in projection &&
+    typeof (projection as { readonly durable?: unknown }).durable === "number"
+      ? (projection as { readonly durable: number }).durable
+      : realSendsToday;
+  let extension: ExtensionHealth | { readonly error: string };
+  try {
+    extension = await extensionHealth();
+  } catch (error) {
+    extension = { error: String(error) };
+  }
+  const recentDisconnects =
+    "recentDisconnects" in extension && typeof extension.recentDisconnects === "number"
+      ? extension.recentDisconnects
+      : 0;
   const summary = humanTickSummary({
     state,
     sendsThisTick,
     realSendsToday,
+    durable,
     target: input.target,
     ...(checkpoint === undefined ? {} : { checkpoint }),
     ...(terminal === undefined ? {} : { terminal }),
+    ...(recentDisconnects > 0 ? { recentDisconnects } : {}),
   });
   return {
     command: "network tick",
@@ -871,30 +939,82 @@ function tickOutput(
     sources: sourceContract(),
     steps,
     projection,
+    extension,
     ...(extra ?? {}),
   };
 }
+
+type TickSummaryCheckpoint = {
+  readonly kind?: string;
+  readonly phase?: string;
+  readonly runId?: string;
+  readonly limit?: number;
+  readonly realSendsToday?: number;
+  readonly evidence?: string;
+  readonly blocker?: { readonly kind?: string; readonly evidence?: string };
+};
 
 function humanTickSummary(info: {
   readonly state: "checkpoint" | "terminal" | "done";
   readonly sendsThisTick: number;
   readonly realSendsToday: number;
+  readonly durable: number;
   readonly target: number;
-  readonly checkpoint?: {
-    readonly phase?: string;
-    readonly blocker?: { readonly kind?: string; readonly evidence?: string };
-  };
+  readonly checkpoint?: TickSummaryCheckpoint;
   readonly terminal?: { readonly reason?: string };
+  readonly recentDisconnects?: number;
 }): string {
-  const progress = `${info.realSendsToday}/${info.target} durable`;
-  if (info.state === "done") return `done: ${progress}, target reached`;
+  const progress = `${info.durable} durable (${info.realSendsToday} real sends)`;
+  const extensionNote =
+    info.recentDisconnects !== undefined && info.recentDisconnects > 0
+      ? `; extension dropped ${info.recentDisconnects}x recently`
+      : "";
+  if (info.state === "done") return `done: ${progress}, target reached${extensionNote}`;
   if (info.state === "terminal") {
-    return `terminal: ${progress}; ${info.terminal?.reason ?? "run ended"}`;
+    return `terminal: ${progress}; ${info.terminal?.reason ?? "run ended"}${extensionNote}`;
   }
-  const blocker = info.checkpoint?.blocker;
-  const evidence = blocker?.evidence ?? "";
-  const cause = evidence.length > 0 ? `: ${evidence.slice(0, 160)}` : "";
-  return `checkpoint: ${info.checkpoint?.phase ?? "unknown"} blocked (${blocker?.kind ?? "browser_failure"}${cause}) — ${progress}`;
+  const checkpoint = info.checkpoint;
+  const kind = checkpoint?.kind;
+  let detail: string;
+  switch (kind) {
+    case "run_blocked":
+      detail = `run blocked (${checkpoint?.runId ?? ""})`;
+      break;
+    case "final_reconciliation_incomplete":
+      detail = "final reconciliation incomplete";
+      break;
+    case "max_real_sends_reached":
+      detail = `max real sends reached (${checkpoint?.limit ?? "?"} limit)`;
+      break;
+    case "engine_state_invalid": {
+      const evidence = checkpoint?.evidence ?? "";
+      detail = `engine state invalid: ${evidence.slice(0, 120)}`;
+      break;
+    }
+    case "browser_blocker": {
+      const blocker = checkpoint?.blocker;
+      const evidence = blocker?.evidence ?? "";
+      const cause = evidence.length > 0 ? `: ${evidence.slice(0, 160)}` : "";
+      detail = `blocked: ${checkpoint?.phase ?? "run"} (${blocker?.kind ?? "browser_failure"}${cause})`;
+      break;
+    }
+    case "source_contract": {
+      const evidence = checkpoint?.evidence ?? "";
+      detail = `source contract mismatch in ${checkpoint?.phase ?? "run"}: ${evidence.slice(0, 120)}`;
+      break;
+    }
+    case undefined: {
+      const blocker = checkpoint?.blocker;
+      const evidence = blocker?.evidence ?? "";
+      const cause = evidence.length > 0 ? `: ${evidence.slice(0, 160)}` : "";
+      detail = `${checkpoint?.phase ?? "run"} blocked (${blocker?.kind ?? "browser_failure"}${cause})`;
+      break;
+    }
+    default:
+      detail = `blocked (${kind})`;
+      break;
+  }
+  return `checkpoint: ${detail} — ${progress}${extensionNote}`;
 }
 
 function receiptId(prefix: string, value: string): string {

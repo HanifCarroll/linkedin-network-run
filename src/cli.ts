@@ -85,6 +85,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.networkRunEnd(invocation.input);
     case "network session-reset":
       return operations.networkSessionReset(invocation.input);
+    case "network open":
+      return operations.networkOpen(invocation.input);
     case "network incident-status":
       return operations.networkIncidentStatus(invocation.input);
     case "network incident-clear":

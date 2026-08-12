@@ -50,6 +50,14 @@ export type NetworkSessionResetInput = {
   readonly playwriterBin: string;
 };
 
+export type NetworkOpenInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  readonly page: "sent" | "search";
+  readonly sourceId?: "hubspot-agency-ops" | "hubspot-b2b-revops";
+};
+
 export type AnalyticsExportInput = {
   readonly stateDir: string;
   readonly playwriterBin: string;
@@ -114,6 +122,7 @@ export interface CliOperations {
   networkReconcile(input: NetworkReconcileInput): Promise<unknown>;
   networkRunEnd(input: NetworkRunEndInput): Promise<unknown>;
   networkSessionReset(input: NetworkSessionResetInput): Promise<unknown>;
+  networkOpen(input: NetworkOpenInput): Promise<unknown>;
   networkIncidentStatus(input: NetworkIncidentStatusInput): Promise<unknown>;
   networkIncidentClear(input: NetworkIncidentClearInput): Promise<unknown>;
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
@@ -149,6 +158,11 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "network session-reset";
       readonly input: NetworkSessionResetInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "network open";
+      readonly input: NetworkOpenInput;
     }
   | {
       readonly kind: "command";

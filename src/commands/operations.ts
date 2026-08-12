@@ -10,6 +10,7 @@ import {
   networkStatus,
   networkTick,
 } from "./network.ts";
+import { networkOpen } from "./network-open.ts";
 import { networkSessionReset } from "./session-reset.ts";
 import type { CliOperations } from "./types.ts";
 
@@ -22,6 +23,7 @@ export function createDefaultOperations(): CliOperations {
     networkReconcile,
     networkRunEnd,
     networkSessionReset,
+    networkOpen,
     networkIncidentStatus,
     networkIncidentClear,
     analyticsExport,

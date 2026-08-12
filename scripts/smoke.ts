@@ -75,6 +75,10 @@ try {
       calls.push("network session-reset");
       return { command: "network session-reset", reset: { ok: true } };
     },
+    networkOpen: async (input) => {
+      calls.push("network open");
+      return { command: "network open", page: input.page, outcome: "succeeded" };
+    },
     networkIncidentStatus: async () => {
       calls.push("network incident-status");
       return { active: false, incident: null };

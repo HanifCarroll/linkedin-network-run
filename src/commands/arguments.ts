@@ -11,6 +11,7 @@ import type {
   MigrationDryRunInput,
   NetworkIncidentClearInput,
   NetworkIncidentStatusInput,
+  NetworkOpenInput,
   NetworkReadInput,
   NetworkReconcileInput,
   NetworkRunEndInput,
@@ -35,6 +36,7 @@ Commands:
   network reconcile      Audit possible sends and finish only after complete reconciliation
   network run-end        End an active day's run so the next day can start cleanly
   network incident-status  Show the active LinkedIn browser incident, if any
+  network open            Navigate the bound network session to sent or search
   network incident-clear Clear the active incident after dual human confirmation
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
@@ -67,6 +69,8 @@ const NETWORK_HELP = `Usage:
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network session-reset [--state-dir ABSOLUTE_PATH]
     [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] network open --page sent|search [--source SOURCE_ID]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] network incident-status [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network incident-clear
     --account-access-confirmed --warning-cleared-confirmed --reason "..."
@@ -168,6 +172,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "reconcile",
         "run-end",
         "session-reset",
+        "open",
         "incident-status",
         "incident-clear",
       ].includes(verb ?? "")
@@ -276,6 +281,42 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         playwriterBin: playwriterBin(options, context),
       };
       return { kind: "command", command: "network session-reset", input };
+    }
+    if (verb === "open") {
+      const options = parseOptions(argv.slice(2), {
+        "--page": "value",
+        "--source": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      const pageRaw = required(options, "--page");
+      if (pageRaw !== "sent" && pageRaw !== "search") {
+        invalid("--page must be sent or search");
+      }
+      const sourceRaw = options.values.get("--source");
+      let sourceId: NetworkOpenInput["sourceId"];
+      if (sourceRaw !== undefined) {
+        if (sourceRaw !== "hubspot-agency-ops" && sourceRaw !== "hubspot-b2b-revops") {
+          invalid("--source must be hubspot-agency-ops or hubspot-b2b-revops");
+        }
+        sourceId = sourceRaw;
+      }
+      if (pageRaw === "sent" && sourceRaw !== undefined) {
+        invalid("--source is only valid with --page search");
+      }
+      const input: NetworkOpenInput = {
+        stateDir: stateDir(options, context),
+        playwriterBin: playwriterBin(options, context),
+        sessionId: requiredWorkflowSession(
+          options.values.get("--session"),
+          context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
+          "--session",
+        ),
+        page: pageRaw,
+        ...(sourceId === undefined ? {} : { sourceId }),
+      };
+      return { kind: "command", command: "network open", input };
     }
     const options = parseOptions(argv.slice(2), {
       "--date": "value",
