@@ -189,9 +189,14 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (verb === "incident-status") {
       const options = parseOptions(argv.slice(2), {
         "--state-dir": "value",
+        "--prune-days": "value",
       });
+      const pruneDaysValue = options.values.get("--prune-days");
       const input: NetworkIncidentStatusInput = {
         stateDir: stateDir(options, context),
+        ...(pruneDaysValue === undefined
+          ? {}
+          : { pruneDays: boundedInteger(pruneDaysValue, "--prune-days", 1, 365) }),
       };
       return { kind: "command", command: "network incident-status", input };
     }

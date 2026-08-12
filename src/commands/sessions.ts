@@ -17,6 +17,7 @@ export type SessionResolutionRequest = {
   readonly selection: PlaywriterSessionSelection;
   readonly stateDir: string;
   readonly playwriterBin: string;
+  readonly warn?: (message: string) => void;
 };
 
 export type SessionResolutionDependencies = {
@@ -42,7 +43,27 @@ export async function resolvePlaywriterSession(
   request: SessionResolutionRequest,
   dependencies: SessionResolutionDependencies = {},
 ): Promise<number> {
-  if (request.selection !== "auto") return request.selection;
+  if (request.selection !== "auto") {
+    const client = (dependencies.createClient ?? defaultCreateClient)(request);
+    const active = await client.listSessions();
+    if (!active.some((session) => session.id === request.selection)) {
+      throw new CliError(
+        "PLAYWRITER_SESSION_NOT_ACTIVE",
+        `Playwriter session ${request.selection} is not active (${active.length} session(s) available); use --session auto or run session new`,
+        {
+          details: { workflow: request.workflow, activeSessionIds: active.map((s) => s.id) },
+          exitCode: request.workflow === "network" ? 4 : 5,
+        },
+      );
+    }
+    const binding = await readBinding(request.stateDir, request.workflow);
+    if (binding !== null && binding.sessionId !== request.selection) {
+      request.warn?.(
+        `[${request.workflow}] binding points to session ${binding.sessionId} but explicit --session ${request.selection} was requested; the binding will be overwritten on the next --session auto run`,
+      );
+    }
+    return request.selection;
+  }
 
   try {
     const binding = await readBinding(request.stateDir, request.workflow);
@@ -61,6 +82,11 @@ export async function resolvePlaywriterSession(
 
     const sessionId = await client.createSession();
     assertSessionId(sessionId);
+    if (binding !== null) {
+      request.warn?.(
+        `[${request.workflow}] bound session ${binding.sessionId} is no longer active; created session ${sessionId} and updated the binding`,
+      );
+    }
     for (const other of others) assertDedicated(sessionId, request.workflow, other);
     const verified = await client.listSessions();
     if (!verified.some((session) => session.id === sessionId)) {

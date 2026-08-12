@@ -14,6 +14,7 @@ export type NetworkReadInput = {
 
 export type NetworkIncidentStatusInput = {
   readonly stateDir: string;
+  readonly pruneDays?: number;
 };
 
 export type NetworkIncidentClearInput = {

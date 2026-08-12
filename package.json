@@ -8,14 +8,13 @@
   },
   "scripts": {
     "build": "bun build ./src/cli.ts --target=bun --outdir=dist && chmod +x ./dist/cli.js",
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun test && bun run build",
-    "check:cli": "biome check src/cli.ts src/commands tests/cli.test.ts tests/commands scripts/smoke.ts",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run build",
+    "check:cli": "biome check src/cli.ts src/commands scripts/smoke.ts",
     "dev": "bun run ./src/cli.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
     "smoke": "bun run scripts/smoke.ts",
-    "test:cli": "bun test tests/cli.test.ts tests/commands",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

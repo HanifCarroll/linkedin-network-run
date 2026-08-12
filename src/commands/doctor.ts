@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { activeIncident, type LinkedInIncident } from "../browser/incident.ts";
 import { bootstrapDatabase } from "../db/database.ts";
 import { SOURCES } from "../network/config.ts";
+import { extensionHealth } from "./incident.ts";
 import type { DoctorInput } from "./types.ts";
 
 type CommandReceipt = {
@@ -80,6 +81,15 @@ export type DoctorResult = {
     readonly active: boolean;
     readonly path: string;
     readonly record: LinkedInIncident | null;
+    readonly error: string | null;
+  };
+  readonly playwriter: {
+    readonly extensionConnected: boolean | null;
+    readonly trackedTabCount: number | null;
+    readonly lastDisconnectAt: string | null;
+    readonly recentDisconnects: number;
+    readonly hasNetworkPage: boolean | null;
+    readonly guidance: readonly string[];
     readonly error: string | null;
   };
   readonly contract: {
@@ -208,6 +218,27 @@ export async function doctor(
     !incidentActive &&
     incidentError === null;
 
+  const playwriter = await extensionHealth();
+  const hasNetworkPage = (() => {
+    if (playwriter.connected !== true || playwriter.trackedTabCount === null) return null;
+    return playwriter.trackedTabCount > 0;
+  })();
+  const guidance: string[] = [];
+  if (playwriter.connected !== true) {
+    guidance.push(
+      "playwriter extension is not connected; open the Sales Navigator search tab and click the playwriter extension icon on it",
+    );
+  } else if (hasNetworkPage !== true) {
+    guidance.push(
+      "extension is connected but no tracked tabs remain; open a Sales Navigator search tab so the walk has a page to reuse",
+    );
+  }
+  if (playwriter.recentDisconnects > 0) {
+    guidance.push(
+      `extension disconnected ${playwriter.recentDisconnects} time(s) recently; a fresh relay restart may stabilize the CDP transport`,
+    );
+  }
+
   return {
     command: "doctor",
     ready,
@@ -249,6 +280,15 @@ export async function doctor(
       path: incidentFile,
       record: incidentRecord,
       error: incidentError,
+    },
+    playwriter: {
+      extensionConnected: playwriter.connected,
+      trackedTabCount: playwriter.trackedTabCount,
+      lastDisconnectAt: playwriter.lastDisconnectAt,
+      recentDisconnects: playwriter.recentDisconnects,
+      hasNetworkPage,
+      guidance,
+      error: playwriter.error,
     },
     contract: await automationContractCheck(input.automationPromptPath),
   };

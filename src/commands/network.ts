@@ -516,6 +516,7 @@ async function resolveNetworkSession<T extends NetworkTickInput | NetworkReconci
     selection: input.sessionId,
     stateDir: input.stateDir,
     playwriterBin: input.playwriterBin,
+    warn: (message) => console.error(`[network] ${message}`),
   });
   return { ...input, sessionId };
 }
@@ -554,38 +555,55 @@ export class CommandNetworkBrowser implements NetworkBrowserPort {
     budget: number,
     pacingMs: number,
   ): Promise<BrowserPortResult<unknown>> {
-    try {
-      const contract = networkSourceContract(source.id);
-      if (
-        contract.sourceName !== source.name ||
-        contract.savedSearchId !== source.savedSearchId ||
-        contract.searchUrl !== source.url ||
-        contract.contractVersion !== source.sourceContractVersion
-      ) {
-        throw new TypeError("command source does not match the exact Playwriter source contract");
-      }
-      const invocation = await this.operations.invoke(this.client, "walk-list", this.sessionId, {
-        url: contract.searchUrl,
-        sourceContract: contract,
-        budget,
-        pacingMs,
-      });
-      if (
-        invocation.receipt.outcome !== "succeeded" ||
-        invocation.receipt.blocker !== undefined ||
-        invocation.receipt.result === null ||
-        !("data" in invocation.receipt.result)
-      ) {
-        return preCommitInvocationFailure(invocation, "walk_list");
-      }
-      return {
-        status: "succeeded",
-        invocationId: invocation.receipt.invocationId,
-        value: invocation.receipt.result.data,
-      };
-    } catch (error) {
-      return preCommitException("walk_list", error);
+    const contract = networkSourceContract(source.id);
+    if (
+      contract.sourceName !== source.name ||
+      contract.savedSearchId !== source.savedSearchId ||
+      contract.searchUrl !== source.url ||
+      contract.contractVersion !== source.sourceContractVersion
+    ) {
+      throw new TypeError("command source does not match the exact Playwriter source contract");
     }
+    const invokeOnce = async (): Promise<BrowserPortResult<unknown>> => {
+      try {
+        const invocation = await this.operations.invoke(this.client, "walk-list", this.sessionId, {
+          url: contract.searchUrl,
+          sourceContract: contract,
+          budget,
+          pacingMs,
+        });
+        if (
+          invocation.receipt.outcome !== "succeeded" ||
+          invocation.receipt.blocker !== undefined ||
+          invocation.receipt.result === null ||
+          !("data" in invocation.receipt.result)
+        ) {
+          return preCommitInvocationFailure(invocation, "walk_list");
+        }
+        return {
+          status: "succeeded",
+          invocationId: invocation.receipt.invocationId,
+          value: invocation.receipt.result.data,
+        };
+      } catch (error) {
+        return preCommitException("walk_list", error);
+      }
+    };
+    const first = await invokeOnce();
+    // The playwriter extension drops its CDP connection mid-walk (page closed,
+    // session lost). One reset + retry recovers without human intervention.
+    if (
+      first.status === "failed" &&
+      (first.blocker.kind === "page_closed" || first.blocker.kind === "session_lost")
+    ) {
+      try {
+        await this.client.resetSession(this.sessionId);
+      } catch {
+        return first;
+      }
+      return invokeOnce();
+    }
+    return first;
   }
 
   async captureSentList(): Promise<BrowserPortResult<unknown>> {
@@ -676,14 +694,20 @@ function preCommitInvocationFailure(
   phase: string,
 ): BrowserPortResult<never> {
   const blocker = invocation.receipt.blocker;
+  const fallbackEvidence =
+    blocker?.evidence ??
+    (() => {
+      const tail = invocation.stderr.trim().split("\n").filter(Boolean).slice(-3).join(" | ");
+      return tail.length > 0
+        ? `Playwriter ${phase} ended with ${invocation.receipt.outcome} before send commit: ${tail}`
+        : `Playwriter ${phase} ended with ${invocation.receipt.outcome} before send commit`;
+    })();
   return {
     status: "failed",
     invocationId: invocation.receipt.invocationId,
     blocker: {
       kind: blocker?.kind ?? "browser_failure",
-      evidence:
-        blocker?.evidence ??
-        `Playwriter ${phase} ended with ${invocation.receipt.outcome} before send commit`,
+      evidence: fallbackEvidence,
       retryability: blocker?.retryability === "terminal" ? "terminal" : "safe_retry",
     },
   };
@@ -815,10 +839,26 @@ function tickOutput(
   completedMicrobatches: number,
   extra?: Readonly<Record<string, unknown>>,
 ): unknown {
+  const checkpoint = extra?.checkpoint as
+    | {
+        readonly phase?: string;
+        readonly blocker?: { readonly kind?: string; readonly evidence?: string };
+      }
+    | undefined;
+  const terminal = extra?.terminal as { readonly reason?: string } | undefined;
+  const summary = humanTickSummary({
+    state,
+    sendsThisTick,
+    realSendsToday,
+    target: input.target,
+    ...(checkpoint === undefined ? {} : { checkpoint }),
+    ...(terminal === undefined ? {} : { terminal }),
+  });
   return {
     command: "network tick",
     localDate: input.localDate,
     state,
+    summary,
     target: input.target,
     batchSize: input.batchSize,
     maxRealSends: input.maxRealSends,
@@ -831,6 +871,28 @@ function tickOutput(
     projection,
     ...(extra ?? {}),
   };
+}
+
+function humanTickSummary(info: {
+  readonly state: "checkpoint" | "terminal" | "done";
+  readonly sendsThisTick: number;
+  readonly realSendsToday: number;
+  readonly target: number;
+  readonly checkpoint?: {
+    readonly phase?: string;
+    readonly blocker?: { readonly kind?: string; readonly evidence?: string };
+  };
+  readonly terminal?: { readonly reason?: string };
+}): string {
+  const progress = `${info.realSendsToday}/${info.target} durable`;
+  if (info.state === "done") return `done: ${progress}, target reached`;
+  if (info.state === "terminal") {
+    return `terminal: ${progress}; ${info.terminal?.reason ?? "run ended"}`;
+  }
+  const blocker = info.checkpoint?.blocker;
+  const evidence = blocker?.evidence ?? "";
+  const cause = evidence.length > 0 ? `: ${evidence.slice(0, 160)}` : "";
+  return `checkpoint: ${info.checkpoint?.phase ?? "unknown"} blocked (${blocker?.kind ?? "browser_failure"}${cause}) — ${progress}`;
 }
 
 function receiptId(prefix: string, value: string): string {

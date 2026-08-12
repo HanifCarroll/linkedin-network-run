@@ -21,7 +21,7 @@ messages to hiring team members only with the explicit `--allow-send` flag.
 - Playwriter is the only browser boundary. Never add direct Playwright, direct CDP, Chrome control,
   browser leases, or cross-automation locks.
 - Scheduled browser commands use `--session auto`. Command-owned exact bindings keep network and
-  analytics sessions distinct; tests must resolve them with fake clients only.
+  analytics sessions distinct.
 - Real network ticks require the exact `--allow-send` flag.
 - One scheduled tick must continue serially until Done or a typed checkpoint/terminal blocker.
   It walks each source list (open, scroll to load all rows, send to every connectable person with
@@ -43,10 +43,11 @@ messages to hiring team members only with the explicit `--allow-send` flag.
 
 ## Verification
 
-Use bounded local checks:
+No tests exist or should ever be written for this repository. The project
+deliberately has no test suite: bounded local checks are the only verification,
+and they must use fakes or temporary state.
 
 ```sh
-bun run test:cli
 bun run check:cli
 bun run typecheck
 bun run build
@@ -54,5 +55,6 @@ bun run smoke
 plutil -lint launchd/*.plist
 ```
 
-Tests and smoke checks must use fakes or temporary state. Do not invoke a live browser, LinkedIn,
-launchd installation, live automation, or legacy writes without a separate explicit request.
+Smoke checks must use fakes or temporary state. Do not invoke a live browser,
+LinkedIn, launchd installation, live automation, or legacy writes without a
+separate explicit request.

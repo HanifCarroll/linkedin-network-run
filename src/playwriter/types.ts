@@ -267,6 +267,7 @@ export type BlockerKind =
   | "checkpoint"
   | "security_verification"
   | "session_lost"
+  | "page_closed"
   | "network_refusal"
   | "source_mismatch"
   | "wrong_page"

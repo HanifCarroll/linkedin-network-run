@@ -13,6 +13,11 @@ const rules: readonly [BlockerKind, TypedBlocker["retryability"], RegExp][] = [
     /session \d+ not found|extension is not connected|relay.*restart/i,
   ],
   [
+    "page_closed",
+    "safe_retry",
+    /Target page, context or browser has been closed|No open pages remain|page\.goto: Timeout/i,
+  ],
+  [
     "network_refusal",
     "terminal",
     /net::ERR_(?:CONNECTION_REFUSED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|NETWORK_CHANGED)/i,

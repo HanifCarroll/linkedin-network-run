@@ -28,11 +28,13 @@ export function buildSearchUrl(spec: JobsSearchSpec): string {
   return url.toString();
 }
 
-// Jobs scripts own a dedicated page. Never reuse the user's open LinkedIn
-// tabs: navigating them interrupts the user's own work and races scheduled
-// automations (observed: goto interrupted by another navigation).
+// Jobs scripts own a dedicated page. Never navigate the user's open LinkedIn
+// tabs: that interrupts their work and races scheduled automations (observed:
+// goto interrupted by another navigation). Prefer a carried page, then any
+// blank tab, then a new page; newPage can time out while the relay is busy
+// with other automation, so it is the last resort.
 const PAGE_PICKUP = `
-let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed())p=stored;else p=await context.newPage();state.jobsPage=p;}`;
+let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed()){p=stored;}else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()==="about:blank")??null;if(!p){try{p=await context.newPage();}catch{throw new Error("JOBS_BROWSER_BUSY: no blank tab and newPage timed out; retry when other automation has finished");}}}state.jobsPage=p;}`;
 
 const EXTRACT_VIEW = `
 () => {

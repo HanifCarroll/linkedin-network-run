@@ -1001,7 +1001,8 @@ export class PlaywriterClient {
       const success = exitCode === 0 && result !== null && !evidenceProblem && !diagnosticBlocker;
       await event(success ? "process_succeeded" : "process_failed");
       progress = parseProgress(await readFile(paths.progress, "utf8")).events;
-      let blocker = evidenceProblem ?? diagnosticBlocker ?? detectBlocker(stdout, stderr);
+      const stderrBlocker = detectBlocker(stdout, stderr);
+      let blocker = diagnosticBlocker ?? stderrBlocker ?? evidenceProblem;
       if (!success && config.command === "commit-send") {
         blocker = blocker
           ? { ...blocker, retryability: "possible_send" }
