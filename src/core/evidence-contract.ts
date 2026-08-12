@@ -17,9 +17,6 @@ export const SEND_PREPARATION_RECEIPT_ID_ACCEPT_RE =
 /** Sales Navigator row identity from data-scroll-into-view. */
 export const SOURCE_ROW_ID_RE = /^urn:li:fs_salesProfile:[A-Za-z0-9_-]+$/;
 
-/** Pagination cursor label, 1-based. */
-export const PAGE_CURSOR_RE = /^Page [1-9][0-9]*$/;
-
 /** True when `value` has exactly the given keys (order-independent). */
 export function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).sort().join("\0") === [...keys].sort().join("\0");

@@ -14,8 +14,6 @@ export type ErrorEnvelope = {
   error: ErrorDetail;
 };
 
-export type Envelope<T> = SuccessEnvelope<T> | ErrorEnvelope;
-
 export function success<T>(data: T): SuccessEnvelope<T> {
   return { ok: true, data };
 }

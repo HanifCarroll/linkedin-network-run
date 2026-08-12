@@ -19,7 +19,6 @@ import {
   type ProgressEvent,
   type SendPreparationReceipt,
   type SourceCaptureResultData,
-  type SourceExhaustionEvidence,
   type SourceReloadEvidence,
   type SourceTerminalEvidence,
   type TypedBlocker,
@@ -814,34 +813,4 @@ function isEquivalentCapturedSourceUrl(value: unknown, expected: string): boolea
   } catch {
     return false;
   }
-}
-
-export function assertSourceExhaustionEvidence(v: SourceExhaustionEvidence): void {
-  const top = record(v, "source exhaustion");
-  exact(top, ["sourceContract", "observations"]);
-  assertNetworkSourceContract(v.sourceContract);
-  invariant(
-    Array.isArray(v.observations) && v.observations.length === 2,
-    "two observations required",
-  );
-  const [a, b] = v.observations;
-  assertSourceTerminalEvidence(a, v.sourceContract);
-  assertSourceTerminalEvidence(b, v.sourceContract);
-  invariant(
-    a.captureInvocationId !== b.captureInvocationId &&
-      a.navigationInvocationId !== b.navigationInvocationId &&
-      a.reloadIdentity !== b.reloadIdentity &&
-      b.reloadGeneration > a.reloadGeneration &&
-      Date.parse(b.observedAt) >= Date.parse(a.observedAt),
-    "observations must be distinct ordered reloads",
-  );
-  invariant(
-    a.terminalFingerprint === b.terminalFingerprint &&
-      a.pageIdentity === b.pageIdentity &&
-      a.cursorIdentity === b.cursorIdentity &&
-      same(a.stableRowIds, b.stableRowIds) &&
-      a.rowCount === b.rowCount &&
-      a.nextControl === b.nextControl,
-    "terminal evidence mismatch",
-  );
 }

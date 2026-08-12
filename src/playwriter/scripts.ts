@@ -35,20 +35,6 @@ export interface NetworkScriptInput {
   readonly confirmNames?: readonly string[];
 }
 
-export type AdapterPlanStep =
-  | { readonly op: "exact_page"; readonly stateKey: string; readonly url: string }
-  | { readonly op: "observe"; readonly label: string }
-  | { readonly op: "logs" }
-  | { readonly op: "navigate"; readonly stateKey: string; readonly url: string }
-  | { readonly op: "click_role"; readonly role: "button" | "link"; readonly name: string };
-export interface GenericAdapterDefinition<TCommand extends string = string> {
-  readonly id: string;
-  readonly command: TCommand;
-  readonly action: BrowserActionKind;
-  readonly phases: readonly ProgressState[];
-  readonly plan: readonly AdapterPlanStep[];
-}
-
 const controlled = new WeakSet<object>();
 const ATTEMPT_ID = /^[A-Za-z0-9:_-]{8,200}$/;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -89,47 +75,7 @@ function issue<T extends PlaywriterCommand>(value: {
   return descriptor;
 }
 
-function countActions(plan: readonly AdapterPlanStep[]): number {
-  return plan.filter((s) => s.op === "navigate" || s.op === "click_role").length;
-}
-
 /** Controlled generic surface: callers provide a closed structured plan, never executable source. */
-export function compileGenericAdapter<T extends string>(
-  definition: GenericAdapterDefinition<T>,
-): CompiledScriptDescriptor<T> {
-  if (!/^[a-z][a-z0-9-]{1,63}$/.test(definition.command)) throw new TypeError("invalid command");
-  if (!/^[a-z][a-z0-9_.-]{3,80}$/.test(definition.id)) throw new TypeError("invalid definition id");
-  if (
-    definition.action === "custom" ||
-    definition.action === "send" ||
-    definition.action === "connect"
-  )
-    throw new TypeError("generic adapters cannot issue sensitive actions");
-  const actions = countActions(definition.plan);
-  if (actions !== (definition.action === "none" ? 0 : 1))
-    throw new TypeError("plan/action mismatch");
-  if (!definition.plan.some((s) => s.op === "logs"))
-    throw new TypeError("adapter must capture logs");
-  let source = `${prelude}let p=page;`;
-  for (const step of definition.plan) {
-    if (step.op === "exact_page")
-      source += `p=state[${literal(step.stateKey)}];if(!p||p.url()!==${literal(step.url)})throw new Error("WRONG_PAGE");`;
-    else if (step.op === "observe") source += `void ${literal(step.label)};`;
-    else if (step.op === "logs") source += logs;
-    else if (step.op === "navigate")
-      source += `p=state[${literal(step.stateKey)}]??page;state[${literal(step.stateKey)}]=p;await p.goto(${literal(step.url)});`;
-    else
-      source += `const target=p.getByRole(${literal(step.role)},{name:${literal(step.name)},exact:true});if(await target.count()!==1)throw new Error("SELECTOR_CONTRACT");await target.click();`;
-  }
-  source += result(definition.command, "data:{adapter:true}");
-  return issue({
-    command: definition.command,
-    action: definition.action,
-    phases: Object.freeze([...definition.phases]),
-    source,
-    definitionId: definition.id,
-  });
-}
 
 export function isControlledCompiledScript(v: unknown): v is CompiledScriptDescriptor {
   return typeof v === "object" && v !== null && controlled.has(v);

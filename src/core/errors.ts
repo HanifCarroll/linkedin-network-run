@@ -15,10 +15,3 @@ export class CliError extends Error {
     this.exitCode = options.exitCode ?? 1;
   }
 }
-
-export function notImplemented(command: string): CliError {
-  return new CliError("NOT_IMPLEMENTED", `${command} is not implemented in the foundation.`, {
-    details: { command },
-    exitCode: 2,
-  });
-}

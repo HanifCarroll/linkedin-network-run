@@ -31,20 +31,6 @@ export type RunProjection = {
   finalReconciliation: boolean;
 };
 
-export type ExhaustionObservation = {
-  id: string;
-  invocationId: string;
-  runId: string;
-  sourceId: SourceId;
-  sourceContractVersion: number;
-  pageIdentity: string;
-  stableRowIds: string[];
-  nextControl: "missing" | "disabled";
-  reloadGeneration: number;
-  tickId: string;
-  observedAt: string;
-};
-
 export type AuditBaselineInput = {
   id: string;
   invocationId: string;

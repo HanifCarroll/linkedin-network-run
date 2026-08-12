@@ -12,7 +12,6 @@ export const SOURCE_CAPTURE_STATE_KEY = "networkSourceCaptureState";
  * or mutate source pages use the long source-capture budget; navigation-only
  * and single-step commands use the Playwriter default.
  */
-export const PLAYWRITER_DEFAULT_TIMEOUT_MS = 10_000;
 export const SOURCE_CAPTURE_TIMEOUT_MS = 240_000;
 
 export const COMMAND_TIMEOUT_MS: Readonly<Record<string, number>> = {
@@ -338,15 +337,4 @@ export interface SessionInfo {
 export interface PreparedSendInvocation {
   readonly invocation: InvocationResult;
   readonly receipt: SendPreparationReceipt | null;
-}
-
-export interface SourceCaptureInvocation {
-  readonly navigation: InvocationResult;
-  readonly capture: InvocationResult | null;
-  readonly data: SourceCaptureResultData | null;
-}
-
-export interface SourceExhaustionEvidence {
-  readonly sourceContract: NetworkSourceContract;
-  readonly observations: readonly [SourceTerminalEvidence, SourceTerminalEvidence];
 }

@@ -1,20 +1,16 @@
 import type { PlaywriterClient } from "./client.ts";
 import { compileNetworkScript, type NetworkScriptInput } from "./scripts.ts";
-import { assertNetworkSourceContract } from "./source-capture.ts";
 import type {
   CandidateIdentity,
   InvocationResult,
   NetworkCommand,
-  NetworkSourceContract,
   PreparedSendInvocation,
   SendPreparationReceipt,
-  SourceCaptureInvocation,
 } from "./types.ts";
 import {
   assertNetworkCommand,
   assertSendPreparationBinding,
   immutableSendPreparationReceipt,
-  immutableSourceCaptureResultData,
 } from "./validation.ts";
 
 export async function invokeNetworkStep(
@@ -74,29 +70,4 @@ export async function commitNetworkSend(
     sendPreparation: receipt,
     input: { sendPreparation: receipt },
   });
-}
-
-export async function captureNetworkSource(
-  client: PlaywriterClient,
-  sessionId: number,
-  sourceContract: NetworkSourceContract,
-): Promise<SourceCaptureInvocation> {
-  assertNetworkSourceContract(sourceContract);
-  const navigation = await invokeNetworkStep(client, "navigate-candidate-results", sessionId, {
-    url: sourceContract.searchUrl,
-    sourceContract,
-  });
-  if (navigation.receipt.outcome !== "succeeded")
-    return Object.freeze({ navigation, capture: null, data: null });
-  const capture = await invokeNetworkStep(client, "capture-candidate-results", sessionId, {
-    url: sourceContract.searchUrl,
-    sourceContract,
-  });
-  if (capture.receipt.outcome !== "succeeded" || capture.receipt.result === null)
-    return Object.freeze({ navigation, capture, data: null });
-  const data = immutableSourceCaptureResultData(capture.receipt.result.data, {
-    invocationId: capture.receipt.invocationId,
-    sourceContract,
-  });
-  return Object.freeze({ navigation, capture, data });
 }

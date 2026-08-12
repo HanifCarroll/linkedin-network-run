@@ -1,6 +1,5 @@
 export const DAILY_TARGET = 30;
 export const PREFERRED_PER_SOURCE = 15;
-export const RESERVOIR_CAPACITY = 60;
 // Delay between serial sends inside a batch. LinkedIn throttles the Sales
 // Navigator profile endpoint (HTTP 429) under rapid-fire candidate lookups.
 export const SEND_PACING_MS = 5_000;
