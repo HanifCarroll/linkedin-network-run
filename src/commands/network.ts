@@ -259,14 +259,6 @@ export async function networkTick(
       projection = controller.status(run.id);
       if (projection.run.status === "done") return output("done");
 
-      if (countRealSends(opened.database, run.id) > DAILY_TARGET) {
-        throw new CliError(
-          "NETWORK_PROTOCOL_ERROR",
-          "durable commit-start count exceeds the daily hard cap",
-          { details: { runId: run.id }, exitCode: 4 },
-        );
-      }
-
       if (isCompletionCandidate(projection)) {
         if (!projection.finalReconciliation) {
           const stopped = await audit("final-audit", "final");
@@ -280,6 +272,16 @@ export async function networkTick(
         return output("checkpoint", {
           checkpoint: { kind: "final_reconciliation_incomplete" },
         });
+      }
+
+      // The cap guards new sends. Completion audits above are read-only and
+      // must still run even when an earlier bug overshot the cap.
+      if (countRealSends(opened.database, run.id) > DAILY_TARGET) {
+        throw new CliError(
+          "NETWORK_PROTOCOL_ERROR",
+          "durable commit-start count exceeds the daily hard cap",
+          { details: { runId: run.id }, exitCode: 4 },
+        );
       }
 
       let realSends = countRealSends(opened.database, run.id);
