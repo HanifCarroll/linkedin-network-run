@@ -519,7 +519,7 @@ export function compileNetworkScript(
           "observation_after",
           "logs_captured",
         ],
-        `${before}${progress("navigation_started")}${usablePage(WORKFLOW_STATE_KEYS.sentInvitations)}await p.goto(${literal(sentUrl)},{waitUntil:"domcontentloaded"});${progress("navigation_returned")}if(p.url()!==${literal(sentUrl)})throw new Error("WRONG_PAGE");${after}${finish(command, "data:{url:p.url()}")}`,
+        `${before}${progress("navigation_started")}${usablePage(WORKFLOW_STATE_KEYS.sentInvitations)}if(p.url()!==${literal(sentUrl)}){await p.goto(${literal(sentUrl)},{waitUntil:"domcontentloaded"});}${progress("navigation_returned")}if(p.url()!==${literal(sentUrl)})throw new Error("WRONG_PAGE");${after}${finish(command, "data:{url:p.url()}")}`,
       );
     case "capture-sent-list":
       return networkIssue(
