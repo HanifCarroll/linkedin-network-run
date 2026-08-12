@@ -261,7 +261,7 @@ export class NetworkController {
     const reusePendingAudit = pendingAudit !== null && pendingAudit.id === auditId;
     let durableAuditId = reusePendingAudit ? pendingAudit.id : undefined;
     if (!reusePendingAudit) {
-      const evidence = await this.captureSentEvidence(runId);
+      const evidence = await this.captureSentEvidence(runId, scope === "final");
       if ("state" in evidence) return evidence;
       const value = evidence.value.evidence;
       this.engine.recordAudit({
@@ -297,15 +297,21 @@ export class NetworkController {
 
   private async captureSentEvidence(
     runId: string,
+    requireFull = false,
   ): Promise<
     | { readonly value: { readonly invocationId: string; readonly evidence: SentListEvidence } }
     | TickResult
   > {
     const durable = this.readState(runId);
     if ("state" in durable) return durable;
-    const pendingNames = durable.value.openAttempts
-      .filter((attempt) => attempt.state === "possible")
-      .map((attempt) => attempt.candidate.name);
+    // A final-scope audit must prove completeness (and absence), so it always
+    // captures the full sent page. Microbatch audits may bound the capture to
+    // the pending attempt names; they confirm presence but never absence.
+    const pendingNames = requireFull
+      ? []
+      : durable.value.openAttempts
+          .filter((attempt) => attempt.state === "possible")
+          .map((attempt) => attempt.candidate.name);
     const capture = await this.browserCall(runId, "capture_sent_list", () =>
       this.browser.captureSentList(pendingNames),
     );
