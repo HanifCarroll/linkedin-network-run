@@ -168,6 +168,61 @@ const sourceRowEligibility = () =>
 
 const exhaustResultsScroll = `let scrollPasses=0;let stagnantPasses=0;for(;scrollPasses<50;scrollPasses+=1){${scrollResultsStep}if(scrollState.after===scrollState.before){stagnantPasses+=1;if(stagnantPasses>=3)break;}else stagnantPasses=0;await p.waitForTimeout(700);}`;
 
+// One candidate on its Sales Navigator lead page: open the profile actions
+// menu, click Connect, then send. Returns a status string used to classify the
+// walk row (sent vs skipped). No search-list scrolling.
+const leadPageSendCandidate = (c: string) =>
+  `const leadUrl="https://www.linkedin.com/sales/lead/"+(${c}).id;` +
+  `let sendStatus="unreachable";` +
+  `try{` +
+  `let trigger=p.locator('button[aria-label="Open actions overflow menu"]').first();` +
+  `if(await trigger.count()===0)trigger=p.locator('button[aria-label^="See more actions for"]').first();` +
+  `if(await trigger.count()!==1)throw new Error("MISSING_MORE_ACTIONS");` +
+  `const clickAction=async(target)=>{try{await target.click({timeout:8000});}catch{try{await target.click({timeout:3000,force:true});}catch{await target.evaluate((element)=>element.click());}}};` +
+  `const menuId=await trigger.getAttribute("aria-controls");` +
+  `await clickAction(trigger);` +
+  `await p.waitForTimeout(500);` +
+  `let menu=menuId?p.locator("#"+menuId).first():p.locator("[data-popper-placement]").last();` +
+  `if(await menu.count()===0)menu=p.locator("[data-popper-placement]").last();` +
+  `if(await menu.count()===0)throw new Error("MISSING_CONNECT_MENU");` +
+  `let connectItem=null;let pending=false;let emailRequired=false;` +
+  `for(const item of await menu.locator("button,a,[role=menuitem]").all()){` +
+  `const text=String(await item.textContent()??"").replace(/\\s+/g," ").trim();` +
+  `const aria=String(await item.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
+  `const label=text||aria;` +
+  `if(/^Connect$/i.test(label))connectItem=item;` +
+  `if(/^(Connect\\s*[-–—]\\s*)?Pending$/i.test(label))pending=true;` +
+  `if(/email/i.test(label)&&/required|connect/i.test(label))emailRequired=true;` +
+  `}` +
+  `if(pending){sendStatus="already_pending";}` +
+  `else if(emailRequired||connectItem===null){sendStatus=emailRequired?"email_required":"unreachable";}` +
+  `else{` +
+  `await clickAction(connectItem);` +
+  `await p.waitForTimeout(500);` +
+  `let send=null;const sendDeadline=Date.now()+6000;` +
+  `for(let sendAttempt=0;sendAttempt<25&&Date.now()<=sendDeadline&&send===null;sendAttempt+=1){` +
+  `if((await p.locator("input[type='email'], input[name*='email' i]").first().count().catch(()=>0))>0){sendStatus="email_required";break;}` +
+  `for(const candidateModal of await p.locator(${literal(LINKEDIN_DIALOG_SELECTOR)}).all()){` +
+  `if(!(await candidateModal.isVisible()))continue;` +
+  `for(const button of await candidateModal.locator("button").all()){` +
+  `if(!(await button.isVisible()))continue;` +
+  `const text=String(await button.textContent()??"").replace(/\\s+/g," ").trim();` +
+  `const aria=String(await button.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();` +
+  `if(${SEND_INVITATION_LABEL}.test(text||aria)){send=button;}` +
+  `}` +
+  `}` +
+  `if(send===null)await p.waitForTimeout(250);` +
+  `}` +
+  `if(sendStatus==="email_required"){await p.keyboard.press("Escape");}` +
+  `else if(send!==null){await send.click();sendStatus="sent";}` +
+  `else{await p.keyboard.press("Escape");sendStatus="unreachable";}` +
+  `}` +
+  `await p.keyboard.press("Escape");` +
+  `}catch(e){sendStatus=String((e&&e.message)||e).includes("EMAIL_REQUIRED")?"email_required":"unreachable";}` +
+  `const rowIdentity="urn:li:fs_salesProfile:"+candidate.id;` +
+  `if(sendStatus==="sent"){sent.push({rowIdentity,name:candidate.name});}` +
+  `else{skipped.push({rowIdentity,name:candidate.name,reason:sendStatus});}`;
+
 function walkListBody(
   url: string,
   sourceContract: NetworkSourceContract,
@@ -180,85 +235,40 @@ function walkListBody(
     `const sourceContract=${literal(sourceContract)};`,
     `const budget=${literal(budget)};`,
     `const pacingMs=${literal(pacingMs)};`,
-    `const maxPages=10;`,
     usablePage(WORKFLOW_STATE_KEYS.candidateResults),
-    `const xhrResponses=[];const xhrListener=async(res)=>{try{const u=res.url();if(!u.includes("salesApiLeadSearch"))return;const startParam=new URL(u).searchParams.get("start");let body=null;try{body=await res.json();}catch{}if(body&&body.paging&&Array.isArray(body.elements)){xhrResponses.push({start:Number(startParam)||0,elements:body.elements,total:Number(body.paging.total)||null});}}catch{}};p.on("response",xhrListener);`,
+    `const xhrResponses=[];const xhrRequests=[];const xhrRequestListener=async(req)=>{try{const u=req.url();if(!u.includes("salesApiLeadSearch"))return;const headers=req.headers();xhrRequests.push({url:u,headers});}catch{}};const xhrListener=async(res)=>{try{const u=res.url();if(!u.includes("salesApiLeadSearch"))return;const startParam=new URL(u).searchParams.get("start");let body=null;try{body=await res.json();}catch{}if(body&&body.paging&&Array.isArray(body.elements)){xhrResponses.push({start:Number(startParam)||0,elements:body.elements,total:Number(body.paging.total)||null});}}catch{}};p.on("request",xhrRequestListener);p.on("response",xhrListener);`,
     `await p.goto(${literal(url)},{waitUntil:"domcontentloaded"});`,
     progress("navigation_returned"),
-    `if(p.url()!==sourceContract.searchUrl)throw new Error("WRONG_PAGE");`,
+    `const maxPages=10;`,
     `const leadIdFrom=(urn)=>{const m=/^urn:li:fs_salesProfile:\\(([A-Za-z0-9_-]+),/.exec(String(urn||""));return m?m[1]:null;};`,
     `const sent=[];const skipped=[];let pagesWalked=0;let complete=false;`,
-    `const clickAction=async(target)=>{try{await target.click({timeout:8000});}catch{try{await target.click({timeout:3000,force:true});}catch{await target.evaluate((element)=>element.click());}}};`,
-    `for(let pageIndex=0;pageIndex<maxPages&&sent.length<budget;pageIndex+=1){`,
+    // Wait for the first salesApiLeadSearch response (the page renders via JSON).
+    `let firstElements=null;let firstTotal=0;let firstStart=0;let firstCount=0;`,
+    `for(let waitAttempt=0;waitAttempt<60&&firstElements===null;waitAttempt+=1){const last=xhrResponses[xhrResponses.length-1];if(last&&last.elements.length>0){firstElements=last.elements;firstTotal=Number(last.total)||0;firstStart=Number(last.start)||0;firstCount=last.elements.length;}else await p.waitForTimeout(500);}`,
+    `if(firstElements===null)throw new Error("XHR_NO_RESPONSE");`,
+    // Collect connectable candidates across the paginated XHR (no list scroll).
+    `const candidates=[];const seenCandidates=new Set();`,
+    `const addCandidates=(elements)=>{for(const el of elements){const id=leadIdFrom(el.entityUrn);if(!id||seenCandidates.has(id))continue;seenCandidates.add(id);if(!!el.pendingInvitation)continue;const degree=Number(el.degree)||0;if(degree===1)continue;candidates.push({id,name:String(el.fullName||"").trim()||"unknown"});}};`,
+    `addCandidates(firstElements);`,
+    // Replay the search XHR via fetch to paginate through connectable rows.
+    `const replaySearch=async(start)=>{const lastReq=xhrRequests[xhrRequests.length-1];if(!lastReq)return null;const url=new URL(lastReq.url);url.searchParams.set("start",String(start));return p.evaluate(async ({u,hdrs})=>{const res=await fetch(u,{headers:{"csrf-token":hdrs["csrf-token"],"x-restli-protocol-version":hdrs["x-restli-protocol-version"],"x-li-track":hdrs["x-li-track"],referer:hdrs.referer}});if(res.status!==200)throw new Error("XHR_REPLAY_"+res.status);return res.json();},{u:url.href,hdrs:lastReq.headers});};`,
+    `let nextStart=firstStart+firstCount;`,
+    `for(let pageIndex=1;pageIndex<maxPages&&candidates.length<budget;pageIndex+=1){`,
     `pagesWalked+=1;`,
-    `let pageElements=null;for(let waitAttempt=0;waitAttempt<60&&pageElements===null;waitAttempt+=1){const last=xhrResponses[xhrResponses.length-1];if(last&&last.elements.length>0)pageElements=last.elements;else await p.waitForTimeout(500);}`,
-    `const byId=new Map();if(pageElements!==null){for(const el of pageElements){const id=leadIdFrom(el.entityUrn);if(id)byId.set(id,{name:String(el.fullName||"").trim()||"unknown",pending:!!el.pendingInvitation,degree:Number(el.degree)||0});}}`,
-    exhaustResultsScroll,
-    `const resultRows=p.locator("li.artdeco-list__item:has(a[href*='/sales/lead/'])");`,
-    `for(let waitAttempt=0;waitAttempt<45&&(await resultRows.count())===0;waitAttempt+=1)await p.waitForTimeout(1000);`,
-    `const rows=await resultRows.all();`,
-    `let walked=0;let malformed=0;let connectableOnPage=0;`,
-    `for(const r of rows){`,
-    `if(sent.length>=budget)break;`,
-    `await r.scrollIntoViewIfNeeded();`,
-    `const marker=r.locator("[data-scroll-into-view]");`,
-    `if(await marker.count()!==1){malformed+=1;walked+=1;const unreachableName="unknown";skipped.push({rowIdentity:"",name:unreachableName,reason:"unreachable"});continue;}`,
-    `const rawIdentity=await marker.getAttribute("data-scroll-into-view");`,
-    `const identityMatch=typeof rawIdentity==="string"?/^urn:li:fs_salesProfile:(?:\\(([A-Za-z0-9_-]+),[^)]*\\)|([A-Za-z0-9_-]+))$/.exec(rawIdentity):null;`,
-    `const salesNavId=identityMatch?.[1]??identityMatch?.[2]??null;`,
-    `if(typeof salesNavId!=="string"||typeof rawIdentity!=="string"){malformed+=1;walked+=1;skipped.push({rowIdentity:typeof rawIdentity==="string"?rawIdentity:"",name:"unknown",reason:"unreachable"});continue;}`,
-    `const rowIdentity="urn:li:fs_salesProfile:"+salesNavId;`,
-    `walked+=1;`,
-    `const meta=byId.get(salesNavId)??null;`,
-    `if(meta&&meta.pending){skipped.push({rowIdentity,name:meta.name,reason:"already_pending"});continue;}`,
-    `if(meta&&meta.degree===1){skipped.push({rowIdentity,name:meta.name,reason:"first_degree"});continue;}`,
-    `const trigger=r.locator("button[aria-label^='See more actions for']").first();`,
-    `if(await trigger.count()!==1){skipped.push({rowIdentity,name:meta?meta.name:"unknown",reason:"unreachable"});continue;}`,
-    `const ariaLabel=String(await trigger.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();`,
-    `const nameMatch=/^See more actions for\\s+(.+)$/i.exec(ariaLabel);`,
-    `const name=(meta&&meta.name!=="unknown")?meta.name:(nameMatch?.[1]?.trim()||"unknown");`,
-    `if(!name||name==="unknown"){skipped.push({rowIdentity,name,reason:"unreachable"});continue;}`,
-    `const menuId=await trigger.getAttribute("aria-controls");`,
-    `await clickAction(trigger);`,
-    `await p.waitForTimeout(500);`,
-    `let menu=menuId?p.locator("#"+menuId).first():p.locator("[data-popper-placement]").last();`,
-    `if(await menu.count()===0)menu=p.locator("[data-popper-placement]").last();`,
-    `if(await menu.count()===0){skipped.push({rowIdentity,name,reason:"unreachable"});await p.keyboard.press("Escape");continue;}`,
-    `let connectItem=null;let pending=false;let emailRequired=false;`,
-    `for(const item of await menu.locator("button,a,[role=menuitem]").all()){`,
-    `const text=String(await item.textContent()??"").replace(/\\s+/g," ").trim();`,
-    `const aria=String(await item.getAttribute("aria-label")??"").replace(/\\s+/g," ").trim();`,
-    `const label=text||aria;`,
-    `if(/^Connect$/i.test(label))connectItem=item;`,
-    `if(/^(Connect\\s*[-–—]\\s*)?Pending$/i.test(label))pending=true;`,
-    `if(/email/i.test(label)&&/required|connect/i.test(label))emailRequired=true;`,
+    `if(firstTotal>0&&nextStart>=firstTotal)break;`,
+    `const pageData=await replaySearch(nextStart).catch(()=>null);`,
+    `if(!pageData||!Array.isArray(pageData.elements)||pageData.elements.length===0)break;`,
+    `addCandidates(pageData.elements);`,
+    `nextStart=nextStart+pageData.elements.length;`,
     `}`,
-    `if(pending){await p.keyboard.press("Escape");skipped.push({rowIdentity,name,reason:"already_pending"});continue;}`,
-    `if(emailRequired||connectItem===null){await p.keyboard.press("Escape");skipped.push({rowIdentity,name,reason:emailRequired?"email_required":"unreachable"});continue;}`,
-    `connectableOnPage+=1;`,
-    `await clickAction(connectItem);`,
-    `await p.waitForTimeout(500);`,
-    `try{`,
-    visibleSendControl(),
-    `await send.click();`,
-    `sent.push({rowIdentity,name});`,
-    `}catch(e){const emailRequired=String((e&&e.message)||e).includes("EMAIL_REQUIRED");if(!emailRequired)throw e;await p.keyboard.press("Escape");skipped.push({rowIdentity,name,reason:"email_required"});continue;}`,
+    // Send to each connectable candidate on its lead page.
+    `for(const candidate of candidates){`,
+    `if(sent.length>=budget)break;`,
+    leadPageSendCandidate("candidate"),
     `if(sent.length<budget)await p.waitForTimeout(pacingMs);`,
     `}`,
-    `if(walked>0&&malformed/walked>0.5)throw new Error("SOURCE_MISMATCH");`,
-    `if(sent.length>=budget){complete=true;break;}`,
-    `let next=null;const nextRole=p.getByRole("button",{name:/^Next/i});if(await nextRole.count()===1)next=nextRole.first();else{const nextAria=p.locator("button[aria-label*='Next' i]");if(await nextAria.count()===1)next=nextAria.first();}`,
-    `if(next===null||!(await next.isVisible())||await next.isDisabled()){complete=true;break;}`,
-    `const previousUrl=p.url();`,
-    `const lastStart=xhrResponses.length>0?xhrResponses[xhrResponses.length-1].start:-1;`,
-    `const lastXhrCount=xhrResponses.length;`,
-    `await next.click();`,
-    `let advanced=false;`,
-    `for(let waitAttempt=0;waitAttempt<45;waitAttempt+=1){await p.waitForTimeout(1000);const nextUrl=p.url();const latest=xhrResponses[xhrResponses.length-1];if(nextUrl!==previousUrl||(xhrResponses.length>lastXhrCount&&latest&&latest.start!==lastStart)){advanced=true;break;}}`,
-    `if(!advanced)complete=true;`,
-    `}`,
-    `if(sent.length>=budget||pagesWalked>=maxPages)complete=true;`,
-    `if(!complete&&sent.length<budget)complete=true;`,
+    `if(sent.length>=budget||candidates.length===0)complete=true;`,
+    `if(sent.length+skipped.length>=candidates.length)complete=true;`,
     after,
     finish(
       "walk-list",

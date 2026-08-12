@@ -422,12 +422,25 @@ class FakePage {
 
   readonly keyboard = { press: async (_key: string): Promise<void> => {} };
 
+  private listeners: Record<string, Array<(arg: unknown) => unknown>> = {};
+
   isClosed(): boolean {
     return !this.alwaysOpen && process.env.FAKE_PAGE_CLOSED === "1";
   }
 
-  /** Compiled scripts may arm response listeners (e.g. salesApiLeadSearch capture). */
-  on(_event: string, _listener: unknown): void {}
+  /** Compiled scripts arm request/response listeners (e.g. salesApiLeadSearch capture). */
+  on(event: string, listener: (arg: unknown) => unknown): void {
+    (this.listeners[event] ??= []).push(listener);
+  }
+
+  private async fire(event: string, arg: unknown): Promise<void> {
+    for (const listener of this.listeners[event] ?? []) {
+      const result = listener(arg);
+      if (result && typeof (result as Promise<unknown>).catch === "function") {
+        await (result as Promise<unknown>).catch(() => null);
+      }
+    }
+  }
 
   url(): string {
     return this.current;
@@ -436,6 +449,32 @@ class FakePage {
   async goto(url: string): Promise<null> {
     if (this.isClosed()) throw new Error("Target page, context or browser has been closed");
     this.current = url;
+    if (url.includes("/sales/search/people") && process.env.FAKE_XHR !== "0") {
+      const candidateCount = Number(process.env.FAKE_XHR_COUNT ?? "1");
+      const elements = Array.from({ length: candidateCount }, (_, index) => ({
+        entityUrn: `urn:li:fs_salesProfile:(ACwAA${String(100 + index)},NAME_SEARCH,x)`,
+        fullName: `Person ${index + 1}`,
+        pendingInvitation: process.env.FAKE_XHR_PENDING === "1",
+        degree: 2,
+      }));
+      const body = {
+        metadata: {},
+        elements,
+        paging: { total: Number(process.env.FAKE_XHR_TOTAL ?? candidateCount), count: 25, start: 0 },
+      };
+      const req = {
+        url: () => `${url}&_salesApiLeadSearch=1`,
+        headers: () => ({ referer: url }),
+        method: () => "GET",
+      };
+      const res = {
+        url: () => req.url(),
+        status: () => 200,
+        json: async () => body,
+      };
+      await this.fire("request", req);
+      await this.fire("response", res);
+    }
     return null;
   }
 
@@ -456,8 +495,16 @@ class FakePage {
       process.env.FAKE_PAGE_EMAIL === "1"
     )
       return new Locator([emailInput]);
-    const roots = [{ kind: "page" } as FixtureNode, ...children({ kind: "page" })];
-    return new Locator(roots.filter((node) => matches(node, selector)));
+    // Search the page and all nested descendants so lead-page / row controls
+    // are reachable regardless of nesting depth in the fixture tree.
+    const root = { kind: "page" } as FixtureNode;
+    const pool: FixtureNode[] = [];
+    const walk = (node: FixtureNode): void => {
+      pool.push(node);
+      for (const child of children(node)) walk(child);
+    };
+    walk(root);
+    return new Locator(pool.filter((node) => matches(node, selector)));
   }
 
   getByRole(role: string, options?: { name: string; exact?: boolean }): Locator {

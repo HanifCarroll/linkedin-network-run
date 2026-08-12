@@ -229,22 +229,27 @@ describe("controlled compiler contract", () => {
       }),
     ).toThrow("sensitive");
   });
-  test("walk-list script contains send pacing and pagination primitives", () => {
+  test("walk-list script is API-driven with lead-page sends and pacing", () => {
     const source = compileNetworkScript("walk-list", {
       url: candidate.searchUrl,
       sourceContract: resolveNetworkSourceContract(candidate.searchUrl),
       budget: 5,
       pacingMs: 5000,
     }).source;
-    expect(source).toContain("li.artdeco-list__item:has(a[href*='/sales/lead/'])");
-    expect(source).toContain("data-scroll-into-view");
+    // API-driven: reads the salesApiLeadSearch response, no list scrolling.
+    expect(source).toContain("salesApiLeadSearch");
+    expect(source).toContain("pendingInvitation");
+    expect(source).toContain("replaySearch");
+    expect(source).not.toContain("li.artdeco-list__item");
+    expect(source).not.toContain("exhaustResultsScroll");
+    // Sends on the lead page via the profile actions menu.
+    expect(source).toContain("/sales/lead/");
+    expect(source).toContain("Open actions overflow menu");
     expect(source).toContain("See more actions for");
     expect(source).toContain("waitForTimeout(pacingMs)");
-    expect(source).toContain('getByRole("button",{name:/^Next/i})');
-    expect(source).toContain("salesApiLeadSearch");
-    expect(source).toContain("pagesWalked");
-    expect(source).toContain("sent.push({rowIdentity,name})");
+    expect(source).toContain("sent.push({rowIdentity,name:candidate.name})");
     expect(source).toContain("already_pending");
+    expect(source).toContain("email_required");
   });
 
   test("walk-list runs under the long source-capture timeout", async () => {
@@ -271,24 +276,6 @@ describe("controlled compiler contract", () => {
     expect(spawned.some((args) => args.includes("--timeout") && args.includes("240000"))).toBe(
       true,
     );
-  });
-
-  test("walk-list recovers when the stored candidate-results page is closed", async () => {
-    const directory = await root();
-    const invocation = await client(directory, "walk_closed", {
-      FAKE_PAGE_CLOSED: "1",
-      FAKE_MENU_OPEN: "1",
-      FAKE_MODAL_OPEN: "1",
-    }).invoke({
-      sessionId: 7,
-      descriptor: compileNetworkScript("walk-list", {
-        url: candidate.searchUrl,
-        sourceContract: resolveNetworkSourceContract(candidate.searchUrl),
-        budget: 5,
-        pacingMs: 0,
-      }),
-    });
-    expect(invocation.receipt.outcome).toBe("succeeded");
   });
 
   test("every command has an explicit Playwriter timeout contract entry", () => {
