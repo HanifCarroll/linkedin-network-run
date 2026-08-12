@@ -72,7 +72,7 @@ describe("collapsed schema equivalence", () => {
 
     const newDb = new Database(":memory:");
     newDb.exec("PRAGMA foreign_keys = ON");
-    const newResult = runNewMigrations(newDb);
+    const newResult = runNewMigrations(newDb, 1);
     expect(newResult).toEqual({ applied: ["initial"], currentVersion: 1 });
     const newShape = shapeOf(newDb);
     newDb.close();

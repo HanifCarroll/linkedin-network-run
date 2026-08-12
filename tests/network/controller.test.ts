@@ -50,13 +50,26 @@ describe("network controller walkList", () => {
     database.close();
   });
 
-  test("requires baseline before walk", async () => {
+  test("walks without a pre-run baseline and records possibles", async () => {
     const { database, engine, runId } = setup();
-    const controller = new NetworkController(engine, new FakeBrowser(), () => NOW);
-    expect(await controller.walkList(runId, "hubspot-b2b-revops", 3, 0)).toMatchObject({
-      state: "checkpoint",
-      checkpoint: { kind: "baseline_required" },
+    const browser = new FakeBrowser({
+      walk: {
+        "hubspot-b2b-revops": {
+          sourceId: "hubspot-b2b-revops",
+          sent: walkRows("coo", 3),
+          skipped: [],
+          pagesWalked: 1,
+          complete: true,
+        },
+      },
     });
+    const controller = new NetworkController(engine, browser, () => NOW);
+    const result = await controller.walkList(runId, "hubspot-b2b-revops", 3, 0);
+    expect(result).toMatchObject({
+      state: "progress",
+      outcome: { kind: "walked", sourceId: "hubspot-b2b-revops", sent: 3 },
+    });
+    expect(engine.projection(runId).provisional).toBe(3);
     database.close();
   });
 
@@ -104,6 +117,34 @@ describe("network controller walkList", () => {
       state: "progress",
       outcome: { kind: "baseline_captured", baselineId: "baseline-1" },
     });
+    engine.recordWalkSends(
+      runId,
+      "hubspot-agency-ops",
+      { sent: walkRows("agency", 2), skipped: [] },
+      NOW,
+    );
+    expect(await controller.reconcile(runId, "audit-1", "microbatch")).toMatchObject({
+      state: "progress",
+      outcome: { kind: "reconciled", auditId: "audit-1", scope: "microbatch" },
+    });
+    expect(engine.projection(runId)).toMatchObject({ durable: 2, provisional: 0 });
+    database.close();
+  });
+
+  test("reconciles via exact match without a pre-run baseline", async () => {
+    const { database, engine, runId } = setup();
+    const browser = new FakeBrowser({
+      sentList: {
+        peopleCount: 102,
+        identities: ["agency1", "agency2"],
+        names: ["Person agency 1", "Person agency 2"],
+        complete: true,
+        competingSenderAbsent: true,
+        contradictoryEvidence: false,
+      },
+    });
+    const controller = new NetworkController(engine, browser, () => NOW);
+    // No captureBaseline: a fresh run sends, then audits once.
     engine.recordWalkSends(
       runId,
       "hubspot-agency-ops",

@@ -226,6 +226,46 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 2,
+    name: "baseline_optional",
+    sql: `
+      -- Confirmation is exact per-attempt match against the post-send audit,
+      -- which does not need a pre-run sent-list baseline. Make
+      -- reconciliations.baseline_id nullable so a run can reconcile without a
+      -- captured baseline. The runner disables foreign_keys around the batch.
+      CREATE TABLE reconciliations_new (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES daily_runs(id),
+        baseline_id TEXT REFERENCES audit_baselines(id),
+        audit_id TEXT NOT NULL REFERENCES audit_snapshots(id),
+        mode TEXT NOT NULL CHECK(mode IN ('exact', 'aggregate', 'mixed')),
+        attempt_count INTEGER NOT NULL CHECK(attempt_count >= 0 AND attempt_count <= 30),
+        complete INTEGER NOT NULL CHECK(complete IN (0, 1)),
+        competing_sender_absent INTEGER NOT NULL
+          CHECK(competing_sender_absent IN (0, 1)),
+        confirmed_attempt_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        causal_sequence INTEGER REFERENCES causal_records(sequence),
+        sealed INTEGER NOT NULL DEFAULT 0 CHECK(sealed IN (0, 1)),
+        scope TEXT NOT NULL DEFAULT 'final'
+          CHECK(scope IN ('microbatch', 'final')),
+        UNIQUE(run_id, audit_id)
+      );
+
+      INSERT INTO reconciliations_new
+        (id, run_id, baseline_id, audit_id, mode, attempt_count, complete,
+         competing_sender_absent, confirmed_attempt_ids_json, created_at,
+         causal_sequence, sealed, scope)
+      SELECT id, run_id, baseline_id, audit_id, mode, attempt_count, complete,
+         competing_sender_absent, confirmed_attempt_ids_json, created_at,
+         causal_sequence, sealed, scope
+      FROM reconciliations;
+
+      DROP TABLE reconciliations;
+      ALTER TABLE reconciliations_new RENAME TO reconciliations;
+    `,
+  },
 ];
 
 export type MigrationResult = {
@@ -258,7 +298,12 @@ export function runMigrations(
       applied.push(migration.name);
     }
   });
-  applyPending();
+  database.exec("PRAGMA foreign_keys = OFF;");
+  try {
+    applyPending();
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON;");
+  }
 
   const row = database
     .query<{ version: number }, []>("SELECT COALESCE(MAX(id), 0) AS version FROM schema_migrations")

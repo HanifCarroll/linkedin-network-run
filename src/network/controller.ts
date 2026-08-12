@@ -94,7 +94,7 @@ export interface NetworkControllerEngine {
   recordAudit(input: AuditInput): void;
   reconcile(
     runId: string,
-    baselineId: string,
+    baselineId: string | null,
     auditId: string,
     now: string,
     reconciliationId: string | undefined,
@@ -186,9 +186,6 @@ export class NetworkController {
   ): Promise<TickResult> {
     const durable = this.readState(runId);
     if ("state" in durable) return durable;
-    if (durable.value.baseline === null) {
-      return { state: "checkpoint", runId, checkpoint: { kind: "baseline_required" } };
-    }
     if (!Number.isSafeInteger(budget) || budget < 1) {
       return this.invalidState(runId, "walk budget must be a positive integer");
     }
@@ -259,12 +256,9 @@ export class NetworkController {
   async reconcile(runId: string, auditId: string, scope: ReconciliationScope): Promise<TickResult> {
     const durable = this.readState(runId);
     if ("state" in durable) return durable;
-    if (durable.value.baseline === null) {
-      return { state: "checkpoint", runId, checkpoint: { kind: "baseline_required" } };
-    }
-    const baselineId = durable.value.baseline.id;
+    const baselineId = durable.value.baseline?.id ?? null;
     const pendingAudit = durable.value.pendingAudit;
-    if (pendingAudit !== null && pendingAudit.baselineId !== baselineId) {
+    if (pendingAudit !== null && baselineId !== null && pendingAudit.baselineId !== baselineId) {
       return this.invalidState(runId, "pending audit does not match the durable baseline");
     }
     const reusePendingAudit = pendingAudit !== null && pendingAudit.id === auditId;

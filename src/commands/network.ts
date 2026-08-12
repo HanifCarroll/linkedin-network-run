@@ -247,27 +247,13 @@ export async function networkTick(
     }
 
     const fresh = engine.readControllerState(run.id);
-    if (fresh.baseline === null) {
-      if (fresh.openAttempts.length > 0) {
-        return output("checkpoint", {
-          checkpoint: {
-            kind: "engine_state_invalid",
-            evidence: "an open attempt exists before the durable sent-list baseline",
-          },
-        });
-      }
-      const baseline = await controller.captureBaseline(
-        run.id,
-        receiptId("baseline", dependencies.createId()),
-      );
-      steps.push(baseline);
-      if (baseline.state === "checkpoint") {
-        return output("checkpoint", { checkpoint: baseline.checkpoint });
-      }
-      if (baseline.state === "terminal") {
-        return output("terminal", { terminal: baseline.terminal });
-      }
-      if (baseline.state === "done") return output("done");
+    if (fresh.baseline === null && fresh.openAttempts.length > 0) {
+      return output("checkpoint", {
+        checkpoint: {
+          kind: "engine_state_invalid",
+          evidence: "an open attempt exists without a durable sent-list baseline",
+        },
+      });
     }
 
     for (

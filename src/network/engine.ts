@@ -616,15 +616,18 @@ export class NetworkEngine {
   recordAudit(input: AuditInput): void {
     inTransaction(this.database, () => {
       this.requireActiveRun(input.runId);
-      const baseline = this.baseline(input.baselineId);
-      if (baseline.run_id !== input.runId) throw new Error("audit baseline belongs to another run");
+      const baseline = input.baselineId === null ? null : this.baseline(input.baselineId);
+      if (baseline !== null && baseline.run_id !== input.runId) {
+        throw new Error("audit baseline belongs to another run");
+      }
       const identities = [...input.identities]
         .map((value) => value.trim())
         .filter((value) => value.length > 0);
       if (new Set(identities).size !== identities.length) {
         throw new Error("audit identities must be unique");
       }
-      const baselineIdentities = this.parseIdentityList(baseline.identities_json);
+      const baselineIdentities =
+        baseline === null ? [] : this.parseIdentityList(baseline.identities_json);
       const competingSenderAbsent = this.computeCompetingSenderAbsent(
         input.runId,
         baselineIdentities,
@@ -684,7 +687,7 @@ export class NetworkEngine {
 
   reconcile(
     runId: string,
-    baselineId: string,
+    baselineId: string | null,
     auditId: string,
     now: string,
     reconciliationId: string = `reconciliation:${auditId}`,
@@ -820,19 +823,21 @@ export class NetworkEngine {
         return replayConfirmedAttemptIds;
       }
 
-      const baseline = this.baseline(baselineId);
+      const baseline = baselineId === null ? null : this.baseline(baselineId);
       const audit = required(this.auditOrNull(auditId), "audit not found");
       this.requireActiveRun(runId);
-      if (baseline.run_id !== runId || audit.run_id !== runId || audit.baseline_id !== baselineId) {
+      if (
+        audit.run_id !== runId ||
+        (baseline !== null && (baseline.run_id !== runId || audit.baseline_id !== baselineId))
+      ) {
         throw new Error("reconciliation run or baseline mismatch");
       }
-      if (audit.captured_at < baseline.captured_at) {
-        throw new Error("audit predates its baseline");
-      }
       if (
-        baseline.causal_sequence === null ||
-        audit.causal_sequence === null ||
-        audit.causal_sequence <= baseline.causal_sequence
+        baseline !== null &&
+        (audit.captured_at < baseline.captured_at ||
+          baseline.causal_sequence === null ||
+          audit.causal_sequence === null ||
+          audit.causal_sequence <= baseline.causal_sequence)
       ) {
         throw new Error("audit must be causally after its baseline");
       }
@@ -849,7 +854,8 @@ export class NetworkEngine {
       const planned = allBefore.filter((attempt) => attempt.state === "planned");
       const active = allBefore.filter((attempt) => ["possible", "durable"].includes(attempt.state));
       const auditIdentities = this.parseIdentityList(audit.identities_json);
-      const baselineIdentities = this.parseIdentityList(baseline.identities_json);
+      const baselineIdentities =
+        baseline === null ? [] : this.parseIdentityList(baseline.identities_json);
       const newIdentities = auditIdentities.filter(
         (identity) => !baselineIdentities.includes(identity),
       );
@@ -860,7 +866,7 @@ export class NetworkEngine {
 
       if (scope === "microbatch") {
         if (
-          baseline.attempt_count_at_capture !== 0 ||
+          (baseline !== null && baseline.attempt_count_at_capture !== 0) ||
           provisionalAll.length === 0 ||
           provisionalAll.some((attempt) => !causallyAudited(attempt))
         ) {
@@ -960,7 +966,8 @@ export class NetworkEngine {
           attemptCount,
           baselineId,
           competingSenderAbsent:
-            baseline.competing_sender_absent === 1 && audit.competing_sender_absent === 1,
+            (baseline === null || baseline.competing_sender_absent === 1) &&
+            audit.competing_sender_absent === 1,
           evidence: evidenceRows,
           finalComplete,
           mode,
@@ -988,7 +995,10 @@ export class NetworkEngine {
           mode,
           attemptCount,
           finalComplete ? 1 : 0,
-          baseline.competing_sender_absent === 1 && audit.competing_sender_absent === 1 ? 1 : 0,
+          (baseline === null || baseline.competing_sender_absent === 1) &&
+            audit.competing_sender_absent === 1
+            ? 1
+            : 0,
           stableJson(newlyConfirmedAttemptIds),
           now,
           causal.sequence,
@@ -1639,7 +1649,7 @@ export class NetworkEngine {
   private applySealedReconciliationConfirmation(input: {
     attemptId: string;
     auditId: string;
-    baselineId: string;
+    baselineId: string | null;
     evidenceKind: ReconciliationEvidenceKind;
     reconciliationId: string;
     scope: ReconciliationScope;
@@ -1654,30 +1664,53 @@ export class NetworkEngine {
       reconciliationScope: input.scope,
     };
     const receiptId = `durable:${input.attemptId}`;
-    const authorized = this.database
-      .query<{ ok: number }, [string, string, string, string, string, string, string]>(
-        `SELECT 1 AS ok
-         FROM reconciliations rec
-         JOIN reconciliation_attempts child
-           ON child.reconciliation_id = rec.id AND child.attempt_id = ?
-         JOIN audit_snapshots audit ON audit.id = rec.audit_id
-         JOIN audit_baselines baseline ON baseline.id = rec.baseline_id
-         JOIN json_each(rec.confirmed_attempt_ids_json) confirmed
-           ON confirmed.value = child.attempt_id
-         WHERE rec.id = ? AND rec.run_id = ? AND rec.audit_id = ? AND rec.baseline_id = ?
-           AND rec.sealed = 1 AND child.evidence_kind = ? AND rec.scope = ?
-           AND audit.run_id = rec.run_id AND audit.baseline_id = baseline.id
-           AND baseline.run_id = rec.run_id`,
-      )
-      .get(
-        input.attemptId,
-        input.reconciliationId,
-        attempt.run_id,
-        input.auditId,
-        input.baselineId,
-        input.evidenceKind,
-        input.scope,
-      );
+    const authorized =
+      input.baselineId === null
+        ? this.database
+            .query<{ ok: number }, [string, string, string, string, string, string]>(
+              `SELECT 1 AS ok
+               FROM reconciliations rec
+               JOIN reconciliation_attempts child
+                 ON child.reconciliation_id = rec.id AND child.attempt_id = ?
+               JOIN audit_snapshots audit ON audit.id = rec.audit_id
+               JOIN json_each(rec.confirmed_attempt_ids_json) confirmed
+                 ON confirmed.value = child.attempt_id
+               WHERE rec.id = ? AND rec.run_id = ? AND rec.audit_id = ? AND rec.baseline_id IS NULL
+                 AND rec.sealed = 1 AND child.evidence_kind = ? AND rec.scope = ?
+                 AND audit.run_id = rec.run_id`,
+            )
+            .get(
+              input.attemptId,
+              input.reconciliationId,
+              attempt.run_id,
+              input.auditId,
+              input.evidenceKind,
+              input.scope,
+            )
+        : this.database
+            .query<{ ok: number }, [string, string, string, string, string, string, string]>(
+              `SELECT 1 AS ok
+               FROM reconciliations rec
+               JOIN reconciliation_attempts child
+                 ON child.reconciliation_id = rec.id AND child.attempt_id = ?
+               JOIN audit_snapshots audit ON audit.id = rec.audit_id
+               JOIN audit_baselines baseline ON baseline.id = rec.baseline_id
+               JOIN json_each(rec.confirmed_attempt_ids_json) confirmed
+                 ON confirmed.value = child.attempt_id
+               WHERE rec.id = ? AND rec.run_id = ? AND rec.audit_id = ? AND rec.baseline_id = ?
+                 AND rec.sealed = 1 AND child.evidence_kind = ? AND rec.scope = ?
+                 AND audit.run_id = rec.run_id AND audit.baseline_id = baseline.id
+                 AND baseline.run_id = rec.run_id`,
+            )
+            .get(
+              input.attemptId,
+              input.reconciliationId,
+              attempt.run_id,
+              input.auditId,
+              input.baselineId,
+              input.evidenceKind,
+              input.scope,
+            );
     if (authorized === null) {
       throw new Error("durable attempt lacks an exact sealed reconciliation authorization");
     }

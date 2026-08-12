@@ -59,7 +59,7 @@ export type AuditInput = {
   id: string;
   invocationId: string;
   runId: string;
-  baselineId: string;
+  baselineId: string | null;
   peopleCount: number;
   identities: string[];
   names: string[];

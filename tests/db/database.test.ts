@@ -30,10 +30,10 @@ describe("database domain", () => {
     const first = runMigrations(database);
     const second = runMigrations(database);
     expect(first).toEqual({
-      applied: ["initial"],
-      currentVersion: 1,
+      applied: ["initial", "baseline_optional"],
+      currentVersion: 2,
     });
-    expect(second).toEqual({ applied: [], currentVersion: 1 });
+    expect(second).toEqual({ applied: [], currentVersion: 2 });
     const tables = database
       .query<{ name: string }, []>(
         `SELECT name FROM sqlite_master
