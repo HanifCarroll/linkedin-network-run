@@ -800,7 +800,7 @@ function countRealSends(database: Database, runId: string): number {
       .query<{ count: number }, [string]>(
         `SELECT COUNT(*) AS count FROM send_attempts
          WHERE run_id = ? AND commit_started_at IS NOT NULL
-           AND state IN ('possible', 'durable')`,
+           AND state IN ('possible', 'durable', 'proven_no_send')`,
       )
       .get(runId)?.count ?? 0
   );

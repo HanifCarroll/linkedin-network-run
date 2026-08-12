@@ -1360,6 +1360,11 @@ export class NetworkEngine {
       const audit = required(this.auditOrNull(auditId), "audit not found");
       if (audit.run_id !== runId) throw new Error("audit belongs to another run");
       if (audit.causal_sequence === null) throw new Error("audit lacks causal sequence");
+      // An incomplete sent-page capture (bounded by pending names, interrupted
+      // scroll, or relay drop) cannot prove a send is absent: the person may
+      // simply be on a row the capture never loaded. Only resolve unconfirmed
+      // attempts as proven_no_send against a complete audit.
+      if (audit.complete !== 1) return 0;
       const sealedConfirmed = new Set(
         this.database
           .query<{ attempt_id: string }, [string, string]>(
