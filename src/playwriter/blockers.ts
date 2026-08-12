@@ -15,7 +15,7 @@ const rules: readonly [BlockerKind, TypedBlocker["retryability"], RegExp][] = [
   [
     "page_closed",
     "safe_retry",
-    /Target page, context or browser has been closed|No open pages remain|page\.goto: Timeout/i,
+    /Target page, context or browser has been closed|No open pages remain|page\.(?:goto|reload|evaluate): Timeout/i,
   ],
   [
     "network_refusal",

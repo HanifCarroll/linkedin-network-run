@@ -232,8 +232,13 @@ function walkListBody(
     `const acquireFirstPage=async()=>{`,
     `if(!p.url().startsWith("https://www.linkedin.com/sales/search/people")){`,
     `await p.goto(${literal(url)},{waitUntil:"domcontentloaded"});`,
-    progress("navigation_returned"),
+    `}else{`,
+    // Already on the search URL, but a settled SPA page does not refire the
+    // sales-api boot requests our header listener needs. Reload to force
+    // fresh salesApiLeadSearch/sales-api traffic without a full goto.
+    `await p.reload({waitUntil:"domcontentloaded"});`,
     `}`,
+    progress("navigation_returned"),
     // The SPA soft-navigates after domcontentloaded; settle briefly so the
     // replay's execution context is stable. (Container selectors vary across
     // Sales Nav builds, so rely on timing + captured headers instead.)
@@ -249,7 +254,7 @@ function walkListBody(
     `};`,
     `let acquired=null;let lastErr=null;`,
     `for(let attempt=0;attempt<4&&acquired===null;attempt+=1){`,
-    `try{acquired=await acquireFirstPage();}catch(e){lastErr=e;const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator/i.test(msg))throw e;await p.waitForTimeout(3000);}`,
+    `try{acquired=await acquireFirstPage();}catch(e){lastErr=e;const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator|Timeout/i.test(msg))throw e;await p.waitForTimeout(3000);}`,
     `}`,
     `if(acquired===null)throw new Error("FIRST_REPLAY:"+String((lastErr&&lastErr.message)||lastErr));`,
     `const {firstPage:firstPage,replaySearch:replaySearch,firstTotal:firstTotal,hdrs:hdrs}=acquired;`,
