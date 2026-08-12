@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { type OpenDatabase, openDatabase } from "../db/database.ts";
-import { PREFERRED_PER_SOURCE, SEND_PACING_MS } from "../network/config.ts";
+import { DAILY_TARGET, PREFERRED_PER_SOURCE, SEND_PACING_MS } from "../network/config.ts";
 import {
   type BrowserPortResult,
   type DailyRun,
@@ -36,7 +36,6 @@ import type {
   NetworkTickInput,
 } from "./types.ts";
 
-const DAILY_TARGET = 30;
 const MAX_BATCH_SIZE = 5;
 const MAX_ORCHESTRATION_STEPS = 500;
 const DEFAULT_SETTLE_WAIT_MS = 60_000;
@@ -808,9 +807,6 @@ function parseReport(bytes: Uint8Array): unknown {
 }
 
 function assertTickBounds(input: NetworkTickInput): void {
-  if (input.target !== DAILY_TARGET) {
-    throw new CliError("INVALID_ARGUMENT", "network target must be exactly 30", { exitCode: 2 });
-  }
   if (
     !Number.isSafeInteger(input.batchSize) ||
     input.batchSize < 1 ||
@@ -919,7 +915,6 @@ async function tickOutput(
     sendsThisTick,
     realSendsToday,
     durable,
-    target: input.target,
     ...(checkpoint === undefined ? {} : { checkpoint }),
     ...(terminal === undefined ? {} : { terminal }),
     ...(recentDisconnects > 0 ? { recentDisconnects } : {}),
@@ -929,7 +924,7 @@ async function tickOutput(
     localDate: input.localDate,
     state,
     summary,
-    target: input.target,
+    target: DAILY_TARGET,
     batchSize: input.batchSize,
     maxRealSends: input.maxRealSends,
     sendsThisTick,
@@ -959,7 +954,6 @@ function humanTickSummary(info: {
   readonly sendsThisTick: number;
   readonly realSendsToday: number;
   readonly durable: number;
-  readonly target: number;
   readonly checkpoint?: TickSummaryCheckpoint;
   readonly terminal?: { readonly reason?: string };
   readonly recentDisconnects?: number;

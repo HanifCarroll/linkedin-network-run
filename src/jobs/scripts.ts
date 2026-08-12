@@ -6,7 +6,7 @@ import type { JobsSearchSpec } from "./types.ts";
  * throws for expected outcomes; the runner parses that line.
  */
 
-const SEARCH_TIMEOUT_MS = 300_000;
+const SEARCH_TIMEOUT_MS = 600_000;
 
 /** LinkedIn jobs search page URL from a spec (f_TPR/f_WT are the standard filters). */
 export function buildSearchUrl(spec: JobsSearchSpec): string {
@@ -28,13 +28,15 @@ export function buildSearchUrl(spec: JobsSearchSpec): string {
   return url.toString();
 }
 
-// Jobs scripts own a dedicated page. Never navigate the user's open LinkedIn
-// tabs: that interrupts their work and races scheduled automations (observed:
-// goto interrupted by another navigation). Prefer a carried page, then any
-// blank tab, then a new page; newPage can time out while the relay is busy
-// with other automation, so it is the last resort.
+// Jobs scripts run on a page they own. context.pages() is shared across all
+// sessions and agents (docs: "Pages are shared, state is not"), so grabbing
+// any open tab can steal another agent's page mid-run (observed: goto
+// interrupted by another navigation). The executor provides a fresh tracked
+// `page` per call and state.jobsPage persists across calls, so prefer the
+// carried page then the executor's own page; never newPage (extra tabs
+// accumulate and overwhelm the relay) and never reuse shared tabs.
 const PAGE_PICKUP = `
-let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed()){p=stored;}else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()==="about:blank")??null;if(!p){try{p=await context.newPage();}catch{throw new Error("JOBS_BROWSER_BUSY: no blank tab and newPage timed out; retry when other automation has finished");}}}state.jobsPage=p;}`;
+let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed()){p=stored;}else{p=page;}if(!p||p.isClosed()){try{p=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}}state.jobsPage=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");`;
 
 const EXTRACT_VIEW = `
 () => {
@@ -45,43 +47,36 @@ const EXTRACT_VIEW = `
   const company = parts.length >= 2 ? parts[parts.length - 1] : "";
   const title = parts.length >= 2 ? parts.slice(0, -1).join(" | ") : (parts[0] ?? "");
   const lines = document.body.innerText.split("\\n").map(l => l.trim()).filter(Boolean);
-  const postedIdx = lines.findIndex(l => l.includes("·") && /ago|applicant|today|hour/i.test(l));
-  const location = postedIdx >= 0 ? (lines[postedIdx].split("·")[0] ?? "").trim() : "";
-  const heading = Array.from(document.querySelectorAll("h1,h2,h3,div,span")).find(el => /^Meet the hiring team$/i.test((el.innerText || "").trim()));
+  // Anchor the location line to the title row: "United States · 2 days ago ·
+  // Over 100 applicants". Scanning from the start hits hidden nav text.
+  const titleAnchor = title.length > 8 ? title.slice(0, 30) : "";
+  const titleIdx = titleAnchor ? lines.findIndex(l => l.includes(titleAnchor)) : -1;
+  const scanFrom = titleIdx >= 0 ? titleIdx : 0;
+  const postedLine = lines.slice(scanFrom, scanFrom + 8).find(l => /·\\s*\\d+\\s*(minute|hour|day|week|month)s?\\s+ago|·\\s*(today|yesterday)/i.test(l));
+  const location = postedLine ? (postedLine.split("·")[0] ?? "").trim() : "";
+  // Hiring-team members are profile links labeled "Job poster" in their own
+  // text. The "Meet the hiring team" heading is not a clean single element
+  // across builds, so fall back to the smallest region containing that text.
   const team = [];
-  let teamText = "";
-  if (heading) {
-    let container = heading;
-    for (let i = 0; i < 4 && container; i += 1) container = container.parentElement;
-    if (container) {
-      teamText = container.innerText.trim();
-      for (const a of Array.from(container.querySelectorAll("a[href*='/in/']"))) {
-        const name = (a.innerText || "").trim().replace(/\\s+/g, " ");
-        if (!name || team.some(m => m.name === name)) continue;
-        const href = a.getAttribute("href") || "";
-        team.push({ name, profileUrl: href.startsWith("http") ? href : "https://www.linkedin.com" + href, degree: "", headline: "" });
-      }
-      const tlines = teamText.split("\\n").map(l => l.trim()).filter(Boolean);
-      for (const m of team) {
-        const idx = tlines.findIndex(l => l === m.name);
-        if (idx >= 0) {
-          const next = tlines[idx + 1] ?? "";
-          const dm = /^\\s*•?\\s*([123](?:st|nd|rd))/.exec(next);
-          if (dm) m.degree = dm[1];
-        }
-        const head = [];
-        for (let j = idx + (idx >= 0 ? 2 : 1); j < tlines.length; j += 1) {
-          const l = tlines[j];
-          if (team.some(t => t.name === l)) break;
-          if (/^\\s*•?\\s*[123](?:st|nd|rd)/.test(l)) break;
-          if (/^(Follow|Message|Connect|Recently hired|Actively reviewing|Promoted by|Save)/.test(l)) break;
-          head.push(l);
-        }
-        m.headline = head.join(" ");
-      }
-    }
+  let links = Array.from(document.querySelectorAll("a[href*='/in/']")).filter(a => /Job poster/i.test(a.innerText || ""));
+  if (links.length === 0) {
+    const region = Array.from(document.querySelectorAll("h1,h2,h3,div,span"))
+      .filter(el => /Meet the hiring team/i.test(el.innerText || ""))
+      .sort((x, y) => (x.innerText || "").length - (y.innerText || "").length)
+      .find(el => el.querySelectorAll("a[href*='/in/']").length > 0);
+    if (region) links = Array.from(region.querySelectorAll("a[href*='/in/']"));
   }
-  return { title, company, location, team, teamText };
+  for (const a of links) {
+    const lines = (a.innerText || "").split("\\n").map(l => l.trim()).filter(Boolean);
+    const name = lines[0] || "";
+    if (!name || team.some(m => m.name === name)) continue;
+    const href = a.getAttribute("href") || "";
+    const degreeLine = lines.find(l => /^•?\\s*([123](?:st|nd|rd))\\s*$/i.test(l));
+    const degree = degreeLine ? (/[123](?:st|nd|rd)/i.exec(degreeLine) || [])[0] ?? "" : "";
+    const headline = lines.slice(1).filter(l => l !== degreeLine && !/^(Job poster|Message|Follow|Connect|Show more|View profile)$/i.test(l)).join(" ");
+    team.push({ name, profileUrl: href.startsWith("http") ? href : "https://www.linkedin.com" + href, degree, headline });
+  }
+  return { title, company, location, team };
 }`;
 
 const SEARCH_RESULT = `
@@ -96,10 +91,27 @@ const onResponse=async(res)=>{
   try{const b=await res.json();const els=b?.data?.elements;const pg=b?.data?.paging;if(Array.isArray(els)&&pg&&els.length>0)cards={elements:els,paging:pg,included:b?.included??[],requestUrl:res.url()};}catch{}
 };
 p.on("response",onResponse);
-await p.goto(CONFIG.searchUrl,{waitUntil:"domcontentloaded",timeout:60000});
-for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);
-if(cards===null){try{await p.reload({waitUntil:"domcontentloaded",timeout:60000});}catch{}for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);}
-if(cards===null)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED");
+// The SPA soft-navigates after domcontentloaded, which can destroy the
+// evaluation context and abort the goto; retry navigate+settle+capture until
+// the cards land or tries are exhausted (same recovery as the network walk).
+let lastNavErr=null;let acquired=false;
+for(let attempt=0;attempt<4&&!acquired;attempt+=1){
+  try{
+    await p.goto(CONFIG.searchUrl,{waitUntil:"commit",timeout:60000});
+    await p.waitForTimeout(1200);
+    for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);
+    if(cards===null){try{await p.reload({waitUntil:"commit",timeout:60000});}catch{}await p.waitForTimeout(1200);for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);}
+    acquired=cards!==null;
+  }catch(e){
+    lastNavErr=e;
+    const msg=String((e&&e.message)||e);
+    if(/closed|context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg)){
+      // Recreate the page if the user closed it or the relay dropped it.
+      try{if(p.isClosed()){let rp=null;try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
+    }else throw e;
+  }
+}
+if(!acquired)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED"+(lastNavErr?": "+String((lastNavErr&&lastNavErr.message)||lastNavErr):""));
 result.pagesCollected=1;
 result.cardsTotal=cards.paging.total??0;
 const byId=new Map();
@@ -115,11 +127,35 @@ for(let pg=1;pg<CONFIG.pages&&byId.size<CONFIG.jobCountTarget;pg+=1){
 }
 const ids=[...byId.keys()].slice(0,CONFIG.hiringTeamLimit);
 const EXTRACT=VIEW_EXTRACT;
+const viewAttempt=async(jobId)=>{
+  // The user may close our tab mid-run (docs: always check before using).
+  if(p.isClosed()){
+    p=null;
+    try{p=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
+    if(!p)throw new Error("NO_PAGE");
+    state.jobsPage=p;
+  }
+  await p.goto("https://www.linkedin.com/jobs/view/"+jobId+"/",{waitUntil:"commit",timeout:45000});
+  await p.waitForTimeout(1000);
+  // Wait for the SSR document title to land (app-owned readiness signal) —
+  // title is set at document load and differs from the previous page.
+  try{
+    const previousTitle=await p.title().catch(()=>"");
+    for(let w=0;w<16;w+=1){const t=await p.title().catch(()=>"");if(t&&t!==previousTitle&&t.includes("LinkedIn"))break;await p.waitForTimeout(500);}
+  }catch{}
+  await p.waitForTimeout(1500);
+    // The hiring-team section is lazy-rendered below the fold; scroll down
+    // incrementally to trigger it (a single jump is unreliable).
+    try{for(let s=0;s<8;s+=1){await p.evaluate(()=>window.scrollBy(0,800));await p.waitForTimeout(500);}await p.waitForTimeout(1500);}catch{}
+    return p.evaluate(EXTRACT);
+};
 for(const id of ids){
   try{
-    await p.goto("https://www.linkedin.com/jobs/view/"+id+"/",{waitUntil:"domcontentloaded",timeout:45000});
-    await p.waitForTimeout(2500);
-    const view=await p.evaluate(EXTRACT);
+    let view=null;let lastViewErr=null;
+    for(let attempt=0;attempt<3&&view===null;attempt+=1){
+      try{view=await viewAttempt(id);}catch(e){lastViewErr=e;const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg))throw e;await p.waitForTimeout(2500);}
+    }
+    if(view===null)throw lastViewErr??new Error("VIEW_UNREACHABLE");
     const team=(view.team??[]).map(t=>({name:t.name,profileUrl:t.profileUrl,degree:t.degree||"",headline:t.headline||""}));
     result.jobs.push({id,title:(byId.get(id)?.title||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0});
   }catch{

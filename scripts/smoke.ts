@@ -51,12 +51,7 @@ try {
       return { attempts: [] };
     },
     networkTick: async (input) => {
-      if (
-        input.target !== 30 ||
-        input.batchSize !== 5 ||
-        input.maxRealSends !== 30 ||
-        input.sessionId !== "auto"
-      ) {
+      if (input.batchSize !== 5 || input.maxRealSends !== 30 || input.sessionId !== "auto") {
         throw new Error("network smoke did not receive the final completion contract");
       }
       calls.push("network tick");
@@ -134,8 +129,6 @@ try {
       "network",
       "tick",
       "--allow-send",
-      "--target",
-      "30",
       "--batch-size",
       "5",
       "--max-real-sends",

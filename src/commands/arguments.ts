@@ -60,7 +60,7 @@ const NETWORK_HELP = `Usage:
   linkedin-tools [--json] network status [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network report [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network tick --allow-send [--batch-size 1..5]
-    [--target 30] [--max-real-sends 1..30]
+    [--max-real-sends 1..30]
     [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH] [--session ID|auto]
     [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] network reconcile [--date YYYY-MM-DD]
@@ -234,7 +234,6 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       const options = parseOptions(argv.slice(2), {
         "--allow-send": "boolean",
         "--batch-size": "value",
-        "--target": "value",
         "--max-real-sends": "value",
         "--date": "value",
         "--state-dir": "value",
@@ -569,12 +568,9 @@ function networkReadInput(options: ParsedOptions, context: ParseContext): Networ
 
 function networkTickInput(options: ParsedOptions, context: ParseContext): NetworkTickInput {
   const read = networkReadInput(options, context);
-  const target = options.values.get("--target") ?? "30";
-  if (target !== "30") invalid("--target must be exactly 30");
   return {
     ...read,
     allowSend: true,
-    target: 30,
     batchSize: boundedInteger(options.values.get("--batch-size") ?? "5", "--batch-size", 1, 5),
     maxRealSends: boundedInteger(
       options.values.get("--max-real-sends") ?? "30",

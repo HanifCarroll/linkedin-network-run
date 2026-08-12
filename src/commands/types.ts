@@ -27,7 +27,6 @@ export type PlaywriterSessionSelection = number | "auto";
 
 export type NetworkTickInput = NetworkReadInput & {
   readonly allowSend: true;
-  readonly target: 30;
   readonly batchSize: number;
   readonly maxRealSends: number;
   readonly playwriterBin: string;
