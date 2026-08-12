@@ -195,6 +195,7 @@ export function assertBlocker(v: unknown): asserts v is TypedBlocker {
     "checkpoint",
     "security_verification",
     "session_lost",
+    "page_closed",
     "network_refusal",
     "source_mismatch",
     "wrong_page",
