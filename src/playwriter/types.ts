@@ -16,9 +16,10 @@ export const PLAYWRITER_DEFAULT_TIMEOUT_MS = 10_000;
 export const SOURCE_CAPTURE_TIMEOUT_MS = 240_000;
 
 export const COMMAND_TIMEOUT_MS: Readonly<Record<string, number>> = {
-  // Source navigation is a single goto; keep the default budget.
-  "navigate-candidate-results": PLAYWRITER_DEFAULT_TIMEOUT_MS,
-  "navigate-sent-list": PLAYWRITER_DEFAULT_TIMEOUT_MS,
+  // Navigations are full cross-page loads through the extension relay, which
+  // can take well over 10s with a loaded sent page; keep the capture budget.
+  "navigate-candidate-results": SOURCE_CAPTURE_TIMEOUT_MS,
+  "navigate-sent-list": SOURCE_CAPTURE_TIMEOUT_MS,
   // Captures and candidate walks scroll, wait for lazy rows, and paginate.
   "capture-candidate-results": SOURCE_CAPTURE_TIMEOUT_MS,
   "capture-candidate": SOURCE_CAPTURE_TIMEOUT_MS,
