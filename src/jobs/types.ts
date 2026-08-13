@@ -20,6 +20,11 @@ export type CollectedJob = {
   readonly hiringTeam: readonly HiringTeamMember[];
   readonly hasHiringTeam: boolean;
 };
+/** A raw job captured from the search XHR, before direct-view enrichment. */
+export type CapturedJob = {
+  readonly id: string;
+  readonly title: string;
+};
 
 export type JobsSearchInput = {
   readonly stateDir: string;
@@ -71,7 +76,7 @@ export type JobsSendInput = {
   readonly allowSend: true;
 };
 
-export type JobStatus = "collected" | "favorite" | "drafted" | "sent";
+export type JobStatus = "captured" | "collected" | "favorite" | "drafted" | "sent";
 
 export type JobRow = {
   readonly id: string;

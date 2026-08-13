@@ -86,9 +86,28 @@ export type JobsSearchInput = {
   readonly skipIds?: readonly string[];
 };
 
+export type JobsCollectInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  readonly keywords: string;
+  readonly location: string;
+  readonly postedWithinDays?: number;
+  readonly remote?: boolean;
+  readonly pages: number;
+};
+
+export type JobsEnrichInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  /** Max jobs to enrich this run (default: all captured). */
+  readonly limit?: number;
+};
+
 export type JobsListInput = {
   readonly stateDir: string;
-  readonly status?: "collected" | "favorite" | "drafted" | "sent";
+  readonly status?: "captured" | "collected" | "favorite" | "drafted" | "sent";
   readonly withHiringTeam: boolean;
 };
 
@@ -129,6 +148,8 @@ export interface CliOperations {
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
   migrationDryRun(input: MigrationDryRunInput): Promise<unknown>;
   jobsSearch(input: JobsSearchInput): Promise<unknown>;
+  jobsCollect(input: JobsCollectInput): Promise<unknown>;
+  jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
   jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
@@ -186,6 +207,8 @@ export type ParsedInvocation =
       readonly input: NetworkIncidentClearInput;
     }
   | { readonly kind: "command"; readonly command: "jobs search"; readonly input: JobsSearchInput }
+  | { readonly kind: "command"; readonly command: "jobs collect"; readonly input: JobsCollectInput }
+  | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }
   | {
       readonly kind: "command";

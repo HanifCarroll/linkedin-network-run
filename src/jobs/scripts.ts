@@ -114,9 +114,9 @@ const enrichOne=async(wp,id)=>{
   }
   if(view===null)throw lastViewErr??new Error("VIEW_UNREACHABLE");
   const team=(view.team??[]).map(t=>({name:t.name,profileUrl:t.profileUrl,degree:t.degree||"",headline:t.headline||""}));
-  return {id,title:(state.jobsBatch.byId[id]||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0};
+  return {id,title:(TITLES[id]||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0};
 };
-const emptyRow=(id)=>({id,title:(state.jobsBatch.byId[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false});
+const emptyRow=(id)=>({id,title:(TITLES[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false});
 `;
 
 const CAPTURE_RESULT = `
@@ -222,7 +222,8 @@ for(let n=3;seenStarts.size<neededStarts&&byId.size<CONFIG.jobCountTarget;n+=1){
 const ids=[...byId.keys()].filter((id)=>!CONFIG.skipIds.includes(id)).slice(0,CONFIG.hiringTeamLimit);
 const batch={byId:Object.fromEntries([...byId.entries()].map(([id,entry])=>[id,entry.title])),ids,results:{},pagesCollected:seenStarts.size,cardsTotal:cards.total};
 state.jobsBatch=batch;
-console.log(JSON.stringify({ok:true,data:{pool:ids.length,pagesCollected:seenStarts.size,cardsTotal:cards.total}}));
+const poolJobs=ids.map((id)=>{const entry=byId.get(id);return {id,title:entry?entry.title:""};});
+console.log(JSON.stringify({ok:true,data:{pool:ids.length,pagesCollected:seenStarts.size,cardsTotal:cards.total,jobs:poolJobs}}));
 `;
 
 const ENRICH_RESULT = `
@@ -263,6 +264,14 @@ const FINISH_RESULT = `
 const batch=state.jobsBatch;
 const jobs=batch.ids.map((id)=>batch.results[id]).filter((r)=>r!==undefined);
 console.log(JSON.stringify({ok:true,data:{jobs,pagesCollected:batch.pagesCollected,cardsTotal:batch.cardsTotal}}));
+`;
+
+const ENRICH_POOL_RESULT = `
+const results=[];
+for(const job of CONFIG.jobs){
+  try{results.push(await enrichOne(p,job.id));}catch{results.push(emptyRow(job.id));}
+}
+console.log(JSON.stringify({ok:true,data:{completed:results}}));
 `;
 
 /**
@@ -316,7 +325,21 @@ export function buildEnrichScript(config: {
   if (!Number.isSafeInteger(workers) || workers < 1 || workers > 5)
     throw new TypeError("workers must be 1..5");
   const cfg = { batchSize: config.batchSize, workers };
-  const source = `const CONFIG=${JSON.stringify(cfg)};const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_RESULT}`;
+  const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=state.jobsBatch.byId;const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_RESULT}`;
+  return { script: source, timeoutMs: 420_000 };
+}
+
+/**
+ * Enrich a caller-supplied batch of captured jobs (id + title), returning the
+ * enriched rows. Used by `jobs enrich` to drain the DB-backed captured pool —
+ * no capture phase and no state.jobsBatch dependency.
+ */
+export function buildEnrichPoolScript(config: {
+  readonly jobs: readonly { readonly id: string; readonly title: string }[];
+}): { readonly script: string; readonly timeoutMs: number } {
+  if (config.jobs.length === 0) throw new TypeError("jobs must be non-empty");
+  const cfg = { jobs: config.jobs };
+  const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=Object.fromEntries(CONFIG.jobs.map((j)=>[j.id,j.title]));const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_POOL_RESULT}`;
   return { script: source, timeoutMs: 420_000 };
 }
 

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
-import type { CollectedJob, HiringTeamMember, JobRow, JobStatus } from "./types.ts";
+import type { CapturedJob, CollectedJob, HiringTeamMember, JobRow, JobStatus } from "./types.ts";
 
 type JobRowRaw = {
   readonly id: string;
@@ -33,6 +33,7 @@ export class JobsEngine {
         posting_url = excluded.posting_url,
         hiring_team_json = excluded.hiring_team_json,
         has_hiring_team = excluded.has_hiring_team,
+        status = 'collected',
         updated_at = excluded.updated_at
     `);
     const tx = this.database.transaction(() => {
@@ -48,6 +49,23 @@ export class JobsEngine {
           now,
           now,
         );
+      }
+    });
+    tx();
+    return jobs.length;
+  }
+
+  storeCapturedJobs(jobs: readonly CapturedJob[], now: string): number {
+    const stmt = this.database.prepare(`
+      INSERT INTO jobs (
+        id, title, company, location, posting_url, hiring_team_json, has_hiring_team,
+        status, message, collected_at, updated_at, sent_at
+      ) VALUES (?, ?, '', '', ?, '[]', 0, 'captured', NULL, ?, ?, NULL)
+      ON CONFLICT(id) DO NOTHING
+    `);
+    const tx = this.database.transaction(() => {
+      for (const job of jobs) {
+        stmt.run(job.id, job.title, `https://www.linkedin.com/jobs/view/${job.id}/`, now, now);
       }
     });
     tx();

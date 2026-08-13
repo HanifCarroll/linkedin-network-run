@@ -3,7 +3,9 @@ import { CliError } from "../core/errors.ts";
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsCollectInput,
   JobsDraftInput,
+  JobsEnrichInput,
   JobsFavoriteInput,
   JobsListInput,
   JobsSearchInput,
@@ -41,6 +43,8 @@ Commands:
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
   jobs search            Collect jobs from a LinkedIn search and check hiring teams
+  jobs collect           Collect raw job postings from a LinkedIn search (no enrichment)
+  jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
   jobs list              List collected jobs from the local store
   jobs favorite          Mark collected jobs for review
   jobs draft             Store a drafted outreach message for a job
@@ -107,7 +111,12 @@ const JOBS_HELP = `Usage:
     --location "United States" [--posted-within 1|7|14|30] [--remote]
     [--pages 1..10] [--hiring-team-limit 1..200] [--hiring-team-target 1..50]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs list [--status collected|favorite|drafted|sent]
+  linkedin-tools [--json] jobs collect --keywords "product engineer"
+    --location "United States" [--posted-within 1|7|14|30] [--remote] [--pages 1..10]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs enrich [--limit N]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs list [--status captured|collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--state-dir ABSOLUTE_PATH]
@@ -124,7 +133,11 @@ already-seen postings, so it auto-advances past exhausted pages; pagination
 through the Playwriter relay is render-variable, so a run may collect fewer
 pages than asked. Re-runs skip already-found teams, so the target converges.
 --targetMet in the result says whether the target
-was reached. jobs send opens the first listed hiring team member's profile,
+was reached.
+The collect/enrich split does the same work in two explicit phases: jobs
+collect stores raw postings as 'captured'; jobs enrich drains the captured
+pool into enriched 'collected' rows. Both are resumable and budget-capped.
+jobs send opens the first listed hiring team member's profile,
 composes the drafted message, and sends it — it requires the explicit
 --allow-send flag.
 `;
@@ -380,7 +393,9 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
   if (argv[0] === "jobs") {
     if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: JOBS_HELP };
     const verb = argv[1];
-    if (!["search", "list", "favorite", "draft", "send"].includes(verb ?? "")) {
+    if (
+      !["search", "collect", "enrich", "list", "favorite", "draft", "send"].includes(verb ?? "")
+    ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
     if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
@@ -399,6 +414,43 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       });
       return { kind: "command", command: "jobs search", input: jobsSearchInput(options, context) };
     }
+    if (verb === "collect") {
+      const options = parseOptions(argv.slice(2), {
+        "--keywords": "value",
+        "--location": "value",
+        "--posted-within": "value",
+        "--remote": "boolean",
+        "--pages": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      return {
+        kind: "command",
+        command: "jobs collect",
+        input: jobsCollectInput(options, context),
+      };
+    }
+    if (verb === "enrich") {
+      const options = parseOptions(argv.slice(2), {
+        "--limit": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      const limitRaw = options.values.get("--limit");
+      const input: JobsEnrichInput = {
+        stateDir: stateDir(options, context),
+        playwriterBin: playwriterBin(options, context),
+        sessionId: requiredWorkflowSession(
+          options.values.get("--session"),
+          context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+          "--session",
+        ),
+        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 200) }),
+      };
+      return { kind: "command", command: "jobs enrich", input };
+    }
     if (verb === "list") {
       const options = parseOptions(argv.slice(2), {
         "--status": "value",
@@ -406,8 +458,11 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "--state-dir": "value",
       });
       const status = options.values.get("--status");
-      if (status !== undefined && !["collected", "favorite", "drafted", "sent"].includes(status)) {
-        invalid("--status must be collected, favorite, drafted, or sent");
+      if (
+        status !== undefined &&
+        !["captured", "collected", "favorite", "drafted", "sent"].includes(status)
+      ) {
+        invalid("--status must be captured, collected, favorite, drafted, or sent");
       }
       const input: JobsListInput = {
         stateDir: stateDir(options, context),
@@ -510,6 +565,30 @@ function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSea
       200,
     ),
     ...(target === 0 ? {} : { hiringTeamTarget: target }),
+  };
+}
+
+function jobsCollectInput(options: ParsedOptions, context: ParseContext): JobsCollectInput {
+  const keywords = required(options, "--keywords");
+  const postedRaw = options.values.get("--posted-within");
+  const postedWithinDays =
+    postedRaw === undefined ? undefined : boundedInteger(postedRaw, "--posted-within", 1, 30);
+  if (postedWithinDays !== undefined && ![1, 7, 14, 30].includes(postedWithinDays)) {
+    invalid("--posted-within must be 1, 7, 14, or 30");
+  }
+  return {
+    stateDir: stateDir(options, context),
+    playwriterBin: playwriterBin(options, context),
+    sessionId: requiredWorkflowSession(
+      options.values.get("--session"),
+      context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+      "--session",
+    ),
+    keywords,
+    location: options.values.get("--location") ?? "",
+    ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
+    ...(options.booleans.has("--remote") ? { remote: true } : {}),
+    pages: boundedInteger(options.values.get("--pages") ?? "5", "--pages", 1, 10),
   };
 }
 

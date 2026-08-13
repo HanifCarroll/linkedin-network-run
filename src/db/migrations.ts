@@ -287,6 +287,40 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 4,
+    name: "jobs_captured_status",
+    sql: `
+      -- Split collection from enrichment: a job starts as 'captured' (raw id +
+      -- title from the search XHR) and becomes 'collected' once enriched with
+      -- company/location/hiring team. Recreate the table to widen the CHECK.
+      CREATE TABLE jobs_new (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        company TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        posting_url TEXT NOT NULL,
+        hiring_team_json TEXT NOT NULL DEFAULT '[]',
+        has_hiring_team INTEGER NOT NULL DEFAULT 0 CHECK(has_hiring_team IN (0, 1)),
+        status TEXT NOT NULL DEFAULT 'collected'
+          CHECK(status IN ('captured', 'collected', 'favorite', 'drafted', 'sent')),
+        message TEXT,
+        collected_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sent_at TEXT
+      );
+
+      INSERT INTO jobs_new
+        (id, title, company, location, posting_url, hiring_team_json,
+         has_hiring_team, status, message, collected_at, updated_at, sent_at)
+      SELECT id, title, company, location, posting_url, hiring_team_json,
+         has_hiring_team, status, message, collected_at, updated_at, sent_at
+      FROM jobs;
+
+      DROP TABLE jobs;
+      ALTER TABLE jobs_new RENAME TO jobs;
+    `,
+  },
 ];
 
 export type MigrationResult = {

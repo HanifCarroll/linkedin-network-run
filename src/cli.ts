@@ -97,6 +97,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.migrationDryRun(invocation.input);
     case "jobs search":
       return operations.jobsSearch(invocation.input);
+    case "jobs collect":
+      return operations.jobsCollect(invocation.input);
+    case "jobs enrich":
+      return operations.jobsEnrich(invocation.input);
     case "jobs list":
       return operations.jobsList(invocation.input);
     case "jobs favorite":

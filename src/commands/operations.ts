@@ -1,7 +1,15 @@
 import { analyticsExport } from "./analytics.ts";
 import { doctor } from "./doctor.ts";
 import { networkIncidentClear, networkIncidentStatus } from "./incident.ts";
-import { jobsDraft, jobsFavorite, jobsList, jobsSearch, jobsSend } from "./jobs.ts";
+import {
+  jobsCollect,
+  jobsDraft,
+  jobsEnrich,
+  jobsFavorite,
+  jobsList,
+  jobsSearch,
+  jobsSend,
+} from "./jobs.ts";
 import { migrationDryRun } from "./migration.ts";
 import {
   networkReconcile,
@@ -29,6 +37,8 @@ export function createDefaultOperations(): CliOperations {
     analyticsExport,
     migrationDryRun,
     jobsSearch,
+    jobsCollect,
+    jobsEnrich,
     jobsList,
     jobsFavorite,
     jobsDraft,

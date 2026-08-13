@@ -95,6 +95,14 @@ try {
       calls.push("jobs search");
       return { collected: 0 };
     },
+    jobsCollect: async () => {
+      calls.push("jobs collect");
+      return { captured: 0 };
+    },
+    jobsEnrich: async () => {
+      calls.push("jobs enrich");
+      return { enriched: 0 };
+    },
     jobsList: async () => {
       calls.push("jobs list");
       return { count: 0, jobs: [] };
