@@ -22,3 +22,5 @@ export type {
   JobsSearchSpec,
   JobsSendInput,
 } from "./types.ts";
+
+export { JOB_SEARCH_TERMS } from "./terms.ts";
