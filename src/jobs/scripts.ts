@@ -207,9 +207,11 @@ if(!acquired)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED"+(lastNavErr?": "+Stri
 // request). Paginate onward with the remaining page buttons — the visible
 // set varies across renders, so collect whatever pages the SPA offers and
 // re-run the search to converge on the target (found teams are skipped).
-// Collect as many pages as the user asked (up to 3; deeper pages are
-// unreliable), so the pool has margin after visited jobs are skipped.
-const neededStarts=Math.min(3,CONFIG.pages);
+// Collect as many pages as the user asked. Already-seen postings are filtered
+// out at the end, so paginating past exhausted pages is how a re-run finds
+// fresh ones. Deeper pages are render-variable; the loop stops early if a
+// page button stops firing its XHR.
+const neededStarts=CONFIG.pages;
 // Settle before paginating so the results list and footer are fully live
 // (the probe that paged reliably waited ~10s before its first click).
 await p.waitForTimeout(8000);

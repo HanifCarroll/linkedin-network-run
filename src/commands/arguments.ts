@@ -118,11 +118,12 @@ jobs search collects postings from a LinkedIn jobs search (via the
 voyagerJobsDashJobCards XHR), loads each posting's direct view to read the
 "Meet the hiring team" section, and stores the jobs locally. With
 --hiring-team-target N it keeps enriching until N postings with a listed
-hiring team are found. Roughly 1 in 4 postings lists one, and each run
-collects a fresh 25-75 posting pool (LinkedIn's pagination through the
-Playwriter relay is render-variable), so a 20-team target typically takes
-1-3 runs: already-found teams are skipped on re-runs and the pool rotates,
-so the target converges. --targetMet in the result says whether the target
+hiring team are found. Roughly 1 in 4 postings lists one. Each run collects
+up to --pages of results (default 5, 25 postings per page) and skips
+already-seen postings, so it auto-advances past exhausted pages; pagination
+through the Playwriter relay is render-variable, so a run may collect fewer
+pages than asked. Re-runs skip already-found teams, so the target converges.
+--targetMet in the result says whether the target
 was reached. jobs send opens the first listed hiring team member's profile,
 composes the drafted message, and sends it — it requires the explicit
 --allow-send flag.
@@ -498,7 +499,7 @@ function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSea
     location: options.values.get("--location") ?? "",
     ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
     ...(options.booleans.has("--remote") ? { remote: true } : {}),
-    pages: boundedInteger(options.values.get("--pages") ?? "1", "--pages", 1, 10),
+    pages: boundedInteger(options.values.get("--pages") ?? "5", "--pages", 1, 10),
     // With a target, scale the default view cap so the pool is large enough
     // to find it (roughly 1 in 4 postings lists a hiring team).
     hiringTeamLimit: boundedInteger(
