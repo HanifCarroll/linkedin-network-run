@@ -105,7 +105,7 @@ This command reads legacy state and returns proposals. It has no apply mode.
 const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs search --keywords "product engineer"
     --location "United States" [--posted-within 1|7|14|30] [--remote]
-    [--pages 1..10] [--hiring-team-limit 1..50]
+    [--pages 1..10] [--hiring-team-limit 1..200] [--hiring-team-target 1..50]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs list [--status collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
@@ -116,9 +116,16 @@ const JOBS_HELP = `Usage:
 
 jobs search collects postings from a LinkedIn jobs search (via the
 voyagerJobsDashJobCards XHR), loads each posting's direct view to read the
-"Meet the hiring team" section, and stores the jobs locally. jobs send opens
-the first listed hiring team member's profile, composes the drafted message,
-and sends it — it requires the explicit --allow-send flag.
+"Meet the hiring team" section, and stores the jobs locally. With
+--hiring-team-target N it keeps enriching until N postings with a listed
+hiring team are found. Roughly 1 in 4 postings lists one, and each run
+collects a fresh 25-75 posting pool (LinkedIn's pagination through the
+Playwriter relay is render-variable), so a 20-team target typically takes
+1-3 runs: already-found teams are skipped on re-runs and the pool rotates,
+so the target converges. --targetMet in the result says whether the target
+was reached. jobs send opens the first listed hiring team member's profile,
+composes the drafted message, and sends it — it requires the explicit
+--allow-send flag.
 `;
 
 type OptionKind = "boolean" | "value" | "repeatable";
@@ -384,6 +391,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "--remote": "boolean",
         "--pages": "value",
         "--hiring-team-limit": "value",
+        "--hiring-team-target": "value",
         "--state-dir": "value",
         "--session": "value",
         "--playwriter-bin": "value",
@@ -475,6 +483,9 @@ function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSea
   if (postedWithinDays !== undefined && ![1, 7, 14, 30].includes(postedWithinDays)) {
     invalid("--posted-within must be 1, 7, 14, or 30");
   }
+  const targetRaw = options.values.get("--hiring-team-target");
+  const target =
+    targetRaw === undefined ? 0 : boundedInteger(targetRaw, "--hiring-team-target", 1, 50);
   return {
     stateDir: stateDir(options, context),
     playwriterBin: playwriterBin(options, context),
@@ -488,12 +499,16 @@ function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSea
     ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
     ...(options.booleans.has("--remote") ? { remote: true } : {}),
     pages: boundedInteger(options.values.get("--pages") ?? "1", "--pages", 1, 10),
+    // With a target, scale the default view cap so the pool is large enough
+    // to find it (roughly 1 in 4 postings lists a hiring team).
     hiringTeamLimit: boundedInteger(
-      options.values.get("--hiring-team-limit") ?? "25",
+      options.values.get("--hiring-team-limit") ??
+        (target === 0 ? "25" : String(Math.min(target * 4, 200))),
       "--hiring-team-limit",
       1,
-      50,
+      200,
     ),
+    ...(target === 0 ? {} : { hiringTeamTarget: target }),
   };
 }
 

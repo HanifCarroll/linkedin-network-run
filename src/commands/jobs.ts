@@ -2,13 +2,16 @@ import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import {
-  buildSearchScript,
+  buildCaptureScript,
+  buildEnrichScript,
   buildSearchUrl,
   buildSendScript,
   JobsEngine,
   runJobsScript,
 } from "../jobs/index.ts";
-import type { CollectedJob } from "../jobs/types.ts";
+import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
+import type { CollectedJob, JobRow } from "../jobs/types.ts";
+import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
   JobsDraftInput,
@@ -21,6 +24,7 @@ import type {
 export type JobsDependencies = {
   readonly resolveSession?: (request: SessionResolutionRequest) => Promise<number>;
   readonly runScript?: typeof runJobsScript;
+  readonly resetSession?: (sessionId: number) => Promise<void>;
   readonly now?: () => string;
 };
 
@@ -30,6 +34,20 @@ const defaultDependencies: JobsDependencies = {
   resolveSession: resolvePlaywriterSession,
   runScript: runJobsScript,
   now: nowDefault,
+};
+
+const defaultResetSession = (input: {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+}): ((sessionId: number) => Promise<void>) => {
+  const client = new PlaywriterClient({
+    executable: input.playwriterBin,
+    invocationRoot: join(input.stateDir, "receipts", "playwriter", "jobs"),
+    stateDir: input.stateDir,
+  });
+  return async (sessionId: number) => {
+    await client.resetSession(sessionId);
+  };
 };
 
 export async function jobsSearch(
@@ -45,39 +63,142 @@ export async function jobsSearch(
     stateDir: input.stateDir,
     playwriterBin: input.playwriterBin,
   });
+  const target = input.hiringTeamTarget ?? 0;
   const searchUrl = buildSearchUrl(input);
-  const { script, timeoutMs } = buildSearchScript({
-    searchUrl,
-    pages: input.pages,
-    hiringTeamLimit: input.hiringTeamLimit,
-  });
-  const outcome = await runScript({
-    playwriterBin: input.playwriterBin,
-    sessionId,
-    script,
-    timeoutMs,
-    stateDir: input.stateDir,
-  });
-  const parsed = parseSearchResult(outcome.data);
-  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
-  let collected = 0;
-  try {
-    collected = new JobsEngine(opened.database).upsertJobs(parsed.jobs, now());
-  } finally {
-    opened.database.close();
+  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
+  const dbPath = join(input.stateDir, "linkedin-tools.db");
+  const phase = (script: string, timeoutMs: number) =>
+    runScript({
+      playwriterBin: input.playwriterBin,
+      sessionId,
+      script,
+      timeoutMs,
+      stateDir: input.stateDir,
+    });
+  const dbRows = (): JobRow[] => {
+    const opened = openDatabase(dbPath);
+    try {
+      return new JobsEngine(opened.database).listJobs({ withHiringTeam: false });
+    } finally {
+      opened.database.close();
+    }
+  };
+  const countTeams = (rows: readonly JobRow[] = dbRows()) =>
+    rows.filter((row) => row.hasHiringTeam).length;
+  // Resume: skip jobs already enriched (found a team OR landed a company) so an
+  // interrupted/session-walled run continues with new work instead of revisiting.
+  const visitedIds = (rows: readonly JobRow[] = dbRows()) =>
+    rows.filter((row) => row.hasHiringTeam || row.company.length > 0).map((row) => row.id);
+  const checkpoint = (jobs: readonly CollectedJob[]): void => {
+    if (jobs.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).upsertJobs(jobs, now());
+    } finally {
+      opened.database.close();
+    }
+  };
+
+  const startRows = dbRows();
+  const startIds = new Set(startRows.map((row) => row.id));
+  const startTeams = countTeams(startRows);
+  let targetMet = target > 0 ? startTeams >= target : false;
+  let cardsTotal = 0;
+  let pagesCollected = 0;
+  const maxCycles = 8;
+  const maxEnrichPerCycle = Math.ceil((input.pages * 25) / 9) + 2;
+
+  // The playwriter extension drops its CDP connection when a session runs past
+  // Chrome's MV3 service-worker ~5-minute wall. Each completed job is
+  // checkpointed to the DB as it lands, so on a session failure we reset the
+  // connection, re-capture a fresh pool, and continue — every cycle does new
+  // work until the team target is met or the pool is exhausted. runPhase
+  // returns null when the session was reset (caller retries with fresh state).
+  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
+    try {
+      return await phase(script, timeoutMs);
+    } catch (error) {
+      if (isSessionFailure(error)) {
+        await resetSession(sessionId).catch(() => {});
+        return null;
+      }
+      throw error;
+    }
+  };
+
+  for (let cycle = 0; cycle < maxCycles && !targetMet; cycle += 1) {
+    const skipIds = target > 0 ? visitedIds() : [];
+    const captureScript = buildCaptureScript({
+      searchUrl,
+      pages: input.pages,
+      hiringTeamLimit: input.hiringTeamLimit,
+      skipIds,
+    });
+    const capture = await runPhase(captureScript.script, captureScript.timeoutMs);
+    if (capture === null) continue;
+    cardsTotal = Number.isSafeInteger(capture.data?.cardsTotal)
+      ? Number(capture.data.cardsTotal)
+      : cardsTotal;
+    pagesCollected = Number.isSafeInteger(capture.data?.pagesCollected)
+      ? Number(capture.data.pagesCollected)
+      : pagesCollected;
+    let remaining = Number.isSafeInteger(capture.data?.pool) ? Number(capture.data.pool) : 0;
+    for (
+      let enrichCall = 0;
+      enrichCall < maxEnrichPerCycle && remaining > 0 && !targetMet;
+      enrichCall += 1
+    ) {
+      const enrichScript = buildEnrichScript({ batchSize: 6, workers: 1 });
+      const enrich = await runPhase(enrichScript.script, enrichScript.timeoutMs);
+      if (enrich === null) break;
+      const completed = Array.isArray(enrich.data?.completed) ? enrich.data.completed : [];
+      // A real job view always yields a company; empty rows mean extraction
+      // failed (page never rendered — usually a degrading/looming-relay-drop
+      // session). Discard those (they're retried next cycle) and treat an
+      // entirely-empty batch as a session-quality failure: reset and re-capture
+      // instead of recording zeros as progress.
+      const real = completed.filter(
+        (job): job is CollectedJob => isRecord(job) && String(job.company ?? "").length > 0,
+      );
+      if (completed.length > 0 && real.length === 0) {
+        await resetSession(sessionId).catch(() => {});
+        break;
+      }
+      checkpoint(real);
+      remaining = Number.isSafeInteger(enrich.data?.remaining) ? Number(enrich.data.remaining) : 0;
+      if (target > 0 && countTeams() >= target) targetMet = true;
+    }
+    if (target > 0 && countTeams() >= target) targetMet = true;
   }
+
+  const finalRows = dbRows();
+  const collected = finalRows.filter((row) => !startIds.has(row.id)).length;
+  const withHiringTeam = countTeams(finalRows);
   return {
     command: "jobs search",
     keywords: input.keywords,
     location: input.location,
     postedWithinDays: input.postedWithinDays ?? null,
     remote: input.remote ?? false,
-    cardsTotal: parsed.cardsTotal,
-    pagesCollected: parsed.pagesCollected,
+    hiringTeamTarget: target,
+    targetMet: target === 0 ? true : withHiringTeam >= target,
+    cardsTotal,
+    pagesCollected,
     collected,
-    withHiringTeam: parsed.jobs.filter((job) => job.hasHiringTeam).length,
-    jobs: parsed.jobs,
+    withHiringTeam,
+    jobs: finalRows,
   };
+}
+
+function isSessionFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /fetch failed|session lost|extension not connected|context was destroyed|page closed|relay|disconnect|econn|timed out|execution timeout/i.test(
+    message,
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function jobsList(input: JobsListInput): Promise<unknown> {
@@ -187,44 +308,4 @@ export async function jobsSend(
     skipped: results.filter((r) => (r as Record<string, unknown>).status !== "sent").length,
     results,
   };
-}
-
-function parseSearchResult(data: Record<string, unknown>): {
-  jobs: CollectedJob[];
-  pagesCollected: number;
-  cardsTotal: number;
-} {
-  const jobsRaw = Array.isArray(data.jobs) ? data.jobs : [];
-  const jobs: CollectedJob[] = [];
-  for (const raw of jobsRaw) {
-    if (!isRecord(raw)) continue;
-    const id = String(raw.id ?? "");
-    if (id.length === 0) continue;
-    const hiringTeam = Array.isArray(raw.hiringTeam)
-      ? raw.hiringTeam.filter(isRecord).map((member) => ({
-          name: String(member.name ?? ""),
-          profileUrl: String(member.profileUrl ?? ""),
-          degree: String(member.degree ?? ""),
-          headline: String(member.headline ?? ""),
-        }))
-      : [];
-    jobs.push({
-      id,
-      title: String(raw.title ?? ""),
-      company: String(raw.company ?? ""),
-      location: String(raw.location ?? ""),
-      postingUrl: String(raw.postingUrl ?? `https://www.linkedin.com/jobs/view/${id}/`),
-      hiringTeam,
-      hasHiringTeam: raw.hasHiringTeam === true || hiringTeam.length > 0,
-    });
-  }
-  const pagesCollected = Number.isSafeInteger(data.pagesCollected)
-    ? Number(data.pagesCollected)
-    : 0;
-  const cardsTotal = Number.isSafeInteger(data.cardsTotal) ? Number(data.cardsTotal) : 0;
-  return { jobs, pagesCollected, cardsTotal };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -6,8 +6,6 @@ import type { JobsSearchSpec } from "./types.ts";
  * throws for expected outcomes; the runner parses that line.
  */
 
-const SEARCH_TIMEOUT_MS = 600_000;
-
 /** LinkedIn jobs search page URL from a spec (f_TPR/f_WT are the standard filters). */
 export function buildSearchUrl(spec: JobsSearchSpec): string {
   const url = new URL("https://www.linkedin.com/jobs/search");
@@ -79,91 +77,188 @@ const EXTRACT_VIEW = `
   return { title, company, location, team };
 }`;
 
-const SEARCH_RESULT = `
-const result={jobs:[],pagesCollected:0,cardsTotal:0};
+// The relay/extension caps any single execute call at ~300s (observed: a pure
+// 320s wait dies at 301.5s with "fetch failed"). Search therefore runs as
+// phased calls — capture, then small enrich batches, then finish — with
+// progress persisted in state.jobsBatch between calls.
+
+const VIEW_ATTEMPT = `
+const viewAttempt=async(wp,jobId)=>{
+  // The user may close our tab mid-run (docs: always check before using).
+  if(wp.isClosed()){
+    let rp=null;
+    try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
+    if(!rp)throw new Error("NO_PAGE");
+    wp=rp;
+  }
+  await wp.goto("https://www.linkedin.com/jobs/view/"+jobId+"/",{waitUntil:"commit",timeout:25000});
+  await wp.waitForTimeout(800);
+  // Wait for the SSR document title to land (app-owned readiness signal) —
+  // title is set at document load and differs from the previous page.
+  try{
+    const previousTitle=await wp.title().catch(()=>"");
+    for(let w=0;w<8;w+=1){const t=await wp.title().catch(()=>"");if(t&&t!==previousTitle&&t.includes("LinkedIn"))break;await wp.waitForTimeout(400);}
+  }catch{}
+  await wp.waitForTimeout(1500);
+  // The hiring-team section is lazy-rendered below the fold; scroll down
+  // incrementally to trigger it (a single jump is unreliable).
+  try{for(let s=0;s<5;s+=1){await wp.evaluate(()=>window.scrollBy(0,900));await wp.waitForTimeout(350);}await wp.waitForTimeout(1000);}catch{}
+  return wp.evaluate(VIEW_EXTRACT);
+};
+const enrichOne=async(wp,id)=>{
+  let view=null;let lastViewErr=null;
+  for(let attempt=0;attempt<3&&view===null;attempt+=1){
+    try{view=await viewAttempt(wp,id);}catch(e){lastViewErr=e;const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg))throw e;await wp.waitForTimeout(2500);}
+  }
+  if(view===null)throw lastViewErr??new Error("VIEW_UNREACHABLE");
+  const team=(view.team??[]).map(t=>({name:t.name,profileUrl:t.profileUrl,degree:t.degree||"",headline:t.headline||""}));
+  return {id,title:(state.jobsBatch.byId[id]||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0};
+};
+const emptyRow=(id)=>({id,title:(state.jobsBatch.byId[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false});
+`;
+
+const CAPTURE_RESULT = `
 try {
   p.removeAllListeners("response");
 } catch {}
+const byId=new Map();
+const absorb=(included)=>{for(const e of included??[]){if(e.$type==="com.linkedin.voyager.dash.jobs.JobPosting"){const m=/fsd_jobPosting:(\\d+)$/.exec(e.entityUrn??"");if(m&&!byId.has(m[1]))byId.set(m[1],{id:m[1],title:e.title??""});}}};
+const seenStarts=new Set();
 let cards=null;
 const onResponse=async(res)=>{
-  if(cards)return;
   if(!res.url().includes("voyagerJobsDashJobCards"))return;
-  try{const b=await res.json();const els=b?.data?.elements;const pg=b?.data?.paging;if(Array.isArray(els)&&pg&&els.length>0)cards={elements:els,paging:pg,included:b?.included??[],requestUrl:res.url()};}catch{}
+  try{
+    const b=await res.json();
+    const els=b?.data?.elements;const pg=b?.data?.paging;
+    if(Array.isArray(els)&&pg&&els.length>0){
+      absorb(b?.included??[]);
+      if(typeof pg.start==="number")seenStarts.add(pg.start);
+      if(cards===null)cards={total:pg.total??0};
+    }
+  }catch{}
 };
 p.on("response",onResponse);
 // The SPA soft-navigates after domcontentloaded, which can destroy the
 // evaluation context and abort the goto; retry navigate+settle+capture until
 // the cards land or tries are exhausted (same recovery as the network walk).
-let lastNavErr=null;let acquired=false;
-for(let attempt=0;attempt<4&&!acquired;attempt+=1){
-  try{
-    await p.goto(CONFIG.searchUrl,{waitUntil:"commit",timeout:60000});
-    await p.waitForTimeout(1200);
-    for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);
-    if(cards===null){try{await p.reload({waitUntil:"commit",timeout:60000});}catch{}await p.waitForTimeout(1200);for(let i=0;i<40&&cards===null;i+=1)await p.waitForTimeout(500);}
-    acquired=cards!==null;
-  }catch(e){
-    lastNavErr=e;
-    const msg=String((e&&e.message)||e);
-    if(/closed|context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg)){
-      // Recreate the page if the user closed it or the relay dropped it.
-      try{if(p.isClosed()){let rp=null;try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
-    }else throw e;
-  }
-}
-if(!acquired)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED"+(lastNavErr?": "+String((lastNavErr&&lastNavErr.message)||lastNavErr):""));
-result.pagesCollected=1;
-result.cardsTotal=cards.paging.total??0;
-const byId=new Map();
-const absorb=(included)=>{for(const e of included??[]){if(e.$type==="com.linkedin.voyager.dash.jobs.JobPosting"){const m=/fsd_jobPosting:(\\d+)$/.exec(e.entityUrn??"");if(m&&!byId.has(m[1]))byId.set(m[1],{id:m[1],title:e.title??""});}}};
-absorb(cards.included);
-for(let pg=1;pg<CONFIG.pages&&byId.size<CONFIG.jobCountTarget;pg+=1){
-  const u=new URL(cards.requestUrl);
-  const start=String(pg*25);
-  u.searchParams.set("start",start);
-  const q=u.searchParams.get("query")??"";
-  if(/start:\\d+/.test(q))u.searchParams.set("query",q.replace(/start:\\d+/,"start:"+start));
-  try{const r=await fetch(u.toString(),{credentials:"include",signal:AbortSignal.timeout(30000)});const b=await r.json();const els=b?.data?.elements??[];if(els.length===0)break;absorb(b?.included??[]);result.pagesCollected+=1;}catch{break;}
-}
-const ids=[...byId.keys()].slice(0,CONFIG.hiringTeamLimit);
-const EXTRACT=VIEW_EXTRACT;
-const viewAttempt=async(jobId)=>{
-  // The user may close our tab mid-run (docs: always check before using).
-  if(p.isClosed()){
-    p=null;
-    try{p=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
-    if(!p)throw new Error("NO_PAGE");
-    state.jobsPage=p;
-  }
-  await p.goto("https://www.linkedin.com/jobs/view/"+jobId+"/",{waitUntil:"commit",timeout:45000});
-  await p.waitForTimeout(1000);
-  // Wait for the SSR document title to land (app-owned readiness signal) —
-  // title is set at document load and differs from the previous page.
-  try{
-    const previousTitle=await p.title().catch(()=>"");
-    for(let w=0;w<16;w+=1){const t=await p.title().catch(()=>"");if(t&&t!==previousTitle&&t.includes("LinkedIn"))break;await p.waitForTimeout(500);}
-  }catch{}
-  await p.waitForTimeout(1500);
-    // The hiring-team section is lazy-rendered below the fold; scroll down
-    // incrementally to trigger it (a single jump is unreliable).
-    try{for(let s=0;s<8;s+=1){await p.evaluate(()=>window.scrollBy(0,800));await p.waitForTimeout(500);}await p.waitForTimeout(1500);}catch{}
-    return p.evaluate(EXTRACT);
+// A cached page renders results WITHOUT refiring the XHR; clicking a
+// pagination control fires it (verified: "Page 2" fires the start:0 request),
+// so the first click is the capture trigger, with a reload fallback.
+const clickPage=async(n)=>{
+  // Use Playwright's trusted click, not element.click(): the latter is
+  // swallowed by React's synthetic events while the SPA is hydrating
+  // (observed: 2 of 3 "Page 2" clicks did nothing).
+  try{await p.locator("button[aria-label=\\"Page "+n+"\\"]").click({timeout:8000});return true;}catch{return false;}
 };
-for(const id of ids){
-  try{
-    let view=null;let lastViewErr=null;
-    for(let attempt=0;attempt<3&&view===null;attempt+=1){
-      try{view=await viewAttempt(id);}catch(e){lastViewErr=e;const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg))throw e;await p.waitForTimeout(2500);}
+const waitForStartGrowth=async(before)=>{
+  // Paginated XHRs can arrive 15-20s after the click (observed), so allow a
+  // generous window before concluding the page did not fire.
+  for(let w=0;w<40&&seenStarts.size<=before;w+=1)await p.waitForTimeout(500);
+};
+// Click a page button repeatedly (every few seconds) until the XHR fires.
+// Clicks during SPA hydration or transitions are silently dropped; the
+// page's own controls are the only reliable trigger (XHR replay 403s).
+const pollClick=async(n,before)=>{
+  const deadline=Date.now()+12000;
+  let lastClickAt=0;
+  while(seenStarts.size<=before&&Date.now()<deadline){
+    if(Date.now()-lastClickAt>4000){
+      lastClickAt=Date.now();
+      const clicked=await clickPage(n);
+      if(!clicked)break;
     }
-    if(view===null)throw lastViewErr??new Error("VIEW_UNREACHABLE");
-    const team=(view.team??[]).map(t=>({name:t.name,profileUrl:t.profileUrl,degree:t.degree||"",headline:t.headline||""}));
-    result.jobs.push({id,title:(byId.get(id)?.title||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0});
-  }catch{
-    result.jobs.push({id,title:(byId.get(id)?.title||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false});
+    await p.waitForTimeout(1000);
+  }
+  return seenStarts.size>before;
+};
+// The start:0 XHR fires unreliably — sometimes on goto, sometimes only after
+// a reload or a pagination click. Fire every trigger in turn, bounded, and
+// stop on the first that lands the cards.
+const waitForCards=async()=>{for(let i=0;i<30&&cards===null;i+=1)await p.waitForTimeout(500);return cards!==null;};
+let lastNavErr=null;let acquired=false;
+try{
+  await p.goto(CONFIG.searchUrl,{waitUntil:"commit",timeout:45000});
+  await p.waitForTimeout(4000);
+  acquired=await waitForCards();
+  if(!acquired){try{await p.reload({waitUntil:"commit",timeout:45000});}catch{}await p.waitForTimeout(3000);acquired=await waitForCards();}
+  if(!acquired){await pollClick(2,seenStarts.size);acquired=cards!==null;}
+  if(!acquired){try{await p.reload({waitUntil:"commit",timeout:45000});}catch{}await p.waitForTimeout(3000);await pollClick(2,seenStarts.size);acquired=cards!==null;}
+}catch(e){
+  lastNavErr=e instanceof Error?e:new Error(String(e));
+  const msg=String((e&&e.message)||e);
+  if(/closed|context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg)){
+    // Recreate the page if the user closed it or the relay dropped it.
+    try{if(p.isClosed()){let rp=null;try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
   }
 }
 try{p.removeListener("response",onResponse);}catch{}
-console.log(JSON.stringify({ok:true,data:result}));
+if(!acquired)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED"+(lastNavErr?": "+String((lastNavErr&&lastNavErr.message)||lastNavErr):""));
+// Paginate with the page's own pagination controls: replaying the XHR 403s
+// (CSRF check failed) and the SPA strips &start from the URL. Clicking the
+// page buttons fires the voyagerJobsDashJobCards requests (observed sequence:
+// buttons 2,3,4,5 -> starts 0,25,50,75); the listener absorbs every response.
+// Data still comes only from the XHR. The acquisition already clicked the
+// page-2 button, so this loop starts at page 3. Clicks during SPA hydration
+// or transitions are silently dropped, so re-click every few seconds until
+// the page's start arrives or the deadline passes.
+// The acquisition already clicked the page-2 button (fires the start:0
+// request). Paginate onward with the remaining page buttons — the visible
+// set varies across renders, so collect whatever pages the SPA offers and
+// re-run the search to converge on the target (found teams are skipped).
+// Collect as many pages as the user asked (up to 3; deeper pages are
+// unreliable), so the pool has margin after visited jobs are skipped.
+const neededStarts=Math.min(3,CONFIG.pages);
+// Settle before paginating so the results list and footer are fully live
+// (the probe that paged reliably waited ~10s before its first click).
+await p.waitForTimeout(8000);
+for(let n=3;seenStarts.size<neededStarts&&byId.size<CONFIG.jobCountTarget;n+=1){
+  const grew=await pollClick(n,seenStarts.size);
+  if(!grew)break;
+}
+const ids=[...byId.keys()].filter((id)=>!CONFIG.skipIds.includes(id)).slice(0,CONFIG.hiringTeamLimit);
+const batch={byId:Object.fromEntries([...byId.entries()].map(([id,entry])=>[id,entry.title])),ids,results:{},pagesCollected:seenStarts.size,cardsTotal:cards.total};
+state.jobsBatch=batch;
+console.log(JSON.stringify({ok:true,data:{pool:ids.length,pagesCollected:seenStarts.size,cardsTotal:cards.total}}));
+`;
+
+const ENRICH_RESULT = `
+const batch=state.jobsBatch;
+const pending=batch.ids.filter((id)=>batch.results[id]===undefined).slice(0,CONFIG.batchSize);
+if(CONFIG.workers<=1){
+  // Sequential on the pickup page: every extra attached tab multiplies the
+  // relay's CDP event fanout (observed: 3 parallel workers wedge the relay
+  // mid-run, producing all-empty extractions), so one tab is the robust path.
+  for(const id of pending){
+    try{batch.results[id]=await enrichOne(p,id);}catch{batch.results[id]=emptyRow(id);}
+  }
+}else{
+  // Fixed worker pages, reused across calls (no accumulation). Opt-in: the
+  // fanout of parallel tabs has proven to wedge the relay on long runs.
+  let workers=state.jobsWorkers;
+  if(!Array.isArray(workers))workers=[];
+  for(let w=workers.length;w<CONFIG.workers;w+=1){
+    let wp=null;
+    try{wp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());wp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
+    if(!wp)break;
+    workers.push(wp);
+  }
+  state.jobsWorkers=workers;
+  const workerJobs=Array.from({length:workers.length},()=>[]);
+  pending.forEach((id,i)=>{workerJobs[i%workers.length].push(id);});
+  await Promise.all(workerJobs.map((jobs,i)=>jobs.length?Promise.all(jobs.map(async(id)=>{try{batch.results[id]=await enrichOne(workers[i],id);}catch{batch.results[id]=emptyRow(id);}})):Promise.resolve()));
+}
+const enriched=Object.keys(batch.results).length;
+const remaining=batch.ids.length-enriched;
+const found=Object.values(batch.results).filter((r)=>r.hasHiringTeam).length;
+const pendingSet=new Set(pending);
+const completed=batch.ids.filter((id)=>pendingSet.has(id)&&batch.results[id]!==undefined).map((id)=>batch.results[id]);
+console.log(JSON.stringify({ok:true,data:{enriched,remaining,found,completed}}));
+`;
+
+const FINISH_RESULT = `
+const batch=state.jobsBatch;
+const jobs=batch.ids.map((id)=>batch.results[id]).filter((r)=>r!==undefined);
+console.log(JSON.stringify({ok:true,data:{jobs,pagesCollected:batch.pagesCollected,cardsTotal:batch.cardsTotal}}));
 `;
 
 /**
@@ -171,29 +266,60 @@ console.log(JSON.stringify({ok:true,data:result}));
  * XHR for the search, paginates by replaying with `start` bumped, then loads
  * each job's direct view to extract company, location, and hiring team.
  */
-export function buildSearchScript(config: {
+/**
+ * Phase 1: capture the `voyagerJobsDashJobCards` XHR for the search, paginate
+ * by replaying with `start` bumped, and persist the id pool in
+ * state.jobsBatch. Runs in one call (well under the 300s relay cap).
+ */
+export function buildCaptureScript(config: {
   readonly searchUrl: string;
   readonly pages: number;
   readonly hiringTeamLimit: number;
+  readonly skipIds?: readonly string[];
 }): { readonly script: string; readonly timeoutMs: number } {
   if (!Number.isSafeInteger(config.pages) || config.pages < 1 || config.pages > 10)
     throw new TypeError("pages must be 1..10");
   if (
     !Number.isSafeInteger(config.hiringTeamLimit) ||
     config.hiringTeamLimit < 1 ||
-    config.hiringTeamLimit > 50
+    config.hiringTeamLimit > 200
   )
-    throw new TypeError("hiringTeamLimit must be 1..50");
-  const jobCountTarget = config.pages * 25;
+    throw new TypeError("hiringTeamLimit must be 1..200");
   const cfg = {
     searchUrl: config.searchUrl,
     pages: config.pages,
     hiringTeamLimit: config.hiringTeamLimit,
-    jobCountTarget,
+    skipIds: config.skipIds ?? [],
+    jobCountTarget: config.pages * 25,
   };
   // Top-level awaits only: the playwriter executor does not await an async IIFE.
-  const source = `const CONFIG=${JSON.stringify(cfg)};const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${SEARCH_RESULT}`;
-  return { script: source, timeoutMs: SEARCH_TIMEOUT_MS };
+  const source = `const CONFIG=${JSON.stringify(cfg)};\n${PAGE_PICKUP}\n${CAPTURE_RESULT}`;
+  return { script: source, timeoutMs: 420_000 };
+}
+
+/**
+ * Phase 2: enrich the next batch of job views (hiring team, company,
+ * location), appending to state.jobsBatch.results. Repeat until the caller's
+ * target is met or `remaining` is 0.
+ */
+export function buildEnrichScript(config: {
+  readonly batchSize: number;
+  readonly workers?: number;
+}): { readonly script: string; readonly timeoutMs: number } {
+  if (!Number.isSafeInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 60)
+    throw new TypeError("batchSize must be 1..60");
+  const workers = config.workers ?? 3;
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 5)
+    throw new TypeError("workers must be 1..5");
+  const cfg = { batchSize: config.batchSize, workers };
+  const source = `const CONFIG=${JSON.stringify(cfg)};const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_RESULT}`;
+  return { script: source, timeoutMs: 420_000 };
+}
+
+/** Phase 3: assemble the full result envelope from state.jobsBatch. */
+export function buildFinishScript(): { readonly script: string; readonly timeoutMs: number } {
+  const source = `${PAGE_PICKUP}\n${FINISH_RESULT}`;
+  return { script: source, timeoutMs: 120_000 };
 }
 
 export const SEND_TIMEOUT_MS = 90_000;

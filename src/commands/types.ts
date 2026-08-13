@@ -82,6 +82,8 @@ export type JobsSearchInput = {
   readonly remote?: boolean;
   readonly pages: number;
   readonly hiringTeamLimit: number;
+  readonly hiringTeamTarget?: number;
+  readonly skipIds?: readonly string[];
 };
 
 export type JobsListInput = {

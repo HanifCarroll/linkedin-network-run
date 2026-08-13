@@ -33,8 +33,16 @@ export type JobsSearchInput = {
   readonly remote?: boolean;
   /** Search pages to collect, 1..10 (25 jobs per page). */
   readonly pages: number;
-  /** How many jobs to enrich with a hiring-team check, 1..50. */
+  /** How many jobs to enrich with a hiring-team check, 1..200. */
   readonly hiringTeamLimit: number;
+  /**
+   * Keep enriching until this many jobs WITH a listed hiring team are found
+   * (0 disables: enrich exactly `hiringTeamLimit` jobs). The run stops early
+   * once the target is met; `targetMet` in the result says whether it was.
+   */
+  readonly hiringTeamTarget?: number;
+  /** Job ids to skip during enrichment (resume after an interrupted run). */
+  readonly skipIds?: readonly string[];
 };
 
 export type JobsListInput = {
