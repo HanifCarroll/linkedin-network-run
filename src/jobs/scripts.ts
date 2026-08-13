@@ -77,10 +77,12 @@ const EXTRACT_VIEW = `
   return { title, company, location, team };
 }`;
 
-// The relay/extension caps any single execute call at ~300s (observed: a pure
-// 320s wait dies at 301.5s with "fetch failed"). Search therefore runs as
+// The playwriter CLI (<=0.4.0) sends execute requests through Node/Undici
+// fetch, whose fixed 300s response-header timeout kills any call longer than
+// ~300s with "fetch failed" (remorses/playwriter#74). Search therefore runs as
 // phased calls — capture, then small enrich batches, then finish — with
-// progress persisted in state.jobsBatch between calls.
+// progress persisted in state.jobsBatch between calls. The ceiling lifts once
+// we upgrade to the playwriter release that fixes #74.
 
 const VIEW_ATTEMPT = `
 const viewAttempt=async(wp,jobId)=>{

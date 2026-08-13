@@ -107,13 +107,22 @@ export async function jobsSearch(
   let pagesCollected = 0;
   const maxCycles = 8;
   const maxEnrichPerCycle = Math.ceil((input.pages * 25) / 9) + 2;
+  // Soft wall-clock budget: stop starting new phases once a run approaches the
+  // ~5-min relay-degradation threshold. Progress is checkpointed, so a timed-out
+  // run resumes cleanly on the next invocation (visited IDs are skipped).
+  const SEARCH_BUDGET_MS = 240_000;
+  const startedAt = Date.now();
+  let timedOut = false;
+  const overBudget = (): boolean => Date.now() - startedAt >= SEARCH_BUDGET_MS;
 
-  // The playwriter extension drops its CDP connection when a session runs past
-  // Chrome's MV3 service-worker ~5-minute wall. Each completed job is
-  // checkpointed to the DB as it lands, so on a session failure we reset the
-  // connection, re-capture a fresh pool, and continue — every cycle does new
-  // work until the team target is met or the pool is exhausted. runPhase
-  // returns null when the session was reset (caller retries with fresh state).
+  // Sessions drop for a few reasons: the playwriter CLI (<=0.4.0) ends long
+  // execute requests at Node/Undici's fixed 300s response-header timeout
+  // (remorses/playwriter#74), and the relay/extension disconnects under
+  // sustained load. Each completed job is checkpointed to the DB as it lands,
+  // so on a session failure we reset the connection, re-capture a fresh pool,
+  // and continue — every cycle does new work until the team target is met or
+  // the pool is exhausted. runPhase returns null when the session was reset
+  // (caller retries with fresh state).
   const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
     try {
       return await phase(script, timeoutMs);
@@ -126,7 +135,11 @@ export async function jobsSearch(
     }
   };
 
-  for (let cycle = 0; cycle < maxCycles && !targetMet; cycle += 1) {
+  for (let cycle = 0; cycle < maxCycles && !targetMet && !timedOut; cycle += 1) {
+    if (overBudget()) {
+      timedOut = true;
+      break;
+    }
     const skipIds = target > 0 ? visitedIds() : [];
     const captureScript = buildCaptureScript({
       searchUrl,
@@ -145,10 +158,14 @@ export async function jobsSearch(
     let remaining = Number.isSafeInteger(capture.data?.pool) ? Number(capture.data.pool) : 0;
     for (
       let enrichCall = 0;
-      enrichCall < maxEnrichPerCycle && remaining > 0 && !targetMet;
+      enrichCall < maxEnrichPerCycle && remaining > 0 && !targetMet && !timedOut;
       enrichCall += 1
     ) {
-      const enrichScript = buildEnrichScript({ batchSize: 6, workers: 1 });
+      if (overBudget()) {
+        timedOut = true;
+        break;
+      }
+      const enrichScript = buildEnrichScript({ batchSize: 3, workers: 1 });
       const enrich = await runPhase(enrichScript.script, enrichScript.timeoutMs);
       if (enrich === null) break;
       const completed = Array.isArray(enrich.data?.completed) ? enrich.data.completed : [];
@@ -182,6 +199,7 @@ export async function jobsSearch(
     remote: input.remote ?? false,
     hiringTeamTarget: target,
     targetMet: target === 0 ? true : withHiringTeam >= target,
+    timedOut,
     cardsTotal,
     pagesCollected,
     collected,
