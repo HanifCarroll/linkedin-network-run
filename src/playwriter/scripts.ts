@@ -82,11 +82,13 @@ export function isControlledCompiledScript(v: unknown): v is CompiledScriptDescr
 }
 
 const usablePage = (key: string) =>
-  `let p=null;{const stored=state[${literal(key)}];if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages();const open=candidates.find((candidate)=>!candidate.isClosed());p=open??(await context.newPage());}state[${literal(key)}]=p;}`;
-// A self-contained walk must run on an extension-tracked page. The playwriter
-// extension only tracks pages it attached listeners to (its session page and
-// popups); pages created via context.newPage() are NOT tracked and get closed
-// (executor.js). Prefer the stored session page, then any open tracked page.
+  `let p=null;{const stored=state[${literal(key)}];if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??page;}state[${literal(key)}]=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");`;
+// Never create tabs from inside a script: the executor reuses context.pages()[0]
+// as `page`, and raw context.newPage() spawns untracked tabs that accumulate
+// and overwhelm the relay (surfacing as "Extension not connected" drops). A
+// self-contained walk must run on an extension-tracked page — prefer the stored
+// session page, then any open tracked page; if none, throw and let the reset
+// path recreate the connection.
 const freshWalkPage = (key: string) =>
   `let p=null;{const stored=state[${literal(key)}];if(stored&&!stored.isClosed())p=stored;else{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??page;state[${literal(key)}]=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");}`;
 const exactPage = (key: string, url: string) => {

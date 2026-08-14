@@ -229,28 +229,11 @@ console.log(JSON.stringify({ok:true,data:{pool:ids.length,pagesCollected:seenSta
 const ENRICH_RESULT = `
 const batch=state.jobsBatch;
 const pending=batch.ids.filter((id)=>batch.results[id]===undefined).slice(0,CONFIG.batchSize);
-if(CONFIG.workers<=1){
-  // Sequential on the pickup page: every extra attached tab multiplies the
-  // relay's CDP event fanout (observed: 3 parallel workers wedge the relay
-  // mid-run, producing all-empty extractions), so one tab is the robust path.
-  for(const id of pending){
-    try{batch.results[id]=await enrichOne(p,id);}catch{batch.results[id]=emptyRow(id);}
-  }
-}else{
-  // Fixed worker pages, reused across calls (no accumulation). Opt-in: the
-  // fanout of parallel tabs has proven to wedge the relay on long runs.
-  let workers=state.jobsWorkers;
-  if(!Array.isArray(workers))workers=[];
-  for(let w=workers.length;w<CONFIG.workers;w+=1){
-    let wp=null;
-    try{wp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());wp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
-    if(!wp)break;
-    workers.push(wp);
-  }
-  state.jobsWorkers=workers;
-  const workerJobs=Array.from({length:workers.length},()=>[]);
-  pending.forEach((id,i)=>{workerJobs[i%workers.length].push(id);});
-  await Promise.all(workerJobs.map((jobs,i)=>jobs.length?Promise.all(jobs.map(async(id)=>{try{batch.results[id]=await enrichOne(workers[i],id);}catch{batch.results[id]=emptyRow(id);}})):Promise.resolve()));
+// Sequential on the pickup page. Parallel workers were removed: every extra
+// attached tab multiplies the relay's CDP event fanout and wedges the relay on
+// long runs, and creating worker tabs via newPage accumulates untracked tabs.
+for(const id of pending){
+  try{batch.results[id]=await enrichOne(p,id);}catch{batch.results[id]=emptyRow(id);}
 }
 const enriched=Object.keys(batch.results).length;
 const remaining=batch.ids.length-enriched;
@@ -315,16 +298,13 @@ export function buildCaptureScript(config: {
  * location), appending to state.jobsBatch.results. Repeat until the caller's
  * target is met or `remaining` is 0.
  */
-export function buildEnrichScript(config: {
-  readonly batchSize: number;
-  readonly workers?: number;
-}): { readonly script: string; readonly timeoutMs: number } {
+export function buildEnrichScript(config: { readonly batchSize: number }): {
+  readonly script: string;
+  readonly timeoutMs: number;
+} {
   if (!Number.isSafeInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 60)
     throw new TypeError("batchSize must be 1..60");
-  const workers = config.workers ?? 1;
-  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 5)
-    throw new TypeError("workers must be 1..5");
-  const cfg = { batchSize: config.batchSize, workers };
+  const cfg = { batchSize: config.batchSize };
   const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=state.jobsBatch.byId;const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_RESULT}`;
   return { script: source, timeoutMs: 420_000 };
 }

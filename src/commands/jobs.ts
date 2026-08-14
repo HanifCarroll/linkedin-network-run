@@ -171,7 +171,7 @@ export async function jobsSearch(
         timedOut = true;
         break;
       }
-      const enrichScript = buildEnrichScript({ batchSize: 3, workers: 1 });
+      const enrichScript = buildEnrichScript({ batchSize: 3 });
       const enrich = await runPhase(enrichScript.script, enrichScript.timeoutMs);
       if (enrich === null) break;
       const completed = Array.isArray(enrich.data?.completed) ? enrich.data.completed : [];
