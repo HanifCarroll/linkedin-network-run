@@ -3,6 +3,7 @@ import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import {
   buildCaptureScript,
+  buildCleanupTabsScript,
   buildEnrichPoolScript,
   buildEnrichScript,
   buildSearchUrl,
@@ -316,7 +317,10 @@ export async function jobsEnrich(
   const resetSession = dependencies.resetSession ?? defaultResetSession(input);
   const dbPath = join(input.stateDir, "linkedin-tools.db");
   const batchSize = 3;
-  const BUDGET_MS = 240_000;
+  // Stay well under Chrome's ~5-minute MV3 single-event termination: a soft
+  // 3-minute budget plus one in-flight batch keeps each invocation below the
+  // limit that reclaims the extension service worker mid-drain.
+  const BUDGET_MS = 180_000;
   const startedAt = Date.now();
   const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
     try {
@@ -355,6 +359,17 @@ export async function jobsEnrich(
       opened.database.close();
     }
   };
+
+  // Trim accumulated blank automation tabs before draining: MV3 service
+  // workers get reclaimed under tab-buildup memory pressure, so this reduces
+  // reconnect-drop frequency. Best-effort; the enrich loop surfaces the real
+  // session failure if the bridge is already down.
+  try {
+    const cleanup = buildCleanupTabsScript();
+    await runPhase(cleanup.script, cleanup.timeoutMs);
+  } catch {
+    // ignore — enrichment below reports the actual failure
+  }
 
   const pool = capturedRows();
   const toEnrich = input.limit === undefined ? pool : pool.slice(0, input.limit);

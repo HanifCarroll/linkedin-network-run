@@ -342,6 +342,15 @@ export function buildEnrichPoolScript(config: {
   const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=Object.fromEntries(CONFIG.jobs.map((j)=>[j.id,j.title]));const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_POOL_RESULT}`;
   return { script: source, timeoutMs: 420_000 };
 }
+/**
+ * Close accumulated blank automation tabs (about:blank / empty URL) before a
+ * drain. MV3 service workers get reclaimed under tab-buildup memory pressure,
+ * so trimming them between reconnect cycles reduces the drop frequency.
+ */
+export function buildCleanupTabsScript(): { readonly script: string; readonly timeoutMs: number } {
+  const source = `let closed=0;try{const pages=context.pages().filter((p)=>{try{return !p.isClosed();}catch{return false;}});for(const pg of pages){try{const url=await pg.url().catch(()=>"");if((url===""||url.startsWith("about:"))&&pg!==page){await pg.close().catch(()=>{});closed+=1;}}catch{}}}catch{}console.log(JSON.stringify({ok:true,data:{closed}}));`;
+  return { script: source, timeoutMs: 60_000 };
+}
 
 /** Phase 3: assemble the full result envelope from state.jobsBatch. */
 export function buildFinishScript(): { readonly script: string; readonly timeoutMs: number } {

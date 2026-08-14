@@ -3,6 +3,7 @@ export type { JobsScriptOutcome } from "./playwriter.ts";
 export { runJobsScript } from "./playwriter.ts";
 export {
   buildCaptureScript,
+  buildCleanupTabsScript,
   buildEnrichPoolScript,
   buildEnrichScript,
   buildFinishScript,
