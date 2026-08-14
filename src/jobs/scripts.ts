@@ -344,11 +344,16 @@ export function buildEnrichPoolScript(config: {
 }
 /**
  * Close accumulated blank automation tabs (about:blank / empty URL) before a
- * drain. MV3 service workers get reclaimed under tab-buildup memory pressure,
- * so trimming them between reconnect cycles reduces the drop frequency.
+ * drain and clear the persisted carried page. Two problems this fixes:
+ *  - MV3 service workers get reclaimed under tab-buildup memory pressure, so
+ *    trimming tabs between reconnect cycles reduces the drop frequency.
+ *  - `state.jobsPage` is a stale handle after an extension drop: `isClosed()`
+ *    still reports false, so PAGE_PICKUP keeps navigating the dead page and
+ *    every enrich batch comes back empty. Nulling it forces PAGE_PICKUP onto
+ *    the executor's fresh `page`.
  */
 export function buildCleanupTabsScript(): { readonly script: string; readonly timeoutMs: number } {
-  const source = `let closed=0;try{const pages=context.pages().filter((p)=>{try{return !p.isClosed();}catch{return false;}});for(const pg of pages){try{const url=await pg.url().catch(()=>"");if((url===""||url.startsWith("about:"))&&pg!==page){await pg.close().catch(()=>{});closed+=1;}}catch{}}}catch{}console.log(JSON.stringify({ok:true,data:{closed}}));`;
+  const source = `let closed=0;state.jobsPage=null;try{const pages=context.pages().filter((p)=>{try{return !p.isClosed();}catch{return false;}});for(const pg of pages){try{const url=pg.url();if((url===""||url.startsWith("about:"))&&pg!==page){try{await pg.close();closed+=1;}catch{}}}catch{}}}catch{}console.log(JSON.stringify({ok:true,data:{closed}}));`;
   return { script: source, timeoutMs: 60_000 };
 }
 
