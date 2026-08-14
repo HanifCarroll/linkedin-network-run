@@ -448,6 +448,7 @@ export async function jobsCheck(
   });
   const resetSession = dependencies.resetSession ?? defaultResetSession(input);
   const dbPath = join(input.stateDir, "linkedin-tools.db");
+  const now = dependencies.now ?? nowDefault;
   const batchSize = 8;
   const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
     try {
@@ -472,6 +473,7 @@ export async function jobsCheck(
       return new JobsEngine(opened.database).listJobs({
         ...(input.status === undefined ? {} : { status: input.status }),
         withHiringTeam: input.withHiringTeam,
+        uncheckedOnly: true,
       });
     } finally {
       opened.database.close();
@@ -482,6 +484,15 @@ export async function jobsCheck(
     const opened = openDatabase(dbPath);
     try {
       new JobsEngine(opened.database).deleteJobs(ids);
+    } finally {
+      opened.database.close();
+    }
+  };
+  const markChecked = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).markChecked(ids, now());
     } finally {
       opened.database.close();
     }
@@ -507,6 +518,7 @@ export async function jobsCheck(
     if (result === null) break;
     const rows = Array.isArray(result.data?.checked) ? result.data.checked : [];
     const deadIds: string[] = [];
+    const liveIds: string[] = [];
     for (const row of rows) {
       if (!isRecord(row)) continue;
       checked += 1;
@@ -516,12 +528,14 @@ export async function jobsCheck(
       }
       if (row.live === true) {
         live += 1;
+        liveIds.push(String(row.id));
         continue;
       }
       dead += 1;
       deadIds.push(String(row.id));
     }
     removeDead(deadIds);
+    markChecked(liveIds);
   }
   return { command: "jobs check", checked, live, dead, unclear };
 }

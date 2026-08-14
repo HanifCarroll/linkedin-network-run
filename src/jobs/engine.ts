@@ -82,7 +82,11 @@ export class JobsEngine {
     return ids.length;
   }
 
-  listJobs(options: { readonly status?: JobStatus; readonly withHiringTeam: boolean }): JobRow[] {
+  listJobs(options: {
+    readonly status?: JobStatus;
+    readonly withHiringTeam: boolean;
+    readonly uncheckedOnly?: boolean;
+  }): JobRow[] {
     const clauses: string[] = [];
     const params: string[] = [];
     if (options.status !== undefined) {
@@ -90,11 +94,22 @@ export class JobsEngine {
       params.push(options.status);
     }
     if (options.withHiringTeam) clauses.push("has_hiring_team = 1");
+    if (options.uncheckedOnly) clauses.push("checked_at IS NULL");
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.database
       .query<JobRowRaw, string[]>(`SELECT * FROM jobs ${where} ORDER BY collected_at DESC`)
       .all(...params);
     return rows.map(rowToJob);
+  }
+
+  markChecked(ids: readonly string[], now: string): number {
+    if (ids.length === 0) return 0;
+    const stmt = this.database.prepare(`UPDATE jobs SET checked_at = ? WHERE id = ?`);
+    const tx = this.database.transaction(() => {
+      for (const id of ids) stmt.run(now, id);
+    });
+    tx();
+    return ids.length;
   }
 
   favoriteJobs(ids: readonly string[], now: string): JobRow[] {

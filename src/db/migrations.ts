@@ -321,6 +321,15 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs_new RENAME TO jobs;
     `,
   },
+  {
+    id: 5,
+    name: "jobs_checked_at",
+    sql: `
+      -- Track when a stored posting was last liveness-checked so jobs check
+      -- can resume: re-runs skip rows that already have a checked_at.
+      ALTER TABLE jobs ADD COLUMN checked_at TEXT;
+    `,
+  },
 ];
 
 export type MigrationResult = {
