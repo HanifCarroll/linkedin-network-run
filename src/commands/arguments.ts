@@ -3,6 +3,7 @@ import { CliError } from "../core/errors.ts";
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsCheckInput,
   JobsCollectInput,
   JobsDraftInput,
   JobsEnrichInput,
@@ -46,6 +47,7 @@ Commands:
   jobs collect           Collect raw job postings from a LinkedIn search (no enrichment)
   jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
   jobs list              List collected jobs from the local store
+  jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
   jobs draft             Store a drafted outreach message for a job
   jobs send              Send drafted messages to listed hiring team members (--allow-send)
@@ -118,6 +120,9 @@ const JOBS_HELP = `Usage:
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs list [--status captured|collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs check [--status captured|collected|favorite|drafted|sent]
+    [--with-hiring-team] [--limit N] [--state-dir ABSOLUTE_PATH]
+    [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
@@ -137,6 +142,10 @@ was reached.
 The collect/enrich split does the same work in two explicit phases: jobs
 collect stores raw postings as 'captured'; jobs enrich drains the captured
 pool into enriched 'collected' rows. Both are resumable and budget-capped.
+jobs check verifies stored postings are still live by loading each direct
+view and reading only the title; removed postings are dropped from the store.
+It is much cheaper than enrich (no hiring-team extraction) and reports
+{checked, live, dead, unclear}.
 jobs send opens the first listed hiring team member's profile,
 composes the drafted message, and sends it — it requires the explicit
 --allow-send flag.
@@ -394,7 +403,9 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: JOBS_HELP };
     const verb = argv[1];
     if (
-      !["search", "collect", "enrich", "list", "favorite", "draft", "send"].includes(verb ?? "")
+      !["search", "collect", "enrich", "list", "check", "favorite", "draft", "send"].includes(
+        verb ?? "",
+      )
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
@@ -470,6 +481,39 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         withHiringTeam: options.booleans.has("--with-hiring-team"),
       };
       return { kind: "command", command: "jobs list", input };
+    }
+    if (verb === "check") {
+      const options = parseOptions(argv.slice(2), {
+        "--status": "value",
+        "--with-hiring-team": "boolean",
+        "--limit": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      const status = options.values.get("--status");
+      if (
+        status !== undefined &&
+        !["captured", "collected", "favorite", "drafted", "sent"].includes(status)
+      ) {
+        invalid("--status must be captured, collected, favorite, drafted, or sent");
+      }
+      const limitRaw = options.values.get("--limit");
+      const input: JobsCheckInput = {
+        stateDir: stateDir(options, context),
+        playwriterBin: playwriterBin(options, context),
+        sessionId: requiredWorkflowSession(
+          options.values.get("--session"),
+          context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+          "--session",
+        ),
+        ...(status === undefined
+          ? {}
+          : { status: status as NonNullable<JobsCheckInput["status"]> }),
+        withHiringTeam: options.booleans.has("--with-hiring-team"),
+        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 500) }),
+      };
+      return { kind: "command", command: "jobs check", input };
     }
     if (verb === "favorite") {
       const options = parseOptions(argv.slice(2), {

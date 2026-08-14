@@ -107,6 +107,10 @@ try {
       calls.push("jobs list");
       return { count: 0, jobs: [] };
     },
+    jobsCheck: async () => {
+      calls.push("jobs check");
+      return { checked: 0, live: 0, dead: 0, unclear: 0 };
+    },
     jobsFavorite: async () => {
       calls.push("jobs favorite");
       return { favorited: 0 };

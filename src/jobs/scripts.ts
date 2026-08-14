@@ -357,6 +357,40 @@ export function buildCleanupTabsScript(): { readonly script: string; readonly ti
   return { script: source, timeoutMs: 60_000 };
 }
 
+const CHECK_LIVENESS_RESULT = `
+const results=[];
+for(const job of CONFIG.jobs){
+  try{
+    await p.goto("https://www.linkedin.com/jobs/view/"+job.id+"/",{waitUntil:"commit",timeout:25000});
+    const t=String(await p.title().catch(()=>""));
+    const parts=t.split(" | ").map((s)=>s.trim()).filter(Boolean);
+    const first=parts[0]??"";const last=parts[parts.length-1]??"";
+    if(last!=="LinkedIn"){results.push({id:job.id,error:"unexpected title: "+t});continue;}
+    if(first==="Jobs"){results.push({id:job.id,live:false});continue;}
+    if(parts.length>=3){results.push({id:job.id,live:true});continue;}
+    results.push({id:job.id,error:"ambiguous title: "+t});
+  }catch(e){results.push({id:job.id,error:String((e&&e.message)||e)});}
+}
+console.log(JSON.stringify({ok:true,data:{checked:results}}));
+`;
+
+/**
+ * Verify a batch of postings is still live. Navigates each direct view and
+ * reads only the title: a live posting has "Title | Company | LinkedIn", a
+ * removed one has the generic "Jobs | LinkedIn". Far cheaper than enrich (no
+ * scroll or hiring-team extraction) — used by `jobs check`.
+ */
+export function buildCheckLivenessScript(config: {
+  readonly jobs: readonly { readonly id: string }[];
+}): { readonly script: string; readonly timeoutMs: number } {
+  if (config.jobs.length === 0) throw new TypeError("jobs must be non-empty");
+  const cfg = { jobs: config.jobs };
+  const source = `const CONFIG=${JSON.stringify(cfg)};\n${PAGE_PICKUP}\n${CHECK_LIVENESS_RESULT}`;
+  // ~35s per job (25s goto + title read + margin), kept under the 300s relay cap.
+  const timeoutMs = Math.min(config.jobs.length * 35_000, 280_000);
+  return { script: source, timeoutMs };
+}
+
 /** Phase 3: assemble the full result envelope from state.jobsBatch. */
 export function buildFinishScript(): { readonly script: string; readonly timeoutMs: number } {
   const source = `${PAGE_PICKUP}\n${FINISH_RESULT}`;

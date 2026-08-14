@@ -103,6 +103,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsEnrich(invocation.input);
     case "jobs list":
       return operations.jobsList(invocation.input);
+    case "jobs check":
+      return operations.jobsCheck(invocation.input);
     case "jobs favorite":
       return operations.jobsFavorite(invocation.input);
     case "jobs draft":

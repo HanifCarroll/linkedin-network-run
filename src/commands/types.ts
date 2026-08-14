@@ -111,6 +111,16 @@ export type JobsListInput = {
   readonly withHiringTeam: boolean;
 };
 
+export type JobsCheckInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  readonly status?: "captured" | "collected" | "favorite" | "drafted" | "sent";
+  readonly withHiringTeam: boolean;
+  /** Max jobs to check this run (default: all matching). */
+  readonly limit?: number;
+};
+
 export type JobsFavoriteInput = {
   readonly stateDir: string;
   readonly ids: readonly string[];
@@ -151,6 +161,7 @@ export interface CliOperations {
   jobsCollect(input: JobsCollectInput): Promise<unknown>;
   jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
+  jobsCheck(input: JobsCheckInput): Promise<unknown>;
   jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
   jobsSend(input: JobsSendInput): Promise<unknown>;
@@ -210,6 +221,7 @@ export type ParsedInvocation =
   | { readonly kind: "command"; readonly command: "jobs collect"; readonly input: JobsCollectInput }
   | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }
+  | { readonly kind: "command"; readonly command: "jobs check"; readonly input: JobsCheckInput }
   | {
       readonly kind: "command";
       readonly command: "jobs favorite";

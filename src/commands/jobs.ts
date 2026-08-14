@@ -3,6 +3,7 @@ import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import {
   buildCaptureScript,
+  buildCheckLivenessScript,
   buildCleanupTabsScript,
   buildEnrichPoolScript,
   buildEnrichScript,
@@ -16,6 +17,7 @@ import type { CapturedJob, CollectedJob, JobRow } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
+  JobsCheckInput,
   JobsCollectInput,
   JobsDraftInput,
   JobsEnrichInput,
@@ -430,6 +432,98 @@ export async function jobsList(input: JobsListInput): Promise<unknown> {
   } finally {
     opened.database.close();
   }
+}
+
+export async function jobsCheck(
+  input: JobsCheckInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
+  const runScript = dependencies.runScript ?? runJobsScript;
+  const sessionId = await resolveSession({
+    workflow: "jobs",
+    selection: input.sessionId,
+    stateDir: input.stateDir,
+    playwriterBin: input.playwriterBin,
+  });
+  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
+  const dbPath = join(input.stateDir, "linkedin-tools.db");
+  const batchSize = 8;
+  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
+    try {
+      return await runScript({
+        playwriterBin: input.playwriterBin,
+        sessionId,
+        script,
+        timeoutMs,
+        stateDir: input.stateDir,
+      });
+    } catch (error) {
+      if (isSessionFailure(error)) {
+        await resetSession(sessionId).catch(() => {});
+        return null;
+      }
+      throw error;
+    }
+  };
+  const matchingRows = (): JobRow[] => {
+    const opened = openDatabase(dbPath);
+    try {
+      return new JobsEngine(opened.database).listJobs({
+        ...(input.status === undefined ? {} : { status: input.status }),
+        withHiringTeam: input.withHiringTeam,
+      });
+    } finally {
+      opened.database.close();
+    }
+  };
+  const removeDead = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).deleteJobs(ids);
+    } finally {
+      opened.database.close();
+    }
+  };
+
+  try {
+    const cleanup = buildCleanupTabsScript();
+    await runPhase(cleanup.script, cleanup.timeoutMs);
+  } catch {
+    // best-effort; the check loop surfaces real session failures
+  }
+
+  const pool = matchingRows();
+  const toCheck = input.limit === undefined ? pool : pool.slice(0, input.limit);
+  let checked = 0;
+  let live = 0;
+  let dead = 0;
+  let unclear = 0;
+  for (let i = 0; i < toCheck.length; i += batchSize) {
+    const batch = toCheck.slice(i, i + batchSize).map((r) => ({ id: r.id }));
+    const { script, timeoutMs } = buildCheckLivenessScript({ jobs: batch });
+    const result = await runPhase(script, timeoutMs);
+    if (result === null) break;
+    const rows = Array.isArray(result.data?.checked) ? result.data.checked : [];
+    const deadIds: string[] = [];
+    for (const row of rows) {
+      if (!isRecord(row)) continue;
+      checked += 1;
+      if (typeof row.error === "string" && row.error !== "") {
+        unclear += 1;
+        continue;
+      }
+      if (row.live === true) {
+        live += 1;
+        continue;
+      }
+      dead += 1;
+      deadIds.push(String(row.id));
+    }
+    removeDead(deadIds);
+  }
+  return { command: "jobs check", checked, live, dead, unclear };
 }
 
 export async function jobsFavorite(
