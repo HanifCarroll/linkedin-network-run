@@ -359,6 +359,15 @@ export async function jobsEnrich(
       opened.database.close();
     }
   };
+  const deleteJobs = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).deleteJobs(ids);
+    } finally {
+      opened.database.close();
+    }
+  };
 
   // Trim accumulated blank automation tabs before draining: MV3 service
   // workers get reclaimed under tab-buildup memory pressure, so this reduces
@@ -383,10 +392,15 @@ export async function jobsEnrich(
     const real = completed.filter(
       (job): job is CollectedJob => isRecord(job) && String(job.company ?? "").length > 0,
     );
-    if (completed.length > 0 && real.length === 0) {
-      await resetSession(sessionId).catch(() => {});
-      break;
-    }
+    // Removed postings ("Job id provided may not be valid...") load with the
+    // generic "Jobs" title and no company. Drop them so they don't sit at the
+    // top of the pool and burn the budget every run; transient empties stay
+    // captured for a later retry.
+    const deadIds = completed
+      .filter((job) => isRecord(job) && job.dead === true && String(job.company ?? "") === "")
+      .map((job) => String(job.id))
+      .filter(Boolean);
+    if (deadIds.length > 0) deleteJobs(deadIds);
     upsert(real);
     enriched += real.length;
   }

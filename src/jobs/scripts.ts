@@ -114,9 +114,9 @@ const enrichOne=async(wp,id)=>{
   }
   if(view===null)throw lastViewErr??new Error("VIEW_UNREACHABLE");
   const team=(view.team??[]).map(t=>({name:t.name,profileUrl:t.profileUrl,degree:t.degree||"",headline:t.headline||""}));
-  return {id,title:(TITLES[id]||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0};
+  return {id,title:(TITLES[id]||view.title||"").trim(),company:view.company||"",location:view.location||"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:team,hasHiringTeam:team.length>0,dead:!view.company&&/^jobs$/i.test(String(view.title||"").trim())};
 };
-const emptyRow=(id)=>({id,title:(TITLES[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false});
+const emptyRow=(id)=>({id,title:(TITLES[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false,dead:false});
 `;
 
 const CAPTURE_RESULT = `

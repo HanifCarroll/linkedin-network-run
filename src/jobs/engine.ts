@@ -72,6 +72,16 @@ export class JobsEngine {
     return jobs.length;
   }
 
+  deleteJobs(ids: readonly string[]): number {
+    if (ids.length === 0) return 0;
+    const stmt = this.database.prepare(`DELETE FROM jobs WHERE id = ?`);
+    const tx = this.database.transaction(() => {
+      for (const id of ids) stmt.run(id);
+    });
+    tx();
+    return ids.length;
+  }
+
   listJobs(options: { readonly status?: JobStatus; readonly withHiringTeam: boolean }): JobRow[] {
     const clauses: string[] = [];
     const params: string[] = [];
