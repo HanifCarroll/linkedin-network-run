@@ -26,15 +26,15 @@ export function buildSearchUrl(spec: JobsSearchSpec): string {
   return url.toString();
 }
 
-// Jobs scripts run on a page they own. context.pages() is shared across all
-// sessions and agents (docs: "Pages are shared, state is not"), so grabbing
-// any open tab can steal another agent's page mid-run (observed: goto
-// interrupted by another navigation). The executor provides a fresh tracked
-// `page` per call and state.jobsPage persists across calls, so prefer the
-// carried page then the executor's own page; never newPage (extra tabs
-// accumulate and overwhelm the relay) and never reuse shared tabs.
+// Jobs scripts run on one carried page. context.pages() is shared across all
+// sessions and agents, and the executor's `page` is just context.pages()[0]
+// (reused, never a fresh tab). The only tab creator is context.newPage(), so
+// scripts must never call it: extra tabs accumulate and overwhelm the relay,
+// which surfaces as "Extension not connected" drops. Prefer the carried page
+// (state.jobsPage) then the executor's `page`; if both are closed, reuse an
+// existing open tab; never create one.
 const PAGE_PICKUP = `
-let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed()){p=stored;}else{p=page;}if(!p||p.isClosed()){try{p=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}}state.jobsPage=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");`;
+let p=null;{const stored=state.jobsPage;if(stored&&!stored.isClosed()){p=stored;}else{p=page;}if(!p||p.isClosed()){const candidates=context.pages().filter((candidate)=>!candidate.isClosed());p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}state.jobsPage=p;}if(!p||p.isClosed())throw new Error("NO_PAGE");`;
 
 const EXTRACT_VIEW = `
 () => {
@@ -88,8 +88,8 @@ const VIEW_ATTEMPT = `
 const viewAttempt=async(wp,jobId)=>{
   // The user may close our tab mid-run (docs: always check before using).
   if(wp.isClosed()){
-    let rp=null;
-    try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}
+    const candidates=context.pages().filter((candidate)=>!candidate.isClosed());
+    const rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;
     if(!rp)throw new Error("NO_PAGE");
     wp=rp;
   }
@@ -189,8 +189,8 @@ try{
   lastNavErr=e instanceof Error?e:new Error(String(e));
   const msg=String((e&&e.message)||e);
   if(/closed|context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg)){
-    // Recreate the page if the user closed it or the relay dropped it.
-    try{if(p.isClosed()){let rp=null;try{rp=await context.newPage();}catch{const candidates=context.pages().filter((candidate)=>!candidate.isClosed());rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;}if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
+    // Reuse an existing open tab if the user closed ours or the relay dropped it.
+    try{if(p.isClosed()){const candidates=context.pages().filter((candidate)=>!candidate.isClosed());const rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
   }
 }
 try{p.removeListener("response",onResponse);}catch{}
@@ -321,7 +321,7 @@ export function buildEnrichScript(config: {
 }): { readonly script: string; readonly timeoutMs: number } {
   if (!Number.isSafeInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 60)
     throw new TypeError("batchSize must be 1..60");
-  const workers = config.workers ?? 3;
+  const workers = config.workers ?? 1;
   if (!Number.isSafeInteger(workers) || workers < 1 || workers > 5)
     throw new TypeError("workers must be 1..5");
   const cfg = { batchSize: config.batchSize, workers };
