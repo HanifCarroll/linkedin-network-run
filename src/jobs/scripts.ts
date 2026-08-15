@@ -58,11 +58,25 @@ const EXTRACT_VIEW = `
   const team = [];
   let links = Array.from(document.querySelectorAll("a[href*='/in/']")).filter(a => /Job poster/i.test(a.innerText || ""));
   if (links.length === 0) {
-    const region = Array.from(document.querySelectorAll("h1,h2,h3,div,span"))
-      .filter(el => /Meet the hiring team/i.test(el.innerText || ""))
-      .sort((x, y) => (x.innerText || "").length - (y.innerText || "").length)
-      .find(el => el.querySelectorAll("a[href*='/in/']").length > 0);
-    if (region) links = Array.from(region.querySelectorAll("a[href*='/in/']"));
+    // Anchor to the exact heading, not any element merely containing the
+    // phrase (which would match <body> and the whole rail). Walk up a few
+    // levels to the smallest container holding the member cards, and stop
+    // before any container that also wraps a different rail, so a fellow
+    // job-seeker's card from "People also viewed" is never captured as a
+    // hiring contact.
+    const heading = Array.from(document.querySelectorAll("h1,h2,h3,h4,div,span,section"))
+      .filter((el) => (el.innerText || "").trim() === "Meet the hiring team")
+      .sort((x, y) => (x.innerText || "").length - (y.innerText || "").length)[0];
+    if (heading) {
+      let container = heading.parentElement;
+      for (let up = 0; up < 4 && container; up += 1) {
+        const text = container.innerText || "";
+        if (/\b(People also viewed|People you may know|Similar jobs|About the job|About the company|Set alert|Explore more)\b/i.test(text)) break;
+        const found = container.querySelectorAll("a[href*='/in/']");
+        if (found.length > 0) { links = Array.from(found); break; }
+        container = container.parentElement;
+      }
+    }
   }
   for (const a of links) {
     const lines = (a.innerText || "").split("\\n").map(l => l.trim()).filter(Boolean);
