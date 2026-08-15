@@ -453,6 +453,9 @@ for(const job of CONFIG.jobs){
     const first=parts[0]??"";const last=parts[parts.length-1]??"";
     if(last!=="LinkedIn"){results.push({id:job.id,error:"unexpected title: "+t});continue;}
     if(first==="Jobs"){results.push({id:job.id,live:false});continue;}
+    let body="";
+    for(let w=0;w<6;w+=1){body=String(await p.evaluate(()=>document.body?document.body.innerText:"").catch(()=>""));if(body.length>200)break;await p.waitForTimeout(500);}
+    if(/No longer accepting applications/i.test(body)){results.push({id:job.id,live:false});continue;}
     if(parts.length>=3){results.push({id:job.id,live:true});continue;}
     results.push({id:job.id,error:"ambiguous title: "+t});
   }catch(e){results.push({id:job.id,error:String((e&&e.message)||e)});}
@@ -461,10 +464,11 @@ console.log(JSON.stringify({ok:true,data:{checked:results}}));
 `;
 
 /**
- * Verify a batch of postings is still live. Navigates each direct view and
- * reads only the title: a live posting has "Title | Company | LinkedIn", a
- * removed one has the generic "Jobs | LinkedIn". Far cheaper than enrich (no
- * scroll or hiring-team extraction) — used by `jobs check`.
+ * reads the title and body: a live posting has "Title | Company | LinkedIn",
+ * a removed one has the generic "Jobs | LinkedIn", and a closed one keeps its
+ * title but swaps the apply control for a "No longer accepting applications"
+ * banner. Far cheaper than enrich (no scroll or hiring-team extraction) —
+ * used by `jobs check`.
  */
 export function buildCheckLivenessScript(config: {
   readonly jobs: readonly { readonly id: string }[];
