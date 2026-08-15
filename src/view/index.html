@@ -60,6 +60,8 @@
     padding: 7px 10px; font: inherit; font-size: 13px; color: var(--ink);
     outline: none; cursor: pointer;
   }
+  .toggle { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-2); font-size: 13px; cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--accent); }
 
   main { flex: 1; display: grid; grid-template-columns: minmax(380px, 5fr) 7fr; min-height: 0; }
   .list { overflow-y: auto; border-right: 1px solid var(--line); }
@@ -134,6 +136,13 @@
   .member .name a { color: var(--ink); font-weight: 600; text-decoration: none; }
   .member .name a:hover { color: var(--accent); text-decoration: underline; }
   .member .headline { color: var(--ink-2); font-size: 12.5px; margin-top: 1px; }
+  .roles { list-style: none; margin: 0; padding: 0; }
+  .roles li { display: block; padding: var(--s3) 0; border-bottom: 1px solid var(--line-soft); }
+  .role-title a { color: var(--ink); font-weight: 600; text-decoration: none; }
+  .role-title a:hover { color: var(--accent); text-decoration: underline; }
+  .role-company { color: var(--ink-2); font-size: 12.5px; }
+  .role-company .loc { color: var(--ink-3); }
+  .role-meta { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
 
   .meta { margin-top: var(--s5); padding-top: var(--s3); border-top: 1px solid var(--line); color: var(--ink-4); font-size: 12px; }
   .meta .mono { font-family: var(--mono); }
@@ -156,6 +165,7 @@
       <option value="newest">Newest first</option>
       <option value="location">Location</option>
     </select>
+    <label class="toggle"><input type="checkbox" id="groupByPerson"> Group by person</label>
   </div>
 </header>
 <main>
@@ -169,7 +179,7 @@
   const el = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const state = { jobs: [], query: "", sort: "degree", selectedId: null };
+  const state = { jobs: [], query: "", sort: "degree", groupByPerson: false, selectedId: null, selectedContact: null };
 
   function strongest(job) {
     let best = 3;
@@ -201,6 +211,34 @@
   }
   function visible() { return state.jobs.filter(matches).sort(sortJobs); }
 
+  function contacts() {
+    const map = new Map();
+    for (const job of state.jobs) {
+      for (const m of job.hiringTeam || []) {
+        const key = (m.profileUrl || m.name || "").trim();
+        if (!key) continue;
+        let c = map.get(key);
+        if (!c) { c = { key, name: m.name, profileUrl: m.profileUrl, degree: m.degree || "", headline: m.headline || "", jobs: [] }; map.set(key, c); }
+        if (!c.degree && m.degree) c.degree = m.degree;
+        if (!c.jobs.some((j) => j.id === job.id)) c.jobs.push(job);
+      }
+    }
+    return [...map.values()];
+  }
+  function visibleContacts() {
+    const q = state.query.toLowerCase();
+    return contacts().filter((c) => {
+      if (!q) return true;
+      const hay = [c.name, c.headline, ...c.jobs.flatMap((j) => [j.title, j.company, j.location])].join(" ").toLowerCase();
+      return hay.includes(q);
+    }).sort((a, b) => {
+      const ra = DEGREE_RANK[a.degree || ""], rb = DEGREE_RANK[b.degree || ""];
+      if (ra !== rb) return ra - rb;
+      if (a.jobs.length !== b.jobs.length) return b.jobs.length - a.jobs.length;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
   function badge(deg) {
     if (!deg) return "";
     return `<span class="badge d${deg[0]}" title="${DEGREE_TITLE[deg] || ""}">${esc(deg)}</span>`;
@@ -223,6 +261,23 @@
 
   function renderList() {
     const list = el("list");
+    if (state.groupByPerson) {
+      const cs = visibleContacts();
+      if (!cs.length) { list.innerHTML = `<div class="empty">No matching people</div>`; return; }
+      list.innerHTML = cs.map((c) => {
+        const titles = c.jobs.map((j) => j.title).join(" · ");
+        const side = [badge(c.degree), c.jobs.length > 1 ? `<span class="badge count">${c.jobs.length}</span>` : ""].join("");
+        const sel = c.key === state.selectedContact ? " selected" : "";
+        return `<div class="row${sel}" data-contact="${esc(c.key)}">
+          <div class="row-main">
+            <div class="row-company">${esc(c.name || "?")}</div>
+            <div class="row-title">${esc(titles)}</div>
+          </div>
+          <div class="row-side">${side}</div>
+        </div>`;
+      }).join("");
+      return;
+    }
     const jobs = visible();
     if (!jobs.length) { list.innerHTML = `<div class="empty">No matching leads</div>`; return; }
     list.innerHTML = jobs.map((job) => {
@@ -241,6 +296,7 @@
   }
 
   function renderDetail() {
+    if (state.groupByPerson) { renderContactDetail(); return; }
     const d = el("detail");
     const job = state.jobs.find((j) => j.id === state.selectedId);
     if (!job) { d.innerHTML = `<div class="empty">Select a lead to see the hiring team</div>`; return; }
@@ -289,16 +345,51 @@
       <div class="meta">ID <span class="mono">${esc(job.id)}</span> · collected ${esc((job.collectedAt || "").slice(0, 10))}</div>`;
   }
 
+  function renderContactDetail() {
+    const d = el("detail");
+    const c = contacts().find((x) => x.key === state.selectedContact);
+    if (!c) { d.innerHTML = `<div class="empty">Select a person to see their roles</div>`; return; }
+    const roles = c.jobs.map((j) => `
+      <li>
+        <div class="role">
+          <div class="role-title"><a href="${esc(j.postingUrl)}" target="_blank" rel="noopener">${esc(j.title)}</a></div>
+          <div class="role-company">${esc(j.company || "—")}${j.location ? `<span class="loc"> · ${esc(j.location)}</span>` : ""}</div>
+          ${j.workplaceType || j.employmentType ? `<div class="role-meta">${[j.workplaceType, j.employmentType].filter(Boolean).map((s) => esc(s)).join(" · ")}</div>` : ""}
+        </div>
+      </li>`).join("");
+    d.innerHTML = `
+      <div class="detail-head">
+        <span class="status">${c.jobs.length} role${c.jobs.length > 1 ? "s" : ""}</span>
+        <h2>${esc(c.name || "?")}</h2>
+        ${c.headline ? `<div class="company">${esc(c.headline)}</div>` : ""}
+        ${c.degree ? `<div class="loc">${badge(c.degree)}</div>` : ""}
+        <div><a class="open" href="${esc(c.profileUrl)}" target="_blank" rel="noopener">Open profile ↗</a></div>
+      </div>
+      <div class="team">
+        <h3>Roles <span class="count">${c.jobs.length}</span></h3>
+        <ul class="roles">${roles}</ul>
+      </div>`;
+  }
+
   function renderSummary() {
-    el("summary").textContent = `${state.jobs.length} leads with hiring team`;
+    el("summary").textContent = state.groupByPerson
+      ? `${contacts().length} people · ${state.jobs.length} roles`
+      : `${state.jobs.length} leads with hiring team`;
   }
 
   el("search").addEventListener("input", (e) => { state.query = e.target.value.trim(); renderList(); });
   el("sort").addEventListener("change", (e) => { state.sort = e.target.value; renderList(); });
+  el("groupByPerson").addEventListener("change", (e) => {
+    state.groupByPerson = e.target.checked;
+    if (state.groupByPerson) state.selectedContact = visibleContacts()[0]?.key ?? null;
+    else state.selectedId = visible()[0]?.id ?? null;
+    renderSummary(); renderList(); renderDetail();
+  });
   el("list").addEventListener("click", (e) => {
     const row = e.target.closest(".row");
     if (!row) return;
-    state.selectedId = row.dataset.id;
+    if (state.groupByPerson) state.selectedContact = row.dataset.contact;
+    else state.selectedId = row.dataset.id;
     renderList(); renderDetail();
   });
 
