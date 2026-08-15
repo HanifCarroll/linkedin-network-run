@@ -372,15 +372,20 @@ const detailOne=async(wp,jobId)=>{
     wp=rp;
   }
   await wp.goto("https://www.linkedin.com/jobs/view/"+jobId+"/",{waitUntil:"commit",timeout:25000});
-  await wp.waitForTimeout(3000);
-  // The description section lazy-hydrates below the fold; scroll to trigger
-  // it. A soft-nav mid-scroll can destroy the evaluate context, so swallow it.
-  try{for(let s=0;s<6;s+=1){await wp.evaluate(()=>window.scrollBy(0,900));await wp.waitForTimeout(400);}}catch{}
-  await wp.waitForTimeout(1500);
+  // The description SSR-hydrates into innerText a few seconds after commit.
+  // Poll for it rather than a fixed wait: the main document is not scrollable
+  // (scrollY stays 0 on LinkedIn job views), so scroll-to-trigger was a no-op,
+  // and a single early read can miss a slow hydration.
   let d=null;
-  for(let attempt=0;attempt<2&&d===null;attempt+=1){
+  for(let attempt=0;attempt<6;attempt+=1){
     try{d=await wp.evaluate(DETAIL_EXTRACT);}
-    catch(e){const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator/i.test(msg))throw e;await wp.waitForTimeout(2000);}
+    catch(e){
+      const msg=String((e&&e.message)||e);
+      if(!/context was destroyed|Execution context|navigation|Navigator/i.test(msg))throw e;
+      d=null;
+    }
+    if(d!==null&&(d.dead===true||(d.description||"").length>0))break;
+    await wp.waitForTimeout(2500);
   }
   if(d===null)throw new Error("DETAIL_UNREACHABLE");
   return {id:jobId,...d};

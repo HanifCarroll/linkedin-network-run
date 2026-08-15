@@ -427,7 +427,11 @@ export async function jobsDetail(
   });
   const resetSession = dependencies.resetSession ?? defaultResetSession(input);
   const dbPath = join(input.stateDir, "linkedin-tools.db");
-  const batchSize = 3;
+  // One job per playwriter invocation: the detail result carries the full
+  // description (~2.5–6 KB), and the playwriter relay truncates an execute's
+  // response text at 10 000 chars (executor.js MAX_LENGTH). A 3-job batch
+  // exceeds that and returns unparseable JSON. Single jobs stay well under it.
+  const batchSize = 1;
   const BUDGET_MS = 180_000;
   const startedAt = Date.now();
   const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
