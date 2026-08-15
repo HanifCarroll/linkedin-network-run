@@ -119,6 +119,10 @@ try {
       calls.push("jobs favorite");
       return { favorited: 0 };
     },
+    jobsRemove: async () => {
+      calls.push("jobs remove");
+      return { removed: 0 };
+    },
     jobsDraft: async () => {
       calls.push("jobs draft");
       return { job: null };

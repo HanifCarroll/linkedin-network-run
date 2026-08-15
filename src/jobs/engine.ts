@@ -92,10 +92,11 @@ export class JobsEngine {
     if (ids.length === 0) return 0;
     const stmt = this.database.prepare(`DELETE FROM jobs WHERE id = ?`);
     const tx = this.database.transaction(() => {
-      for (const id of ids) stmt.run(id);
+      let removed = 0;
+      for (const id of ids) removed += stmt.run(id).changes;
+      return removed;
     });
-    tx();
-    return ids.length;
+    return tx();
   }
   storeJobDetails(details: readonly JobDetail[], now: string): number {
     if (details.length === 0) return 0;

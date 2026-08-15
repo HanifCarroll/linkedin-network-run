@@ -25,6 +25,7 @@ import type {
   JobsEnrichInput,
   JobsFavoriteInput,
   JobsListInput,
+  JobsRemoveInput,
   JobsSearchInput,
   JobsSendInput,
 } from "./types.ts";
@@ -649,6 +650,16 @@ export async function jobsFavorite(
   try {
     const rows = new JobsEngine(opened.database).favoriteJobs(input.ids, now());
     return { command: "jobs favorite", favorited: rows.length, jobs: rows };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsRemove(input: JobsRemoveInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const removed = new JobsEngine(opened.database).deleteJobs(input.ids);
+    return { command: "jobs remove", removed };
   } finally {
     opened.database.close();
   }

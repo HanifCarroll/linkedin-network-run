@@ -10,6 +10,7 @@ import type {
   JobsEnrichInput,
   JobsFavoriteInput,
   JobsListInput,
+  JobsRemoveInput,
   JobsSearchInput,
   JobsSendInput,
   MigrationDryRunInput,
@@ -128,6 +129,7 @@ const JOBS_HELP = `Usage:
     [--with-hiring-team] [--limit N] [--state-dir ABSOLUTE_PATH]
     [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs remove --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
@@ -417,6 +419,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "favorite",
         "draft",
         "send",
+        "remove",
       ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
@@ -556,6 +559,16 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       if (ids.length === 0) invalid("jobs favorite requires at least one --id");
       const input: JobsFavoriteInput = { stateDir: stateDir(options, context), ids };
       return { kind: "command", command: "jobs favorite", input };
+    }
+    if (verb === "remove") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "repeatable",
+        "--state-dir": "value",
+      });
+      const ids = options.repeated.get("--id") ?? [];
+      if (ids.length === 0) invalid("jobs remove requires at least one --id");
+      const input: JobsRemoveInput = { stateDir: stateDir(options, context), ids };
+      return { kind: "command", command: "jobs remove", input };
     }
     if (verb === "draft") {
       const options = parseOptions(argv.slice(2), {

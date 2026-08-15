@@ -9,6 +9,7 @@ import {
   jobsEnrich,
   jobsFavorite,
   jobsList,
+  jobsRemove,
   jobsSearch,
   jobsSend,
 } from "./jobs.ts";
@@ -45,6 +46,7 @@ export function createDefaultOperations(): CliOperations {
     jobsList,
     jobsCheck,
     jobsFavorite,
+    jobsRemove,
     jobsDraft,
     jobsSend,
   };

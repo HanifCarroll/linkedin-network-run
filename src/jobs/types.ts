@@ -75,6 +75,11 @@ export type JobsFavoriteInput = {
   readonly ids: readonly string[];
 };
 
+export type JobsRemoveInput = {
+  readonly stateDir: string;
+  readonly ids: readonly string[];
+};
+
 export type JobsDraftInput = {
   readonly stateDir: string;
   readonly id: string;

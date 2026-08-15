@@ -23,6 +23,7 @@ export type {
   JobsDraftInput,
   JobsFavoriteInput,
   JobsListInput,
+  JobsRemoveInput,
   JobsSearchInput,
   JobsSearchSpec,
   JobsSendInput,

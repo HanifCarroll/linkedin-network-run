@@ -1,5 +1,8 @@
 import { PlaywriterClient } from "./src/playwriter/client.ts";
-const client = new PlaywriterClient({ invocationRoot: "/tmp/pw-probe", createInvocationId: () => "pw_probe_01" });
+const client = new PlaywriterClient({
+  invocationRoot: "/tmp/pw-probe",
+  createInvocationId: () => "pw_probe_01",
+});
 const source = [
   `let p=page;`,
   `const seen=[];`,
