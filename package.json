@@ -15,7 +15,8 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "smoke": "bun run scripts/smoke.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "view": "bun run ./src/view/server.ts"
   },
   "dependencies": {
     "playwriter": "0.4.0"
