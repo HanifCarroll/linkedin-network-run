@@ -450,7 +450,7 @@ export async function jobsDetail(
   const pendingRows = (): JobRow[] => {
     const opened = openDatabase(dbPath);
     try {
-      return new JobsEngine(opened.database).listJobs({ withHiringTeam: false, needsDetail: true });
+      return new JobsEngine(opened.database).listJobs({ withHiringTeam: true, needsDetail: true });
     } finally {
       opened.database.close();
     }
