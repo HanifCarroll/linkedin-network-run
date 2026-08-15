@@ -4,6 +4,7 @@ import { networkIncidentClear, networkIncidentStatus } from "./incident.ts";
 import {
   jobsCheck,
   jobsCollect,
+  jobsDetail,
   jobsDraft,
   jobsEnrich,
   jobsFavorite,
@@ -40,6 +41,7 @@ export function createDefaultOperations(): CliOperations {
     jobsSearch,
     jobsCollect,
     jobsEnrich,
+    jobsDetail,
     jobsList,
     jobsCheck,
     jobsFavorite,

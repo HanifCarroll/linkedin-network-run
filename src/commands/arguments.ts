@@ -5,6 +5,7 @@ import type {
   DoctorInput,
   JobsCheckInput,
   JobsCollectInput,
+  JobsDetailInput,
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
@@ -46,6 +47,7 @@ Commands:
   jobs search            Collect jobs from a LinkedIn search and check hiring teams
   jobs collect           Collect raw job postings from a LinkedIn search (no enrichment)
   jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
+  jobs detail            Pull full posting-page detail (description + structured fields)
   jobs list              List collected jobs from the local store
   jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
@@ -117,6 +119,8 @@ const JOBS_HELP = `Usage:
     --location "United States" [--posted-within 1|7|14|30] [--remote] [--pages 1..10]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs enrich [--limit N]
+    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs detail [--limit N]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs list [--status captured|collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
@@ -403,9 +407,17 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: JOBS_HELP };
     const verb = argv[1];
     if (
-      !["search", "collect", "enrich", "list", "check", "favorite", "draft", "send"].includes(
-        verb ?? "",
-      )
+      ![
+        "search",
+        "collect",
+        "enrich",
+        "detail",
+        "list",
+        "check",
+        "favorite",
+        "draft",
+        "send",
+      ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
@@ -461,6 +473,26 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 200) }),
       };
       return { kind: "command", command: "jobs enrich", input };
+    }
+    if (verb === "detail") {
+      const options = parseOptions(argv.slice(2), {
+        "--limit": "value",
+        "--state-dir": "value",
+        "--session": "value",
+        "--playwriter-bin": "value",
+      });
+      const limitRaw = options.values.get("--limit");
+      const input: JobsDetailInput = {
+        stateDir: stateDir(options, context),
+        playwriterBin: playwriterBin(options, context),
+        sessionId: requiredWorkflowSession(
+          options.values.get("--session"),
+          context.env.LINKEDIN_TOOLS_JOBS_SESSION,
+          "--session",
+        ),
+        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 500) }),
+      };
+      return { kind: "command", command: "jobs detail", input };
     }
     if (verb === "list") {
       const options = parseOptions(argv.slice(2), {

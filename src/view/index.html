@@ -116,6 +116,23 @@
   .status.drafted { color: var(--ink-2); background: var(--line-soft); }
   .status.sent { color: var(--ok); background: var(--ok-soft); }
 
+  .facts { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); align-items: center; }
+  .fact { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; color: var(--ink-2); background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+  .fact.flag { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .fact.muted { color: var(--ink-3); background: transparent; box-shadow: none; padding: 0 2px; font-weight: 500; }
+
+  .description { margin-top: var(--s5); }
+  .description h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
+  .description .body { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+  .description .body div { margin: 0 0 3px; }
+  .description .body .desc-heading { font-weight: 650; margin-top: var(--s4); color: var(--ink); }
+  .description .body .desc-heading:first-child { margin-top: 0; }
+
+  .benefits { margin-top: var(--s4); }
+  .benefits h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s2); }
+  .benefits .list { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  .benefit { font-size: 12px; color: var(--ink-2); background: var(--line-soft); border-radius: 6px; padding: 3px 9px; }
+
   .team { margin-top: var(--s5); }
   .team h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
   .team h3 .count { font-family: var(--mono); color: var(--ink-3); font-weight: 500; }
@@ -208,6 +225,21 @@
     return `<span class="badge d${deg[0]}" title="${DEGREE_TITLE[deg] || ""}">${esc(deg)}</span>`;
   }
 
+  function renderDescription(text) {
+    const connectors = new Set(["of", "the", "and", "in", "for", "to", "with", "a", "an", "on", "at", "&"]);
+    const isHeading = (line) => {
+      const t = line.trim();
+      if (!t || t.length > 48) return false;
+      if (/[.,;:|]$/.test(t) || /[•·()]/.test(t)) return false;
+      const words = t.split(/\s+/).filter(Boolean);
+      return words.length > 0 && words.every((w) => /^[A-Z0-9]/.test(w) || connectors.has(w.toLowerCase()));
+    };
+    return text.split("\n").filter((l) => l.trim()).map((line) => {
+      const t = line.trim();
+      return isHeading(t) ? `<div class="desc-heading">${esc(t)}</div>` : `<div>${esc(t)}</div>`;
+    }).join("");
+  }
+
   function renderList() {
     const list = el("list");
     const jobs = visible();
@@ -242,18 +274,37 @@
             </div>
           </li>`).join("")}</ul>`
       : `<div class="empty" style="padding: var(--s4) 0">No hiring team listed on this posting</div>`;
+    const facts = [
+      job.workplaceType ? `<span class="fact">${esc(job.workplaceType)}</span>` : "",
+      job.employmentType ? `<span class="fact">${esc(job.employmentType)}</span>` : "",
+      job.applyMethod ? `<span class="fact">${esc(job.applyMethod)}</span>` : "",
+      job.promoted ? `<span class="fact flag">Promoted</span>` : "",
+      job.activelyReviewing ? `<span class="fact flag">Actively reviewing</span>` : "",
+      job.postedAt ? `<span class="fact muted">${esc(job.postedAt)}</span>` : "",
+      job.applicantCount ? `<span class="fact muted">${esc(job.applicantCount)}</span>` : "",
+    ].filter(Boolean).join("");
+    const benefits = job.benefits || [];
+    const descHtml = job.description
+      ? `<div class="description"><h3>About the job</h3><div class="body">${renderDescription(job.description)}</div></div>`
+      : "";
+    const benefitsHtml = benefits.length
+      ? `<div class="benefits"><h3>Benefits</h3><div class="list">${benefits.map((b) => `<span class="benefit">${esc(b)}</span>`).join("")}</div></div>`
+      : "";
     d.innerHTML = `
       <div class="detail-head">
         <span class="status ${esc(job.status)}">${esc(job.status)}</span>
         <h2>${esc(job.title)}</h2>
         <div class="company">${esc(job.company || "—")}</div>
         ${job.location ? `<div class="loc">${esc(job.location)}</div>` : ""}
+        ${facts ? `<div class="facts">${facts}</div>` : ""}
         <div><a class="open" href="${esc(job.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
       </div>
       <div class="team">
         <h3>Hiring team ${team.length ? `<span class="count">${team.length}</span>` : ""}</h3>
         ${teamHtml}
       </div>
+      ${descHtml}
+      ${benefitsHtml}
       <div class="meta">ID <span class="mono">${esc(job.id)}</span> · collected ${esc((job.collectedAt || "").slice(0, 10))}</div>`;
   }
 

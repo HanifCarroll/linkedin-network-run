@@ -103,6 +103,10 @@ try {
       calls.push("jobs enrich");
       return { enriched: 0 };
     },
+    jobsDetail: async () => {
+      calls.push("jobs detail");
+      return { detailed: 0, remaining: 0 };
+    },
     jobsList: async () => {
       calls.push("jobs list");
       return { count: 0, jobs: [] };

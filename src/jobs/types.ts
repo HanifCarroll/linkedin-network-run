@@ -26,6 +26,20 @@ export type CapturedJob = {
   readonly title: string;
 };
 
+/** Full posting-page details captured by the detail-enrich pass. */
+export type JobDetail = {
+  readonly id: string;
+  readonly description: string;
+  readonly workplaceType: string;
+  readonly employmentType: string;
+  readonly applyMethod: string;
+  readonly promoted: boolean;
+  readonly activelyReviewing: boolean;
+  readonly postedAt: string;
+  readonly applicantCount: string;
+  readonly benefits: readonly string[];
+};
+
 export type JobsSearchInput = {
   readonly stateDir: string;
   readonly playwriterBin: string;
@@ -91,6 +105,15 @@ export type JobRow = {
   readonly collectedAt: string;
   readonly updatedAt: string;
   readonly sentAt: string | null;
+  readonly description: string;
+  readonly workplaceType: string;
+  readonly employmentType: string;
+  readonly applyMethod: string;
+  readonly promoted: boolean;
+  readonly activelyReviewing: boolean;
+  readonly postedAt: string;
+  readonly applicantCount: string;
+  readonly benefits: readonly string[];
 };
 
 export type JobsSearchSpec = {

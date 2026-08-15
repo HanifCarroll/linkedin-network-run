@@ -330,6 +330,24 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN checked_at TEXT;
     `,
   },
+  {
+    id: 6,
+    name: "jobs_detail_fields",
+    sql: `
+      -- Full posting-page details captured by the detail-enrich pass: the raw
+      -- description plus the structured header fields that are always SSR'd
+      -- into the view DOM (no salary -- it is only free text, when present).
+      ALTER TABLE jobs ADD COLUMN description TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN workplace_type TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN employment_type TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN apply_method TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE jobs ADD COLUMN actively_reviewing INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE jobs ADD COLUMN posted_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN applicant_count TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN benefits_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 export type MigrationResult = {

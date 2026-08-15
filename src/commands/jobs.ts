@@ -5,6 +5,7 @@ import {
   buildCaptureScript,
   buildCheckLivenessScript,
   buildCleanupTabsScript,
+  buildDetailScript,
   buildEnrichPoolScript,
   buildEnrichScript,
   buildSearchUrl,
@@ -13,12 +14,13 @@ import {
   runJobsScript,
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
-import type { CapturedJob, CollectedJob, JobRow } from "../jobs/types.ts";
+import type { CapturedJob, CollectedJob, JobDetail, JobRow } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
   JobsCheckInput,
   JobsCollectInput,
+  JobsDetailInput,
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
@@ -408,6 +410,100 @@ export async function jobsEnrich(
   }
   const remaining = capturedRows().length;
   return { command: "jobs enrich", enriched, remaining };
+}
+
+export async function jobsDetail(
+  input: JobsDetailInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
+  const runScript = dependencies.runScript ?? runJobsScript;
+  const now = dependencies.now ?? nowDefault;
+  const sessionId = await resolveSession({
+    workflow: "jobs",
+    selection: input.sessionId,
+    stateDir: input.stateDir,
+    playwriterBin: input.playwriterBin,
+  });
+  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
+  const dbPath = join(input.stateDir, "linkedin-tools.db");
+  const batchSize = 3;
+  const BUDGET_MS = 180_000;
+  const startedAt = Date.now();
+  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
+    try {
+      return await runScript({
+        playwriterBin: input.playwriterBin,
+        sessionId,
+        script,
+        timeoutMs,
+        stateDir: input.stateDir,
+      });
+    } catch (error) {
+      if (isSessionFailure(error)) {
+        await resetSession(sessionId).catch(() => {});
+        return null;
+      }
+      throw error;
+    }
+  };
+  const pendingRows = (): JobRow[] => {
+    const opened = openDatabase(dbPath);
+    try {
+      return new JobsEngine(opened.database).listJobs({ withHiringTeam: false, needsDetail: true });
+    } finally {
+      opened.database.close();
+    }
+  };
+  const store = (details: JobDetail[]): void => {
+    if (details.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).storeJobDetails(details, now());
+    } finally {
+      opened.database.close();
+    }
+  };
+  const deleteJobs = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    const opened = openDatabase(dbPath);
+    try {
+      new JobsEngine(opened.database).deleteJobs(ids);
+    } finally {
+      opened.database.close();
+    }
+  };
+
+  try {
+    const cleanup = buildCleanupTabsScript();
+    await runPhase(cleanup.script, cleanup.timeoutMs);
+  } catch {
+    // ignore — the detail loop below surfaces the real session failure
+  }
+
+  const pool = pendingRows();
+  const toDetail = input.limit === undefined ? pool : pool.slice(0, input.limit);
+  let detailed = 0;
+  for (let i = 0; i < toDetail.length && Date.now() - startedAt < BUDGET_MS; i += batchSize) {
+    const batch = toDetail.slice(i, i + batchSize).map((r) => ({ id: r.id }));
+    const { script, timeoutMs } = buildDetailScript({ jobs: batch });
+    const result = await runPhase(script, timeoutMs);
+    if (result === null) break;
+    const completed = Array.isArray(result.data?.completed) ? result.data.completed : [];
+    const real = completed.filter(
+      (d): d is JobDetail =>
+        isRecord(d) && typeof d.description === "string" && d.description.length > 0,
+    );
+    const deadIds = completed
+      .filter((d) => isRecord(d) && d.dead === true)
+      .map((d) => String(d.id))
+      .filter(Boolean);
+    if (deadIds.length > 0) deleteJobs(deadIds);
+    store(real);
+    detailed += real.length;
+  }
+  const remaining = pendingRows().length;
+  return { command: "jobs detail", detailed, remaining };
 }
 
 function isSessionFailure(error: unknown): boolean {

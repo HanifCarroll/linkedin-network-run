@@ -77,6 +77,46 @@ const EXTRACT_VIEW = `
   return { title, company, location, team };
 }`;
 
+// Full posting-page detail. LinkedIn job views ship no JSON-LD and no stable
+// CSS classes (build-hashed), so this parses the SSR'd innerText with content
+// anchors: the meta line for location/posted/applicants, exact enum lines for
+// workplace/employment/apply, and the "About the job".."Benefits found in job
+// post" range for the description.
+const DETAIL_EXTRACT = `
+() => {
+  const lines = document.body.innerText.split("\\n").map(l => l.trim()).filter(Boolean);
+  const pick = (re) => lines.find(l => re.test(l)) || "";
+  const metaLine = pick(/·\\s*(Just now|\\d+\\s+(minute|hour|day|week|month)s?\\s+ago|today|yesterday)/i);
+  const metaParts = metaLine.split("·").map(s => s.trim()).filter(Boolean);
+  const postedAt = metaParts.find(p => /ago|today|yesterday|just now/i.test(p)) || "";
+  const applicantCount = metaParts.find(p => /applicant/i.test(p)) || "";
+  const workplaceType = pick(/^(On-site|Remote|Hybrid)$/i);
+  const employmentType = pick(/^(Full-time|Part-time|Contract|Temporary|Internship|Other)$/i);
+  const applyMethod = pick(/^(Easy Apply|Apply)$/i);
+  const promoLine = pick(/Promoted/i);
+  const promoted = /Promoted/i.test(promoLine);
+  const activelyReviewing = /Actively reviewing/i.test(promoLine);
+  const aboutIdx = lines.findIndex(l => /^About the job$/i.test(l));
+  let endIdx = lines.length;
+  const endMarkers = [/^Benefits found in job post$/i, /^Set alert for similar jobs$/i, /^Similar jobs$/i];
+  if (aboutIdx >= 0) {
+    for (let i = aboutIdx + 1; i < lines.length; i += 1) {
+      if (endMarkers.some(re => re.test(lines[i]))) { endIdx = i; break; }
+    }
+  }
+  const description = aboutIdx >= 0
+    ? lines.slice(aboutIdx + 1, endIdx).filter(l => !/^(… more|Show more|See more)$/i.test(l)).join("\\n").trim()
+    : "";
+  const benIdx = lines.findIndex(l => /^Benefits found in job post$/i.test(l));
+  let benefits = [];
+  if (benIdx >= 0) {
+    let j = benIdx + 1;
+    while (j < lines.length && !/^Set alert|^Similar jobs/i.test(lines[j])) j += 1;
+    benefits = lines.slice(benIdx + 1, j).flatMap(l => l.split(",")).map(s => s.trim()).filter(s => s.length > 0);
+  }
+  return { postedAt, applicantCount, workplaceType, employmentType, applyMethod, promoted, activelyReviewing, description, benefits, dead: /^Jobs\\s*\\|/i.test(document.title) };
+}`;
+
 // The playwriter CLI (<=0.4.0) sends execute requests through Node/Undici
 // fetch, whose fixed 300s response-header timeout kills any call longer than
 // ~300s with "fetch failed" (remorses/playwriter#74). Search therefore runs as
@@ -321,6 +361,53 @@ export function buildEnrichPoolScript(config: {
   const cfg = { jobs: config.jobs };
   const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=Object.fromEntries(CONFIG.jobs.map((j)=>[j.id,j.title]));const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_POOL_RESULT}`;
   return { script: source, timeoutMs: 420_000 };
+}
+
+const DETAIL_RESULT = `
+const detailOne=async(wp,jobId)=>{
+  if(wp.isClosed()){
+    const candidates=context.pages().filter((candidate)=>!candidate.isClosed());
+    const rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;
+    if(!rp)throw new Error("NO_PAGE");
+    wp=rp;
+  }
+  await wp.goto("https://www.linkedin.com/jobs/view/"+jobId+"/",{waitUntil:"commit",timeout:25000});
+  await wp.waitForTimeout(3000);
+  // The description section lazy-hydrates below the fold; scroll to trigger
+  // it. A soft-nav mid-scroll can destroy the evaluate context, so swallow it.
+  try{for(let s=0;s<6;s+=1){await wp.evaluate(()=>window.scrollBy(0,900));await wp.waitForTimeout(400);}}catch{}
+  await wp.waitForTimeout(1500);
+  let d=null;
+  for(let attempt=0;attempt<2&&d===null;attempt+=1){
+    try{d=await wp.evaluate(DETAIL_EXTRACT);}
+    catch(e){const msg=String((e&&e.message)||e);if(!/context was destroyed|Execution context|navigation|Navigator/i.test(msg))throw e;await wp.waitForTimeout(2000);}
+  }
+  if(d===null)throw new Error("DETAIL_UNREACHABLE");
+  return {id:jobId,...d};
+};
+const results=[];
+for(const job of CONFIG.jobs){
+  try{results.push(await detailOne(p,job.id));}
+  catch(e){results.push({id:job.id,postedAt:"",applicantCount:"",workplaceType:"",employmentType:"",applyMethod:"",promoted:false,activelyReviewing:false,description:"",benefits:[],dead:false,error:String((e&&e.message)||e)});}
+}
+console.log(JSON.stringify({ok:true,data:{completed:results}}));
+`;
+
+/**
+ * Phase 2b: pull the full posting-page detail (description + structured
+ * header fields) for a batch of already-collected jobs. No hiring-team
+ * extraction — that already happened in enrich.
+ */
+export function buildDetailScript(config: { readonly jobs: readonly { readonly id: string }[] }): {
+  readonly script: string;
+  readonly timeoutMs: number;
+} {
+  if (config.jobs.length === 0) throw new TypeError("jobs must be non-empty");
+  const cfg = { jobs: config.jobs };
+  const source = `const CONFIG=${JSON.stringify(cfg)};const DETAIL_EXTRACT=${DETAIL_EXTRACT};\n${PAGE_PICKUP}\n${DETAIL_RESULT}`;
+  // ~35s per job (25s goto + settle + extract), kept under the 300s relay cap.
+  const timeoutMs = Math.min(config.jobs.length * 35_000, 280_000);
+  return { script: source, timeoutMs };
 }
 /**
  * Close accumulated blank automation tabs (about:blank / empty URL) before a

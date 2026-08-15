@@ -101,6 +101,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsCollect(invocation.input);
     case "jobs enrich":
       return operations.jobsEnrich(invocation.input);
+    case "jobs detail":
+      return operations.jobsDetail(invocation.input);
     case "jobs list":
       return operations.jobsList(invocation.input);
     case "jobs check":

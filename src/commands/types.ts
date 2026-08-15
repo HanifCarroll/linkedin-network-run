@@ -121,6 +121,14 @@ export type JobsCheckInput = {
   readonly limit?: number;
 };
 
+export type JobsDetailInput = {
+  readonly stateDir: string;
+  readonly playwriterBin: string;
+  readonly sessionId: PlaywriterSessionSelection;
+  /** Max jobs to detail this run (default: all collected missing detail). */
+  readonly limit?: number;
+};
+
 export type JobsFavoriteInput = {
   readonly stateDir: string;
   readonly ids: readonly string[];
@@ -160,6 +168,7 @@ export interface CliOperations {
   jobsSearch(input: JobsSearchInput): Promise<unknown>;
   jobsCollect(input: JobsCollectInput): Promise<unknown>;
   jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
+  jobsDetail(input: JobsDetailInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
   jobsCheck(input: JobsCheckInput): Promise<unknown>;
   jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
@@ -220,6 +229,7 @@ export type ParsedInvocation =
   | { readonly kind: "command"; readonly command: "jobs search"; readonly input: JobsSearchInput }
   | { readonly kind: "command"; readonly command: "jobs collect"; readonly input: JobsCollectInput }
   | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
+  | { readonly kind: "command"; readonly command: "jobs detail"; readonly input: JobsDetailInput }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }
   | { readonly kind: "command"; readonly command: "jobs check"; readonly input: JobsCheckInput }
   | {

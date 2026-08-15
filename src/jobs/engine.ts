@@ -1,6 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
-import type { CapturedJob, CollectedJob, HiringTeamMember, JobRow, JobStatus } from "./types.ts";
+import type {
+  CapturedJob,
+  CollectedJob,
+  HiringTeamMember,
+  JobDetail,
+  JobRow,
+  JobStatus,
+} from "./types.ts";
 
 type JobRowRaw = {
   readonly id: string;
@@ -15,6 +22,15 @@ type JobRowRaw = {
   readonly collected_at: string;
   readonly updated_at: string;
   readonly sent_at: string | null;
+  readonly description: string;
+  readonly workplace_type: string;
+  readonly employment_type: string;
+  readonly apply_method: string;
+  readonly promoted: number;
+  readonly actively_reviewing: number;
+  readonly posted_at: string;
+  readonly applicant_count: string;
+  readonly benefits_json: string;
 };
 
 export class JobsEngine {
@@ -81,11 +97,41 @@ export class JobsEngine {
     tx();
     return ids.length;
   }
+  storeJobDetails(details: readonly JobDetail[], now: string): number {
+    if (details.length === 0) return 0;
+    const stmt = this.database.prepare(`
+      UPDATE jobs SET
+        description = ?, workplace_type = ?, employment_type = ?, apply_method = ?,
+        promoted = ?, actively_reviewing = ?, posted_at = ?, applicant_count = ?,
+        benefits_json = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    const tx = this.database.transaction(() => {
+      for (const d of details) {
+        stmt.run(
+          d.description,
+          d.workplaceType,
+          d.employmentType,
+          d.applyMethod,
+          d.promoted ? 1 : 0,
+          d.activelyReviewing ? 1 : 0,
+          d.postedAt,
+          d.applicantCount,
+          JSON.stringify(d.benefits),
+          now,
+          d.id,
+        );
+      }
+    });
+    tx();
+    return details.length;
+  }
 
   listJobs(options: {
     readonly status?: JobStatus;
     readonly withHiringTeam: boolean;
     readonly uncheckedOnly?: boolean;
+    readonly needsDetail?: boolean;
   }): JobRow[] {
     const clauses: string[] = [];
     const params: string[] = [];
@@ -95,6 +141,7 @@ export class JobsEngine {
     }
     if (options.withHiringTeam) clauses.push("has_hiring_team = 1");
     if (options.uncheckedOnly) clauses.push("checked_at IS NULL");
+    if (options.needsDetail) clauses.push("description = ''");
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.database
       .query<JobRowRaw, string[]>(`SELECT * FROM jobs ${where} ORDER BY collected_at DESC`)
@@ -168,6 +215,13 @@ function rowToJob(row: JobRowRaw): JobRow {
   } catch {
     hiringTeam = [];
   }
+  let benefits: readonly string[] = [];
+  try {
+    const parsed = JSON.parse(row.benefits_json) as unknown;
+    if (Array.isArray(parsed)) benefits = parsed.filter((b): b is string => typeof b === "string");
+  } catch {
+    benefits = [];
+  }
   return {
     id: row.id,
     title: row.title,
@@ -181,5 +235,14 @@ function rowToJob(row: JobRowRaw): JobRow {
     collectedAt: row.collected_at,
     updatedAt: row.updated_at,
     sentAt: row.sent_at,
+    description: row.description,
+    workplaceType: row.workplace_type,
+    employmentType: row.employment_type,
+    applyMethod: row.apply_method,
+    promoted: row.promoted === 1,
+    activelyReviewing: row.actively_reviewing === 1,
+    postedAt: row.posted_at,
+    applicantCount: row.applicant_count,
+    benefits,
   };
 }
