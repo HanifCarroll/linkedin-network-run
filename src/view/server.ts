@@ -33,7 +33,7 @@ function readJobs(): unknown {
   const db = new Database(dbPath);
   try {
     db.exec("PRAGMA query_only = ON;");
-    return new JobsEngine(db).listJobs({ withHiringTeam: false });
+    return new JobsEngine(db).listJobs({ withHiringTeam: true });
   } finally {
     db.close();
   }

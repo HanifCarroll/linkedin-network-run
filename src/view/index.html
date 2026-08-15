@@ -60,21 +60,6 @@
     padding: 7px 10px; font: inherit; font-size: 13px; color: var(--ink);
     outline: none; cursor: pointer;
   }
-  .toggle { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-2); font-size: 13px; cursor: pointer; user-select: none; }
-  .toggle input { accent-color: var(--accent); }
-
-  .chips { display: flex; gap: var(--s2); flex-wrap: wrap; width: 100%; }
-  .chip {
-    font: inherit; font-size: 12.5px; font-weight: 500;
-    color: var(--ink-2); background: transparent;
-    border: 1px solid var(--line); border-radius: 999px;
-    padding: 3px 12px; cursor: pointer; line-height: 1.5;
-    display: inline-flex; align-items: center; gap: 6px;
-  }
-  .chip:hover { border-color: var(--ink-4); }
-  .chip.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
-  .chip .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
-  .chip.on .n { color: var(--accent); }
 
   main { flex: 1; display: grid; grid-template-columns: minmax(380px, 5fr) 7fr; min-height: 0; }
   .list { overflow-y: auto; border-right: 1px solid var(--line); }
@@ -171,9 +156,7 @@
       <option value="newest">Newest first</option>
       <option value="location">Location</option>
     </select>
-    <label class="toggle"><input type="checkbox" id="teamOnly" checked> Hiring team only</label>
   </div>
-  <div class="chips" id="chips"></div>
 </header>
 <main>
   <section class="list" id="list"></section>
@@ -186,7 +169,7 @@
   const el = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const state = { jobs: [], query: "", teamOnly: true, status: "all", sort: "degree", selectedId: null };
+  const state = { jobs: [], query: "", sort: "degree", selectedId: null };
 
   function strongest(job) {
     let best = 3;
@@ -194,8 +177,6 @@
     return best >= 3 ? "" : DEGREES[best];
   }
   function matches(job) {
-    if (state.teamOnly && !job.hasHiringTeam) return false;
-    if (state.status !== "all" && job.status !== state.status) return false;
     if (!state.query) return true;
     const q = state.query.toLowerCase();
     const hay = [job.title, job.company, job.location, ...(job.hiringTeam || []).flatMap((m) => [m.name, m.headline])]
@@ -309,30 +290,11 @@
   }
 
   function renderSummary() {
-    const total = state.jobs.length;
-    const teams = state.jobs.filter((j) => j.hasHiringTeam).length;
-    el("summary").textContent = `${teams} leads with hiring team · ${total} total`;
-  }
-
-  function renderChips() {
-    const counts = { all: state.jobs.length };
-    for (const j of state.jobs) counts[j.status] = (counts[j.status] || 0) + 1;
-    const order = ["all", "collected", "favorite", "drafted", "sent"];
-    el("chips").innerHTML = order
-      .filter((s) => counts[s] > 0)
-      .map((s) => `<button class="chip${state.status === s ? " on" : ""}" data-status="${s}">${s === "all" ? "All" : s} <span class="n">${counts[s]}</span></button>`)
-      .join("");
+    el("summary").textContent = `${state.jobs.length} leads with hiring team`;
   }
 
   el("search").addEventListener("input", (e) => { state.query = e.target.value.trim(); renderList(); });
   el("sort").addEventListener("change", (e) => { state.sort = e.target.value; renderList(); });
-  el("teamOnly").addEventListener("change", (e) => { state.teamOnly = e.target.checked; renderList(); });
-  el("chips").addEventListener("click", (e) => {
-    const b = e.target.closest(".chip");
-    if (!b) return;
-    state.status = b.dataset.status;
-    renderChips(); renderList();
-  });
   el("list").addEventListener("click", (e) => {
     const row = e.target.closest(".row");
     if (!row) return;
@@ -345,7 +307,7 @@
     .then((jobs) => {
       state.jobs = Array.isArray(jobs) ? jobs : [];
       state.selectedId = visible()[0]?.id ?? null;
-      renderSummary(); renderChips(); renderList(); renderDetail();
+      renderSummary(); renderList(); renderDetail();
     })
     .catch((e) => {
       el("summary").textContent = "Failed to load";
