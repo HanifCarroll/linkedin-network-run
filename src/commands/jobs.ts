@@ -11,6 +11,7 @@ import {
   buildSearchUrl,
   buildSendScript,
   JobsEngine,
+  recipientProfileUrl,
   runJobsScript,
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
@@ -19,6 +20,7 @@ import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
   JobsCheckInput,
+  JobsClassifyInput,
   JobsCollectInput,
   JobsDetailInput,
   JobsDraftInput,
@@ -672,8 +674,34 @@ export async function jobsDraft(
   const now = dependencies.now ?? nowDefault;
   const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
   try {
-    const row = new JobsEngine(opened.database).storeDraft(input.id, input.message, now());
+    const row = new JobsEngine(opened.database).storeDraft(
+      input.id,
+      input.subject,
+      input.message,
+      now(),
+    );
     return { command: "jobs draft", job: row };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsClassify(
+  input: JobsClassifyInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const now = dependencies.now ?? nowDefault;
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const row = new JobsEngine(opened.database).classifyJob(
+      input.id,
+      input.workFocus,
+      input.productSystem,
+      input.workSummary,
+      input.productSummary,
+      now(),
+    );
+    return { command: "jobs classify", job: row };
   } finally {
     opened.database.close();
   }
@@ -686,24 +714,48 @@ export async function jobsSend(
   const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
   const runScript = dependencies.runScript ?? runJobsScript;
   const now = dependencies.now ?? nowDefault;
+
+  // Validate targets and seed the defensive recipient set from already-sent
+  // jobs before any browser session is created, so a no-op send fails without
+  // opening a session.
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  let targets: JobRow[];
+  const sentRecipients = new Set<string>();
+  try {
+    const engine = new JobsEngine(opened.database);
+    for (const sent of engine.sentJobs()) {
+      const profile = recipientProfileUrl(sent);
+      if (profile !== null) sentRecipients.add(profile);
+    }
+    if (input.id === undefined) {
+      targets = engine.approvedDrafts();
+    } else {
+      const job = engine.requireJob(input.id);
+      if (job.review !== "approved")
+        throw new CliError("JOBS_NOT_APPROVED", `job ${job.id} is not an approved draft`, {
+          exitCode: 2,
+        });
+      if (job.status !== "drafted")
+        throw new CliError("JOBS_NOT_DRAFTED", `job ${job.id} is not a pending draft`, {
+          exitCode: 2,
+        });
+      targets = [job];
+    }
+  } finally {
+    opened.database.close();
+  }
+  if (targets.length === 0)
+    throw new CliError("JOBS_NOTHING_TO_SEND", "no approved drafts to send", { exitCode: 2 });
+
   const sessionId = await resolveSession({
     workflow: "jobs",
     selection: input.sessionId,
     stateDir: input.stateDir,
     playwriterBin: input.playwriterBin,
   });
-  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
-  let targets: ReturnType<JobsEngine["draftedJobs"]>;
-  try {
-    const engine = new JobsEngine(opened.database);
-    targets = input.id === undefined ? engine.draftedJobs() : [engine.requireJob(input.id)];
-  } finally {
-    opened.database.close();
-  }
-  if (targets.length === 0)
-    throw new CliError("JOBS_NOTHING_TO_SEND", "no drafted jobs to send", { exitCode: 2 });
 
   const results: unknown[] = [];
+  const seenRecipients = new Set(sentRecipients);
   for (const job of targets) {
     const member = job.hiringTeam[0];
     if (member === undefined)
@@ -716,10 +768,32 @@ export async function jobsSend(
       );
     if (job.message === null || job.message.trim().length === 0)
       throw new CliError("JOBS_NO_DRAFT", `job ${job.id} has no drafted message`, { exitCode: 2 });
+    const profile = recipientProfileUrl(job);
+    if (profile === null)
+      throw new CliError(
+        "JOBS_NO_HIRING_TEAM",
+        `job ${job.id} has no usable hiring-team profile URL`,
+        { exitCode: 2 },
+      );
+    // Defensive duplicate-recipient guard: never message one profile twice,
+    // across runs or within one run. Already-sent/approved recipients are
+    // skipped without changing state.
+    if (seenRecipients.has(profile)) {
+      results.push({
+        jobId: job.id,
+        title: job.title,
+        member: member.name,
+        status: "skipped",
+        detail: "duplicate recipient (already sent or approved)",
+      });
+      continue;
+    }
+    seenRecipients.add(profile);
     const { script, timeoutMs } = buildSendScript({
       jobId: job.id,
       memberName: member.name,
       profileUrl: member.profileUrl,
+      subject: job.subject,
       message: job.message,
     });
     const outcome = await runScript({

@@ -142,6 +142,8 @@ export type JobsRemoveInput = {
 export type JobsDraftInput = {
   readonly stateDir: string;
   readonly id: string;
+  /** Optional subject line; only used when the composer exposes a subject field. */
+  readonly subject: string;
   readonly message: string;
 };
 
@@ -151,6 +153,15 @@ export type JobsSendInput = {
   readonly sessionId: PlaywriterSessionSelection;
   readonly id?: string;
   readonly allowSend: true;
+};
+
+export type JobsClassifyInput = {
+  readonly stateDir: string;
+  readonly id: string;
+  readonly workFocus: string;
+  readonly productSystem: string;
+  readonly workSummary: string;
+  readonly productSummary: string;
 };
 
 export type MigrationDryRunInput = {
@@ -180,6 +191,7 @@ export interface CliOperations {
   jobsRemove(input: JobsRemoveInput): Promise<unknown>;
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
   jobsSend(input: JobsSendInput): Promise<unknown>;
+  jobsClassify(input: JobsClassifyInput): Promise<unknown>;
 }
 
 export type ParsedInvocation =
@@ -245,4 +257,9 @@ export type ParsedInvocation =
     }
   | { readonly kind: "command"; readonly command: "jobs remove"; readonly input: JobsRemoveInput }
   | { readonly kind: "command"; readonly command: "jobs draft"; readonly input: JobsDraftInput }
-  | { readonly kind: "command"; readonly command: "jobs send"; readonly input: JobsSendInput };
+  | { readonly kind: "command"; readonly command: "jobs send"; readonly input: JobsSendInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs classify";
+      readonly input: JobsClassifyInput;
+    };

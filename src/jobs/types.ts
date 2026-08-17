@@ -1,5 +1,22 @@
 import type { PlaywriterSessionSelection } from "../commands/types.ts";
 
+/** Max characters for one classification phrase (work focus / product system). */
+export const CLASSIFICATION_MAX_LENGTH = 80;
+
+/** Max characters for one classification summary (work / product summary). */
+export const SUMMARY_MAX_LENGTH = 320;
+
+/** Max characters for a draft subject line. */
+export const SUBJECT_MAX_LENGTH = 300;
+
+/** Max characters for a draft body (generous; the four-paragraph shape is far shorter). */
+export const DRAFT_MAX_LENGTH = 5000;
+
+/** A review decision is orthogonal to the status lifecycle. */
+export type ReviewDecision = "needs_review" | "approved" | "skipped";
+
+export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["needs_review", "approved", "skipped"];
+
 /** One person listed on a job posting's "Meet the hiring team" section. */
 export type HiringTeamMember = {
   readonly name: string;
@@ -83,6 +100,8 @@ export type JobsRemoveInput = {
 export type JobsDraftInput = {
   readonly stateDir: string;
   readonly id: string;
+  /** Optional subject line; only used when the composer exposes a subject field. */
+  readonly subject: string;
   readonly message: string;
 };
 
@@ -119,6 +138,18 @@ export type JobRow = {
   readonly postedAt: string;
   readonly applicantCount: string;
   readonly benefits: readonly string[];
+  /** Functional area the role centers on (e.g. "Growth", "Backend platform"). */
+  readonly workFocus: string;
+  /** Tool or platform the role is built around (e.g. "Salesforce", "HubSpot"). */
+  readonly productSystem: string;
+  /** Longer prose on what the role does day to day. */
+  readonly workSummary: string;
+  /** Longer prose on what the role builds. */
+  readonly productSummary: string;
+  /** Editable draft subject line ('' when the DM composer has no subject). */
+  readonly subject: string;
+  /** Review decision, orthogonal to status. */
+  readonly review: ReviewDecision;
 };
 
 export type JobsSearchSpec = {

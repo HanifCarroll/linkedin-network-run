@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Job Leads</title>
+<title>Outreach Review Queue</title>
 <style>
   :root {
     --bg: #F5F4F1;
@@ -18,6 +18,8 @@
     --accent-soft: #EAF2FA;
     --ok: #1F7A3D;
     --ok-soft: #EAF4ED;
+    --warn: #8A5A00;
+    --warn-soft: #FAF1E3;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
     --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
@@ -29,7 +31,7 @@
     background: var(--bg);
     color: var(--ink);
     font-family: var(--sans);
-    font-size: 14px;
+    font-size: 16px;
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
     display: flex;
@@ -40,30 +42,64 @@
     display: flex;
     align-items: flex-end;
     gap: var(--s5);
-    padding: var(--s5) var(--s6) var(--s4);
+    padding: var(--s5) var(--s6) var(--s3);
     border-bottom: 1px solid var(--line);
     flex-wrap: wrap;
   }
-  .brand h1 { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
-  .brand .sub { margin: 2px 0 0; color: var(--ink-3); font-size: 12.5px; }
+  .brand h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  .brand .sub { margin: 2px 0 0; color: var(--ink-3); font-size: 14px; }
   .controls { display: flex; align-items: center; gap: var(--s3); margin-left: auto; flex-wrap: wrap; }
 
   input[type="search"] {
     background: #fff; border: 1px solid var(--line); border-radius: var(--s2);
-    padding: 7px 12px; font: inherit; font-size: 13px; color: var(--ink);
-    width: 260px; outline: none;
+    padding: 7px 12px; font: inherit; font-size: 15px; color: var(--ink);
+    width: 240px; outline: none;
   }
   input[type="search"]::placeholder { color: var(--ink-4); }
   input[type="search"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  select {
-    background: #fff; border: 1px solid var(--line); border-radius: var(--s2);
-    padding: 7px 10px; font: inherit; font-size: 13px; color: var(--ink);
-    outline: none; cursor: pointer;
-  }
-  .toggle { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-2); font-size: 13px; cursor: pointer; user-select: none; }
-  .toggle input { accent-color: var(--accent); }
 
-  main { flex: 1; display: grid; grid-template-columns: minmax(380px, 5fr) 7fr; min-height: 0; }
+  .switch { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-2); font-size: 15px; cursor: pointer; user-select: none; }
+  .switch input {
+    appearance: none; width: 34px; height: 20px; margin: 0; border: 0; border-radius: 999px;
+    background: var(--line); position: relative; cursor: pointer; transition: background 0.15s;
+  }
+  .switch input::after {
+    content: ""; position: absolute; width: 14px; height: 14px; top: 3px; left: 3px;
+    border-radius: 50%; background: #fff; transition: transform 0.15s;
+  }
+  .switch input:checked { background: var(--accent); }
+  .switch input:checked::after { transform: translateX(14px); }
+  .switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .filters { display: flex; gap: var(--s1); padding: var(--s3) var(--s6) var(--s3); border-bottom: 1px solid var(--line); flex-wrap: wrap; align-items: center; }
+  .filter {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-2);
+    border-radius: 999px; padding: 5px 12px; font: inherit; font-size: 14px; font-weight: 600;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .filter .n { font-family: var(--mono); font-weight: 500; color: var(--ink-3); }
+  .filter:hover { border-color: var(--ink-4); }
+  .filter.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .filter.active .n { color: rgba(255,255,255,0.7); }
+
+  .sections { display: flex; gap: var(--s1); padding: var(--s3) var(--s6) 0; flex-wrap: wrap; align-items: center; }
+  .section-btn {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-2);
+    border-radius: var(--s2); padding: 8px 14px; font: inherit; font-size: 15px; font-weight: 650;
+    cursor: pointer; display: inline-flex; align-items: center; gap: var(--s2);
+  }
+  .section-btn .n { font-family: var(--mono); font-weight: 500; color: var(--ink-3); }
+  .section-btn:hover { border-color: var(--ink-4); }
+  .section-btn.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .section-btn.active .n { color: rgba(255,255,255,0.7); }
+
+  .reminder { margin-top: var(--s4); background: var(--warn-soft); border: 1px solid #EAD9A8; border-radius: var(--s2); padding: var(--s3) var(--s4); color: var(--warn); font-size: 15px; line-height: 1.5; }
+  .reminder strong { display: block; font-weight: 650; }
+
+  .role-url { color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 500; }
+  .role-url:hover { color: var(--accent-ink); text-decoration: underline; }
+
+  main { flex: 1; display: grid; grid-template-columns: minmax(360px, 5fr) 7fr; min-height: 0; }
   .list { overflow-y: auto; border-right: 1px solid var(--line); }
   .detail { overflow-y: auto; }
 
@@ -75,173 +111,226 @@
   }
   .row:hover { background: rgba(0, 0, 0, 0.025); }
   .row.selected { background: var(--accent-soft); }
+  .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .row-main { flex: 1; min-width: 0; }
-  .row-company { font-weight: 600; color: var(--ink); font-size: 13.5px; }
+  .row-name { font-weight: 650; color: var(--ink); font-size: 16px; }
+  .row-company { font-weight: 600; color: var(--ink); font-size: 16px; }
   .row-company .loc { font-weight: 400; color: var(--ink-3); }
-  .row-title { color: var(--ink-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-title { color: var(--ink-2); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-class { color: var(--ink-3); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row-side { display: flex; gap: var(--s2); align-items: center; flex: none; }
 
   .badge {
     display: inline-flex; align-items: center; gap: 4px;
-    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
     padding: 1px 7px; border-radius: 999px; line-height: 1.5; letter-spacing: 0.01em;
   }
   .badge.d1 { background: var(--accent); color: #fff; }
   .badge.d2 { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .badge.d3 { background: transparent; color: var(--ink-3); box-shadow: inset 0 0 0 1px var(--line); }
   .badge.count { background: var(--line-soft); color: var(--ink-2); box-shadow: none; }
+  .badge.rev { background: var(--line-soft); color: var(--ink-2); box-shadow: none; }
+  .badge.rev.needs_review { background: var(--line-soft); color: var(--ink-3); }
+  .badge.rev.approved { color: var(--accent); background: var(--accent-soft); }
+  .badge.rev.skipped { color: var(--warn); background: var(--warn-soft); }
+  .badge.rev.sent { color: var(--ok); background: var(--ok-soft); }
+  .badge.dup { color: var(--warn); background: var(--warn-soft); }
 
   .detail { padding: var(--s5) var(--s6) var(--s6); }
-  .detail-head h2 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: var(--s3) 0 var(--s1); line-height: 1.25; }
-  .detail-head .company { font-size: 15px; font-weight: 600; }
-  .detail-head .loc { color: var(--ink-3); font-size: 13px; margin-top: 2px; }
+  .detail-head h2 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; margin: var(--s3) 0 var(--s1); line-height: 1.25; }
+  .detail-head .company { font-size: 17px; font-weight: 600; }
+  .detail-head .loc { color: var(--ink-3); font-size: 15px; margin-top: 2px; }
   .detail-head .open { display: inline-flex; margin-top: var(--s3); color: var(--accent); text-decoration: none; font-weight: 500; }
   .detail-head .open:hover { color: var(--accent-ink); text-decoration: underline; }
 
-  .status { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; color: var(--ink-3); background: var(--line-soft); }
-  .status.favorite { color: var(--accent); background: var(--accent-soft); }
-  .status.drafted { color: var(--ink-2); background: var(--line-soft); }
+  .status { display: inline-flex; align-items: center; font-size: 14px; font-weight: 600; padding: 2px 10px; border-radius: 999px; color: var(--ink-3); background: var(--line-soft); }
+  .status.approved { color: var(--accent); background: var(--accent-soft); }
+  .status.skipped { color: var(--warn); background: var(--warn-soft); }
   .status.sent { color: var(--ok); background: var(--ok-soft); }
 
   .facts { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s3); align-items: center; }
-  .fact { display: inline-flex; align-items: center; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; color: var(--ink-2); background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
+  .fact { display: inline-flex; align-items: center; font-size: 14px; font-weight: 600; padding: 2px 10px; border-radius: 999px; color: var(--ink-2); background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
   .fact.flag { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
   .fact.muted { color: var(--ink-3); background: transparent; box-shadow: none; padding: 0 2px; font-weight: 500; }
 
   .description { margin-top: var(--s5); }
-  .description h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
-  .description .body { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+  .description h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
+  .description .body { font-size: 16px; line-height: 1.55; color: var(--ink); }
   .description .body div { margin: 0 0 3px; }
   .description .body .desc-heading { font-weight: 650; margin-top: var(--s4); color: var(--ink); }
   .description .body .desc-heading:first-child { margin-top: 0; }
 
+  .summary { margin-top: var(--s5); }
+  .summary h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
+  .summary .block { font-size: 16px; line-height: 1.55; color: var(--ink); margin: 0 0 var(--s3); }
+  .summary .block:last-child { margin-bottom: 0; }
+  .summary .label { font-size: 14px; font-weight: 650; color: var(--ink-2); margin-bottom: 1px; }
+
   .benefits { margin-top: var(--s4); }
-  .benefits h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s2); }
+  .benefits h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s2); }
   .benefits .list { display: flex; flex-wrap: wrap; gap: var(--s2); }
-  .benefit { font-size: 12px; color: var(--ink-2); background: var(--line-soft); border-radius: 6px; padding: 3px 9px; }
+  .benefit { font-size: 14px; color: var(--ink-2); background: var(--line-soft); border-radius: 6px; padding: 3px 9px; }
 
   .team { margin-top: var(--s5); }
-  .team h3 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
+  .team h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
   .team h3 .count { font-family: var(--mono); color: var(--ink-3); font-weight: 500; }
   .team ul { list-style: none; margin: 0; padding: 0; }
-  .team li { display: flex; gap: var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--line-soft); align-items: flex-start; }
+  .team li { display: flex; gap: var(--s3); padding: var(--s3) 0; align-items: flex-start; }
   .avatar {
     width: 32px; height: 32px; border-radius: 50%;
     background: var(--ink); color: var(--bg);
     display: grid; place-items: center;
-    font-weight: 650; font-size: 13px; flex: none;
+    font-weight: 650; font-size: 14px; flex: none;
   }
   .member { flex: 1; min-width: 0; }
   .member .name { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
   .member .name a { color: var(--ink); font-weight: 600; text-decoration: none; }
   .member .name a:hover { color: var(--accent); text-decoration: underline; }
-  .member .headline { color: var(--ink-2); font-size: 12.5px; margin-top: 1px; }
-  .roles { list-style: none; margin: 0; padding: 0; }
-  .roles li { display: block; padding: var(--s3) 0; border-bottom: 1px solid var(--line-soft); }
-  .role-title a { color: var(--ink); font-weight: 600; text-decoration: none; }
-  .role-title a:hover { color: var(--accent); text-decoration: underline; }
-  .role-company { color: var(--ink-2); font-size: 12.5px; }
-  .role-company .loc { color: var(--ink-3); }
-  .role-meta { color: var(--ink-3); font-size: 12px; margin-top: 1px; }
+  .member .headline { color: var(--ink-2); font-size: 15px; margin-top: 1px; }
 
-  .meta { margin-top: var(--s5); padding-top: var(--s3); border-top: 1px solid var(--line); color: var(--ink-4); font-size: 12px; }
+  .team .roles { list-style: none; margin: 0; padding: 0; }
+  .team .roles li { display: block; padding: var(--s3) var(--s2); cursor: pointer; border-radius: var(--s2); }
+  .team .roles li:hover { background: rgba(0, 0, 0, 0.03); }
+  .team .roles li:hover .role-title { color: var(--accent); }
+  .team .roles li.current { background: var(--accent-soft); }
+  .team .roles li:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .team .role-title { font-weight: 600; color: var(--ink); }
+  .team .role-company { color: var(--ink-2); font-size: 15px; }
+  .team .role-company .loc { color: var(--ink-3); }
+  .team .role-state { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; margin-top: 3px; }
+  .team .role-owner { color: var(--ink-3); font-size: 13px; }
+
+  .draft { margin-top: var(--s5); }
+  .detail.hide-draft .draft { display: none; }
+  .draft h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s3); }
+  .draft label { display: block; font-size: 14px; font-weight: 650; color: var(--ink-2); margin: var(--s3) 0 4px; }
+  .draft input[type="text"], .draft textarea {
+    width: 100%; background: #fff; border: 1px solid var(--line); border-radius: var(--s2);
+    padding: 8px 10px; font: inherit; font-size: 16px; color: var(--ink); outline: none; resize: vertical;
+  }
+  .draft input[type="text"]:focus, .draft textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .draft textarea { min-height: 200px; line-height: 1.55; white-space: pre-wrap; }
+  .draft-actions { display: flex; gap: var(--s2); margin-top: var(--s3); flex-wrap: wrap; }
+  .draft-actions button {
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: var(--s2); padding: 7px 14px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  .draft-actions button:hover { border-color: var(--ink-4); }
+  .draft-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .draft-actions button.primary:hover { background: var(--accent-ink); border-color: var(--accent-ink); }
+  .draft-actions button.danger { color: #B3261E; border-color: #E5C6C4; }
+  .draft-hint { margin-top: var(--s2); color: var(--ink-4); font-size: 14px; }
+  .draft-read { background: #fff; border: 1px solid var(--line-soft); border-radius: var(--s2); padding: var(--s3); white-space: pre-wrap; font-size: 16px; line-height: 1.55; color: var(--ink); }
+  .draft-subject-read { font-weight: 600; margin-bottom: var(--s2); }
+  .flash { position: fixed; right: var(--s4); bottom: var(--s4); background: var(--ink); color: #fff; padding: 8px 14px; border-radius: var(--s2); font-size: 15px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .flash.show { opacity: 1; }
+
+  .meta { margin-top: var(--s5); padding-top: var(--s3); border-top: 1px solid var(--line); color: var(--ink-4); font-size: 14px; }
   .meta .mono { font-family: var(--mono); }
 
-  .empty { padding: var(--s6) var(--s4); color: var(--ink-3); text-align: center; font-size: 13px; }
-  .error { padding: var(--s6) var(--s4); color: #B3261E; text-align: center; font-size: 13px; }
+  .empty { padding: var(--s6) var(--s4); color: var(--ink-3); text-align: center; font-size: 15px; }
+  .error { padding: var(--s6) var(--s4); color: #B3261E; text-align: center; font-size: 15px; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">
-    <h1>Job Leads</h1>
+    <h1>Outreach Review Queue</h1>
     <p class="sub" id="summary">Loading…</p>
   </div>
   <div class="controls">
-    <input type="search" id="search" placeholder="Filter title, company, location, name…" autocomplete="off">
-    <select id="sort" aria-label="Sort">
-      <option value="degree" selected>Strongest connection</option>
-      <option value="company">Company</option>
-      <option value="newest">Newest first</option>
-      <option value="location">Location</option>
-    </select>
-    <label class="toggle"><input type="checkbox" id="groupByPerson"> Group by person</label>
+    <label class="switch"><input type="checkbox" id="showDraft" role="switch" checked> Show draft</label>
+    <input type="search" id="search" placeholder="Filter name, role, company, location, doing…" autocomplete="off">
   </div>
 </header>
+<div class="sections" id="sections"></div>
+<div class="filters" id="filters"></div>
 <main>
   <section class="list" id="list"></section>
-  <section class="detail" id="detail"><div class="empty">Select a lead to see the hiring team</div></section>
+  <section class="detail" id="detail"><div class="empty">Select a person to review their draft</div></section>
 </main>
-<script>
-  const DEGREE_RANK = { "1st": 0, "2nd": 1, "3rd": 2, "": 3 };
-  const DEGREES = ["1st", "2nd", "3rd"];
+<div class="flash" id="flash"></div>
+<script type="module">
+  import { groupJobs, bucketFor, primaryRoleFor, messageOwnerId, draftActionFor, groupOutreachKind } from "/groups.js";
+
   const DEGREE_TITLE = { "1st": "1st-degree connection", "2nd": "2nd-degree connection", "3rd": "3rd-degree connection" };
   const el = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const state = { jobs: [], query: "", sort: "degree", groupByPerson: false, selectedId: null, selectedContact: null };
+  const SECTION_LABELS = { direct: "Direct outreach", application_followup: "Application follow-up" };
+  const FILTERS = [
+    { key: "needs_review", label: "Needs review" },
+    { key: "approved", label: "Approved" },
+    { key: "skipped", label: "Skipped" },
+    { key: "sent", label: "Sent" },
+    { key: "all", label: "All" },
+  ];
+  const state = { jobs: [], groups: [], section: "direct", filter: "needs_review", query: "", selectedKey: null, override: new Map() };
 
-  function strongest(job) {
-    let best = 3;
-    for (const m of job.hiringTeam || []) best = Math.min(best, DEGREE_RANK[m.degree] ?? 3);
-    return best >= 3 ? "" : DEGREES[best];
+  function refreshGroups() { state.groups = groupJobs(state.jobs); }
+  function selectedGroup() { return state.groups.find((g) => g.key === state.selectedKey) ?? null; }
+  function primaryOf(group) { return primaryRoleFor(group.jobs, state.override.get(group.key)); }
+  function groupKind(group) { return groupOutreachKind(group.jobs); }
+  function sectionGroups() { return state.groups.filter((g) => groupKind(g) === state.section); }
+  function recipientName(group) {
+    const primary = primaryOf(group);
+    return String((primary.hiringTeam || [])[0]?.name ?? "").trim();
   }
-  function matches(job) {
+
+  function sectionCounts() {
+    const c = { direct: 0, application_followup: 0 };
+    for (const g of state.groups) c[groupKind(g)] += 1;
+    return c;
+  }
+
+  function counts() {
+    const c = { needs_review: 0, approved: 0, skipped: 0, sent: 0, all: 0 };
+    const groups = sectionGroups();
+    for (const g of groups) c[bucketFor(g.jobs)] += 1;
+    c.all = groups.length;
+    return c;
+  }
+
+  function matchesGroup(group) {
     if (!state.query) return true;
     const q = state.query.toLowerCase();
-    const hay = [job.title, job.company, job.location, ...(job.hiringTeam || []).flatMap((m) => [m.name, m.headline])]
-      .join(" ").toLowerCase();
+    const hay = group.jobs.flatMap((j) => [
+      j.title, j.company, j.location, j.workFocus, j.productSystem,
+      j.workSummary, j.productSummary, j.subject, j.message,
+      ...(j.hiringTeam || []).flatMap((m) => [m.name, m.headline]),
+    ]).join(" ").toLowerCase();
     return hay.includes(q);
   }
-  function sortJobs(a, b) {
-    switch (state.sort) {
-      case "degree": {
-        const ra = DEGREE_RANK[strongest(a) || ""];
-        const rb = DEGREE_RANK[strongest(b) || ""];
-        if (ra !== rb) return ra - rb;
-        const ta = (a.hiringTeam || []).length, tb = (b.hiringTeam || []).length;
-        if (ta !== tb) return tb - ta;
-        return a.company.localeCompare(b.company);
-      }
-      case "company": return a.company.localeCompare(b.company);
-      case "newest": return (b.collectedAt || "").localeCompare(a.collectedAt || "");
-      case "location": return a.location.localeCompare(b.location);
-      default: return 0;
-    }
-  }
-  function visible() { return state.jobs.filter(matches).sort(sortJobs); }
 
-  function contacts() {
-    const map = new Map();
-    for (const job of state.jobs) {
-      for (const m of job.hiringTeam || []) {
-        const key = (m.profileUrl || m.name || "").trim();
-        if (!key) continue;
-        let c = map.get(key);
-        if (!c) { c = { key, name: m.name, profileUrl: m.profileUrl, degree: m.degree || "", headline: m.headline || "", jobs: [] }; map.set(key, c); }
-        if (!c.degree && m.degree) c.degree = m.degree;
-        if (!c.jobs.some((j) => j.id === job.id)) c.jobs.push(job);
-      }
-    }
-    return [...map.values()];
-  }
-  function visibleContacts() {
-    const q = state.query.toLowerCase();
-    return contacts().filter((c) => {
-      if (!q) return true;
-      const hay = [c.name, c.headline, ...c.jobs.flatMap((j) => [j.title, j.company, j.location])].join(" ").toLowerCase();
-      return hay.includes(q);
-    }).sort((a, b) => {
-      const ra = DEGREE_RANK[a.degree || ""], rb = DEGREE_RANK[b.degree || ""];
-      if (ra !== rb) return ra - rb;
-      if (a.jobs.length !== b.jobs.length) return b.jobs.length - a.jobs.length;
-      return a.name.localeCompare(b.name);
+  function visibleGroups() {
+    return state.groups.filter((g) => {
+      if (groupKind(g) !== state.section) return false;
+      if (state.filter !== "all" && bucketFor(g.jobs) !== state.filter) return false;
+      return matchesGroup(g);
     });
   }
 
   function badge(deg) {
     if (!deg) return "";
     return `<span class="badge d${deg[0]}" title="${DEGREE_TITLE[deg] || ""}">${esc(deg)}</span>`;
+  }
+
+  function reviewBadge(bucket) {
+    if (bucket === "needs_review") return "";
+    const label = { approved: "Approved", skipped: "Skipped", sent: "Sent" }[bucket];
+    return `<span class="badge rev ${bucket}">${label}</span>`;
+  }
+
+  function classLine(job) {
+    return [job.workFocus ? `Doing: ${job.workFocus}` : "", job.productSystem ? `Building: ${job.productSystem}` : ""]
+      .filter(Boolean).join(" · ");
+  }
+
+  function roleStateLabel(role) {
+    if (role.status === "sent") return { bucket: "sent", label: "Sent", note: "message sent for this role" };
+    if (role.review === "approved") return { bucket: "approved", label: "Approved", note: "owns the approved message" };
+    if (role.review === "skipped") return { bucket: "skipped", label: "Skipped", note: "" };
+    return { bucket: "needs_review", label: "Needs review", note: "" };
   }
 
   function renderDescription(text) {
@@ -259,150 +348,347 @@
     }).join("");
   }
 
+  function renderSections() {
+    const c = sectionCounts();
+    el("sections").innerHTML = Object.keys(SECTION_LABELS).map((k) =>
+      `<button class="section-btn${state.section === k ? " active" : ""}" data-section="${k}">${SECTION_LABELS[k]} <span class="n">${c[k]}</span></button>`
+    ).join("");
+  }
+
+  function renderFilters() {
+    const c = counts();
+    el("filters").innerHTML = FILTERS.map((f) =>
+      `<button class="filter${state.filter === f.key ? " active" : ""}" data-filter="${f.key}">${f.label} <span class="n">${c[f.key]}</span></button>`
+    ).join("");
+  }
+
   function renderList() {
     const list = el("list");
-    if (state.groupByPerson) {
-      const cs = visibleContacts();
-      if (!cs.length) { list.innerHTML = `<div class="empty">No matching people</div>`; return; }
-      list.innerHTML = cs.map((c) => {
-        const titles = c.jobs.map((j) => j.title).join(" · ");
-        const side = [badge(c.degree), c.jobs.length > 1 ? `<span class="badge count">${c.jobs.length}</span>` : ""].join("");
-        const sel = c.key === state.selectedContact ? " selected" : "";
-        return `<div class="row${sel}" data-contact="${esc(c.key)}">
-          <div class="row-main">
-            <div class="row-company">${esc(c.name || "?")}</div>
-            <div class="row-title">${esc(titles)}</div>
-          </div>
-          <div class="row-side">${side}</div>
-        </div>`;
-      }).join("");
-      return;
-    }
-    const jobs = visible();
-    if (!jobs.length) { list.innerHTML = `<div class="empty">No matching leads</div>`; return; }
-    list.innerHTML = jobs.map((job) => {
-      const sd = strongest(job);
-      const teamN = (job.hiringTeam || []).length;
-      const side = [sd ? badge(sd) : "", teamN ? `<span class="badge count">${teamN}</span>` : ""].join("");
-      const sel = job.id === state.selectedId ? " selected" : "";
-      return `<div class="row${sel}" data-id="${esc(job.id)}">
+    const groups = visibleGroups();
+    if (!groups.length) { list.innerHTML = `<div class="empty">No people in this filter</div>`; return; }
+    list.innerHTML = groups.map((group) => {
+      const primary = primaryOf(group);
+      const bucket = bucketFor(group.jobs);
+      const name = recipientName(group);
+      const displayName = name || primary.title || "—";
+      const roles = group.jobs.length;
+      const side = [
+        roles > 1 ? `<span class="badge dup" title="${roles} roles list this person">${roles} roles</span>` : "",
+        reviewBadge(bucket),
+      ].join("");
+      const sel = group.key === state.selectedKey ? " selected" : "";
+      const cl = classLine(primary);
+      return `<div class="row${sel}" data-key="${esc(group.key)}" role="button" tabindex="0">
         <div class="row-main">
-          <div class="row-company">${esc(job.company || "—")}${job.location ? `<span class="loc"> · ${esc(job.location)}</span>` : ""}</div>
-          <div class="row-title">${esc(job.title)}</div>
+          <div class="row-name">${esc(displayName)}</div>
+          <div class="row-title">${esc(primary.title || "—")}${primary.company ? ` · ${esc(primary.company)}` : ""}</div>
+          ${cl ? `<div class="row-class">${esc(cl)}</div>` : ""}
         </div>
         <div class="row-side">${side}</div>
       </div>`;
     }).join("");
   }
 
+  function roleChip(role, primaryId, ownerId) {
+    const st = roleStateLabel(role);
+    const current = role.id === primaryId;
+    return `<li data-select-job="${esc(role.id)}" role="button" tabindex="0"${current ? ' class="current"' : ""}>
+      <div class="role-title">${esc(role.title || "—")}${current ? ' <span class="badge rev">Primary</span>' : ""}</div>
+      <div class="role-company">${esc(role.company || "—")}${role.location ? `<span class="loc"> · ${esc(role.location)}</span>` : ""}</div>
+      <div class="role-state"><span class="badge rev ${st.bucket}">${st.label}</span>${role.id === ownerId ? ` <span class="role-owner">${esc(st.note)}</span>` : ""}</div>
+      <a class="role-url" href="${esc(role.postingUrl)}" target="_blank" rel="noopener">View posting ↗</a>
+    </li>`;
+  }
+
   function renderDetail() {
-    if (state.groupByPerson) { renderContactDetail(); return; }
     const d = el("detail");
-    const job = state.jobs.find((j) => j.id === state.selectedId);
-    if (!job) { d.innerHTML = `<div class="empty">Select a lead to see the hiring team</div>`; return; }
-    const team = job.hiringTeam || [];
-    const teamHtml = team.length
-      ? `<ul>${team.map((m) => `
-          <li>
-            <span class="avatar">${esc((m.name || "?").trim().charAt(0).toUpperCase() || "?")}</span>
-            <div class="member">
-              <div class="name"><a href="${esc(m.profileUrl)}" target="_blank" rel="noopener">${esc(m.name)}</a>${badge(m.degree)}</div>
-              ${m.headline ? `<div class="headline">${esc(m.headline)}</div>` : ""}
-            </div>
-          </li>`).join("")}</ul>`
-      : `<div class="empty" style="padding: var(--s4) 0">No hiring team listed on this posting</div>`;
+    const group = selectedGroup();
+    if (!group) { d.innerHTML = `<div class="empty">Select a person to review their draft</div>`; return; }
+    const primary = primaryOf(group);
+    const bucket = bucketFor(group.jobs);
+    const name = recipientName(group);
+    const displayName = name || primary.title || "—";
+    const first = (primary.hiringTeam || [])[0];
+    const ownerId = messageOwnerId(group.jobs);
+    const action = draftActionFor(group.jobs, primary.id);
+    const rolesHtml = `<div class="team"><h3>Roles for this person <span class="count">${group.jobs.length}</span></h3><ul class="roles">${group.jobs.map((role) => roleChip(role, primary.id, ownerId)).join("")}</ul></div>`;
     const facts = [
-      job.workplaceType ? `<span class="fact">${esc(job.workplaceType)}</span>` : "",
-      job.employmentType ? `<span class="fact">${esc(job.employmentType)}</span>` : "",
-      job.applyMethod ? `<span class="fact">${esc(job.applyMethod)}</span>` : "",
-      job.promoted ? `<span class="fact flag">Promoted</span>` : "",
-      job.activelyReviewing ? `<span class="fact flag">Actively reviewing</span>` : "",
-      job.postedAt ? `<span class="fact muted">${esc(job.postedAt)}</span>` : "",
-      job.applicantCount ? `<span class="fact muted">${esc(job.applicantCount)}</span>` : "",
+      primary.workFocus ? `<span class="fact">Doing: ${esc(primary.workFocus)}</span>` : "",
+      primary.productSystem ? `<span class="fact">Building: ${esc(primary.productSystem)}</span>` : "",
+      primary.workplaceType ? `<span class="fact">${esc(primary.workplaceType)}</span>` : "",
+      primary.employmentType ? `<span class="fact">${esc(primary.employmentType)}</span>` : "",
+      primary.applyMethod ? `<span class="fact">${esc(primary.applyMethod)}</span>` : "",
+      primary.promoted ? `<span class="fact flag">Promoted</span>` : "",
+      primary.activelyReviewing ? `<span class="fact flag">Actively reviewing</span>` : "",
+      primary.postedAt ? `<span class="fact muted">${esc(primary.postedAt)}</span>` : "",
+      primary.applicantCount ? `<span class="fact muted">${esc(primary.applicantCount)}</span>` : "",
     ].filter(Boolean).join("");
-    const benefits = job.benefits || [];
-    const descHtml = job.description
-      ? `<div class="description"><h3>About the job</h3><div class="body">${renderDescription(job.description)}</div></div>`
+    const benefits = primary.benefits || [];
+    const descHtml = primary.description
+      ? `<div class="description"><h3>About the job</h3><div class="body">${renderDescription(primary.description)}</div></div>`
+      : "";
+    const summaryBlocks = [
+      primary.productSummary ? `<div class="block"><div class="label">What you'd build</div>${esc(primary.productSummary)}</div>` : "",
+      primary.workSummary ? `<div class="block"><div class="label">What you'd do</div>${esc(primary.workSummary)}</div>` : "",
+    ].filter(Boolean).join("");
+    const summaryHtml = summaryBlocks
+      ? `<div class="summary"><h3>Summary</h3>${summaryBlocks}</div>`
       : "";
     const benefitsHtml = benefits.length
       ? `<div class="benefits"><h3>Benefits</h3><div class="list">${benefits.map((b) => `<span class="benefit">${esc(b)}</span>`).join("")}</div></div>`
       : "";
+    const statusLabel = { needs_review: "needs review", approved: "approved", skipped: "skipped", sent: "sent" }[bucket];
+    const reminderHtml = state.section === "application_followup"
+      ? `<div class="reminder"><strong>Apply first.</strong> Follow up after 1–2 weeks unless the posting gives a timeline. Keep it brief, name the role and company, and include one relevant qualification. No message is sent from this page.</div>`
+      : "";
+    const draftHtml = action.editable
+      ? `<div class="draft">
+          <h3>Draft message</h3>
+          <label for="draft-subject">Subject</label>
+          <input type="text" id="draft-subject" placeholder="(optional — only used when the composer shows a subject field)" value="${esc(primary.subject ?? "")}">
+          <label for="draft-body">Body</label>
+          <textarea id="draft-body" spellcheck="true">${esc(primary.message ?? "")}</textarea>
+          <div class="draft-actions">
+            <button data-action="save">Save</button>
+            <button data-action="approve" class="primary">${action.replace ? "Use this draft instead" : "Approve &amp; next"}</button>
+            <button data-action="skip">Skip &amp; next</button>
+          </div>
+          <div class="draft-hint">Blank lines between paragraphs are preserved. No message is sent from this page.</div>
+        </div>`
+      : `<div class="draft">
+          <h3>Draft message</h3>
+          ${primary.subject ? `<div class="draft-subject-read">${esc(primary.subject)}</div>` : ""}
+          <div class="draft-read">${esc(primary.message ?? "")}</div>
+          ${action.canReturn
+            ? `<div class="draft-actions"><button data-action="return">Return to review</button></div>`
+            : ""}
+        </div>`;
     d.innerHTML = `
       <div class="detail-head">
-        <span class="status ${esc(job.status)}">${esc(job.status)}</span>
-        <h2>${esc(job.title)}</h2>
-        <div class="company">${esc(job.company || "—")}</div>
-        ${job.location ? `<div class="loc">${esc(job.location)}</div>` : ""}
+        <span class="status ${bucket}">${statusLabel}</span>
+        <h2>${esc(displayName)} ${badge(first?.degree)}</h2>
+        <div class="company">${esc(primary.title || "—")}${primary.company ? ` · ${esc(primary.company)}` : ""}</div>
+        ${primary.location ? `<div class="loc">${esc(primary.location)}</div>` : ""}
+        ${first?.headline ? `<div class="loc">${esc(first.headline)}</div>` : ""}
         ${facts ? `<div class="facts">${facts}</div>` : ""}
-        <div><a class="open" href="${esc(job.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
+        <div><a class="open" href="${esc(primary.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
       </div>
-      <div class="team">
-        <h3>Hiring team ${team.length ? `<span class="count">${team.length}</span>` : ""}</h3>
-        ${teamHtml}
-      </div>
+      ${rolesHtml}
+      ${reminderHtml}
+      ${draftHtml}
+      ${summaryHtml}
       ${descHtml}
       ${benefitsHtml}
-      <div class="meta">ID <span class="mono">${esc(job.id)}</span> · collected ${esc((job.collectedAt || "").slice(0, 10))}</div>`;
-  }
-
-  function renderContactDetail() {
-    const d = el("detail");
-    const c = contacts().find((x) => x.key === state.selectedContact);
-    if (!c) { d.innerHTML = `<div class="empty">Select a person to see their roles</div>`; return; }
-    const roles = c.jobs.map((j) => `
-      <li>
-        <div class="role">
-          <div class="role-title"><a href="${esc(j.postingUrl)}" target="_blank" rel="noopener">${esc(j.title)}</a></div>
-          <div class="role-company">${esc(j.company || "—")}${j.location ? `<span class="loc"> · ${esc(j.location)}</span>` : ""}</div>
-          ${j.workplaceType || j.employmentType ? `<div class="role-meta">${[j.workplaceType, j.employmentType].filter(Boolean).map((s) => esc(s)).join(" · ")}</div>` : ""}
-        </div>
-      </li>`).join("");
-    d.innerHTML = `
-      <div class="detail-head">
-        <span class="status">${c.jobs.length} role${c.jobs.length > 1 ? "s" : ""}</span>
-        <h2>${esc(c.name || "?")}</h2>
-        ${c.headline ? `<div class="company">${esc(c.headline)}</div>` : ""}
-        ${c.degree ? `<div class="loc">${badge(c.degree)}</div>` : ""}
-        <div><a class="open" href="${esc(c.profileUrl)}" target="_blank" rel="noopener">Open profile ↗</a></div>
-      </div>
-      <div class="team">
-        <h3>Roles <span class="count">${c.jobs.length}</span></h3>
-        <ul class="roles">${roles}</ul>
-      </div>`;
+      <div class="meta">ID <span class="mono">${esc(primary.id)}</span> · collected ${esc((primary.collectedAt || "").slice(0, 10))}</div>`;
   }
 
   function renderSummary() {
-    el("summary").textContent = state.groupByPerson
-      ? `${contacts().length} people · ${state.jobs.length} roles`
-      : `${state.jobs.length} leads with hiring team`;
+    const c = counts();
+    el("summary").textContent = `${SECTION_LABELS[state.section]} — ${c.needs_review} need review · ${c.approved} approved · ${c.skipped} skipped · ${c.sent} sent`;
+  }
+
+  function renderAll() { renderSummary(); renderSections(); renderFilters(); renderList(); renderDetail(); }
+
+  function flash(message) {
+    const f = el("flash");
+    f.textContent = message;
+    f.classList.add("show");
+    setTimeout(() => f.classList.remove("show"), 2200);
+  }
+
+  function flashError(message) {
+    const f = el("flash");
+    f.textContent = message;
+    f.style.background = "#B3261E";
+    f.classList.add("show");
+    setTimeout(() => { f.classList.remove("show"); f.style.background = ""; }, 3200);
+  }
+
+  async function post(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || payload.ok !== true) {
+      const err = payload?.error ?? {};
+      const error = new Error(err.message ?? "request failed");
+      error.code = err.code ?? "ERROR";
+      if (err.details) error.details = err.details;
+      throw error;
+    }
+    return payload.data;
+  }
+
+  async function loadJobs() {
+    const res = await fetch("/jobs.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    state.jobs = Array.isArray(payload) ? payload : (payload?.data ?? []);
+    refreshGroups();
+    if (state.selectedKey !== null && !state.groups.some((g) => g.key === state.selectedKey)) {
+      state.selectedKey = null;
+    }
+  }
+
+  function subjVal() { return el("draft-subject").value; }
+  function bodyVal() { return el("draft-body").value; }
+  function currentPrimaryId() { const g = selectedGroup(); return g ? primaryOf(g).id : null; }
+
+  async function saveDraft() {
+    const jobId = currentPrimaryId();
+    if (!jobId) return;
+    try {
+      const data = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, { subject: subjVal(), message: bodyVal() });
+      state.jobs = state.jobs.map((j) => (j.id === jobId ? data : j));
+      refreshGroups();
+      renderAll();
+      flash("Saved");
+    } catch (e) { flashError(e.message); }
+  }
+
+  async function approve() {
+    const jobId = currentPrimaryId();
+    if (!jobId) return;
+    let saved;
+    try {
+      saved = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, { subject: subjVal(), message: bodyVal() });
+    } catch (e) { flashError(e.message); return; }
+    // Reflect the save immediately so a later approval failure can't make the edit look lost.
+    state.jobs = state.jobs.map((j) => (j.id === jobId ? saved : j));
+    refreshGroups();
+    renderAll();
+    try {
+      await post(`/api/jobs/${encodeURIComponent(jobId)}/review`, { review: "approved" });
+      await loadJobs();
+      advanceAfterAction();
+      renderAll();
+      flash("Approved");
+    } catch (e) {
+      const details = e.details ?? null;
+      if (e.code === "DUPLICATE_APPROVED_PROFILE" && details?.status === "drafted") {
+        const title = details.title ?? "the other role";
+        const replace = confirm(`This person already has an approved draft for "${title}". Use this draft instead?`);
+        if (replace) {
+          try {
+            await post(`/api/jobs/${encodeURIComponent(jobId)}/review`, { review: "approved", replaceId: details.jobId });
+            await loadJobs();
+            advanceAfterAction();
+            renderAll();
+            flash("Approved — previous approval replaced");
+          } catch (e2) { flashError(e2.message); }
+        } else {
+          flash("Saved. Existing approval unchanged.");
+        }
+      } else if (e.code === "DUPLICATE_APPROVED_PROFILE" && details?.status === "sent") {
+        flash(`Saved. This person was already contacted for "${details.title ?? "that role"}".`);
+      } else {
+        flashError(e.message);
+      }
+    }
+  }
+
+  async function skipPerson() {
+    const jobId = currentPrimaryId();
+    if (!jobId) return;
+    try {
+      await post(`/api/recipients/${encodeURIComponent(jobId)}/review`, { review: "skipped" });
+      await loadJobs();
+      advanceAfterAction();
+      renderAll();
+      flash("Skipped");
+    } catch (e) { flashError(e.message); }
+  }
+
+  async function returnPerson() {
+    const group = selectedGroup();
+    const jobId = group ? primaryOf(group).id : null;
+    const key = group ? group.key : null;
+    if (!jobId) return;
+    try {
+      await post(`/api/recipients/${encodeURIComponent(jobId)}/review`, { review: "needs_review" });
+      state.filter = "needs_review";
+      await loadJobs();
+      state.selectedKey = key;
+      renderAll();
+      flash("Returned to review");
+    } catch (e) { flashError(e.message); }
+  }
+
+  function advanceAfterAction() {
+    state.selectedKey = sectionGroups().find((g) => bucketFor(g.jobs) === "needs_review")?.key ?? null;
   }
 
   el("search").addEventListener("input", (e) => { state.query = e.target.value.trim(); renderList(); });
-  el("sort").addEventListener("change", (e) => { state.sort = e.target.value; renderList(); });
-  el("groupByPerson").addEventListener("change", (e) => {
-    state.groupByPerson = e.target.checked;
-    if (state.groupByPerson) state.selectedContact = visibleContacts()[0]?.key ?? null;
-    else state.selectedId = visible()[0]?.id ?? null;
-    renderSummary(); renderList(); renderDetail();
+  el("showDraft").addEventListener("change", (e) => { el("detail").classList.toggle("hide-draft", !e.target.checked); });
+  el("sections").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-section]");
+    if (!btn) return;
+    state.section = btn.dataset.section;
+    state.selectedKey = visibleGroups()[0]?.key ?? null;
+    renderAll();
+  });
+  el("filters").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-filter]");
+    if (!btn) return;
+    state.filter = btn.dataset.filter;
+    state.selectedKey = visibleGroups()[0]?.key ?? null;
+    renderAll();
   });
   el("list").addEventListener("click", (e) => {
     const row = e.target.closest(".row");
     if (!row) return;
-    if (state.groupByPerson) state.selectedContact = row.dataset.contact;
-    else state.selectedId = row.dataset.id;
+    state.selectedKey = row.dataset.key;
     renderList(); renderDetail();
   });
+  el("list").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const row = e.target.closest(".row");
+    if (!row) return;
+    e.preventDefault();
+    state.selectedKey = row.dataset.key;
+    renderList(); renderDetail();
+  });
+  el("detail").addEventListener("click", (e) => {
+    if (e.target.closest("a[href]")) return;
+    const role = e.target.closest("[data-select-job]");
+    if (role) {
+      const group = selectedGroup();
+      if (group) {
+        state.override.set(group.key, role.dataset.selectJob);
+        renderList(); renderDetail();
+      }
+      return;
+    }
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    if (action === "save") return saveDraft();
+    if (action === "approve") return approve();
+    if (action === "skip") return skipPerson();
+    if (action === "return") return returnPerson();
+  });
+  el("detail").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const role = e.target.closest("[data-select-job]");
+    if (!role) return;
+    e.preventDefault();
+    const group = selectedGroup();
+    if (group) {
+      state.override.set(group.key, role.dataset.selectJob);
+      renderList(); renderDetail();
+    }
+  });
 
-  fetch("/jobs.json")
-    .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-    .then((jobs) => {
-      state.jobs = Array.isArray(jobs) ? jobs : [];
-      state.selectedId = visible()[0]?.id ?? null;
-      renderSummary(); renderList(); renderDetail();
+  loadJobs()
+    .then(() => {
+      state.selectedKey = sectionGroups().find((g) => bucketFor(g.jobs) === "needs_review")?.key ?? sectionGroups()[0]?.key ?? null;
+      renderAll();
     })
     .catch((e) => {
       el("summary").textContent = "Failed to load";
-      el("list").innerHTML = `<div class="error">Could not load leads: ${esc(e.message)}</div>`;
+      el("list").innerHTML = `<div class="error">Could not load people: ${esc(e.message)}</div>`;
     });
 </script>
 </body>

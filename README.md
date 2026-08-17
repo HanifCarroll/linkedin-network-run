@@ -1,9 +1,11 @@
 # LinkedIn Tools
 
-A single-package Bun/TypeScript implementation for two workflows:
+A single-package Bun/TypeScript implementation for three workflows:
 
 - Daily LinkedIn network automation.
 - Weekly seven-day content analytics export.
+- Read-only LinkedIn jobs collection with guarded hiring-team outreach and a
+  local draft-review queue.
 
 Promoted 2026-08-11 from `linkedin-tools-next` to the canonical repository
 path. The former Python implementation (acceptance tracking, Relationship
@@ -34,7 +36,6 @@ schedules.
 
 ```sh
 bun install
-bun run test:cli
 bun run check:cli
 bun run typecheck
 bun run build
@@ -141,6 +142,95 @@ reports it active. A missing or stale binding creates and verifies a new persist
 Playwriter's supported client API, then writes the binding atomically. Auto mode never adopts an
 unbound active session or shares one session between workflows. Numeric session IDs remain
 supported for explicit operator control. Tests fake this boundary and never create a live session.
+
+## Jobs and review queue
+
+The `jobs` workflow collects postings from a LinkedIn jobs search (read-only XHR +
+direct-view reads), stores them locally with their listed hiring team, and supports
+guarded hiring-team outreach. Collection and enrichment are split into explicit phases
+(`jobs collect` → `jobs enrich`), and `jobs detail` pulls the full posting-page description.
+`jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
+two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
+
+```sh
+linkedin-tools --json jobs search --keywords "product engineer" \
+  --location "United States" --posted-within 7 --pages 1 --hiring-team-limit 25
+linkedin-tools --json jobs draft --id <jobId> --subject "..." --message "..."
+linkedin-tools --json jobs send --allow-send --session auto
+```
+
+Every hiring-team job gets a draft — there is no pre-draft qualification. Draft once per
+recipient: when several postings list the same person, draft the best-fitting role; the other
+roles are context, not separate messages, and at most one approved/sent message holds per
+person. A draft stores an editable subject line and a body; interior blank lines in the body
+round-trip unchanged, and storing or redrafting returns the job to needs-review. The draft
+template depends on the role's queue section.
+
+**Direct outreach** uses the existing conversational contract-help pitch (three paragraphs
+separated by one blank line, `\n\n`):
+
+```text
+Hi [first name] — I saw the [role] opening at [company]. One plain, specific detail
+about the product, users, or problem that caught my attention.
+
+One relevant experience or proof statement, in ordinary language, connected directly
+to the detail in the first paragraph.
+
+Would you be open to contract help while you're hiring?
+```
+
+The proof sentence must tie back to the detail in paragraph 1, not stand alone as a résumé line.
+
+**Application follow-up** is for contract roles (and full-time roles that are really contract
+engagements: contract-to-hire, or W2/C2C/1099-only). Apply first, then follow up after roughly
+1–2 weeks unless the posting gives a timeline. The message names the role and company, leads
+with one specific relevant proof, and closes with a low-pressure offer of more. It does not ask
+whether they are open to contract help:
+
+```text
+I applied for [role] at [company] and wanted to follow up directly.
+
+One specific relevant qualification or proof, tied to the role.
+
+Please let me know if I can provide anything else. Thanks for taking a look.
+```
+
+The subject line is normally `[Role] at [Company]` or `About the [Role] opening`. `--subject`
+fills the composer's subject field only when the composer exposes one; normal no-subject DM
+composers are unaffected.
+
+Review happens in the local queue, not through the CLI:
+
+```sh
+bun run view   # http://127.0.0.1:4567
+```
+
+The queue splits people into two top-level sections with person counts: **Direct outreach** and
+**Application follow-up**. Contract roles — and full-time roles that are really contract
+engagements (contract-to-hire, or W2/C2C/1099-only) — appear only under Application follow-up,
+never under Direct outreach. A mixed group (one person listed on both a direct and a contract
+role) stays one queue item in Application follow-up and defaults its primary selection to the
+contract role unless a sent, approved, or explicitly selected role owns the decision. The queue
+defaults to Needs review, and the Needs review / Approved / Skipped / Sent / All filters and the
+summary counts scope to the selected section. Each row is one recipient — a normalized first
+hiring-team profile URL —
+not one job. When several postings list the same person they appear as a single item with a
+roles badge; the primary role (sent, then approved, then the selected role, then the most
+recently updated non-skipped role) is shown as context and every other role is clickable
+context. Approving one role keeps exactly one approved role per recipient, Skip & next skips
+the whole person, and Return to review returns the whole person; a sent recipient is covered
+and immutable. Jobs without a usable recipient stay visible under a job-id fallback row. The
+Application follow-up detail shows a short reminder to apply first and follow up after 1–2
+weeks unless the posting gives a timeline. There is no Send button and the viewer performs no
+browser mutation; writes go through tight same-origin local JSON endpoints that route through
+`JobsEngine`.
+
+`jobs send` selects approved drafted jobs only (review = approved) and still requires the exact
+`--allow-send` flag. Recipient uniqueness holds across time: approving conflicts with another
+approved draft or an already-sent job for the same hiring-team profile URL (normalized: trim,
+query/hash/trailing slash stripped, case-folded), reported as `DUPLICATE_APPROVED_PROFILE`.
+A defensive duplicate-recipient guard in `jobs send` seeds from already-sent jobs and skips a
+repeat profile without changing state.
 
 ## JSON contract
 

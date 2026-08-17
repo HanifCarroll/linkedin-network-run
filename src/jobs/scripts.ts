@@ -510,6 +510,10 @@ try{
   const box=p.locator("div[role='textbox'][contenteditable='true']").last();
   if(await box.count()===0){out.status="no_composer";out.detail="messenger composer not found";console.log(JSON.stringify({ok:true,data:out}));return;}
   await box.click();
+  if(CONFIG.subject){
+    const subj=p.locator("input[placeholder*='Subject' i], input[name='subject' i], input[aria-label*='subject' i]").first();
+    if(await subj.count()>0){try{await subj.fill(CONFIG.subject);}catch{await subj.click();await p.keyboard.type(CONFIG.subject,{delay:2});}}
+  }
   try{await box.fill(CONFIG.message);}catch{await p.keyboard.type(CONFIG.message,{delay:2});}
   await p.waitForTimeout(800);
   let sendBtn=null;
@@ -542,6 +546,7 @@ export function buildSendScript(config: {
   readonly jobId: string;
   readonly memberName: string;
   readonly profileUrl: string;
+  readonly subject: string;
   readonly message: string;
 }): { readonly script: string; readonly timeoutMs: number } {
   if (!/^https:\/\/www\.linkedin\.com\/in\//.test(config.profileUrl))

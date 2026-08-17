@@ -3,6 +3,7 @@ import { doctor } from "./doctor.ts";
 import { networkIncidentClear, networkIncidentStatus } from "./incident.ts";
 import {
   jobsCheck,
+  jobsClassify,
   jobsCollect,
   jobsDetail,
   jobsDraft,
@@ -49,5 +50,6 @@ export function createDefaultOperations(): CliOperations {
     jobsRemove,
     jobsDraft,
     jobsSend,
+    jobsClassify,
   };
 }

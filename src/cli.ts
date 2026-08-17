@@ -115,6 +115,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsDraft(invocation.input);
     case "jobs send":
       return operations.jobsSend(invocation.input);
+    case "jobs classify":
+      return operations.jobsClassify(invocation.input);
   }
 }
 

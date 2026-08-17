@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
+import { recipientProfileUrl } from "./recipient.ts";
+import {
+  CLASSIFICATION_MAX_LENGTH,
+  DRAFT_MAX_LENGTH,
+  SUBJECT_MAX_LENGTH,
+  SUMMARY_MAX_LENGTH,
+} from "./types.ts";
 import type {
   CapturedJob,
   CollectedJob,
@@ -7,6 +14,7 @@ import type {
   JobDetail,
   JobRow,
   JobStatus,
+  ReviewDecision,
 } from "./types.ts";
 
 type JobRowRaw = {
@@ -31,6 +39,12 @@ type JobRowRaw = {
   readonly posted_at: string;
   readonly applicant_count: string;
   readonly benefits_json: string;
+  readonly work_focus: string;
+  readonly product_system: string;
+  readonly work_summary: string;
+  readonly product_summary: string;
+  readonly subject: string;
+  readonly review: string;
 };
 
 export class JobsEngine {
@@ -49,7 +63,10 @@ export class JobsEngine {
         posting_url = excluded.posting_url,
         hiring_team_json = excluded.hiring_team_json,
         has_hiring_team = excluded.has_hiring_team,
-        status = 'collected',
+        status = CASE
+          WHEN jobs.status IN ('favorite', 'drafted', 'sent') THEN jobs.status
+          ELSE 'collected'
+        END,
         updated_at = excluded.updated_at
     `);
     const tx = this.database.transaction(() => {
@@ -170,27 +187,223 @@ export class JobsEngine {
     return ids.map((id) => this.requireJob(id));
   }
 
-  storeDraft(id: string, message: string, now: string): JobRow {
-    if (message.trim().length === 0)
-      throw new CliError("INVALID_ARGUMENT", "draft requires a non-empty --message");
-    this.requireJob(id);
+  storeDraft(id: string, subject: string, message: string, now: string): JobRow {
+    const body = message.trim();
+    const subj = subject.trim();
+    if (body.length === 0)
+      throw new CliError("INVALID_ARGUMENT", "draft requires a non-empty message");
+    if (body.length > DRAFT_MAX_LENGTH)
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `draft message must be at most ${DRAFT_MAX_LENGTH} characters`,
+      );
+    if (subj.length > SUBJECT_MAX_LENGTH)
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `draft subject must be at most ${SUBJECT_MAX_LENGTH} characters`,
+      );
+    const existing = this.requireJob(id);
+    if (existing.status === "sent") {
+      throw new CliError(
+        "JOBS_ALREADY_SENT",
+        `job ${id} was already sent and cannot be redrafted`,
+        {
+          exitCode: 2,
+        },
+      );
+    }
     this.database
-      .prepare(`UPDATE jobs SET status = 'drafted', message = ?, updated_at = ? WHERE id = ?`)
-      .run(message.trim(), now, id);
+      .prepare(
+        `UPDATE jobs SET status = 'drafted', message = ?, subject = ?, review = 'needs_review', updated_at = ? WHERE id = ?`,
+      )
+      .run(body, subj, now, id);
     return this.requireJob(id);
   }
 
-  draftedJobs(): JobRow[] {
+  approvedDrafts(): JobRow[] {
     const rows = this.database
-      .query<JobRowRaw, []>(`SELECT * FROM jobs WHERE status = 'drafted' ORDER BY updated_at ASC`)
+      .query<JobRowRaw, []>(
+        `SELECT * FROM jobs WHERE status = 'drafted' AND review = 'approved' ORDER BY updated_at ASC`,
+      )
       .all();
     return rows.map(rowToJob);
+  }
+
+  setReview(id: string, review: ReviewDecision, now: string, replaceId?: string): JobRow {
+    const job = this.requireJob(id);
+    if (job.status === "sent") {
+      throw new CliError(
+        "JOBS_ALREADY_SENT",
+        `job ${id} was already sent and its review cannot change`,
+        { exitCode: 2 },
+      );
+    }
+    if (review === "approved") {
+      if (job.status !== "drafted") {
+        throw new CliError("JOBS_NOT_DRAFTED", `job ${id} is not a pending draft`, {
+          exitCode: 2,
+        });
+      }
+      if (job.message === null || job.message.trim().length === 0) {
+        throw new CliError("JOBS_NO_DRAFT", `job ${id} has no drafted message`, {
+          exitCode: 2,
+        });
+      }
+      const profile = recipientProfileUrl(job);
+      if (profile === null) {
+        throw new CliError(
+          "JOBS_NO_HIRING_TEAM",
+          `job ${id} has no usable hiring-team profile URL`,
+          { exitCode: 2 },
+        );
+      }
+      const conflict = this.conflictingJobForRecipient(profile, id);
+      if (conflict !== null) {
+        if (conflict.status === "sent") {
+          throw new CliError(
+            "DUPLICATE_APPROVED_PROFILE",
+            `job ${id} shares hiring-team profile ${profile} with already-sent job ${conflict.id}`,
+            { exitCode: 2, details: conflictDetails(conflict) },
+          );
+        }
+        if (replaceId === conflict.id) {
+          return this.replaceApproval(conflict.id, id, now);
+        }
+        if (replaceId !== undefined) {
+          throw new CliError(
+            "DUPLICATE_REPLACE_STALE",
+            `replacement target ${replaceId} is not the current conflict ${conflict.id} for job ${id}`,
+            { exitCode: 2 },
+          );
+        }
+        throw new CliError(
+          "DUPLICATE_APPROVED_PROFILE",
+          `job ${id} shares hiring-team profile ${profile} with already-approved job ${conflict.id}`,
+          { exitCode: 2, details: conflictDetails(conflict) },
+        );
+      }
+      if (replaceId !== undefined) {
+        throw new CliError(
+          "DUPLICATE_REPLACE_STALE",
+          `no conflicting approval ${replaceId} for job ${id}`,
+          { exitCode: 2 },
+        );
+      }
+    }
+    this.database
+      .prepare(`UPDATE jobs SET review = ?, updated_at = ? WHERE id = ?`)
+      .run(review, now, id);
+    return this.requireJob(id);
+  }
+
+  /** Replace one approved draft with another, in one transaction. */
+  private replaceApproval(conflictId: string, currentId: string, now: string): JobRow {
+    const tx = this.database.transaction(() => {
+      this.database
+        .prepare(`UPDATE jobs SET review = 'needs_review', updated_at = ? WHERE id = ?`)
+        .run(now, conflictId);
+      this.database
+        .prepare(`UPDATE jobs SET review = 'approved', updated_at = ? WHERE id = ?`)
+        .run(now, currentId);
+    });
+    tx();
+    return this.requireJob(currentId);
+  }
+
+  /**
+   * Atomically apply a group-level decision to every non-sent role that shares
+   * the anchor job's normalized first hiring-team profile. A job with no
+   * usable recipient profile is its own single-role group. Sent roles are
+   * never mutated. One SQLite transaction; returns the refreshed group.
+   */
+  setGroupReview(jobId: string, review: "skipped" | "needs_review", now: string): JobRow[] {
+    const anchor = this.requireJob(jobId);
+    const profile = recipientProfileUrl(anchor);
+    const group =
+      profile === null
+        ? [anchor]
+        : this.listJobs({ withHiringTeam: false }).filter(
+            (job) => recipientProfileUrl(job) === profile,
+          );
+    // Whole-recipient immutability: a covered (sent) recipient group cannot be
+    // skipped or returned to review. Reject before any mutation so an unsent
+    // sibling in a sent group is never touched.
+    const sent = group.find((job) => job.status === "sent");
+    if (sent !== undefined) {
+      throw new CliError(
+        "JOBS_ALREADY_SENT",
+        `recipient group for job ${jobId} includes already-sent job ${sent.id}; group review is not allowed`,
+        { exitCode: 2 },
+      );
+    }
+    const update = this.database.prepare(
+      `UPDATE jobs SET review = ?, updated_at = ? WHERE id = ?`,
+    );
+    const tx = this.database.transaction(() => {
+      for (const job of group) update.run(review, now, job.id);
+    });
+    tx();
+    return group.map((job) => this.requireJob(job.id));
+  }
+
+  sentJobs(): JobRow[] {
+    const rows = this.database
+      .query<JobRowRaw, []>(`SELECT * FROM jobs WHERE status = 'sent' ORDER BY sent_at ASC`)
+      .all();
+    return rows.map(rowToJob);
+  }
+
+  private conflictingJobForRecipient(profileUrl: string, excludeId: string): JobRow | null {
+    const candidates = [...this.approvedDrafts(), ...this.sentJobs()];
+    return (
+      candidates.find((job) => job.id !== excludeId && recipientProfileUrl(job) === profileUrl) ??
+      null
+    );
   }
 
   markSent(id: string, now: string): JobRow {
     this.database
       .prepare(`UPDATE jobs SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?`)
       .run(now, now, id);
+    return this.requireJob(id);
+  }
+
+  classifyJob(
+    id: string,
+    workFocus: string,
+    productSystem: string,
+    workSummary: string,
+    productSummary: string,
+    now: string,
+  ): JobRow {
+    const focus = workFocus.trim();
+    const system = productSystem.trim();
+    const summary = workSummary.trim();
+    const product = productSummary.trim();
+    if (focus.length === 0 || system.length === 0 || summary.length === 0 || product.length === 0) {
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        "classify requires a non-empty --work-focus, --product-system, --work-summary, and --product-summary",
+      );
+    }
+    if (focus.length > CLASSIFICATION_MAX_LENGTH || system.length > CLASSIFICATION_MAX_LENGTH) {
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `classify work-focus and product-system must be at most ${CLASSIFICATION_MAX_LENGTH} characters`,
+      );
+    }
+    if (summary.length > SUMMARY_MAX_LENGTH || product.length > SUMMARY_MAX_LENGTH) {
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `classify summaries must be at most ${SUMMARY_MAX_LENGTH} characters`,
+      );
+    }
+    this.requireJob(id);
+    this.database
+      .prepare(
+        `UPDATE jobs SET work_focus = ?, product_system = ?, work_summary = ?, product_summary = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(focus, system, summary, product, now, id);
     return this.requireJob(id);
   }
 
@@ -206,6 +419,16 @@ export class JobsEngine {
       .prepare(`UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?`)
       .run(status, now, id);
   }
+}
+
+function conflictDetails(job: JobRow): Record<string, unknown> {
+  return {
+    jobId: job.id,
+    title: job.title,
+    company: job.company,
+    status: job.status,
+    review: job.review,
+  };
 }
 
 function rowToJob(row: JobRowRaw): JobRow {
@@ -245,5 +468,13 @@ function rowToJob(row: JobRowRaw): JobRow {
     postedAt: row.posted_at,
     applicantCount: row.applicant_count,
     benefits,
+    workFocus: row.work_focus,
+    productSystem: row.product_system,
+    workSummary: row.work_summary,
+    productSummary: row.product_summary,
+    subject: row.subject,
+    review: row.review as ReviewDecision,
   };
 }
+
+export { normalizeProfileUrl, recipientProfileUrl } from "./recipient.ts";

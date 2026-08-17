@@ -1,9 +1,16 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { CliError } from "../core/errors.ts";
+import {
+  CLASSIFICATION_MAX_LENGTH,
+  DRAFT_MAX_LENGTH,
+  SUBJECT_MAX_LENGTH,
+  SUMMARY_MAX_LENGTH,
+} from "../jobs/types.ts";
 import type {
   AnalyticsExportInput,
   DoctorInput,
   JobsCheckInput,
+  JobsClassifyInput,
   JobsCollectInput,
   JobsDetailInput,
   JobsDraftInput,
@@ -52,8 +59,9 @@ Commands:
   jobs list              List collected jobs from the local store
   jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
-  jobs draft             Store a drafted outreach message for a job
-  jobs send              Send drafted messages to listed hiring team members (--allow-send)
+  jobs draft             Store a drafted subject + message for a job
+  jobs send              Send approved drafted messages to hiring team members (--allow-send)
+  jobs classify          Set work-focus and product-system phrases for a job
 
 Browser boundary:
   Playwriter is the only browser boundary: no Playwright import, direct CDP,
@@ -130,9 +138,13 @@ const JOBS_HELP = `Usage:
     [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs remove --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--subject "..."]
+    [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs classify --id JOB_ID --work-focus "..." --product-system "..."
+    --work-summary "..." --product-summary "..."
+    [--state-dir ABSOLUTE_PATH]
 
 jobs search collects postings from a LinkedIn jobs search (via the
 voyagerJobsDashJobCards XHR), loads each posting's direct view to read the
@@ -153,8 +165,35 @@ view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
 {checked, live, dead, unclear}.
 jobs send opens the first listed hiring team member's profile,
-composes the drafted message, and sends it — it requires the explicit
---allow-send flag.
+composes the approved drafted message, and sends it — it requires the explicit
+--allow-send flag. Only approved drafted jobs (review = approved) are selected;
+if --id is given that single job must itself be an approved draft.
+--subject fills the composer's subject field only when the composer exposes
+one; normal no-subject DM composers are unaffected.
+jobs draft stores a draft for review: --message is the body (interior blank
+lines are preserved) and --subject is an optional subject line. Storing or
+redrafting returns the job to needs-review. Draft once per recipient — when
+several postings list the same person, draft the best-fitting role; sibling
+roles are context and at most one approved/sent message per person holds. The
+local review queue (bun run
+view) is where drafts are reviewed and approved or skipped. The body is three
+paragraphs separated by one blank line (\\n\\n):
+
+  Hi [first name] — I saw the [role] opening at [company]. One plain, specific
+  detail about the product, users, or problem that caught my attention.
+
+  One relevant experience or proof statement, in ordinary language, connected
+  directly to the detail in the first paragraph.
+
+  Would you be open to contract help while you're hiring?
+
+The proof must connect to the detail in the first paragraph, not stand alone.
+The subject is normally "[Role] at [Company]" or "About the [Role] opening".
+jobs classify stores the two brief review phrases for a posting: --work-focus
+(the functional area the role centers on) and --product-system (the tool or
+platform it is built around), plus two longer summaries: --work-summary (what
+you'd do) and --product-summary (what you'd build). All four are required,
+trimmed, and length-bounded (phrases 80 chars, summaries 320 chars).
 `;
 
 type OptionKind = "boolean" | "value" | "repeatable";
@@ -420,6 +459,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "draft",
         "send",
         "remove",
+        "classify",
       ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
@@ -573,6 +613,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (verb === "draft") {
       const options = parseOptions(argv.slice(2), {
         "--id": "value",
+        "--subject": "value",
         "--message": "value",
         "--state-dir": "value",
       });
@@ -580,12 +621,53 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       if (message === undefined || message.trim().length === 0) {
         invalid("jobs draft requires a non-empty --message");
       }
+      if (message.trim().length > DRAFT_MAX_LENGTH) {
+        invalid(`--message must be at most ${DRAFT_MAX_LENGTH} characters`);
+      }
+      const subject = (options.values.get("--subject") ?? "").trim();
+      if (subject.length > SUBJECT_MAX_LENGTH) {
+        invalid(`--subject must be at most ${SUBJECT_MAX_LENGTH} characters`);
+      }
       const input: JobsDraftInput = {
         stateDir: stateDir(options, context),
         id: required(options, "--id"),
+        subject,
         message: message.trim(),
       };
       return { kind: "command", command: "jobs draft", input };
+    }
+    if (verb === "classify") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--work-focus": "value",
+        "--product-system": "value",
+        "--work-summary": "value",
+        "--product-summary": "value",
+        "--state-dir": "value",
+      });
+      const workFocus = options.values.get("--work-focus");
+      const productSystem = options.values.get("--product-system");
+      const workSummary = options.values.get("--work-summary");
+      const productSummary = options.values.get("--product-summary");
+      if (
+        workFocus === undefined ||
+        productSystem === undefined ||
+        workSummary === undefined ||
+        productSummary === undefined
+      ) {
+        invalid(
+          "jobs classify requires --work-focus, --product-system, --work-summary, and --product-summary",
+        );
+      }
+      const input: JobsClassifyInput = {
+        stateDir: stateDir(options, context),
+        id: required(options, "--id"),
+        workFocus: boundedText(workFocus, "--work-focus", CLASSIFICATION_MAX_LENGTH),
+        productSystem: boundedText(productSystem, "--product-system", CLASSIFICATION_MAX_LENGTH),
+        workSummary: boundedText(workSummary, "--work-summary", SUMMARY_MAX_LENGTH),
+        productSummary: boundedText(productSummary, "--product-summary", SUMMARY_MAX_LENGTH),
+      };
+      return { kind: "command", command: "jobs classify", input };
     }
     const options = parseOptions(argv.slice(2), {
       "--allow-send": "boolean",
@@ -912,6 +994,13 @@ function boundedInteger(value: string, label: string, minimum: number, maximum: 
     invalid(`${label} must be between ${minimum} and ${maximum}`);
   }
   return parsed;
+}
+
+function boundedText(value: string, label: string, maximum: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) invalid(`${label} requires a non-empty value`);
+  if (trimmed.length > maximum) invalid(`${label} must be at most ${maximum} characters`);
+  return trimmed;
 }
 
 function absolutePath(value: string, label: string): string {

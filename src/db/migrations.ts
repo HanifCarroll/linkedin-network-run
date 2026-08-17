@@ -348,6 +348,42 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN benefits_json TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    id: 7,
+    name: "jobs_classification",
+    sql: `
+      -- Manual two-field classification of a posting, set by the user after
+      -- review: the work focus (the functional area the role centers on) and
+      -- the product system (the tool or platform the role is built around).
+      -- Brief free-text phrases, trimmed and length-bounded at the CLI.
+      ALTER TABLE jobs ADD COLUMN work_focus TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN product_system TEXT NOT NULL DEFAULT '';
+    `,
+  },
+  {
+    id: 8,
+    name: "jobs_classification_summaries",
+    sql: `
+      -- Longer structured prose alongside the brief classification phrases:
+      -- what the role does day to day and what it builds, shown in the viewer
+      -- as full sentences rather than pills.
+      ALTER TABLE jobs ADD COLUMN work_summary TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN product_summary TEXT NOT NULL DEFAULT '';
+    `,
+  },
+  {
+    id: 9,
+    name: "jobs_review",
+    sql: `
+      -- Draft review state, orthogonal to the status lifecycle: an editable
+      -- subject line plus a review decision. Durable send targets are approved
+      -- drafted jobs (review = 'approved'). The column-level CHECK is enforced
+      -- by SQLite on ADD COLUMN (existing rows take the passing default).
+      ALTER TABLE jobs ADD COLUMN subject TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN review TEXT NOT NULL DEFAULT 'needs_review'
+        CHECK(review IN ('needs_review', 'approved', 'skipped'));
+    `,
+  },
 ];
 
 export type MigrationResult = {

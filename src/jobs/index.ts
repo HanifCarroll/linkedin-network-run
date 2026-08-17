@@ -1,4 +1,4 @@
-export { JobsEngine } from "./engine.ts";
+export { JobsEngine, normalizeProfileUrl, recipientProfileUrl } from "./engine.ts";
 export type { JobsScriptOutcome } from "./playwriter.ts";
 export { runJobsScript } from "./playwriter.ts";
 export {
