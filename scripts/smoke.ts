@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
@@ -9,14 +9,24 @@ import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
 import type { JobRow } from "../src/jobs/index.ts";
-import { JobsEngine, normalizeProfileUrl } from "../src/jobs/index.ts";
+import {
+  buildSendScript,
+  JobsEngine,
+  JobsNormalizer,
+  normalizeProfileUrl,
+} from "../src/jobs/index.ts";
 import {
   bucketFor,
   draftActionFor,
   groupJobs,
   groupOutreachKind,
+  groupSearchHaystack,
   outreachKindFor,
+  outreachKindLabel,
   primaryRoleFor,
+  sectionCounts,
+  showsApplicationReminder,
+  visibleGroups,
 } from "../src/view/grouping.ts";
 
 const root = await mkdtemp(join(tmpdir(), "linkedin-tools-smoke-"));
@@ -753,6 +763,134 @@ try {
     }
   }
 
+  // Bounded pure-function check: the all-outreach section counts every group
+  // once, status/text filters compose with any section, and the searchable
+  // haystack covers employmentType plus the direct/applied type label.
+  {
+    const member = {
+      name: "Sam",
+      profileUrl: "https://www.linkedin.com/in/sam",
+      degree: "2nd",
+      headline: "HM",
+    };
+    const row = (id: string, overrides: Partial<JobRow>): JobRow => ({
+      id,
+      title: "",
+      company: "",
+      location: "",
+      postingUrl: `https://www.linkedin.com/jobs/view/${id}/`,
+      hiringTeam: [],
+      hasHiringTeam: false,
+      status: "collected",
+      message: null,
+      collectedAt: "2026-08-03T00:00:00Z",
+      updatedAt: "2026-08-03T00:00:00Z",
+      sentAt: null,
+      description: "",
+      workplaceType: "",
+      employmentType: "",
+      applyMethod: "",
+      promoted: false,
+      activelyReviewing: false,
+      postedAt: "",
+      applicantCount: "",
+      benefits: [],
+      workFocus: "",
+      productSystem: "",
+      workSummary: "",
+      productSummary: "",
+      subject: "",
+      review: "needs_review",
+      ...overrides,
+    });
+    const contract = row("s1", {
+      title: "Contract Platform Engineer",
+      company: "Acme",
+      employmentType: "Contract",
+      status: "drafted",
+      hiringTeam: [member],
+      hasHiringTeam: true,
+      updatedAt: "2026-08-03T00:00:01Z",
+    });
+    const direct = row("s2", {
+      title: "Platform Engineer",
+      company: "Beta",
+      employmentType: "Full-time",
+      status: "drafted",
+      review: "approved",
+      hiringTeam: [{ ...member, profileUrl: "https://www.linkedin.com/in/beta" }],
+      hasHiringTeam: true,
+      updatedAt: "2026-08-03T00:00:02Z",
+    });
+    const sentDirect = row("s3", {
+      title: "Staff Engineer",
+      company: "Gamma",
+      employmentType: "Full-time",
+      status: "sent",
+      review: "approved",
+      hiringTeam: [{ ...member, profileUrl: "https://www.linkedin.com/in/gamma" }],
+      hasHiringTeam: true,
+      updatedAt: "2026-08-03T00:00:03Z",
+    });
+
+    const groups = groupJobs([contract, direct, sentDirect]);
+    if (groups.length !== 3) throw new Error("all-section: expected 3 groups");
+
+    const counts = sectionCounts(groups);
+    if (counts.direct !== 2 || counts.application_followup !== 1) {
+      throw new Error("all-section: section counts wrong");
+    }
+
+    const all = visibleGroups(groups, "all", "all", "");
+    if (all.length !== 3) throw new Error("all-section: All section must show every group once");
+
+    const followup = visibleGroups(groups, "application_followup", "all", "");
+    if (followup.length !== 1 || followup[0]?.jobs[0]?.id !== "s1") {
+      throw new Error("all-section: application follow-up section wrong");
+    }
+
+    const needsReview = visibleGroups(groups, "all", "needs_review", "");
+    if (needsReview.length !== 1 || needsReview[0]?.jobs[0]?.id !== "s1") {
+      throw new Error("all-section: needs_review filter should compose with All");
+    }
+
+    const query = visibleGroups(groups, "all", "all", "contract");
+    if (query.length !== 1 || query[0]?.jobs[0]?.id !== "s1") {
+      throw new Error("all-section: employmentType/title text query failed");
+    }
+
+    const kindQuery = visibleGroups(groups, "all", "all", "applied");
+    if (kindQuery.length !== 1 || kindQuery[0]?.jobs[0]?.id !== "s1") {
+      throw new Error("all-section: applied type label not searchable");
+    }
+
+    if (
+      outreachKindLabel("direct") !== "Direct" ||
+      outreachKindLabel("application_followup") !== "Applied"
+    ) {
+      throw new Error("all-section: kind label wrong");
+    }
+
+    const hay = groupSearchHaystack([contract]);
+    if (
+      !hay.includes("contract") ||
+      !hay.includes("applied") ||
+      !hay.includes("application follow-up")
+    ) {
+      throw new Error("all-section: haystack missing employmentType or type label");
+    }
+
+    // Reminder keying: an Applied group shows the reminder in All too, while
+    // Direct groups never do.
+    if (!showsApplicationReminder(followup[0]?.jobs ?? [])) {
+      throw new Error("all-section: Applied group must show the reminder in All");
+    }
+    const directGroups = visibleGroups(groups, "direct", "all", "");
+    if (directGroups.length !== 2 || directGroups.some((g) => showsApplicationReminder(g.jobs))) {
+      throw new Error("all-section: Direct groups must not show the reminder");
+    }
+  }
+
   // Bounded check: jobs send with no approved targets fails before resolving a
   // browser session (no live browser).
   {
@@ -781,6 +919,259 @@ try {
       if (!(error instanceof CliError) || error.code !== "JOBS_NOTHING_TO_SEND") throw error;
     }
     if (sessionResolved) throw new Error("jobs send resolved a session before target validation");
+  }
+
+  // Bounded static check: the send script binds the executor page (never the
+  // stale carried state.jobsPage), never creates tabs, drives the Sales Nav
+  // lead page, clicks only via bound elementHandles, and reports sent only when
+  // the message needle is visible. No live browser.
+  {
+    const { script } = buildSendScript({
+      jobId: "4454027506",
+      memberName: "John Doe",
+      profileUrl: "https://www.linkedin.com/in/john-doe",
+      subject: "Hi",
+      message: "Hello there, this is the proof sentence.",
+    });
+    if (!script.includes("let p=page")) throw new Error("send script must bind the executor page");
+    if (script.includes("state.jobsPage"))
+      throw new Error("send script must not use the stale carried page");
+    if (script.includes("context.newPage")) throw new Error("send script must never create tabs");
+    if (!script.includes("/sales/lead/"))
+      throw new Error("send script must navigate to the Sales Nav lead page");
+    if (!script.includes("Sales Navigator Lead Page"))
+      throw new Error("send script must verify the Sales Nav lead document");
+    if (!script.includes("input[aria-label='Subject (required)']"))
+      throw new Error("send script must use the InMail subject field");
+    if (!script.includes("textarea[aria-label='Type your message here or create draft']"))
+      throw new Error("send script must use the InMail message field");
+    if (!script.includes("elementHandle()") || !script.includes(".click({timeout:")) {
+      throw new Error("send script must click via a bound elementHandle");
+    }
+    if (script.includes("node.click()"))
+      throw new Error("send script must not use an untrusted DOM click");
+    if (!script.includes('out.status=out.confirmed?"sent":"failed"')) {
+      throw new Error("send script must report sent only when the message needle is visible");
+    }
+  }
+
+  // Capture handoff checks: SQLite owns durable state, repeated pages are a
+  // no-op, malformed payloads are rejected before insert, and no browser runs.
+  {
+    const captureDb = openDatabase(join(root, "capture.db"));
+    try {
+      const { JobsCaptureStore } = await import("../src/jobs/capture.ts");
+      const store = new JobsCaptureStore(captureDb.database);
+      const run = store.startRun({
+        id: "run-1",
+        sourceUrl: "https://www.linkedin.com/jobs/search/?keywords=engineer",
+        searchConfigJson: JSON.stringify({ keywords: "engineer" }),
+        checkpointJson: JSON.stringify({ next: "page-2" }),
+        now: "2026-08-03T12:00:00Z",
+      });
+      if (run.state !== "active") throw new Error("capture run did not start");
+      const payload = JSON.stringify({
+        included: [{ $type: "com.linkedin.voyager.dash.jobs.JobPosting" }],
+      });
+      const first = store.ingestPage({
+        runId: "run-1",
+        pageIdentity: "start:0",
+        sourceUrl: run.sourceUrl,
+        responseUrl: "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+        capturedAt: "2026-08-03T12:00:01Z",
+        payloadText: payload,
+      });
+      const second = store.ingestPage({
+        runId: "run-1",
+        pageIdentity: "start:0",
+        sourceUrl: run.sourceUrl,
+        responseUrl: "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+        capturedAt: "2026-08-03T12:00:02Z",
+        payloadText: payload,
+      });
+      if (!first.inserted || second.inserted)
+        throw new Error("capture page ingest is not idempotent");
+      if (first.run.checkpoint.next !== "page-2" || first.run.checkpoint.last_page !== "start:0") {
+        throw new Error("capture checkpoint did not preserve existing keys");
+      }
+      const resumed = store.startRun({
+        id: "run-1",
+        sourceUrl: run.sourceUrl,
+        searchConfigJson: JSON.stringify({ keywords: "engineer" }),
+        now: "2026-08-03T12:00:02Z",
+      });
+      if (resumed.checkpoint.last_page !== "start:0") {
+        throw new Error("capture run did not resume from its advanced checkpoint");
+      }
+      try {
+        store.ingestPage({
+          runId: "run-1",
+          pageIdentity: "bad",
+          sourceUrl: run.sourceUrl,
+          responseUrl: "https://example.test/jobs",
+          capturedAt: "2026-08-03T12:00:03Z",
+          payloadText: "not json",
+        });
+        throw new Error("malformed capture payload was accepted");
+      } catch (error) {
+        if (!(error instanceof CliError)) throw error;
+      }
+      try {
+        store.ingestPage({
+          runId: "run-1",
+          pageIdentity: "not-jobs",
+          sourceUrl: run.sourceUrl,
+          responseUrl: "https://example.test/jobs",
+          capturedAt: "2026-08-03T12:00:03Z",
+          payloadText: JSON.stringify({ foo: 1 }),
+        });
+        throw new Error("arbitrary JSON object was accepted as a Jobs payload");
+      } catch (error) {
+        if (!(error instanceof CliError)) throw error;
+      }
+      try {
+        store.startRun({
+          id: "run-1",
+          sourceUrl: "https://different",
+          now: "2026-08-03T12:00:04Z",
+        });
+        throw new Error("capture run conflict was accepted");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "CAPTURE_RUN_CONFLICT") throw error;
+      }
+      try {
+        store.ingestPage({
+          runId: "run-1",
+          pageIdentity: "start:0",
+          sourceUrl: run.sourceUrl,
+          responseUrl: "https://different",
+          capturedAt: "2026-08-03T12:00:04Z",
+          payloadText: payload,
+        });
+        throw new Error("capture page conflict was accepted");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "CAPTURE_PAGE_CONFLICT") throw error;
+      }
+      const finished = store.finishRun({
+        id: "run-1",
+        state: "complete",
+        checkpointJson: JSON.stringify({ final: true }),
+        now: "2026-08-03T12:00:04Z",
+      });
+      const retried = store.finishRun({
+        id: "run-1",
+        state: "complete",
+        checkpointJson: JSON.stringify({ final: true }),
+        now: "2026-08-03T12:00:05Z",
+      });
+      if (finished.state !== "complete" || retried.state !== "complete") {
+        throw new Error("capture finish is not retry-safe");
+      }
+      try {
+        store.finishRun({
+          id: "run-1",
+          state: "failed",
+          error: "late",
+          now: "2026-08-03T12:00:06Z",
+        });
+        throw new Error("terminal capture rewrite was accepted");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "CAPTURE_FINISH_CONFLICT") throw error;
+      }
+      try {
+        store.ingestPage({
+          runId: "run-1",
+          pageIdentity: "new",
+          sourceUrl: run.sourceUrl,
+          responseUrl: "https://example.test/jobs",
+          capturedAt: "2026-08-03T12:00:06Z",
+          payloadText: payload,
+        });
+        throw new Error("new page accepted after terminal capture finish");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "CAPTURE_RUN_NOT_ACTIVE") throw error;
+      }
+      const helper = await readFile(
+        new URL("../scripts/linkedin-jobs-chrome-helper.mjs", import.meta.url),
+        "utf8",
+      );
+      if (
+        !helper.includes('"--payload"') ||
+        !helper.includes('"-"') ||
+        !helper.includes("captureAndIngestJobsPage")
+      ) {
+        throw new Error("Chrome helper does not construct stdin ingest arguments");
+      }
+      const pages = captureDb.database
+        .query("SELECT COUNT(*) AS count FROM capture_pages")
+        .get() as { count: number };
+      if (pages.count !== 1)
+        throw new Error("capture page duplicated or malformed payload persisted");
+    } finally {
+      captureDb.database.close();
+    }
+  }
+
+  // Step 2 normalization: temporary SQLite, duplicate IDs across pages, rich
+  // existing fields, and resume after one-page processing.
+  {
+    const normalizeDb = openDatabase(join(root, "normalize.db"));
+    try {
+      const { JobsCaptureStore } = await import("../src/jobs/capture.ts");
+      const capture = new JobsCaptureStore(normalizeDb.database);
+      capture.startRun({
+        id: "normalize-run",
+        sourceUrl: "https://www.linkedin.com/jobs/search",
+        now: "2026-08-03T12:00:00Z",
+      });
+      const payload = (title: string, id: string) =>
+        JSON.stringify({
+          included: [
+            {
+              $type: "com.linkedin.voyager.dash.jobs.JobPosting",
+              entityUrn: `urn:li:fsd_jobPosting:${id}`,
+              title,
+            },
+          ],
+        });
+      for (const [page, title] of [
+        ["page-1", "First"],
+        ["page-2", "Second"],
+      ] as const) {
+        capture.ingestPage({
+          runId: "normalize-run",
+          pageIdentity: page,
+          sourceUrl: "https://www.linkedin.com/jobs/search",
+          responseUrl: "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+          capturedAt: `2026-08-03T12:00:0${page === "page-1" ? "1" : "2"}Z`,
+          payloadText: payload(title, page === "page-1" ? "123" : "123"),
+        });
+      }
+      new JobsEngine(normalizeDb.database).storeCapturedJobs(
+        [{ id: "123", title: "Existing" }],
+        "2026-08-03T12:00:00Z",
+      );
+      normalizeDb.database.prepare("UPDATE jobs SET company = 'Richer Co' WHERE id = '123'").run();
+      const first = new JobsNormalizer(normalizeDb.database).normalize({
+        runId: "normalize-run",
+        limit: 1,
+        now: "2026-08-03T12:01:00Z",
+      });
+      if (first.pagesProcessed !== 1 || first.jobsObserved !== 1 || first.remainingPages !== 1)
+        throw new Error("normalization did not process one page");
+      const second = new JobsNormalizer(normalizeDb.database).normalize({
+        runId: "normalize-run",
+        now: "2026-08-03T12:02:00Z",
+      });
+      if (second.newlyInserted !== 0 || second.deduplicated !== 1 || second.remainingPages !== 0)
+        throw new Error("normalization did not deduplicate/resume");
+      const rich = normalizeDb.database
+        .query("SELECT company FROM jobs WHERE id = '123'")
+        .get() as { company: string };
+      if (rich.company !== "Richer Co") throw new Error("normalization erased richer job fields");
+    } finally {
+      normalizeDb.database.close();
+    }
   }
 
   const calls: string[] = [];
@@ -835,13 +1226,26 @@ try {
       calls.push("migration dry-run");
       return { proposalOnly: true };
     },
-    jobsSearch: async () => {
-      calls.push("jobs search");
-      return { collected: 0 };
+    jobsCaptureStart: async (input) => {
+      if (input.runId !== "run-1") throw new Error("capture-start did not parse run id");
+      calls.push("jobs capture-start");
+      return { command: "jobs capture-start" };
     },
-    jobsCollect: async () => {
-      calls.push("jobs collect");
-      return { captured: 0 };
+    jobsCaptureIngest: async (input) => {
+      if (input.pageIdentity !== "page-1") throw new Error("capture-ingest did not parse page");
+      calls.push("jobs capture-ingest");
+      return { command: "jobs capture-ingest" };
+    },
+    jobsCaptureFinish: async (input) => {
+      if (input.state !== "complete") throw new Error("capture-finish did not parse state");
+      calls.push("jobs capture-finish");
+      return { command: "jobs capture-finish" };
+    },
+    jobsNormalize: async (input) => {
+      if (input.runId !== "run-1" || input.limit !== 2)
+        throw new Error("normalize did not parse arguments");
+      calls.push("jobs normalize");
+      return { command: "jobs normalize" };
     },
     jobsEnrich: async () => {
       calls.push("jobs enrich");
@@ -892,6 +1296,7 @@ try {
       LINKEDIN_TOOLS_ANALYTICS_ACCOUNT: "Hanif",
     },
   };
+  await writeFile(join(root, "capture-payload.json"), JSON.stringify({ elements: [] }));
   const commands: readonly (readonly string[])[] = [
     ["--json", "network", "status"],
     ["--json", "network", "report"],
@@ -923,6 +1328,32 @@ try {
       "auto",
     ],
     ["--json", "migration", "dry-run", "--source-root", join(root, "legacy")],
+    [
+      "--json",
+      "jobs",
+      "capture-start",
+      "--run-id",
+      "run-1",
+      "--source-url",
+      "https://www.linkedin.com/jobs/search",
+    ],
+    [
+      "--json",
+      "jobs",
+      "capture-ingest",
+      "--run-id",
+      "run-1",
+      "--page",
+      "page-1",
+      "--payload",
+      "-",
+      "--source-url",
+      "https://www.linkedin.com/jobs/search",
+      "--response-url",
+      "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+    ],
+    ["--json", "jobs", "capture-finish", "--run-id", "run-1", "--state", "complete"],
+    ["--json", "jobs", "normalize", "--run-id", "run-1", "--limit", "2"],
     [
       "--json",
       "jobs",

@@ -1,15 +1,13 @@
 export { JobsEngine, normalizeProfileUrl, recipientProfileUrl } from "./engine.ts";
+export { JobsCaptureStore, CAPTURE_PARSER_VERSION } from "./capture.ts";
+export { JobsNormalizer, NORMALIZE_PARSER_VERSION } from "./normalize.ts";
 export type { JobsScriptOutcome } from "./playwriter.ts";
 export { runJobsScript } from "./playwriter.ts";
 export {
-  buildCaptureScript,
   buildCheckLivenessScript,
   buildCleanupTabsScript,
   buildDetailScript,
   buildEnrichPoolScript,
-  buildEnrichScript,
-  buildFinishScript,
-  buildSearchUrl,
   buildSendScript,
 } from "./scripts.ts";
 export { JOB_SEARCH_TERMS } from "./terms.ts";
@@ -24,7 +22,5 @@ export type {
   JobsFavoriteInput,
   JobsListInput,
   JobsRemoveInput,
-  JobsSearchInput,
-  JobsSearchSpec,
   JobsSendInput,
 } from "./types.ts";

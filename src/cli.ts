@@ -95,10 +95,14 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.analyticsExport(invocation.input);
     case "migration dry-run":
       return operations.migrationDryRun(invocation.input);
-    case "jobs search":
-      return operations.jobsSearch(invocation.input);
-    case "jobs collect":
-      return operations.jobsCollect(invocation.input);
+    case "jobs capture-start":
+      return operations.jobsCaptureStart(invocation.input);
+    case "jobs capture-ingest":
+      return operations.jobsCaptureIngest(invocation.input);
+    case "jobs capture-finish":
+      return operations.jobsCaptureFinish(invocation.input);
+    case "jobs normalize":
+      return operations.jobsNormalize(invocation.input);
     case "jobs enrich":
       return operations.jobsEnrich(invocation.input);
     case "jobs detail":

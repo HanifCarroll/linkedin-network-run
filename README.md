@@ -4,8 +4,8 @@ A single-package Bun/TypeScript implementation for three workflows:
 
 - Daily LinkedIn network automation.
 - Weekly seven-day content analytics export.
-- Read-only LinkedIn jobs collection with guarded hiring-team outreach and a
-  local draft-review queue.
+- Chrome-based LinkedIn Jobs result capture with guarded hiring-team outreach
+  and a local draft-review queue.
 
 Promoted 2026-08-11 from `linkedin-tools-next` to the canonical repository
 path. The former Python implementation (acceptance tracking, Relationship
@@ -19,18 +19,18 @@ Networking uses only these exact Sales Navigator saved searches:
 
 | Source | Saved search ID | Preferred allocation |
 | --- | --- | ---: |
-| Consulting - HubSpot Agency Ops | 1980844577 | 15 |
-| Consulting - HubSpot B2B RevOps | 1980870185 | 15 |
+| B2B SaaS Founders & CTOs | 2006164114 | 15 |
+| B2B SaaS Engineering & Product Leaders | 2006164122 | 15 |
 
 The daily target is exactly 30 durable requests, shared across the two configured sources
 (15/15, with bidirectional carryover). Completion requires exactly 30 durable, zero provisional
 or planned attempts, and a complete final sent-list reconciliation. A possible send is reserved
 until reconciliation proves its outcome.
 
-Playwriter is the only browser boundary. The repository does not directly import Playwright, use
-direct CDP, use a Chrome-control fallback, or implement browser leases or cross-automation locks.
-Networking and analytics have distinct, command-bound Playwriter sessions and non-overlapping
-schedules.
+LinkedIn Jobs result capture uses the caller-owned Codex Chrome tab and stores raw responses through
+the CLI. Networking, analytics, Jobs enrichment/checking, and sending remain on distinct,
+command-bound Playwriter sessions for now. The repository does not implement browser leases or
+cross-automation locks.
 
 ## Install and verify
 
@@ -145,19 +145,32 @@ supported for explicit operator control. Tests fake this boundary and never crea
 
 ## Jobs and review queue
 
-The `jobs` workflow collects postings from a LinkedIn jobs search (read-only XHR +
-direct-view reads), stores them locally with their listed hiring team, and supports
-guarded hiring-team outreach. Collection and enrichment are split into explicit phases
-(`jobs collect` → `jobs enrich`), and `jobs detail` pulls the full posting-page description.
+Step 1 captures LinkedIn Jobs XHR responses through the Codex Chrome handoff and stores
+raw JSON durably in SQLite. Start a run with `jobs capture-start`, pipe each helper `rawBody`
+directly to `jobs capture-ingest --payload -`, and use the saved page/cursor checkpoint to
+resume. No per-page artifact is required (a file is diagnostic-only). The helper can pipe and
+parse the CLI's stable JSON envelope with `captureAndIngestJobsPage`. Run
+`jobs normalize --run-id ID [--limit N]` to process pages transactionally, deduplicate by
+LinkedIn job ID, preserve run/page provenance, and resume safely. It does not filter by location
+or fit and does not enrich. Enrichment, detail, live-job checks, networking, analytics, and
+sending remain unchanged for now and are planned for later migration to the same Chrome boundary.
 `jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
 two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
 
 ```sh
-linkedin-tools --json jobs search --keywords "product engineer" \
-  --location "United States" --posted-within 7 --pages 1 --hiring-team-limit 25
-linkedin-tools --json jobs draft --id <jobId> --subject "..." --message "..."
-linkedin-tools --json jobs send --allow-send --session auto
+linkedin-tools --json jobs capture-start --run-id run-20260818-1 \
+  --source-url "https://www.linkedin.com/jobs/search/?keywords=product%20engineer" \
+  --search-config '{"keywords":"product engineer"}'
+# After the Codex helper returns rawBody:
+printf '%s' "$rawBody" | linkedin-tools --json jobs capture-ingest --run-id run-20260818-1 --page start:0 \
+  --payload - --source-url "https://www.linkedin.com/jobs/search" \
+  --response-url "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards"
+linkedin-tools --json jobs capture-finish --run-id run-20260818-1 --state complete
+linkedin-tools --json jobs normalize --run-id run-20260818-1
 ```
+
+Normalization reports stable counts for pages processed, jobs observed, newly inserted jobs,
+deduplicated observations, and remaining pages.
 
 Every hiring-team job gets a draft — there is no pre-draft qualification. Draft once per
 recipient: when several postings list the same person, draft the best-fitting role; the other
@@ -181,18 +194,18 @@ Would you be open to contract help while you're hiring?
 
 The proof sentence must tie back to the detail in paragraph 1, not stand alone as a résumé line.
 
-**Application follow-up** is for contract roles (and full-time roles that are really contract
-engagements: contract-to-hire, or W2/C2C/1099-only). Apply first, then follow up after roughly
-1–2 weeks unless the posting gives a timeline. The message names the role and company, leads
-with one specific relevant proof, and closes with a low-pressure offer of more. It does not ask
-whether they are open to contract help:
+**Application note** is for contract roles (and full-time roles that are really contract
+engagements: contract-to-hire, or W2/C2C/1099-only). Apply first, then send the short
+application note the same day or next day — do not wait one to two weeks. The note names the
+role and company, leads with one specific relevant proof, and closes by putting a name to the
+application. It does not ask whether they are open to contract help and does not request a call:
 
 ```text
-I applied for [role] at [company] and wanted to follow up directly.
+Hi [name] — I just applied for [role] at [company].
 
-One specific relevant qualification or proof, tied to the role.
+[One concrete sentence showing strong alignment.]
 
-Please let me know if I can provide anything else. Thanks for taking a look.
+I wanted to put a name to the application. Happy to provide anything else that would be useful.
 ```
 
 The subject line is normally `[Role] at [Company]` or `About the [Role] opening`. `--subject`
@@ -205,10 +218,11 @@ Review happens in the local queue, not through the CLI:
 bun run view   # http://127.0.0.1:4567
 ```
 
-The queue splits people into two top-level sections with person counts: **Direct outreach** and
-**Application follow-up**. Contract roles — and full-time roles that are really contract
-engagements (contract-to-hire, or W2/C2C/1099-only) — appear only under Application follow-up,
-never under Direct outreach. A mixed group (one person listed on both a direct and a contract
+The queue splits people into top-level sections with person counts: **All outreach**, **Direct
+outreach**, and **Application follow-up**. All outreach shows every person group once and marks
+each with a compact Direct/Applied badge. Contract roles — and full-time roles that are really
+contract engagements (contract-to-hire, or W2/C2C/1099-only) — appear only under Application
+follow-up, never under Direct outreach. A mixed group (one person listed on both a direct and a contract
 role) stays one queue item in Application follow-up and defaults its primary selection to the
 contract role unless a sent, approved, or explicitly selected role owns the decision. The queue
 defaults to Needs review, and the Needs review / Approved / Skipped / Sent / All filters and the
@@ -220,8 +234,8 @@ recently updated non-skipped role) is shown as context and every other role is c
 context. Approving one role keeps exactly one approved role per recipient, Skip & next skips
 the whole person, and Return to review returns the whole person; a sent recipient is covered
 and immutable. Jobs without a usable recipient stay visible under a job-id fallback row. The
-Application follow-up detail shows a short reminder to apply first and follow up after 1–2
-weeks unless the posting gives a timeline. There is no Send button and the viewer performs no
+Application follow-up detail shows a short reminder to apply first and send the application note
+the same day or next day. There is no Send button and the viewer performs no
 browser mutation; writes go through tight same-origin local JSON endpoints that route through
 `JobsEngine`.
 
@@ -230,7 +244,12 @@ browser mutation; writes go through tight same-origin local JSON endpoints that 
 approved draft or an already-sent job for the same hiring-team profile URL (normalized: trim,
 query/hash/trailing slash stripped, case-folded), reported as `DUPLICATE_APPROVED_PROFILE`.
 A defensive duplicate-recipient guard in `jobs send` seeds from already-sent jobs and skips a
-repeat profile without changing state.
+repeat profile without changing state. When a profile has no direct Message button, the send
+script reads the member's id from the profile's static compose anchor, navigates the same page
+to the Sales Navigator lead URL, and sends from the lead page's in-place InMail composer
+(subject + message + Send). It never opens a new tab, because LinkedIn-opened tabs are invisible
+to the playwriter bridge, and it reports a job as sent only when the message is visible in the
+thread after Send.
 
 ## JSON contract
 

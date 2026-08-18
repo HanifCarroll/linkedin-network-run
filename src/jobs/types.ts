@@ -57,30 +57,6 @@ export type JobDetail = {
   readonly benefits: readonly string[];
 };
 
-export type JobsSearchInput = {
-  readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  readonly keywords: string;
-  readonly location: string;
-  /** LinkedIn time-posted filter: 1 | 7 | 14 | 30 days; omit for any time. */
-  readonly postedWithinDays?: number;
-  /** Include only remote postings (f_WT=2). */
-  readonly remote?: boolean;
-  /** Search pages to collect, 1..10 (25 jobs per page). */
-  readonly pages: number;
-  /** How many jobs to enrich with a hiring-team check, 1..200. */
-  readonly hiringTeamLimit: number;
-  /**
-   * Keep enriching until this many jobs WITH a listed hiring team are found
-   * (0 disables: enrich exactly `hiringTeamLimit` jobs). The run stops early
-   * once the target is met; `targetMet` in the result says whether it was.
-   */
-  readonly hiringTeamTarget?: number;
-  /** Job ids to skip during enrichment (resume after an interrupted run). */
-  readonly skipIds?: readonly string[];
-};
-
 export type JobsListInput = {
   readonly stateDir: string;
   readonly status?: JobStatus;
@@ -150,11 +126,4 @@ export type JobRow = {
   readonly subject: string;
   /** Review decision, orthogonal to status. */
   readonly review: ReviewDecision;
-};
-
-export type JobsSearchSpec = {
-  readonly keywords: string;
-  readonly location: string;
-  readonly postedWithinDays?: number;
-  readonly remote?: boolean;
 };

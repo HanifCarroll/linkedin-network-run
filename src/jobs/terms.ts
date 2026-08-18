@@ -4,10 +4,8 @@
  * quotes force LinkedIn's phrase matching instead of loose keyword OR, which
  * keeps results on-role (product/software/fullstack/frontend/backend).
  *
- * Collect with:
- *   jobs collect --keywords "<phrase>" --location "United States" ...
- *
- * Reorder or extend freely; the agent runs the full list to build the pool.
+ * These remain reusable metadata configuration for capture-start/search-config;
+ * they are not production-approved intake terms yet.
  */
 export const JOB_SEARCH_TERMS: readonly string[] = [
   '"product engineer"',

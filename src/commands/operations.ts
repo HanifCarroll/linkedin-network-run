@@ -2,16 +2,18 @@ import { analyticsExport } from "./analytics.ts";
 import { doctor } from "./doctor.ts";
 import { networkIncidentClear, networkIncidentStatus } from "./incident.ts";
 import {
+  jobsCaptureFinish,
+  jobsCaptureIngest,
+  jobsCaptureStart,
   jobsCheck,
   jobsClassify,
-  jobsCollect,
   jobsDetail,
   jobsDraft,
   jobsEnrich,
   jobsFavorite,
   jobsList,
+  jobsNormalize,
   jobsRemove,
-  jobsSearch,
   jobsSend,
 } from "./jobs.ts";
 import { migrationDryRun } from "./migration.ts";
@@ -40,8 +42,10 @@ export function createDefaultOperations(): CliOperations {
     networkIncidentClear,
     analyticsExport,
     migrationDryRun,
-    jobsSearch,
-    jobsCollect,
+    jobsCaptureStart,
+    jobsCaptureIngest,
+    jobsCaptureFinish,
+    jobsNormalize,
     jobsEnrich,
     jobsDetail,
     jobsList,

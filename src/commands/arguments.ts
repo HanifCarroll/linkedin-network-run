@@ -9,16 +9,18 @@ import {
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsCaptureFinishInput,
+  JobsCaptureIngestInput,
+  JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
-  JobsCollectInput,
   JobsDetailInput,
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
   JobsListInput,
+  JobsNormalizeInput,
   JobsRemoveInput,
-  JobsSearchInput,
   JobsSendInput,
   MigrationDryRunInput,
   NetworkIncidentClearInput,
@@ -52,8 +54,10 @@ Commands:
   network incident-clear Clear the active incident after dual human confirmation
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
-  jobs search            Collect jobs from a LinkedIn search and check hiring teams
-  jobs collect           Collect raw job postings from a LinkedIn search (no enrichment)
+  jobs capture-start     Start a durable Chrome Jobs capture run
+  jobs capture-ingest    Ingest one captured Jobs XHR response into SQLite
+  jobs capture-finish    Complete or fail a capture run with final checkpoint
+  jobs normalize         Normalize captured pages into deduplicated jobs
   jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
   jobs detail            Pull full posting-page detail (description + structured fields)
   jobs list              List collected jobs from the local store
@@ -64,8 +68,9 @@ Commands:
   jobs classify          Set work-focus and product-system phrases for a job
 
 Browser boundary:
-  Playwriter is the only browser boundary: no Playwright import, direct CDP,
-  Chrome-control fallback, browser lease, or cross-automation lock; no browser lease is used.
+  LinkedIn Jobs CAPTURE ONLY uses the Codex Chrome handoff helper; the CLI only
+  ingests captured JSON. Enrichment, live-job checks, networking, analytics, and
+  sending stay unchanged for Step 1 and are planned for later Chrome migration.
 
 Global options:
   --json                  Emit one stable JSON envelope to stdout
@@ -120,13 +125,15 @@ This command reads legacy state and returns proposals. It has no apply mode.
 `;
 
 const JOBS_HELP = `Usage:
-  linkedin-tools [--json] jobs search --keywords "product engineer"
-    --location "United States" [--posted-within 1|7|14|30] [--remote]
-    [--pages 1..10] [--hiring-team-limit 1..200] [--hiring-team-target 1..50]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs collect --keywords "product engineer"
-    --location "United States" [--posted-within 1|7|14|30] [--remote] [--pages 1..10]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs capture-start --run-id ID --source-url URL
+    [--search-config JSON] [--checkpoint JSON] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs capture-ingest --run-id ID --page PAGE_ID
+    --payload - --source-url URL --response-url URL [--cursor CURSOR]
+    [--captured-at ISO] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs capture-finish --run-id ID --state complete|failed
+    [--checkpoint JSON] [--error TEXT] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs normalize --run-id ID [--limit N]
+    [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs enrich [--limit N]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs detail [--limit N]
@@ -146,20 +153,17 @@ const JOBS_HELP = `Usage:
     --work-summary "..." --product-summary "..."
     [--state-dir ABSOLUTE_PATH]
 
-jobs search collects postings from a LinkedIn jobs search (via the
-voyagerJobsDashJobCards XHR), loads each posting's direct view to read the
-"Meet the hiring team" section, and stores the jobs locally. With
---hiring-team-target N it keeps enriching until N postings with a listed
-hiring team are found. Roughly 1 in 4 postings lists one. Each run collects
-up to --pages of results (default 5, 25 postings per page) and skips
-already-seen postings, so it auto-advances past exhausted pages; pagination
-through the Playwriter relay is render-variable, so a run may collect fewer
-pages than asked. Re-runs skip already-found teams, so the target converges.
---targetMet in the result says whether the target
-was reached.
-The collect/enrich split does the same work in two explicit phases: jobs
-collect stores raw postings as 'captured'; jobs enrich drains the captured
-pool into enriched 'collected' rows. Both are resumable and budget-capped.
+jobs capture-start records source/search metadata for a run. Use the
+importable scripts/linkedin-jobs-chrome-helper.mjs from the Codex Chrome
+runtime to capture a matching Jobs XHR, then pipe its raw body to
+jobs capture-ingest --payload -. No per-page artifact is required. The CLI
+owns SQLite durability; it never controls Chrome. Run jobs normalize after
+capture to create deduplicated jobs rows. It processes one page transactionally,
+records run/page provenance, and resumes by skipping completed pages.
+Ingest is idempotent with conflict detection, rejects malformed/non-JSON or
+non-Jobs payloads before write, and updates a resume cursor. Capture-finish is
+retry-safe and records complete/failed state plus final checkpoint/error.
+No location filter is added; search configuration is metadata only.
 jobs check verifies stored postings are still live by loading each direct
 view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
@@ -371,8 +375,11 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       const sourceRaw = options.values.get("--source");
       let sourceId: NetworkOpenInput["sourceId"];
       if (sourceRaw !== undefined) {
-        if (sourceRaw !== "hubspot-agency-ops" && sourceRaw !== "hubspot-b2b-revops") {
-          invalid("--source must be hubspot-agency-ops or hubspot-b2b-revops");
+        if (
+          sourceRaw !== "b2b-saas-founders" &&
+          sourceRaw !== "b2b-saas-engineering-product-leaders"
+        ) {
+          invalid("--source must be b2b-saas-founders or b2b-saas-engineering-product-leaders");
         }
         sourceId = sourceRaw;
       }
@@ -449,8 +456,10 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     const verb = argv[1];
     if (
       ![
-        "search",
-        "collect",
+        "capture-start",
+        "capture-ingest",
+        "capture-finish",
+        "normalize",
         "enrich",
         "detail",
         "list",
@@ -465,37 +474,93 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
     if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
-    if (verb === "search") {
+    if (verb === "capture-start") {
       const options = parseOptions(argv.slice(2), {
-        "--keywords": "value",
-        "--location": "value",
-        "--posted-within": "value",
-        "--remote": "boolean",
-        "--pages": "value",
-        "--hiring-team-limit": "value",
-        "--hiring-team-target": "value",
+        "--run-id": "value",
+        "--source-url": "value",
+        "--search-config": "value",
+        "--checkpoint": "value",
         "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
       });
-      return { kind: "command", command: "jobs search", input: jobsSearchInput(options, context) };
-    }
-    if (verb === "collect") {
-      const options = parseOptions(argv.slice(2), {
-        "--keywords": "value",
-        "--location": "value",
-        "--posted-within": "value",
-        "--remote": "boolean",
-        "--pages": "value",
-        "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
-      });
-      return {
-        kind: "command",
-        command: "jobs collect",
-        input: jobsCollectInput(options, context),
+      const input: JobsCaptureStartInput = {
+        stateDir: stateDir(options, context),
+        runId: required(options, "--run-id"),
+        sourceUrl: required(options, "--source-url"),
+        ...(options.values.get("--search-config") === undefined
+          ? {}
+          : { searchConfigJson: options.values.get("--search-config") }),
+        ...(options.values.get("--checkpoint") === undefined
+          ? {}
+          : { checkpointJson: options.values.get("--checkpoint") }),
       };
+      return { kind: "command", command: "jobs capture-start", input };
+    }
+    if (verb === "capture-ingest") {
+      const options = parseOptions(argv.slice(2), {
+        "--run-id": "value",
+        "--page": "value",
+        "--payload": "value",
+        "--source-url": "value",
+        "--response-url": "value",
+        "--cursor": "value",
+        "--captured-at": "value",
+        "--state-dir": "value",
+      });
+      const input: JobsCaptureIngestInput = {
+        stateDir: stateDir(options, context),
+        runId: required(options, "--run-id"),
+        pageIdentity: required(options, "--page"),
+        payloadPath:
+          required(options, "--payload") === "-"
+            ? "-"
+            : absolutePath(required(options, "--payload"), "--payload"),
+        sourceUrl: required(options, "--source-url"),
+        responseUrl: required(options, "--response-url"),
+        ...(options.values.get("--cursor") === undefined
+          ? {}
+          : { cursor: options.values.get("--cursor") }),
+        ...(options.values.get("--captured-at") === undefined
+          ? {}
+          : { capturedAt: options.values.get("--captured-at") }),
+      };
+      return { kind: "command", command: "jobs capture-ingest", input };
+    }
+    if (verb === "capture-finish") {
+      const options = parseOptions(argv.slice(2), {
+        "--run-id": "value",
+        "--state": "value",
+        "--checkpoint": "value",
+        "--error": "value",
+        "--state-dir": "value",
+      });
+      const state = required(options, "--state");
+      if (state !== "complete" && state !== "failed") invalid("--state must be complete or failed");
+      const input: JobsCaptureFinishInput = {
+        stateDir: stateDir(options, context),
+        runId: required(options, "--run-id"),
+        state,
+        ...(options.values.get("--checkpoint") === undefined
+          ? {}
+          : { checkpointJson: options.values.get("--checkpoint") }),
+        ...(options.values.get("--error") === undefined
+          ? {}
+          : { error: options.values.get("--error") }),
+      };
+      return { kind: "command", command: "jobs capture-finish", input };
+    }
+    if (verb === "normalize") {
+      const options = parseOptions(argv.slice(2), {
+        "--run-id": "value",
+        "--limit": "value",
+        "--state-dir": "value",
+      });
+      const limitRaw = options.values.get("--limit");
+      const input: JobsNormalizeInput = {
+        stateDir: stateDir(options, context),
+        runId: required(options, "--run-id"),
+        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 500) }),
+      };
+      return { kind: "command", command: "jobs normalize", input };
     }
     if (verb === "enrich") {
       const options = parseOptions(argv.slice(2), {
@@ -700,67 +765,6 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
   }
 
   invalid(`unknown command: ${argv[0]}`);
-}
-
-function jobsSearchInput(options: ParsedOptions, context: ParseContext): JobsSearchInput {
-  const keywords = required(options, "--keywords");
-  const postedRaw = options.values.get("--posted-within");
-  const postedWithinDays =
-    postedRaw === undefined ? undefined : boundedInteger(postedRaw, "--posted-within", 1, 30);
-  if (postedWithinDays !== undefined && ![1, 7, 14, 30].includes(postedWithinDays)) {
-    invalid("--posted-within must be 1, 7, 14, or 30");
-  }
-  const targetRaw = options.values.get("--hiring-team-target");
-  const target =
-    targetRaw === undefined ? 0 : boundedInteger(targetRaw, "--hiring-team-target", 1, 50);
-  return {
-    stateDir: stateDir(options, context),
-    playwriterBin: playwriterBin(options, context),
-    sessionId: requiredWorkflowSession(
-      options.values.get("--session"),
-      context.env.LINKEDIN_TOOLS_JOBS_SESSION,
-      "--session",
-    ),
-    keywords,
-    location: options.values.get("--location") ?? "",
-    ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
-    ...(options.booleans.has("--remote") ? { remote: true } : {}),
-    pages: boundedInteger(options.values.get("--pages") ?? "5", "--pages", 1, 10),
-    // With a target, scale the default view cap so the pool is large enough
-    // to find it (roughly 1 in 4 postings lists a hiring team).
-    hiringTeamLimit: boundedInteger(
-      options.values.get("--hiring-team-limit") ??
-        (target === 0 ? "25" : String(Math.min(target * 4, 200))),
-      "--hiring-team-limit",
-      1,
-      200,
-    ),
-    ...(target === 0 ? {} : { hiringTeamTarget: target }),
-  };
-}
-
-function jobsCollectInput(options: ParsedOptions, context: ParseContext): JobsCollectInput {
-  const keywords = required(options, "--keywords");
-  const postedRaw = options.values.get("--posted-within");
-  const postedWithinDays =
-    postedRaw === undefined ? undefined : boundedInteger(postedRaw, "--posted-within", 1, 30);
-  if (postedWithinDays !== undefined && ![1, 7, 14, 30].includes(postedWithinDays)) {
-    invalid("--posted-within must be 1, 7, 14, or 30");
-  }
-  return {
-    stateDir: stateDir(options, context),
-    playwriterBin: playwriterBin(options, context),
-    sessionId: requiredWorkflowSession(
-      options.values.get("--session"),
-      context.env.LINKEDIN_TOOLS_JOBS_SESSION,
-      "--session",
-    ),
-    keywords,
-    location: options.values.get("--location") ?? "",
-    ...(postedWithinDays === undefined ? {} : { postedWithinDays }),
-    ...(options.booleans.has("--remote") ? { remote: true } : {}),
-    pages: boundedInteger(options.values.get("--pages") ?? "5", "--pages", 1, 10),
-  };
 }
 
 function parseOptions(argv: readonly string[], spec: OptionSpec): ParsedOptions {

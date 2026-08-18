@@ -78,14 +78,14 @@ export interface CandidateIdentity {
   readonly rowIdentity: string;
 }
 
-export type NetworkSourceId = "hubspot-agency-ops" | "hubspot-b2b-revops";
+export type NetworkSourceId = "b2b-saas-founders" | "b2b-saas-engineering-product-leaders";
 
 export interface NetworkSourceContract {
   readonly schemaVersion: 1;
   readonly kind: "network_source_contract";
   readonly contractVersion: 1;
   readonly sourceId: NetworkSourceId;
-  readonly sourceName: "Consulting - HubSpot Agency Ops" | "Consulting - HubSpot B2B RevOps";
+  readonly sourceName: "B2B SaaS Founders & CTOs" | "B2B SaaS Engineering & Product Leaders";
   readonly savedSearchId: string;
   readonly searchUrl: string;
   readonly contractFingerprint: string;

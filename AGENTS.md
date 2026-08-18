@@ -8,18 +8,20 @@ implementation it replaced is retired; migration from legacy state is dry-run
 and proposal-only.
 
 The product workflows are deterministic daily networking, read-only content
-analytics export, and interactive jobs collection/outreach. The `jobs` workflow
-collects postings from a LinkedIn jobs search (read-only XHR + direct-view
-reads), stores them locally with their listed hiring team, and sends drafted
-messages to hiring team members only with the explicit `--allow-send` flag.
+analytics export, and interactive jobs intake/outreach. The current `jobs`
+intake step captures raw LinkedIn Jobs result responses through Codex Chrome
+and stores them in SQLite. Existing normalized rows still support guarded
+hiring-team outreach with the explicit `--allow-send` flag.
 
 ## Invariants
 
 - Use Bun, strict TypeScript, one package, `bun:sqlite`, and one `linkedin-tools` binary.
 - Emit stable `{ "ok": true, "data": ... }` or `{ "ok": false, "error": ... }` JSON envelopes.
 - Reject unknown, duplicate, conflicting, malformed, and out-of-range arguments before dispatch.
-- Playwriter is the only browser boundary. Never add direct Playwright, direct CDP, Chrome control,
-  browser leases, or cross-automation locks.
+- LinkedIn Jobs CAPTURE ONLY uses the Codex Chrome handoff helper and CLI SQLite ingest. Never add
+  CLI browser control, browser leases, or cross-automation locks. Jobs enrichment, live-job checking,
+  networking, analytics, and sending remain on their current Playwriter paths for this step; migrate
+  those paths to the Chrome boundary later, after capture is stable.
 - Scheduled browser commands use `--session auto`. Command-owned exact bindings keep network and
   analytics sessions distinct.
 - Real network ticks require the exact `--allow-send` flag.
@@ -36,6 +38,7 @@ messages to hiring team members only with the explicit `--allow-send` flag.
   a browser session; reconcile that exact earlier date before starting the new day.
 - Never replace a possible send or infer failure from absence.
 - Migration never applies or writes legacy state.
+- `jobs normalize` processes captured pages one SQLite transaction at a time, deduplicates only by LinkedIn job ID, records page/job provenance, and resumes from completed pages. It never filters by location or fit and never enriches.
 - Do not add the retired acceptance, radar, recruiter, opportunity, Python, uv,
   or web UI workflows. The `jobs` workflow is a distinct, approved workflow for
   hiring-team outreach on job postings; it is not a re-add of the retired
@@ -54,6 +57,8 @@ bun run build
 bun run smoke
 plutil -lint launchd/*.plist
 ```
+
+`jobs normalize` smoke coverage uses temporary SQLite state only; no live browser or legacy state is touched.
 
 Smoke checks must use fakes or temporary state. Do not invoke a live browser,
 LinkedIn, launchd installation, live automation, or legacy writes without a

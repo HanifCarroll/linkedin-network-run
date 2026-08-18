@@ -81,6 +81,8 @@
   .filter:hover { border-color: var(--ink-4); }
   .filter.active { background: var(--ink); color: #fff; border-color: var(--ink); }
   .filter.active .n { color: rgba(255,255,255,0.7); }
+  .filter.clear { margin-left: auto; color: var(--accent); border-color: var(--accent); }
+  .filter.clear:hover { background: var(--accent-soft); }
 
   .sections { display: flex; gap: var(--s1); padding: var(--s3) var(--s6) 0; flex-wrap: wrap; align-items: center; }
   .section-btn {
@@ -135,6 +137,8 @@
   .badge.rev.skipped { color: var(--warn); background: var(--warn-soft); }
   .badge.rev.sent { color: var(--ok); background: var(--ok-soft); }
   .badge.dup { color: var(--warn); background: var(--warn-soft); }
+  .badge.kind-direct { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .badge.kind-applied { background: var(--ok-soft); color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
 
   .detail { padding: var(--s5) var(--s6) var(--s6); }
   .detail-head h2 { font-size: 24px; font-weight: 650; letter-spacing: -0.01em; margin: var(--s3) 0 var(--s1); line-height: 1.25; }
@@ -251,13 +255,14 @@
 </main>
 <div class="flash" id="flash"></div>
 <script type="module">
-  import { groupJobs, bucketFor, primaryRoleFor, messageOwnerId, draftActionFor, groupOutreachKind } from "/groups.js";
+  import { groupJobs, bucketFor, primaryRoleFor, messageOwnerId, draftActionFor, groupOutreachKind, outreachKindLabel, sectionCounts, showsApplicationReminder, visibleGroups } from "/groups.js";
 
   const DEGREE_TITLE = { "1st": "1st-degree connection", "2nd": "2nd-degree connection", "3rd": "3rd-degree connection" };
   const el = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const SECTION_LABELS = { direct: "Direct outreach", application_followup: "Application follow-up" };
+  const SECTION_LABELS = { all: "All outreach", direct: "Direct outreach", application_followup: "Application follow-up" };
+  const SECTIONS = ["all", "direct", "application_followup"];
   const FILTERS = [
     { key: "needs_review", label: "Needs review" },
     { key: "approved", label: "Approved" },
@@ -271,15 +276,19 @@
   function selectedGroup() { return state.groups.find((g) => g.key === state.selectedKey) ?? null; }
   function primaryOf(group) { return primaryRoleFor(group.jobs, state.override.get(group.key)); }
   function groupKind(group) { return groupOutreachKind(group.jobs); }
-  function sectionGroups() { return state.groups.filter((g) => groupKind(g) === state.section); }
+  function sectionGroups() {
+    return state.section === "all"
+      ? state.groups
+      : state.groups.filter((g) => groupKind(g) === state.section);
+  }
   function recipientName(group) {
     const primary = primaryOf(group);
     return String((primary.hiringTeam || [])[0]?.name ?? "").trim();
   }
 
-  function sectionCounts() {
-    const c = { direct: 0, application_followup: 0 };
-    for (const g of state.groups) c[groupKind(g)] += 1;
+  function sectionCountsAll() {
+    const c = sectionCounts(state.groups);
+    c.all = state.groups.length;
     return c;
   }
 
@@ -291,23 +300,10 @@
     return c;
   }
 
-  function matchesGroup(group) {
-    if (!state.query) return true;
-    const q = state.query.toLowerCase();
-    const hay = group.jobs.flatMap((j) => [
-      j.title, j.company, j.location, j.workFocus, j.productSystem,
-      j.workSummary, j.productSummary, j.subject, j.message,
-      ...(j.hiringTeam || []).flatMap((m) => [m.name, m.headline]),
-    ]).join(" ").toLowerCase();
-    return hay.includes(q);
-  }
+  function visible() { return visibleGroups(state.groups, state.section, state.filter, state.query); }
 
-  function visibleGroups() {
-    return state.groups.filter((g) => {
-      if (groupKind(g) !== state.section) return false;
-      if (state.filter !== "all" && bucketFor(g.jobs) !== state.filter) return false;
-      return matchesGroup(g);
-    });
+  function defaultsActive() {
+    return state.query === "" && state.filter === "needs_review" && state.section === "direct";
   }
 
   function badge(deg) {
@@ -349,30 +345,43 @@
   }
 
   function renderSections() {
-    const c = sectionCounts();
-    el("sections").innerHTML = Object.keys(SECTION_LABELS).map((k) =>
+    const c = sectionCountsAll();
+    el("sections").innerHTML = SECTIONS.map((k) =>
       `<button class="section-btn${state.section === k ? " active" : ""}" data-section="${k}">${SECTION_LABELS[k]} <span class="n">${c[k]}</span></button>`
     ).join("");
   }
 
   function renderFilters() {
     const c = counts();
+    const clear = defaultsActive()
+      ? ""
+      : `<button class="filter clear" data-clear type="button">Clear</button>`;
     el("filters").innerHTML = FILTERS.map((f) =>
       `<button class="filter${state.filter === f.key ? " active" : ""}" data-filter="${f.key}">${f.label} <span class="n">${c[f.key]}</span></button>`
-    ).join("");
+    ).join("") + clear;
   }
 
   function renderList() {
     const list = el("list");
-    const groups = visibleGroups();
-    if (!groups.length) { list.innerHTML = `<div class="empty">No people in this filter</div>`; return; }
+    const groups = visible();
+    if (!groups.length) {
+      const message = sectionGroups().length === 0
+        ? `No people in ${SECTION_LABELS[state.section]} yet`
+        : "No people match your search or filters";
+      list.innerHTML = `<div class="empty">${esc(message)}</div>`;
+      return;
+    }
     list.innerHTML = groups.map((group) => {
       const primary = primaryOf(group);
       const bucket = bucketFor(group.jobs);
+      const kind = groupKind(group);
       const name = recipientName(group);
       const displayName = name || primary.title || "—";
       const roles = group.jobs.length;
       const side = [
+        state.section === "all"
+          ? `<span class="badge kind ${kind === "direct" ? "kind-direct" : "kind-applied"}">${esc(outreachKindLabel(kind))}</span>`
+          : "",
         roles > 1 ? `<span class="badge dup" title="${roles} roles list this person">${roles} roles</span>` : "",
         reviewBadge(bucket),
       ].join("");
@@ -438,8 +447,8 @@
       ? `<div class="benefits"><h3>Benefits</h3><div class="list">${benefits.map((b) => `<span class="benefit">${esc(b)}</span>`).join("")}</div></div>`
       : "";
     const statusLabel = { needs_review: "needs review", approved: "approved", skipped: "skipped", sent: "sent" }[bucket];
-    const reminderHtml = state.section === "application_followup"
-      ? `<div class="reminder"><strong>Apply first.</strong> Follow up after 1–2 weeks unless the posting gives a timeline. Keep it brief, name the role and company, and include one relevant qualification. No message is sent from this page.</div>`
+    const reminderHtml = showsApplicationReminder(group.jobs)
+      ? `<div class="reminder"><strong>Apply first, then send this application note the same day or next day.</strong> Keep it brief: name the role and company, include one specific relevant proof, and don't ask for a call. No message is sent from this page.</div>`
       : "";
     const draftHtml = action.editable
       ? `<div class="draft">
@@ -620,20 +629,37 @@
     state.selectedKey = sectionGroups().find((g) => bucketFor(g.jobs) === "needs_review")?.key ?? null;
   }
 
-  el("search").addEventListener("input", (e) => { state.query = e.target.value.trim(); renderList(); });
+  el("search").addEventListener("input", (e) => {
+    state.query = e.target.value.trim();
+    if (state.selectedKey !== null && !visible().some((g) => g.key === state.selectedKey)) {
+      state.selectedKey = visible()[0]?.key ?? null;
+    }
+    renderFilters();
+    renderList();
+    renderDetail();
+  });
   el("showDraft").addEventListener("change", (e) => { el("detail").classList.toggle("hide-draft", !e.target.checked); });
   el("sections").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-section]");
     if (!btn) return;
     state.section = btn.dataset.section;
-    state.selectedKey = visibleGroups()[0]?.key ?? null;
+    state.selectedKey = visible()[0]?.key ?? null;
     renderAll();
   });
   el("filters").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-filter]");
     if (!btn) return;
     state.filter = btn.dataset.filter;
-    state.selectedKey = visibleGroups()[0]?.key ?? null;
+    state.selectedKey = visible()[0]?.key ?? null;
+    renderAll();
+  });
+  el("filters").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-clear]")) return;
+    state.query = "";
+    state.filter = "needs_review";
+    state.section = "direct";
+    el("search").value = "";
+    state.selectedKey = visible()[0]?.key ?? null;
     renderAll();
   });
   el("list").addEventListener("click", (e) => {

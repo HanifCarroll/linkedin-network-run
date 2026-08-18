@@ -336,9 +336,7 @@ export class JobsEngine {
         { exitCode: 2 },
       );
     }
-    const update = this.database.prepare(
-      `UPDATE jobs SET review = ?, updated_at = ? WHERE id = ?`,
-    );
+    const update = this.database.prepare(`UPDATE jobs SET review = ?, updated_at = ? WHERE id = ?`);
     const tx = this.database.transaction(() => {
       for (const job of group) update.run(review, now, job.id);
     });

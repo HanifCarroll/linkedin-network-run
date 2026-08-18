@@ -7,6 +7,12 @@ export type Bucket = "sent" | "approved" | "skipped" | "needs_review";
 /** Which queue section a role belongs to: direct prospecting or post-application follow-up. */
 export type OutreachKind = "direct" | "application_followup";
 
+/** A top-level viewer section: one kind, or "all" for every group once. */
+export type SectionKey = OutreachKind | "all";
+
+/** A status filter: one review bucket, or "all" for every bucket. */
+export type StatusFilter = Bucket | "all";
+
 const CONTRACT_TO_HIRE_RE = /\bcontract\s+to\s+hire\b/i;
 const C2C_1099_NEGATION_RE =
   /\b(?:not|no|never|without|cannot|can'?t|doesn'?t|don'?t|isn'?t|aren'?t|won'?t|exclud(?:es|ing|ed))\b[^.\n]{0,40}\b(?:c2c|1099)\b/i;
@@ -53,6 +59,15 @@ export function groupOutreachKind(jobs: readonly JobRow[]): OutreachKind {
   return jobs.some((job) => outreachKindFor(job) === "application_followup")
     ? "application_followup"
     : "direct";
+}
+
+/**
+ * Whether the detail pane shows the apply-first reminder for a group. Keyed
+ * to the group's own kind so Applied contacts show it in All outreach too,
+ * while Direct contacts never do.
+ */
+export function showsApplicationReminder(jobs: readonly JobRow[]): boolean {
+  return groupOutreachKind(jobs) === "application_followup";
 }
 
 /** One queue item: all job roles that share a normalized first hiring profile. */
@@ -182,4 +197,70 @@ function primaryPreferred(candidate: JobRow, current: JobRow): boolean {
 function updatedOf(job: JobRow): number {
   const value = Date.parse(job.updatedAt);
   return Number.isNaN(value) ? 0 : value;
+}
+
+const KIND_LABEL: Record<OutreachKind, string> = {
+  direct: "Direct",
+  application_followup: "Applied",
+};
+
+/** Compact badge label for a section kind. */
+export function outreachKindLabel(kind: OutreachKind): string {
+  return KIND_LABEL[kind];
+}
+
+const KIND_SEARCH: Record<OutreachKind, string> = {
+  direct: "direct outreach",
+  application_followup: "applied application follow-up application followup",
+};
+
+/** Lowercased searchable text for one recipient group. Covers the person,
+ *  role, company, location, summaries, draft, hiring team, employment type,
+ *  and the direct/applied type label. */
+export function groupSearchHaystack(jobs: readonly JobRow[]): string {
+  const parts: string[] = [];
+  for (const job of jobs) {
+    const kind = outreachKindFor(job);
+    parts.push(
+      job.title,
+      job.company,
+      job.location,
+      job.workFocus,
+      job.productSystem,
+      job.workSummary,
+      job.productSummary,
+      job.subject,
+      job.message ?? "",
+      job.employmentType,
+      KIND_LABEL[kind],
+      KIND_SEARCH[kind],
+    );
+    for (const member of job.hiringTeam ?? []) {
+      parts.push(member.name, member.headline);
+    }
+  }
+  return parts.join(" ").toLowerCase();
+}
+
+/** Per-section group counts; the "all" total is the caller's group length. */
+export function sectionCounts(groups: readonly RecipientGroup[]): Record<OutreachKind, number> {
+  const counts: Record<OutreachKind, number> = { direct: 0, application_followup: 0 };
+  for (const group of groups) counts[groupOutreachKind(group.jobs)] += 1;
+  return counts;
+}
+
+/** Groups that survive the active section, status filter, and text query. */
+export function visibleGroups(
+  groups: readonly RecipientGroup[],
+  section: SectionKey,
+  filter: StatusFilter,
+  query: string,
+): RecipientGroup[] {
+  const q = query.trim().toLowerCase();
+  return groups.filter((group) => {
+    if (section !== "all" && groupOutreachKind(group.jobs) !== section) return false;
+    if (filter !== "all" && bucketFor(group.jobs) !== filter) return false;
+    if (q !== "" && !groupSearchHaystack(group.jobs).includes(q)) return false;
+    return true;
+  });
 }

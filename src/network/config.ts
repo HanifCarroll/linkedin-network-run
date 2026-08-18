@@ -6,18 +6,18 @@ export const SEND_PACING_MS = 5_000;
 
 export const SOURCES = [
   {
-    id: "hubspot-agency-ops",
-    name: "Consulting - HubSpot Agency Ops",
+    id: "b2b-saas-founders",
+    name: "B2B SaaS Founders & CTOs",
     preferredAllocation: 15,
     reservoirTarget: 30,
-    savedSearchId: "1980844577",
+    savedSearchId: "2006164114",
   },
   {
-    id: "hubspot-b2b-revops",
-    name: "Consulting - HubSpot B2B RevOps",
+    id: "b2b-saas-engineering-product-leaders",
+    name: "B2B SaaS Engineering & Product Leaders",
     preferredAllocation: 15,
     reservoirTarget: 30,
-    savedSearchId: "1980870185",
+    savedSearchId: "2006164122",
   },
 ] as const;
 

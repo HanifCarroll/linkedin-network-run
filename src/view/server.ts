@@ -24,7 +24,9 @@ function stateDir(): string {
 const dbPath = join(stateDir(), "linkedin-tools.db");
 if (!(await Bun.file(dbPath).exists())) {
   console.error(`jobs viewer: no database at ${dbPath}`);
-  console.error("run jobs collect/enrich first, or set --state-dir / LINKEDIN_TOOLS_STATE_DIR");
+  console.error(
+    "run jobs capture-start/capture-ingest; raw pages await Step 2 normalization, or set --state-dir / LINKEDIN_TOOLS_STATE_DIR",
+  );
   process.exit(1);
 }
 

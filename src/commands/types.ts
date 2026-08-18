@@ -54,7 +54,7 @@ export type NetworkOpenInput = {
   readonly playwriterBin: string;
   readonly sessionId: PlaywriterSessionSelection;
   readonly page: "sent" | "search";
-  readonly sourceId?: "hubspot-agency-ops" | "hubspot-b2b-revops";
+  readonly sourceId?: "b2b-saas-founders" | "b2b-saas-engineering-product-leaders";
 };
 
 export type AnalyticsExportInput = {
@@ -72,29 +72,36 @@ export type AnalyticsExportInput = {
   readonly maxPolls?: number;
 };
 
-export type JobsSearchInput = {
+export type JobsCaptureStartInput = {
   readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  readonly keywords: string;
-  readonly location: string;
-  readonly postedWithinDays?: number;
-  readonly remote?: boolean;
-  readonly pages: number;
-  readonly hiringTeamLimit: number;
-  readonly hiringTeamTarget?: number;
-  readonly skipIds?: readonly string[];
+  readonly runId: string;
+  readonly sourceUrl: string;
+  readonly searchConfigJson?: string | undefined;
+  readonly checkpointJson?: string | undefined;
 };
 
-export type JobsCollectInput = {
+export type JobsCaptureIngestInput = {
   readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  readonly keywords: string;
-  readonly location: string;
-  readonly postedWithinDays?: number;
-  readonly remote?: boolean;
-  readonly pages: number;
+  readonly runId: string;
+  readonly pageIdentity: string;
+  readonly payloadPath: string;
+  readonly sourceUrl: string;
+  readonly responseUrl: string;
+  readonly cursor?: string | undefined;
+  readonly capturedAt?: string | undefined;
+};
+
+export type JobsCaptureFinishInput = {
+  readonly stateDir: string;
+  readonly runId: string;
+  readonly state: "complete" | "failed";
+  readonly checkpointJson?: string | undefined;
+  readonly error?: string | undefined;
+};
+export type JobsNormalizeInput = {
+  readonly stateDir: string;
+  readonly runId: string;
+  readonly limit?: number;
 };
 
 export type JobsEnrichInput = {
@@ -181,8 +188,10 @@ export interface CliOperations {
   networkIncidentClear(input: NetworkIncidentClearInput): Promise<unknown>;
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
   migrationDryRun(input: MigrationDryRunInput): Promise<unknown>;
-  jobsSearch(input: JobsSearchInput): Promise<unknown>;
-  jobsCollect(input: JobsCollectInput): Promise<unknown>;
+  jobsCaptureStart(input: JobsCaptureStartInput): Promise<unknown>;
+  jobsCaptureIngest(input: JobsCaptureIngestInput): Promise<unknown>;
+  jobsCaptureFinish(input: JobsCaptureFinishInput): Promise<unknown>;
+  jobsNormalize(input: JobsNormalizeInput): Promise<unknown>;
   jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
   jobsDetail(input: JobsDetailInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
@@ -244,8 +253,26 @@ export type ParsedInvocation =
       readonly command: "network incident-clear";
       readonly input: NetworkIncidentClearInput;
     }
-  | { readonly kind: "command"; readonly command: "jobs search"; readonly input: JobsSearchInput }
-  | { readonly kind: "command"; readonly command: "jobs collect"; readonly input: JobsCollectInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs capture-start";
+      readonly input: JobsCaptureStartInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs capture-ingest";
+      readonly input: JobsCaptureIngestInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs capture-finish";
+      readonly input: JobsCaptureFinishInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs normalize";
+      readonly input: JobsNormalizeInput;
+    }
   | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
   | { readonly kind: "command"; readonly command: "jobs detail"; readonly input: JobsDetailInput }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }

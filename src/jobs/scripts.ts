@@ -1,30 +1,8 @@
-import type { JobsSearchSpec } from "./types.ts";
-
 /**
  * Plain playwriter script bodies for the jobs workflow. Each script prints one
  * JSON envelope (`{ok:true,data:{...}}`) as its final stdout line and never
  * throws for expected outcomes; the runner parses that line.
  */
-
-/** LinkedIn jobs search page URL from a spec (f_TPR/f_WT are the standard filters). */
-export function buildSearchUrl(spec: JobsSearchSpec): string {
-  const url = new URL("https://www.linkedin.com/jobs/search");
-  if (spec.keywords.trim().length > 0) url.searchParams.set("keywords", spec.keywords.trim());
-  if (spec.location.trim().length > 0) url.searchParams.set("location", spec.location.trim());
-  if (spec.postedWithinDays !== undefined) {
-    const byDays: Readonly<Record<number, string>> = {
-      1: "r86400",
-      7: "r604800",
-      14: "r1209600",
-      30: "r2592000",
-    };
-    const token = byDays[spec.postedWithinDays];
-    if (token === undefined) throw new TypeError("postedWithinDays must be 1, 7, 14, or 30");
-    url.searchParams.set("f_TPR", token);
-  }
-  if (spec.remote === true) url.searchParams.set("f_WT", "2");
-  return url.toString();
-}
 
 // Jobs scripts run on one carried page. context.pages() is shared across all
 // sessions and agents, and the executor's `page` is just context.pages()[0]
@@ -173,136 +151,6 @@ const enrichOne=async(wp,id)=>{
 const emptyRow=(id)=>({id,title:(TITLES[id]||"").trim(),company:"",location:"",postingUrl:"https://www.linkedin.com/jobs/view/"+id+"/",hiringTeam:[],hasHiringTeam:false,dead:false});
 `;
 
-const CAPTURE_RESULT = `
-try {
-  p.removeAllListeners("response");
-} catch {}
-const byId=new Map();
-const absorb=(included)=>{for(const e of included??[]){if(e.$type==="com.linkedin.voyager.dash.jobs.JobPosting"){const m=/fsd_jobPosting:(\\d+)$/.exec(e.entityUrn??"");if(m&&!byId.has(m[1]))byId.set(m[1],{id:m[1],title:e.title??""});}}};
-const seenStarts=new Set();
-let cards=null;
-const onResponse=async(res)=>{
-  if(!res.url().includes("voyagerJobsDashJobCards"))return;
-  try{
-    const b=await res.json();
-    const els=b?.data?.elements;const pg=b?.data?.paging;
-    if(Array.isArray(els)&&pg&&els.length>0){
-      absorb(b?.included??[]);
-      if(typeof pg.start==="number")seenStarts.add(pg.start);
-      if(cards===null)cards={total:pg.total??0};
-    }
-  }catch{}
-};
-p.on("response",onResponse);
-// The SPA soft-navigates after domcontentloaded, which can destroy the
-// evaluation context and abort the goto; retry navigate+settle+capture until
-// the cards land or tries are exhausted (same recovery as the network walk).
-// A cached page renders results WITHOUT refiring the XHR; clicking a
-// pagination control fires it (verified: "Page 2" fires the start:0 request),
-// so the first click is the capture trigger, with a reload fallback.
-const clickPage=async(n)=>{
-  // Use Playwright's trusted click, not element.click(): the latter is
-  // swallowed by React's synthetic events while the SPA is hydrating
-  // (observed: 2 of 3 "Page 2" clicks did nothing).
-  try{await p.locator("button[aria-label=\\"Page "+n+"\\"]").click({timeout:8000});return true;}catch{return false;}
-};
-const waitForStartGrowth=async(before)=>{
-  // Paginated XHRs can arrive 15-20s after the click (observed), so allow a
-  // generous window before concluding the page did not fire.
-  for(let w=0;w<40&&seenStarts.size<=before;w+=1)await p.waitForTimeout(500);
-};
-// Click a page button repeatedly (every few seconds) until the XHR fires.
-// Clicks during SPA hydration or transitions are silently dropped; the
-// page's own controls are the only reliable trigger (XHR replay 403s).
-const pollClick=async(n,before)=>{
-  const deadline=Date.now()+12000;
-  let lastClickAt=0;
-  while(seenStarts.size<=before&&Date.now()<deadline){
-    if(Date.now()-lastClickAt>4000){
-      lastClickAt=Date.now();
-      const clicked=await clickPage(n);
-      if(!clicked)break;
-    }
-    await p.waitForTimeout(1000);
-  }
-  return seenStarts.size>before;
-};
-// The start:0 XHR fires unreliably — sometimes on goto, sometimes only after
-// a reload or a pagination click. Fire every trigger in turn, bounded, and
-// stop on the first that lands the cards.
-const waitForCards=async()=>{for(let i=0;i<30&&cards===null;i+=1)await p.waitForTimeout(500);return cards!==null;};
-let lastNavErr=null;let acquired=false;
-try{
-  await p.goto(CONFIG.searchUrl,{waitUntil:"commit",timeout:45000});
-  await p.waitForTimeout(4000);
-  acquired=await waitForCards();
-  if(!acquired){try{await p.reload({waitUntil:"commit",timeout:45000});}catch{}await p.waitForTimeout(3000);acquired=await waitForCards();}
-  if(!acquired){await pollClick(2,seenStarts.size);acquired=cards!==null;}
-  if(!acquired){try{await p.reload({waitUntil:"commit",timeout:45000});}catch{}await p.waitForTimeout(3000);await pollClick(2,seenStarts.size);acquired=cards!==null;}
-}catch(e){
-  lastNavErr=e instanceof Error?e:new Error(String(e));
-  const msg=String((e&&e.message)||e);
-  if(/closed|context was destroyed|Execution context|navigation|Navigator|Timeout|fetch failed|ERR_ABORTED|net::/i.test(msg)){
-    // Reuse an existing open tab if the user closed ours or the relay dropped it.
-    try{if(p.isClosed()){const candidates=context.pages().filter((candidate)=>!candidate.isClosed());const rp=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith("about:"))??candidates[0]??null;if(rp){p=rp;state.jobsPage=p;}}await p.waitForTimeout(3000);}catch{}
-  }
-}
-try{p.removeListener("response",onResponse);}catch{}
-if(!acquired)throw new Error("JOBS_CARDS_XHR_NOT_CAPTURED"+(lastNavErr?": "+String((lastNavErr&&lastNavErr.message)||lastNavErr):""));
-// Paginate with the page's own pagination controls: replaying the XHR 403s
-// (CSRF check failed) and the SPA strips &start from the URL. Clicking the
-// page buttons fires the voyagerJobsDashJobCards requests (observed sequence:
-// buttons 2,3,4,5 -> starts 0,25,50,75); the listener absorbs every response.
-// Data still comes only from the XHR. The acquisition already clicked the
-// page-2 button, so this loop starts at page 3. Clicks during SPA hydration
-// or transitions are silently dropped, so re-click every few seconds until
-// the page's start arrives or the deadline passes.
-// The acquisition already clicked the page-2 button (fires the start:0
-// request). Paginate onward with the remaining page buttons — the visible
-// set varies across renders, so collect whatever pages the SPA offers and
-// re-run the search to converge on the target (found teams are skipped).
-// Collect as many pages as the user asked. Already-seen postings are filtered
-// out at the end, so paginating past exhausted pages is how a re-run finds
-// fresh ones. Deeper pages are render-variable; the loop stops early if a
-// page button stops firing its XHR.
-const neededStarts=CONFIG.pages;
-// Settle before paginating so the results list and footer are fully live
-// (the probe that paged reliably waited ~10s before its first click).
-await p.waitForTimeout(8000);
-for(let n=3;seenStarts.size<neededStarts&&byId.size<CONFIG.jobCountTarget;n+=1){
-  const grew=await pollClick(n,seenStarts.size);
-  if(!grew)break;
-}
-const ids=[...byId.keys()].filter((id)=>!CONFIG.skipIds.includes(id)).slice(0,CONFIG.hiringTeamLimit);
-const batch={byId:Object.fromEntries([...byId.entries()].map(([id,entry])=>[id,entry.title])),ids,results:{},pagesCollected:seenStarts.size,cardsTotal:cards.total};
-state.jobsBatch=batch;
-const poolJobs=ids.map((id)=>{const entry=byId.get(id);return {id,title:entry?entry.title:""};});
-console.log(JSON.stringify({ok:true,data:{pool:ids.length,pagesCollected:seenStarts.size,cardsTotal:cards.total,jobs:poolJobs}}));
-`;
-
-const ENRICH_RESULT = `
-const batch=state.jobsBatch;
-const pending=batch.ids.filter((id)=>batch.results[id]===undefined).slice(0,CONFIG.batchSize);
-// Sequential on the pickup page. Parallel workers were removed: every extra
-// attached tab multiplies the relay's CDP event fanout and wedges the relay on
-// long runs, and creating worker tabs via newPage accumulates untracked tabs.
-for(const id of pending){
-  try{batch.results[id]=await enrichOne(p,id);}catch{batch.results[id]=emptyRow(id);}
-}
-const enriched=Object.keys(batch.results).length;
-const remaining=batch.ids.length-enriched;
-const found=Object.values(batch.results).filter((r)=>r.hasHiringTeam).length;
-const pendingSet=new Set(pending);
-const completed=batch.ids.filter((id)=>pendingSet.has(id)&&batch.results[id]!==undefined).map((id)=>batch.results[id]);
-console.log(JSON.stringify({ok:true,data:{enriched,remaining,found,completed}}));
-`;
-
-const FINISH_RESULT = `
-const batch=state.jobsBatch;
-const jobs=batch.ids.map((id)=>batch.results[id]).filter((r)=>r!==undefined);
-console.log(JSON.stringify({ok:true,data:{jobs,pagesCollected:batch.pagesCollected,cardsTotal:batch.cardsTotal}}));
-`;
-
 const ENRICH_POOL_RESULT = `
 const results=[];
 for(const job of CONFIG.jobs){
@@ -310,58 +158,6 @@ for(const job of CONFIG.jobs){
 }
 console.log(JSON.stringify({ok:true,data:{completed:results}}));
 `;
-
-/**
- * Build the search + enrichment script. Collects the `voyagerJobsDashJobCards`
- * XHR for the search, paginates by replaying with `start` bumped, then loads
- * each job's direct view to extract company, location, and hiring team.
- */
-/**
- * Phase 1: capture the `voyagerJobsDashJobCards` XHR for the search, paginate
- * by replaying with `start` bumped, and persist the id pool in
- * state.jobsBatch. Runs in one call (well under the 300s relay cap).
- */
-export function buildCaptureScript(config: {
-  readonly searchUrl: string;
-  readonly pages: number;
-  readonly hiringTeamLimit: number;
-  readonly skipIds?: readonly string[];
-}): { readonly script: string; readonly timeoutMs: number } {
-  if (!Number.isSafeInteger(config.pages) || config.pages < 1 || config.pages > 10)
-    throw new TypeError("pages must be 1..10");
-  if (
-    !Number.isSafeInteger(config.hiringTeamLimit) ||
-    config.hiringTeamLimit < 1 ||
-    config.hiringTeamLimit > 200
-  )
-    throw new TypeError("hiringTeamLimit must be 1..200");
-  const cfg = {
-    searchUrl: config.searchUrl,
-    pages: config.pages,
-    hiringTeamLimit: config.hiringTeamLimit,
-    skipIds: config.skipIds ?? [],
-    jobCountTarget: config.pages * 25,
-  };
-  // Top-level awaits only: the playwriter executor does not await an async IIFE.
-  const source = `const CONFIG=${JSON.stringify(cfg)};\n${PAGE_PICKUP}\n${CAPTURE_RESULT}`;
-  return { script: source, timeoutMs: 420_000 };
-}
-
-/**
- * Phase 2: enrich the next batch of job views (hiring team, company,
- * location), appending to state.jobsBatch.results. Repeat until the caller's
- * target is met or `remaining` is 0.
- */
-export function buildEnrichScript(config: { readonly batchSize: number }): {
-  readonly script: string;
-  readonly timeoutMs: number;
-} {
-  if (!Number.isSafeInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 60)
-    throw new TypeError("batchSize must be 1..60");
-  const cfg = { batchSize: config.batchSize };
-  const source = `const CONFIG=${JSON.stringify(cfg)};const TITLES=state.jobsBatch.byId;const VIEW_EXTRACT=${EXTRACT_VIEW};\n${PAGE_PICKUP}\n${VIEW_ATTEMPT}\n${ENRICH_RESULT}`;
-  return { script: source, timeoutMs: 420_000 };
-}
 
 /**
  * Enrich a caller-supplied batch of captured jobs (id + title), returning the
@@ -481,65 +277,148 @@ export function buildCheckLivenessScript(config: {
   return { script: source, timeoutMs };
 }
 
-/** Phase 3: assemble the full result envelope from state.jobsBatch. */
-export function buildFinishScript(): { readonly script: string; readonly timeoutMs: number } {
-  const source = `${PAGE_PICKUP}\n${FINISH_RESULT}`;
-  return { script: source, timeoutMs: 120_000 };
-}
+export const SEND_TIMEOUT_MS = 290_000;
 
-export const SEND_TIMEOUT_MS = 90_000;
+const SEND_PICKUP = `
+let p=page;\nif(!p||p.isClosed()){\n  const candidates=context.pages().filter((candidate)=>!candidate.isClosed());\n  p=candidates.find((candidate)=>candidate.url()&&!candidate.url().startsWith(\"about:\"))??candidates[0]??null;\n}\nif(!p||p.isClosed())throw new Error(\"NO_PAGE\");
+`;
 
+// Send flow: a direct Message CTA on the profile when present; otherwise read
+// the member's profileUrn from the profile's static /messaging/compose anchor,
+// navigate the SAME page to the Sales Navigator lead URL, and message from the
+// lead page's in-place InMail composer (subject + message + Send). No new tabs
+// are ever created: site-opened tabs are invisible to the playwriter bridge, so
+// the overflow More -> "Message [name]" path (which opens a Sales Nav tab) is
+// never taken; More is opened only to re-render the static anchors, never to
+// send. SEND_PICKUP binds the executor's live `page` (pages[0]), not the
+// persisted state.jobsPage: a stale carried page can be a dropped tab whose
+// evaluate() reads empty, which previously surfaced as lead_page_not_loaded.
 const SEND_RESULT = `
 const out={jobId:CONFIG.jobId,memberName:CONFIG.memberName,status:"failed",detail:"",confirmed:false};
-try{
-  await p.goto(CONFIG.profileUrl,{waitUntil:"domcontentloaded",timeout:60000});
-  await p.waitForTimeout(3000);
-  let msg=null;
-  const buttons=p.locator("button");
-  const n=await buttons.count();
+const clean=(s)=>String(s??"").replace(/\\s+/g," ").trim();
+// Bind the matching button immediately: nth locators re-resolve across renders.
+const findButtonHandle=async(pg,re)=>{
+  const list=pg.locator("button");
+  const n=await list.count();
   for(let i=0;i<n;i+=1){
-    const b=buttons.nth(i);
+    const b=list.nth(i);
     if(!(await b.isVisible().catch(()=>false)))continue;
-    const text=((await b.textContent().catch(()=>""))||"").replace(/\\s+/g," ").trim();
-    const aria=((await b.getAttribute("aria-label").catch(()=>null))||"").replace(/\\s+/g," ").trim();
-    if(/^Message$/i.test(text)||(/^Message$/i.test(aria)&&!/more/i.test(aria))){msg=b;break;}
+    const text=clean(await b.textContent().catch(()=>""));
+    const aria=clean(await b.getAttribute("aria-label").catch(()=>null));
+    if(re.test(text)||re.test(aria))return b.elementHandle().catch(()=>null);
   }
-  if(!msg){out.status="no_message_button";out.detail="no Message CTA on profile";console.log(JSON.stringify({ok:true,data:out}));return;}
-  await msg.click();
-  await p.waitForTimeout(2500);
-  const box=p.locator("div[role='textbox'][contenteditable='true']").last();
-  if(await box.count()===0){out.status="no_composer";out.detail="messenger composer not found";console.log(JSON.stringify({ok:true,data:out}));return;}
-  await box.click();
-  if(CONFIG.subject){
-    const subj=p.locator("input[placeholder*='Subject' i], input[name='subject' i], input[aria-label*='subject' i]").first();
-    if(await subj.count()>0){try{await subj.fill(CONFIG.subject);}catch{await subj.click();await p.keyboard.type(CONFIG.subject,{delay:2});}}
+  return null;
+};
+const bind=async(loc)=>loc.elementHandle().catch(()=>null);
+try{
+  await p.goto(CONFIG.profileUrl,{waitUntil:"domcontentloaded",timeout:30000});
+  await p.waitForTimeout(3000);
+  let messageHandle=await findButtonHandle(p,/^Message$/i);
+  let usingInMail=false;
+  if(!messageHandle){
+    // No direct Message CTA. The compose anchor's profileUrn is the lead id;
+    // message from the Sales Nav lead page's in-place InMail composer.
+    const firstName=clean(CONFIG.memberName.split(/\\s+/)[0]||"");
+    const findUrn=async()=>{
+      const anchors=p.locator("a[href*='/messaging/compose/?profileUrn=']");
+      const n=await anchors.count();
+      for(let i=0;i<n;i+=1){
+        const a=anchors.nth(i);
+        const t=clean(await a.textContent().catch(()=>""));
+        if(!t.toLowerCase().startsWith(("message "+firstName).toLowerCase()))continue;
+        const href=clean(await a.getAttribute("href").catch(()=>null));
+        const m=/profileUrn=([^&]+)/.exec(href);
+        if(m)return decodeURIComponent(m[1]);
+      }
+      return "";
+    };
+    let urn="";
+    // Poll ~15s for the static compose anchor.
+    for(let w=0;w<15&&!urn;w+=1){
+      urn=await findUrn();
+      if(urn)break;
+      await p.waitForTimeout(1000);
+    }
+    if(!urn){
+      // Last resort: open the More overflow once so its anchors render. This
+      // is a trusted elementHandle.click, never the dropdown's Message item.
+      const moreHandle=await findButtonHandle(p,/^(More|More actions)$/i);
+      if(moreHandle){
+        try{await moreHandle.click({timeout:5000});}catch{}
+        await p.waitForTimeout(1500);
+        urn=await findUrn();
+      }
+    }
+    if(!urn){out.status="no_message_button";out.detail="no Message CTA on profile and no compose anchor for "+CONFIG.memberName;console.log(JSON.stringify({ok:true,data:out}));return;}
+    const leadUrl="https://www.linkedin.com/sales/lead/"+urn+",name,s9qk";
+    // A successful goto can still land on an empty/error document, so retry
+    // the same-page navigation once unless the verified lead Message CTA lands.
+    let leadLoaded=false;
+    for(let attempt=0;attempt<2&&!messageHandle;attempt+=1){
+      try{await p.goto(leadUrl,{waitUntil:"domcontentloaded",timeout:30000});}
+      catch(e){
+        const detail=String((e&&e.message)||e);
+        const transient=/navigation|Timeout|ERR_ABORTED|ERR_CONNECTION_CLOSED|net::|context was destroyed|Execution context/i.test(detail);
+        if(attempt===0&&transient){await p.waitForTimeout(2000);continue;}
+        out.status="failed";out.detail=detail;console.log(JSON.stringify({ok:true,data:out}));return;
+      }
+      for(let w=0;w<25&&!messageHandle;w+=1){
+        const body=await p.evaluate(()=>document.body?document.body.innerText:"").catch(()=>"");
+        if(/Sales Navigator Lead Page/i.test(body)){
+          leadLoaded=true;
+          messageHandle=await findButtonHandle(p,/^Message$/i);
+        }
+        if(!messageHandle)await p.waitForTimeout(1000);
+      }
+    }
+    if(!messageHandle){
+      out.status=leadLoaded?"no_message_button":"lead_page_not_loaded";
+      out.detail=leadLoaded?"Sales Nav lead page has no Message button":"Sales Nav lead page did not load";
+      console.log(JSON.stringify({ok:true,data:out}));return;
+    }
+    usingInMail=true;
   }
-  try{await box.fill(CONFIG.message);}catch{await p.keyboard.type(CONFIG.message,{delay:2});}
+  // Open the composer in place (profile messenger or Sales Nav InMail).
+  try{await messageHandle.click({timeout:10000});}catch(e){out.status="failed";out.detail=String((e&&e.message)||e);console.log(JSON.stringify({ok:true,data:out}));return;}
+  let box=null;
+  const boxSelector=usingInMail
+    ? "textarea[aria-label='Type your message here or create draft']"
+    : "div[role='textbox'][contenteditable='true']";
+  for(let w=0;w<30&&!box;w+=1){
+    const b=p.locator(boxSelector).last();
+    if(await b.count()>0&&await b.isVisible().catch(()=>false)){box=await bind(b);break;}
+    await p.waitForTimeout(1000);
+  }
+  if(!box){
+    out.status="no_composer";
+    out.detail="messenger composer not found ("+String(await p.url().catch(()=>""))+")";
+    console.log(JSON.stringify({ok:true,data:out}));return;
+  }
+  if(usingInMail&&CONFIG.subject){
+    const subj=p.locator("input[aria-label='Subject (required)']").first();
+    try{await subj.fill(CONFIG.subject);}catch(e){out.status="no_composer";out.detail="InMail subject field not found: "+String((e&&e.message)||e);console.log(JSON.stringify({ok:true,data:out}));return;}
+  }
+  try{await box.fill(CONFIG.message);}catch{await box.click({timeout:5000}).catch(()=>{});await p.keyboard.type(CONFIG.message,{delay:2});}
   await p.waitForTimeout(800);
-  let sendBtn=null;
-  const sbuttons=p.locator("button");
-  const sn=await sbuttons.count();
-  for(let i=0;i<sn;i+=1){
-    const b=sbuttons.nth(i);
-    if(!(await b.isVisible().catch(()=>false)))continue;
-    const text=((await b.textContent().catch(()=>""))||"").replace(/\\s+/g," ").trim();
-    const aria=((await b.getAttribute("aria-label").catch(()=>null))||"").replace(/\\s+/g," ").trim();
-    if(/^Send$/i.test(text)||/^Send$/i.test(aria)){sendBtn=b;break;}
-  }
-  if(!sendBtn){out.status="no_send_button";out.detail="composer open but no Send CTA";console.log(JSON.stringify({ok:true,data:out}));return;}
-  await sendBtn.click();
-  await p.waitForTimeout(3500);
+  const sendHandle=await findButtonHandle(p,/^Send$/i);
+  if(!sendHandle){out.status="no_send_button";out.detail="composer open but no Send CTA";console.log(JSON.stringify({ok:true,data:out}));return;}
+  try{await sendHandle.click({timeout:10000});}catch(e){out.status="failed";out.detail=String((e&&e.message)||e);console.log(JSON.stringify({ok:true,data:out}));return;}
   const needle=CONFIG.message.slice(0,60);
-  const bodyText=await p.evaluate(()=>document.body.innerText).catch(()=>"");
-  out.confirmed=bodyText.includes(needle);
-  out.status="sent";
+  for(let w=0;w<15&&!out.confirmed;w+=1){
+    await p.waitForTimeout(1000);
+    const bodyText=await p.evaluate(()=>document.body?document.body.innerText:"").catch(()=>"");
+    out.confirmed=bodyText.includes(needle);
+  }
+  // Only report sent when the message is actually visible in the thread.
+  out.status=out.confirmed?"sent":"failed";
   out.detail=out.confirmed?"message visible in thread":"Send clicked; confirmation unverified";
   console.log(JSON.stringify({ok:true,data:out}));
 }catch(e){
   out.status="failed";
-  out.detail=String((e&&e.message)||e).slice(0,300);
+  out.detail=String((e&&e.message)||e);
   console.log(JSON.stringify({ok:true,data:out}));
-}`;
+}
+`;
 
 /** Build the message-send script for one hiring team member profile. */
 export function buildSendScript(config: {
@@ -553,6 +432,6 @@ export function buildSendScript(config: {
     throw new TypeError("profileUrl must be a linkedin.com/in/ profile URL");
   if (config.message.trim().length === 0) throw new TypeError("message must not be empty");
   // Top-level awaits only: the playwriter executor does not await an async IIFE.
-  const source = `const CONFIG=${JSON.stringify(config)};\n${PAGE_PICKUP}\n${SEND_RESULT}`;
+  const source = `const CONFIG=${JSON.stringify(config)};\n${SEND_PICKUP}\n${SEND_RESULT}`;
   return { script: source, timeoutMs: SEND_TIMEOUT_MS };
 }

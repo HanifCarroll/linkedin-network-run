@@ -384,6 +384,64 @@ const migrations: readonly Migration[] = [
         CHECK(review IN ('needs_review', 'approved', 'skipped'));
     `,
   },
+  {
+    id: 10,
+    name: "jobs_capture",
+    sql: `
+      CREATE TABLE capture_runs (
+        id TEXT PRIMARY KEY,
+        source_url TEXT NOT NULL,
+        search_config_json TEXT NOT NULL DEFAULT '{}',
+        state TEXT NOT NULL DEFAULT 'active'
+          CHECK(state IN ('active', 'complete', 'failed')),
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        checkpoint_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT
+      );
+
+      CREATE TABLE capture_pages (
+        run_id TEXT NOT NULL REFERENCES capture_runs(id) ON DELETE CASCADE,
+        page_identity TEXT NOT NULL,
+        cursor TEXT,
+        source_url TEXT NOT NULL,
+        response_url TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        item_count INTEGER,
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        error TEXT,
+        PRIMARY KEY(run_id, page_identity)
+      );
+      CREATE INDEX capture_pages_run_idx ON capture_pages(run_id, captured_at);
+    `,
+  },
+  {
+    id: 11,
+    name: "jobs_normalization",
+    sql: `
+      CREATE TABLE capture_page_normalizations (
+        run_id TEXT NOT NULL REFERENCES capture_runs(id) ON DELETE CASCADE,
+        page_identity TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        observed_count INTEGER NOT NULL CHECK(observed_count >= 0),
+        normalized_at TEXT NOT NULL,
+        PRIMARY KEY(run_id, page_identity)
+      );
+
+      CREATE TABLE job_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES capture_runs(id) ON DELETE CASCADE,
+        page_identity TEXT NOT NULL,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        observed_title TEXT NOT NULL DEFAULT '',
+        observed_at TEXT NOT NULL,
+        UNIQUE(run_id, page_identity, job_id)
+      );
+      CREATE INDEX job_observations_job_idx ON job_observations(job_id);
+    `,
+  },
 ];
 
 export type MigrationResult = {

@@ -15,14 +15,14 @@ const CONTRACT_FIELDS = [
 
 const definitions = [
   {
-    sourceId: "hubspot-agency-ops",
-    sourceName: "Consulting - HubSpot Agency Ops",
-    savedSearchId: "1980844577",
+    sourceId: "b2b-saas-founders",
+    sourceName: "B2B SaaS Founders & CTOs",
+    savedSearchId: "2006164114",
   },
   {
-    sourceId: "hubspot-b2b-revops",
-    sourceName: "Consulting - HubSpot B2B RevOps",
-    savedSearchId: "1980870185",
+    sourceId: "b2b-saas-engineering-product-leaders",
+    sourceName: "B2B SaaS Engineering & Product Leaders",
+    savedSearchId: "2006164122",
   },
 ] as const;
 

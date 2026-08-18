@@ -1,34 +1,36 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
+import { JobsCaptureStore } from "../jobs/capture.ts";
 import {
-  buildCaptureScript,
   buildCheckLivenessScript,
   buildCleanupTabsScript,
   buildDetailScript,
   buildEnrichPoolScript,
-  buildEnrichScript,
-  buildSearchUrl,
   buildSendScript,
   JobsEngine,
+  JobsNormalizer,
   recipientProfileUrl,
   runJobsScript,
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
-import type { CapturedJob, CollectedJob, JobDetail, JobRow } from "../jobs/types.ts";
+import type { CollectedJob, JobDetail, JobRow } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
+  JobsCaptureFinishInput,
+  JobsCaptureIngestInput,
+  JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
-  JobsCollectInput,
   JobsDetailInput,
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
   JobsListInput,
+  JobsNormalizeInput,
   JobsRemoveInput,
-  JobsSearchInput,
   JobsSendInput,
 } from "./types.ts";
 
@@ -61,251 +63,91 @@ const defaultResetSession = (input: {
   };
 };
 
-export async function jobsSearch(
-  input: JobsSearchInput,
+export async function jobsCaptureStart(
+  input: JobsCaptureStartInput,
   dependencies: JobsDependencies = defaultDependencies,
 ): Promise<unknown> {
-  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
-  const runScript = dependencies.runScript ?? runJobsScript;
   const now = dependencies.now ?? nowDefault;
-  const sessionId = await resolveSession({
-    workflow: "jobs",
-    selection: input.sessionId,
-    stateDir: input.stateDir,
-    playwriterBin: input.playwriterBin,
-  });
-  const target = input.hiringTeamTarget ?? 0;
-  const searchUrl = buildSearchUrl(input);
-  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
-  const dbPath = join(input.stateDir, "linkedin-tools.db");
-  const phase = (script: string, timeoutMs: number) =>
-    runScript({
-      playwriterBin: input.playwriterBin,
-      sessionId,
-      script,
-      timeoutMs,
-      stateDir: input.stateDir,
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const run = new JobsCaptureStore(opened.database).startRun({
+      id: input.runId,
+      sourceUrl: input.sourceUrl,
+      ...(input.searchConfigJson === undefined ? {} : { searchConfigJson: input.searchConfigJson }),
+      ...(input.checkpointJson === undefined ? {} : { checkpointJson: input.checkpointJson }),
+      now: now(),
     });
-  const dbRows = (): JobRow[] => {
-    const opened = openDatabase(dbPath);
-    try {
-      return new JobsEngine(opened.database).listJobs({ withHiringTeam: false });
-    } finally {
-      opened.database.close();
-    }
-  };
-  const countTeams = (rows: readonly JobRow[] = dbRows()) =>
-    rows.filter((row) => row.hasHiringTeam).length;
-  // Resume: skip jobs already enriched (found a team OR landed a company) so an
-  // interrupted/session-walled run continues with new work instead of revisiting.
-  const visitedIds = (rows: readonly JobRow[] = dbRows()) =>
-    rows.filter((row) => row.hasHiringTeam || row.company.length > 0).map((row) => row.id);
-  const checkpoint = (jobs: readonly CollectedJob[]): void => {
-    if (jobs.length === 0) return;
-    const opened = openDatabase(dbPath);
-    try {
-      new JobsEngine(opened.database).upsertJobs(jobs, now());
-    } finally {
-      opened.database.close();
-    }
-  };
-
-  const startRows = dbRows();
-  const startIds = new Set(startRows.map((row) => row.id));
-  const startTeams = countTeams(startRows);
-  let targetMet = target > 0 ? startTeams >= target : false;
-  let cardsTotal = 0;
-  let pagesCollected = 0;
-  const maxCycles = 8;
-  const maxEnrichPerCycle = Math.ceil((input.pages * 25) / 9) + 2;
-  // Soft wall-clock budget: stop starting new phases once a run approaches the
-  // ~5-min relay-degradation threshold. Progress is checkpointed, so a timed-out
-  // run resumes cleanly on the next invocation (visited IDs are skipped).
-  const SEARCH_BUDGET_MS = 240_000;
-  const startedAt = Date.now();
-  let timedOut = false;
-  const overBudget = (): boolean => Date.now() - startedAt >= SEARCH_BUDGET_MS;
-
-  // Sessions drop for a few reasons: the playwriter CLI (<=0.4.0) ends long
-  // execute requests at Node/Undici's fixed 300s response-header timeout
-  // (remorses/playwriter#74), and the relay/extension disconnects under
-  // sustained load. Each completed job is checkpointed to the DB as it lands,
-  // so on a session failure we reset the connection, re-capture a fresh pool,
-  // and continue — every cycle does new work until the team target is met or
-  // the pool is exhausted. runPhase returns null when the session was reset
-  // (caller retries with fresh state).
-  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
-    try {
-      return await phase(script, timeoutMs);
-    } catch (error) {
-      if (isSessionFailure(error)) {
-        await resetSession(sessionId).catch(() => {});
-        return null;
-      }
-      throw error;
-    }
-  };
-
-  for (let cycle = 0; cycle < maxCycles && !targetMet && !timedOut; cycle += 1) {
-    if (overBudget()) {
-      timedOut = true;
-      break;
-    }
-    const skipIds = target > 0 ? visitedIds() : [];
-    const captureScript = buildCaptureScript({
-      searchUrl,
-      pages: input.pages,
-      hiringTeamLimit: input.hiringTeamLimit,
-      skipIds,
-    });
-    const capture = await runPhase(captureScript.script, captureScript.timeoutMs);
-    if (capture === null) continue;
-    cardsTotal = Number.isSafeInteger(capture.data?.cardsTotal)
-      ? Number(capture.data.cardsTotal)
-      : cardsTotal;
-    pagesCollected = Number.isSafeInteger(capture.data?.pagesCollected)
-      ? Number(capture.data.pagesCollected)
-      : pagesCollected;
-    let remaining = Number.isSafeInteger(capture.data?.pool) ? Number(capture.data.pool) : 0;
-    for (
-      let enrichCall = 0;
-      enrichCall < maxEnrichPerCycle && remaining > 0 && !targetMet && !timedOut;
-      enrichCall += 1
-    ) {
-      if (overBudget()) {
-        timedOut = true;
-        break;
-      }
-      const enrichScript = buildEnrichScript({ batchSize: 3 });
-      const enrich = await runPhase(enrichScript.script, enrichScript.timeoutMs);
-      if (enrich === null) break;
-      const completed = Array.isArray(enrich.data?.completed) ? enrich.data.completed : [];
-      // A real job view always yields a company; empty rows mean extraction
-      // failed (page never rendered — usually a degrading/looming-relay-drop
-      // session). Discard those (they're retried next cycle) and treat an
-      // entirely-empty batch as a session-quality failure: reset and re-capture
-      // instead of recording zeros as progress.
-      const real = completed.filter(
-        (job): job is CollectedJob => isRecord(job) && String(job.company ?? "").length > 0,
-      );
-      if (completed.length > 0 && real.length === 0) {
-        await resetSession(sessionId).catch(() => {});
-        break;
-      }
-      checkpoint(real);
-      remaining = Number.isSafeInteger(enrich.data?.remaining) ? Number(enrich.data.remaining) : 0;
-      if (target > 0 && countTeams() >= target) targetMet = true;
-    }
-    if (target > 0 && countTeams() >= target) targetMet = true;
+    return { command: "jobs capture-start", run };
+  } finally {
+    opened.database.close();
   }
-
-  const finalRows = dbRows();
-  const collected = finalRows.filter((row) => !startIds.has(row.id)).length;
-  const withHiringTeam = countTeams(finalRows);
-  return {
-    command: "jobs search",
-    keywords: input.keywords,
-    location: input.location,
-    postedWithinDays: input.postedWithinDays ?? null,
-    remote: input.remote ?? false,
-    hiringTeamTarget: target,
-    targetMet: target === 0 ? true : withHiringTeam >= target,
-    timedOut,
-    cardsTotal,
-    pagesCollected,
-    collected,
-    withHiringTeam,
-    jobs: finalRows,
-  };
 }
 
-export async function jobsCollect(
-  input: JobsCollectInput,
+export async function jobsCaptureIngest(
+  input: JobsCaptureIngestInput,
   dependencies: JobsDependencies = defaultDependencies,
 ): Promise<unknown> {
-  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
-  const runScript = dependencies.runScript ?? runJobsScript;
   const now = dependencies.now ?? nowDefault;
-  const sessionId = await resolveSession({
-    workflow: "jobs",
-    selection: input.sessionId,
-    stateDir: input.stateDir,
-    playwriterBin: input.playwriterBin,
-  });
-  const searchUrl = buildSearchUrl(input);
-  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
-  const dbPath = join(input.stateDir, "linkedin-tools.db");
-  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
-    try {
-      return await runScript({
-        playwriterBin: input.playwriterBin,
-        sessionId,
-        script,
-        timeoutMs,
-        stateDir: input.stateDir,
-      });
-    } catch (error) {
-      if (isSessionFailure(error)) {
-        await resetSession(sessionId).catch(() => {});
-        return null;
-      }
-      throw error;
-    }
-  };
-  const knownIds = (): string[] => {
-    const opened = openDatabase(dbPath);
-    try {
-      return new JobsEngine(opened.database).listJobs({ withHiringTeam: false }).map((r) => r.id);
-    } finally {
-      opened.database.close();
-    }
-  };
-
-  let cardsTotal = 0;
-  let pagesCollected = 0;
-  let captured = 0;
-  for (let cycle = 0; cycle < 8; cycle += 1) {
-    const { script, timeoutMs } = buildCaptureScript({
-      searchUrl,
-      pages: input.pages,
-      hiringTeamLimit: Math.min(input.pages * 25, 200),
-      skipIds: knownIds(),
+  let payload: string;
+  try {
+    payload =
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8");
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", `cannot read capture payload ${input.payloadPath}`, {
+      exitCode: 2,
     });
-    const result = await runPhase(script, timeoutMs);
-    if (result === null) continue;
-    cardsTotal = Number.isSafeInteger(result.data?.cardsTotal)
-      ? Number(result.data.cardsTotal)
-      : cardsTotal;
-    pagesCollected = Number.isSafeInteger(result.data?.pagesCollected)
-      ? Number(result.data.pagesCollected)
-      : pagesCollected;
-    const jobs: CapturedJob[] = [];
-    const raw = result.data?.jobs;
-    if (Array.isArray(raw)) {
-      for (const item of raw) {
-        if (isRecord(item) && typeof item.id === "string" && typeof item.title === "string") {
-          jobs.push({ id: item.id, title: item.title });
-        }
-      }
-    }
-    if (jobs.length > 0) {
-      const opened = openDatabase(dbPath);
-      try {
-        captured = new JobsEngine(opened.database).storeCapturedJobs(jobs, now());
-      } finally {
-        opened.database.close();
-      }
-    }
-    break;
   }
-  return {
-    command: "jobs collect",
-    keywords: input.keywords,
-    location: input.location,
-    cardsTotal,
-    pagesCollected,
-    captured,
-  };
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const result = new JobsCaptureStore(opened.database).ingestPage({
+      runId: input.runId,
+      pageIdentity: input.pageIdentity,
+      payloadText: payload,
+      sourceUrl: input.sourceUrl,
+      responseUrl: input.responseUrl,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      capturedAt: input.capturedAt ?? now(),
+    });
+    return { command: "jobs capture-ingest", ...result };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsCaptureFinish(
+  input: JobsCaptureFinishInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const now = dependencies.now ?? nowDefault;
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const run = new JobsCaptureStore(opened.database).finishRun({
+      id: input.runId,
+      state: input.state,
+      ...(input.checkpointJson === undefined ? {} : { checkpointJson: input.checkpointJson }),
+      ...(input.error === undefined ? {} : { error: input.error }),
+      now: now(),
+    });
+    return { command: "jobs capture-finish", run };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsNormalize(
+  input: JobsNormalizeInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return new JobsNormalizer(opened.database).normalize({
+      runId: input.runId,
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+      now: (dependencies.now ?? nowDefault)(),
+    });
+  } finally {
+    opened.database.close();
+  }
 }
 
 export async function jobsEnrich(
