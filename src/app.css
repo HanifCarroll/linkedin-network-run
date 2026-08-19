@@ -1,21 +1,21 @@
 :root {
-  --bg: #f5f4f1;
-  --ink: #1b1a17;
-  --ink-2: #56544e;
-  --ink-3: #8e8c84;
-  --ink-4: #bdbbb2;
-  --line: #e3e1d9;
-  --line-soft: #ece9e1;
-  --accent: #0a66c2;
-  --accent-ink: #075093;
-  --accent-soft: #eaf2fa;
-  --ok: #1f7a3d;
-  --ok-soft: #eaf4ed;
-  --warn: #8a5a00;
-  --warn-soft: #faf1e3;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, system-ui, sans-serif;
+  --bg: #fff;
+  --surface-inset: #fafaf8;
+  --ink: #282828;
+  --ink-2: #504945;
+  --ink-3: #77716d;
+  --ink-4: #aaa6a2;
+  --line: #e0e2dc;
+  --line-soft: #eeefeb;
+  --accent: #f8d651;
+  --accent-ink: #10253f;
+  --accent-soft: #fffaf0;
+  --ok: #36512e;
+  --ok-soft: #eaf1e6;
+  --warn: #5c4200;
+  --warn-soft: #f8edce;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --s1: 4px;
   --s2: 8px;
   --s3: 12px;
@@ -36,7 +36,7 @@ body {
   color: var(--ink);
   font-family: var(--sans);
   font-size: 16px;
-  line-height: 1.45;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
@@ -46,20 +46,22 @@ header {
   display: flex;
   align-items: flex-end;
   gap: var(--s5);
-  padding: var(--s5) var(--s6) var(--s3);
+  padding: var(--s5) var(--s6) var(--s4);
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
 .brand h1 {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
   margin: 0;
 }
 .brand .sub {
-  margin: 2px 0 0;
+  margin: 6px 0 0;
   color: var(--ink-3);
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 1.45;
 }
 .controls {
   display: flex;
@@ -70,12 +72,12 @@ header {
 }
 
 input[type="search"] {
-  background: #fff;
+  background: var(--surface-inset);
   border: 1px solid var(--line);
   border-radius: var(--s2);
   padding: 7px 12px;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--ink);
   width: 240px;
   outline: none;
@@ -84,8 +86,8 @@ input[type="search"]::placeholder {
   color: var(--ink-4);
 }
 input[type="search"]:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .switch {
@@ -124,6 +126,9 @@ input[type="search"]:focus {
   background: var(--accent);
 }
 .switch input:checked::after {
+  background: var(--accent-ink);
+}
+.switch input:checked::after {
   transform: translateX(14px);
 }
 .switch input:focus-visible {
@@ -143,7 +148,7 @@ input[type="search"]:focus {
   border: 1px solid var(--line);
   background: #fff;
   color: var(--ink-2);
-  border-radius: 999px;
+  border-radius: var(--s2);
   padding: 5px 12px;
   font: inherit;
   font-size: 14px;
@@ -162,20 +167,23 @@ input[type="search"]:focus {
   border-color: var(--ink-4);
 }
 .filter.active {
-  background: var(--ink);
-  color: #fff;
-  border-color: var(--ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent);
 }
 .filter.active .n {
-  color: rgba(255, 255, 255, 0.7);
+  color: color-mix(in srgb, var(--accent-ink) 68%, transparent);
 }
 .filter.clear {
   margin-left: auto;
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--ink);
+  border-color: var(--ink);
 }
 .filter.clear:hover {
   background: var(--accent-soft);
+  text-decoration: underline 2px color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 3px;
 }
 
 .sections {
@@ -208,12 +216,13 @@ input[type="search"]:focus {
   border-color: var(--ink-4);
 }
 .section-btn.active {
-  background: var(--ink);
-  color: #fff;
-  border-color: var(--ink);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent);
 }
 .section-btn.active .n {
-  color: rgba(255, 255, 255, 0.7);
+  color: color-mix(in srgb, var(--accent-ink) 68%, transparent);
 }
 
 .reminder {
@@ -232,14 +241,15 @@ input[type="search"]:focus {
 }
 
 .role-url {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--ink);
+  text-decoration: underline 2px color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 3px;
   font-size: 13px;
   font-weight: 500;
 }
 .role-url:hover {
-  color: var(--accent-ink);
-  text-decoration: underline;
+  color: var(--ink);
+  text-decoration-color: var(--accent);
 }
 
 main {
@@ -265,10 +275,11 @@ main {
   cursor: pointer;
 }
 .row:hover {
-  background: rgba(0, 0, 0, 0.025);
+  background: var(--surface-inset);
 }
 .row.selected {
   background: var(--accent-soft);
+  box-shadow: inset 4px 0 0 var(--accent);
 }
 .row:focus-visible {
   outline: 2px solid var(--accent);
@@ -279,7 +290,7 @@ main {
   min-width: 0;
 }
 .row-name {
-  font-weight: 650;
+  font-weight: 700;
   color: var(--ink);
   font-size: 16px;
 }
@@ -321,18 +332,18 @@ main {
   font-size: 12px;
   font-weight: 600;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: 4px;
   line-height: 1.5;
   letter-spacing: 0.01em;
 }
 .badge.d1 {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
 }
 .badge.d2 {
   background: transparent;
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--ink-2);
+  box-shadow: inset 0 0 0 1px var(--line);
 }
 .badge.d3 {
   background: transparent;
@@ -354,8 +365,8 @@ main {
   color: var(--ink-3);
 }
 .badge.rev.approved {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--ok);
+  background: var(--ok-soft);
 }
 .badge.rev.skipped {
   color: var(--warn);
@@ -376,7 +387,7 @@ main {
 }
 .badge.kind-direct {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--warn);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 .badge.kind-applied {
@@ -389,15 +400,15 @@ main {
   padding: var(--s5) var(--s6) var(--s6);
 }
 .detail-head h2 {
-  font-size: 24px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   margin: var(--s3) 0 var(--s1);
   line-height: 1.25;
 }
 .detail-head .company {
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 500;
 }
 .detail-head .loc {
   color: var(--ink-3);
@@ -407,13 +418,14 @@ main {
 .detail-head .open {
   display: inline-flex;
   margin-top: var(--s3);
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--ink);
+  text-decoration: underline 2px color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 3px;
   font-weight: 500;
 }
 .detail-head .open:hover {
-  color: var(--accent-ink);
-  text-decoration: underline;
+  color: var(--ink);
+  text-decoration-color: var(--accent);
 }
 
 .status {
@@ -422,13 +434,13 @@ main {
   font-size: 14px;
   font-weight: 600;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: 4px;
   color: var(--ink-3);
   background: var(--line-soft);
 }
 .status.approved {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--ok);
+  background: var(--ok-soft);
 }
 .status.skipped {
   color: var(--warn);
@@ -452,13 +464,13 @@ main {
   font-size: 14px;
   font-weight: 600;
   padding: 2px 10px;
-  border-radius: 999px;
+  border-radius: 4px;
   color: var(--ink-2);
   background: #fff;
   box-shadow: inset 0 0 0 1px var(--line);
 }
 .fact.flag {
-  color: var(--accent);
+  color: var(--warn);
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
@@ -474,11 +486,11 @@ main {
   margin-top: var(--s5);
 }
 .description h3 {
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
+  letter-spacing: 0.07em;
+  color: var(--ink);
   margin: 0 0 var(--s3);
 }
 .description .body {
@@ -502,11 +514,11 @@ main {
   margin-top: var(--s5);
 }
 .summary h3 {
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
+  letter-spacing: 0.07em;
+  color: var(--ink);
   margin: 0 0 var(--s3);
 }
 .summary .block {
@@ -536,11 +548,11 @@ main {
   margin-top: var(--s4);
 }
 .benefits h3 {
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
+  letter-spacing: 0.07em;
+  color: var(--ink);
   margin: 0 0 var(--s2);
 }
 .benefits .list {
@@ -560,11 +572,11 @@ main {
   margin-top: var(--s5);
 }
 .team h3 {
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
+  letter-spacing: 0.07em;
+  color: var(--ink);
   margin: 0 0 var(--s3);
 }
 .team h3 .count {
@@ -611,8 +623,9 @@ main {
   text-decoration: none;
 }
 .member .name a:hover {
-  color: var(--accent);
-  text-decoration: underline;
+  color: var(--ink);
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 3px;
 }
 .member .headline {
   color: var(--ink-2);
@@ -646,7 +659,8 @@ main {
   color: var(--ink);
 }
 .team .roles li:hover .role-title {
-  color: var(--accent);
+  text-decoration: underline 2px var(--accent);
+  text-underline-offset: 3px;
 }
 .team .role-company {
   color: var(--ink-2);
@@ -674,11 +688,11 @@ main {
   display: none;
 }
 .draft h3 {
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-3);
+  letter-spacing: 0.07em;
+  color: var(--ink);
   margin: 0 0 var(--s3);
 }
 .draft label {
@@ -691,7 +705,7 @@ main {
 .draft input[type="text"],
 .draft textarea {
   width: 100%;
-  background: #fff;
+  background: var(--surface-inset);
   border: 1px solid var(--line);
   border-radius: var(--s2);
   padding: 8px 10px;
@@ -703,8 +717,8 @@ main {
 }
 .draft input[type="text"]:focus,
 .draft textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .draft textarea {
   min-height: 200px;
@@ -733,12 +747,12 @@ main {
 }
 .draft-actions button.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   border-color: var(--accent);
 }
 .draft-actions button.primary:hover {
-  background: var(--accent-ink);
-  border-color: var(--accent-ink);
+  background: #f2b63d;
+  border-color: #f2b63d;
 }
 .draft-actions button.danger {
   color: #b3261e;
