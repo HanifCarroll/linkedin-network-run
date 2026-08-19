@@ -30,11 +30,13 @@ import {
   networkTick,
 } from "./network.ts";
 import { networkOpen } from "./network-open.ts";
+import { salesnav } from "./salesnav.ts";
 import { networkSessionReset } from "./session-reset.ts";
 import type { CliOperations } from "./types.ts";
 
 export function createDefaultOperations(): CliOperations {
   return {
+    salesnav,
     doctor,
     networkStatus,
     networkReport,

@@ -71,6 +71,20 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
     throw new CliError("INTERNAL_ERROR", "non-command invocation reached command execution");
   }
   switch (invocation.command) {
+    case "salesnav staffing capture-start":
+    case "salesnav staffing capture-ingest":
+    case "salesnav staffing capture-finish":
+    case "salesnav staffing normalize":
+    case "salesnav staffing qualify":
+    case "salesnav staffing status":
+    case "salesnav staffing account-capture-start":
+    case "salesnav staffing account-capture-ingest":
+    case "salesnav staffing account-capture-finish":
+    case "salesnav staffing account-normalize":
+    case "salesnav staffing account-status":
+    case "salesnav staffing account-qualify-next":
+    case "salesnav staffing account-qualify-record":
+      return operations.salesnav(invocation.input);
     case "doctor":
       return operations.doctor(invocation.input);
     case "network status":

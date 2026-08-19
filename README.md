@@ -322,3 +322,65 @@ tokens. They use distinct windows and log files, an explicit working directory a
 
 Tests and `bun run smoke` use dependency injection, temporary state, and fake commands. They do not
 exercise a live browser, LinkedIn, launchd, the old Python repository, or legacy state.
+
+### Sales Navigator staffing intake
+
+This read-only slice accepts only the saved people search with `savedSearchId=2006360906`.
+The CLI owns SQLite and JSON envelopes; caller-owned Chrome owns the visible action and response
+capture. It never creates or closes tabs and never receives cookies or headers.
+
+```sh
+linkedin-tools salesnav staffing capture-start --run-id ID \
+  --source-url 'https://www.linkedin.com/sales/search/people?savedSearchId=2006360906'
+linkedin-tools salesnav staffing capture-ingest --run-id ID --start 0 --payload - \
+  --source-url 'https://www.linkedin.com/sales/search/people?savedSearchId=2006360906' \
+  --response-url 'https://www.linkedin.com/sales-api/salesApiLeadSearch?q=savedSearchId&start=0&count=25&savedSearchId=2006360906'
+linkedin-tools salesnav staffing capture-finish --run-id ID --state complete
+linkedin-tools salesnav staffing normalize --run-id ID
+linkedin-tools salesnav staffing qualify --run-id ID --policy-version staffing-v2
+linkedin-tools salesnav staffing status --run-id ID
+```
+
+Use `--json` for the stable `{ "ok": true, "data": ... }` or
+`{ "ok": false, "error": ... }` boundary. The handoff helper is
+`scripts/linkedin-salesnav-chrome-helper.mjs`. Account capture uses
+`scripts/linkedin-salesnav-account-chrome-helper.mjs` and the additive migration
+19 tables; qualification decisions are organization-scoped across runs.
+
+Staffing intake now begins with the account search. The supported contract is United States,
+Staffing and Recruiting, 11–50 and 51–200 employees, with a non-empty, run-bound keyword query.
+The source URL records the exact query used for each run:
+
+```sh
+linkedin-tools salesnav staffing account-capture-start --run-id ID \
+  --source-url '<current-supported-account-search-url>'
+linkedin-tools salesnav staffing account-capture-ingest --run-id ID --start 0 \
+  --payload - --source-url '<same-url>' --response-url '<captured-account-response-url>'
+linkedin-tools salesnav staffing account-capture-finish --run-id ID --state complete
+linkedin-tools salesnav staffing account-normalize --run-id ID
+linkedin-tools salesnav staffing account-qualify-next --run-id ID
+linkedin-tools salesnav staffing account-qualify-record --run-id ID \
+  --organization-id ID --fit kept --evidence '{}' --unknowns '[]' \
+  --reason 'Relevant staffing firm' --policy-version staffing-account-v1
+linkedin-tools salesnav staffing account-status --run-id ID
+```
+
+Review the firm's account evidence, LinkedIn company page, and website before recording the
+qualification. The people-search commands above remain available for contact selection at kept firms.
+
+### Sales Navigator studio lane
+
+`salesnav studio` uses the same caller-owned account capture flow, but only these two exact
+Boolean searches are accepted: US, 11–50 employees, IT Services & IT Consulting plus Design
+Services, with the approved product-development or product-studio query. Decisions are scoped by
+`(lane, organization)` while organizations remain globally deduplicated. Before a studio keep,
+record manual evidence:
+
+```sh
+linkedin-tools salesnav studio firm-research-record --run-id ID --organization-id ORG \
+  --source-urls '["https://www.linkedin.com/company/example","https://example.com"]' \
+  --services 'Product design and custom software' --fact 'Built a customer portal' \
+  --unknowns '["team size"]'
+```
+
+This lane is research-only: it has no HubSpot or sending path.

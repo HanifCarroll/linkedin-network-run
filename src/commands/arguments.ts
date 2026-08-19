@@ -36,6 +36,7 @@ import type {
   NetworkSessionResetInput,
   NetworkTickInput,
   ParsedInvocation,
+  SalesNavInput,
 } from "./types.ts";
 
 const PLAYWRITER_DEFAULT = "/Users/hanifcarroll/.bun/bin/playwriter";
@@ -58,6 +59,7 @@ Commands:
   network incident-clear Clear the active incident after dual human confirmation
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
+  salesnav staffing|studio  Capture and qualify lane-scoped Sales Navigator accounts
   jobs capture-start     Start a durable Chrome Jobs capture run
   jobs capture-ingest    Ingest one captured Jobs XHR response into SQLite
   jobs capture-finish    Complete or fail a capture run with final checkpoint
@@ -131,6 +133,38 @@ const MIGRATION_HELP = `Usage:
   linkedin-tools [--json] migration dry-run --source-root ABSOLUTE_PATH
 
 This command reads legacy state and returns proposals. It has no apply mode.
+`;
+
+const SALESNAV_HELP = `Usage:
+  linkedin-tools [--json] salesnav staffing capture-start --run-id ID --source-url URL
+    [--checkpoint JSON] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing capture-ingest --run-id ID --start N
+    --payload - --source-url URL --response-url URL [--captured-at ISO]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing capture-finish --run-id ID
+    --state complete|failed [--checkpoint JSON] [--error TEXT]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing normalize --run-id ID [--limit N]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing qualify --run-id ID --policy-version ID
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing status --run-id ID [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] salesnav staffing account-capture-start --run-id ID --source-url URL
+  linkedin-tools [--json] salesnav staffing account-capture-ingest --run-id ID --start N --payload - --source-url URL --response-url URL
+  linkedin-tools [--json] salesnav staffing account-capture-finish --run-id ID --state complete|failed
+  linkedin-tools [--json] salesnav staffing account-normalize --run-id ID
+  linkedin-tools [--json] salesnav staffing account-status --run-id ID
+  linkedin-tools [--json] salesnav studio account-capture-start --run-id ID --source-url URL
+  linkedin-tools [--json] salesnav studio account-capture-ingest --run-id ID --start N --payload - --source-url URL --response-url URL
+  linkedin-tools [--json] salesnav studio account-capture-finish --run-id ID --state complete|failed
+  linkedin-tools [--json] salesnav studio account-normalize --run-id ID
+  linkedin-tools [--json] salesnav studio account-status --run-id ID
+  linkedin-tools [--json] salesnav studio account-qualify-next --run-id ID
+  linkedin-tools [--json] salesnav staffing account-qualify-next --run-id ID
+  linkedin-tools [--json] salesnav studio firm-research-record --run-id ID --organization-id ID --source-urls JSON_ARRAY --services TEXT --fact TEXT --unknowns JSON_ARRAY [--reviewed-at ISO]
+
+Staffing keeps savedSearchId 2006360906. Studio has exactly two approved US 11-50 IT/design Boolean searches. Account capture requires the lane contract. Capture is caller-owned Chrome handoff;
+the CLI ingests JSON and emits stable JSON envelopes.
 `;
 
 const JOBS_HELP = `Usage:
@@ -474,6 +508,148 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       sourceRoot: absolutePath(required(options, "--source-root"), "--source-root"),
     };
     return { kind: "command", command: "migration dry-run", input };
+  }
+
+  if (argv[0] === "salesnav") {
+    if (argv.length < 3 || (argv[1] !== "staffing" && argv[1] !== "studio") || isHelp(argv[2]))
+      return { kind: "help", text: SALESNAV_HELP };
+    const lane = argv[1] as "staffing" | "studio";
+    const verb = argv[2] ?? "";
+    const verbs = [
+      "capture-start",
+      "capture-ingest",
+      "capture-finish",
+      "normalize",
+      "qualify",
+      "status",
+      "account-capture-start",
+      "account-capture-ingest",
+      "account-capture-finish",
+      "account-normalize",
+      "account-status",
+      "account-qualify-next",
+      "account-qualify-record",
+      "firm-research-record",
+    ] as const;
+    const isSalesNavVerb = (value: string): value is SalesNavInput["command"] =>
+      verbs.includes(value as (typeof verbs)[number]);
+    if (!isSalesNavVerb(verb)) invalid(`unknown salesnav staffing command: ${verb}`);
+    const specs: Readonly<Record<string, OptionKind>> = verb.endsWith("capture-start")
+      ? {
+          "--run-id": "value",
+          "--source-url": "value",
+          "--checkpoint": "value",
+          "--state-dir": "value",
+        }
+      : verb.endsWith("capture-ingest")
+        ? {
+            "--run-id": "value",
+            "--start": "value",
+            "--payload": "value",
+            "--source-url": "value",
+            "--response-url": "value",
+            "--captured-at": "value",
+            "--state-dir": "value",
+          }
+        : verb.endsWith("capture-finish")
+          ? {
+              "--run-id": "value",
+              "--state": "value",
+              "--checkpoint": "value",
+              "--error": "value",
+              "--state-dir": "value",
+            }
+          : verb.endsWith("normalize")
+            ? { "--run-id": "value", "--limit": "value", "--state-dir": "value" }
+            : verb.endsWith("qualify-record")
+              ? {
+                  "--run-id": "value",
+                  "--organization-id": "value",
+                  "--fit": "value",
+                  "--evidence": "value",
+                  "--unknowns": "value",
+                  "--reason": "value",
+                  "--policy-version": "value",
+                  "--state-dir": "value",
+                }
+              : verb === "firm-research-record"
+                ? {
+                    "--run-id": "value",
+                    "--organization-id": "value",
+                    "--source-urls": "value",
+                    "--services": "value",
+                    "--fact": "value",
+                    "--unknowns": "value",
+                    "--reviewed-at": "value",
+                    "--state-dir": "value",
+                  }
+                : verb === "qualify"
+                  ? { "--run-id": "value", "--policy-version": "value", "--state-dir": "value" }
+                  : { "--run-id": "value", "--state-dir": "value" };
+    const options = parseOptions(argv.slice(3), specs);
+    const input: Record<string, unknown> = {
+      command: verb,
+      stateDir: stateDir(options, context),
+      runId: boundedText(required(options, "--run-id"), "--run-id", 200),
+      lane,
+    };
+    if (verb.endsWith("capture-start")) {
+      input.sourceUrl = required(options, "--source-url");
+      input.checkpointJson = options.values.get("--checkpoint");
+    } else if (verb.endsWith("capture-ingest")) {
+      const start = required(options, "--start");
+      input.start = start === "0" ? 0 : boundedInteger(start, "--start", 1, 1000000);
+      const payloadPath = required(options, "--payload");
+      input.payloadPath = payloadPath === "-" ? "-" : absolutePath(payloadPath, "--payload");
+      input.sourceUrl = required(options, "--source-url");
+      input.responseUrl = required(options, "--response-url");
+      input.capturedAt = options.values.get("--captured-at");
+    } else if (verb.endsWith("capture-finish")) {
+      const state = required(options, "--state");
+      if (state !== "complete" && state !== "failed") invalid("--state must be complete or failed");
+      input.state = state;
+      input.checkpointJson = options.values.get("--checkpoint");
+      input.error = options.values.get("--error");
+    } else if (verb.endsWith("normalize")) {
+      const limit = options.values.get("--limit");
+      input.limit = limit === undefined ? undefined : boundedInteger(limit, "--limit", 1, 500);
+    } else if (verb === "qualify") {
+      input.policyVersion = boundedText(
+        required(options, "--policy-version"),
+        "--policy-version",
+        80,
+      );
+    } else if (verb === "firm-research-record") {
+      input.organizationId = boundedText(
+        required(options, "--organization-id"),
+        "--organization-id",
+        200,
+      );
+      input.sourceUrlsJson = required(options, "--source-urls");
+      input.services = boundedText(required(options, "--services"), "--services", 1000);
+      input.concreteFact = boundedText(required(options, "--fact"), "--fact", 1000);
+      input.unknownsJson = required(options, "--unknowns");
+      input.reviewedAt = options.values.get("--reviewed-at");
+    } else if (verb.endsWith("qualify-record")) {
+      const fit = required(options, "--fit");
+      if (fit !== "kept" && fit !== "dropped") invalid("--fit must be kept or dropped");
+      input.organizationId = boundedText(
+        required(options, "--organization-id"),
+        "--organization-id",
+        200,
+      );
+      input.fit = fit;
+      input.evidenceJson = required(options, "--evidence");
+      input.unknownsJson = required(options, "--unknowns");
+      input.reason = boundedText(required(options, "--reason"), "--reason", 500);
+      input.policyVersion = boundedText(
+        required(options, "--policy-version"),
+        "--policy-version",
+        80,
+      );
+    }
+    const commandName = `salesnav ${lane} ${verb}` as const;
+    return { kind: "command", command: commandName, input: input as SalesNavInput };
   }
 
   if (argv[0] === "jobs") {

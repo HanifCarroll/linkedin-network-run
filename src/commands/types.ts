@@ -72,6 +72,8 @@ export type AnalyticsExportInput = {
   readonly maxPolls?: number;
 };
 
+export type SalesNavInput = import("../salesnav.ts").SalesNavInput;
+
 export type JobsCaptureStartInput = {
   readonly stateDir: string;
   readonly runId: string;
@@ -220,6 +222,7 @@ export interface CliOperations {
   networkIncidentClear(input: NetworkIncidentClearInput): Promise<unknown>;
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
   migrationDryRun(input: MigrationDryRunInput): Promise<unknown>;
+  salesnav(input: SalesNavInput): Promise<unknown>;
   jobsCaptureStart(input: JobsCaptureStartInput): Promise<unknown>;
   jobsCaptureIngest(input: JobsCaptureIngestInput): Promise<unknown>;
   jobsCaptureFinish(input: JobsCaptureFinishInput): Promise<unknown>;
@@ -243,6 +246,39 @@ export interface CliOperations {
 export type ParsedInvocation =
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "version" }
+  | {
+      readonly kind: "command";
+      readonly command:
+        | "salesnav staffing capture-start"
+        | "salesnav staffing capture-ingest"
+        | "salesnav staffing capture-finish"
+        | "salesnav staffing normalize"
+        | "salesnav staffing qualify"
+        | "salesnav staffing status"
+        | "salesnav staffing account-capture-start"
+        | "salesnav staffing account-capture-ingest"
+        | "salesnav staffing account-capture-finish"
+        | "salesnav staffing account-normalize"
+        | "salesnav staffing account-status"
+        | "salesnav staffing account-qualify-next"
+        | "salesnav staffing account-qualify-record"
+        | "salesnav staffing firm-research-record"
+        | "salesnav studio capture-start"
+        | "salesnav studio capture-ingest"
+        | "salesnav studio capture-finish"
+        | "salesnav studio normalize"
+        | "salesnav studio qualify"
+        | "salesnav studio status"
+        | "salesnav studio account-capture-start"
+        | "salesnav studio account-capture-ingest"
+        | "salesnav studio account-capture-finish"
+        | "salesnav studio account-normalize"
+        | "salesnav studio account-status"
+        | "salesnav studio account-qualify-next"
+        | "salesnav studio account-qualify-record"
+        | "salesnav studio firm-research-record";
+      readonly input: SalesNavInput;
+    }
   | { readonly kind: "command"; readonly command: "doctor"; readonly input: DoctorInput }
   | {
       readonly kind: "command";

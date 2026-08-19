@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
+import { parseInvocation } from "../src/commands/arguments.ts";
 import { jobsEnrichNext, jobsEnrichRecord, jobsSend } from "../src/commands/jobs.ts";
 import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
@@ -18,6 +19,12 @@ import {
   normalizeProfileUrl,
   prospectIdForProfile,
 } from "../src/jobs/index.ts";
+import { SalesNavStore } from "../src/salesnav.ts";
+import {
+  isAccountResponseUrl,
+  isAccountSearchUrl,
+  SalesNavAccountStore,
+} from "../src/salesnav-account.ts";
 import {
   bucketFor,
   draftActionFor,
@@ -46,6 +53,455 @@ console.error("unexpected fake Playwriter command");process.exit(2)
 await chmod(fakePlaywriter, 0o755);
 
 try {
+  // Focused Sales Navigator intake coverage: fresh migration 17 -> 18, strict parsing,
+  // idempotency/conflicts, fs_salesProfile normalization, dedupe, qualification, status,
+  // and a fake CDP responseReceived/loadingFinished split across batches.
+  {
+    const sourceUrl = "https://www.linkedin.com/sales/search/people?savedSearchId=2006360906";
+    const responseUrl =
+      "https://www.linkedin.com/sales-api/salesApiLeadSearch?q=savedSearchId&start=0&count=25&savedSearchId=2006360906&decorationId=ListCard";
+    const db = openDatabase(join(root, "salesnav.db"));
+    try {
+      if (!db.migrations.applied.includes("salesnav_staffing_schema_v2"))
+        throw new Error("Sales Nav migration 18 missing");
+      const store = new SalesNavStore(db.database);
+      const base = {
+        command: "capture-start" as const,
+        stateDir: root,
+        runId: "sn-run",
+        sourceUrl,
+      };
+      store.start(base, "t0");
+      const lead = {
+        entityUrn: "urn:li:fs_salesProfile:(abc123,NAME_SEARCH,foo)",
+        fullName: "A Person",
+        geoRegion: "Ireland",
+        degree: "2nd",
+        currentPositions: [
+          {
+            title: "Technical Recruiter",
+            companyName: "Acme",
+            companyUrn: "",
+            description: "Software engineering hiring",
+            tenureAtPosition: { numYears: 1, numMonths: 2 },
+          },
+        ],
+        summary: "product recruiting",
+        spotlightBadges: [
+          { displayValue: "Recently promoted" },
+          { displayValues: ["Viewed your profile"] },
+        ],
+      };
+      const body = JSON.stringify({ elements: [lead], paging: { start: 0, count: 1, total: 1 } });
+      const ingest = {
+        command: "capture-ingest" as const,
+        stateDir: root,
+        runId: "sn-run",
+        start: 0,
+        payloadPath: "-",
+        sourceUrl,
+        responseUrl,
+      };
+      store.ingest(ingest, body, "t1");
+      if (store.ingest(ingest, body, "t2").inserted)
+        throw new Error("Sales Nav retry was not idempotent");
+      let conflict = false;
+      try {
+        store.ingest(ingest, body.replace("Acme", "Other"), "t2");
+      } catch (error) {
+        conflict = error instanceof CliError && error.code === "SALESNAV_PAGE_CONFLICT";
+      }
+      if (!conflict) throw new Error("Sales Nav page conflict was accepted");
+      let wrongResponse = false;
+      try {
+        store.ingest(
+          { ...ingest, responseUrl: responseUrl.replace("2006360906", "999") },
+          body,
+          "t2",
+        );
+      } catch (error) {
+        wrongResponse = error instanceof CliError && error.code === "SALESNAV_WRONG_RESPONSE";
+      }
+      if (!wrongResponse) throw new Error("wrong Sales Nav response search was accepted");
+      let wrongStart = false;
+      try {
+        store.ingest(
+          { ...ingest, start: 2, responseUrl: responseUrl.replace("start=0", "start=2") },
+          body,
+          "t2",
+        );
+      } catch (error) {
+        wrongStart = error instanceof CliError && error.code === "SALESNAV_WRONG_START";
+      }
+      if (!wrongStart) throw new Error("wrong Sales Nav response start was accepted");
+      const second = JSON.stringify({
+        elements: [
+          lead,
+          {
+            ...lead,
+            entityUrn: "urn:li:fs_salesProfile:(drop1,NAME_SEARCH,foo)",
+            fullName: "No Tech",
+            currentPositions: [
+              {
+                title: "Recruiter",
+                companyName: "Acme",
+                companyUrn: "",
+                description: "People hiring",
+                tenureAtPosition: {},
+              },
+            ],
+            summary: "",
+          },
+        ],
+        paging: { start: 1, count: 2, total: 2 },
+      });
+      store.ingest(
+        { ...ingest, start: 1, responseUrl: responseUrl.replace("start=0", "start=1") },
+        second,
+        "t3",
+      );
+      store.normalize({ command: "normalize", stateDir: root, runId: "sn-run" }, "t4");
+      const qualified = store.qualify(
+        { command: "qualify", stateDir: root, runId: "sn-run", policyVersion: "policy-v1" },
+        "t5",
+      );
+      if (qualified.kept !== 1 || qualified.dropped !== 1)
+        throw new Error("Sales Nav qualification failed");
+      const row = db.database
+        .query("SELECT * FROM salesnav_staffing_leads WHERE sales_nav_id='abc123'")
+        .get() as Record<string, unknown>;
+      if (
+        row.current_tenure !== "1y 2m" ||
+        row.lead_url !== "https://www.linkedin.com/sales/lead/abc123" ||
+        row.spotlight_json !== '["Recently promoted","Viewed your profile"]'
+      )
+        throw new Error("Sales Nav direct-position parser failed");
+      if (Number((store.status("sn-run") as { organizations: number }).organizations) !== 1)
+        throw new Error("Sales Nav organization fallback dedupe failed");
+      const finished = {
+        command: "capture-finish" as const,
+        stateDir: root,
+        runId: "sn-run",
+        state: "complete" as const,
+        checkpointJson: JSON.stringify({ checkpoint: "done" }),
+      };
+      store.finish(finished, "t6");
+      store.finish(finished, "t7");
+      let finishConflict = false;
+      try {
+        store.finish({ ...finished, error: "different" }, "t8");
+      } catch (error) {
+        finishConflict = error instanceof CliError && error.code === "SALESNAV_FINISH_CONFLICT";
+      }
+      if (!finishConflict) throw new Error("Sales Nav finish conflict was accepted");
+      const parsed = parseInvocation(["salesnav", "staffing", "status", "--run-id", "x"], {
+        now: new Date(),
+        env: { HOME: process.env.HOME ?? root },
+      });
+      if (parsed.kind !== "command" || parsed.command !== "salesnav staffing status")
+        throw new Error("Sales Nav dispatch parse failed");
+      let strict = false;
+      try {
+        parseInvocation(["salesnav", "staffing", "status", "--run-id", "x", "--payload", "-"], {
+          now: new Date(),
+          env: { HOME: process.env.HOME ?? root },
+        });
+      } catch (error) {
+        strict = error instanceof CliError;
+      }
+      if (!strict) throw new Error("Sales Nav irrelevant option was accepted");
+    } finally {
+      db.database.close();
+    }
+
+    const helperState = join(root, "salesnav-helper-state");
+    const helperDb = openDatabase(join(helperState, "linkedin-tools.db"));
+    helperDb.database.close();
+    const helperRunDb = openDatabase(join(helperState, "linkedin-tools.db"));
+    new SalesNavStore(helperRunDb.database).start(
+      { command: "capture-start", stateDir: helperState, runId: "helper-run", sourceUrl },
+      "t0",
+    );
+    helperRunDb.database.close();
+    // @ts-expect-error smoke imports the caller-owned JS handoff helper directly.
+    const { captureAndIngestSalesNavPage } = await import("./linkedin-salesnav-chrome-helper.mjs");
+    let reads = 0;
+    const fakeBody = JSON.stringify({ elements: [], paging: { start: 0, count: 0, total: 0 } });
+    const fakeCdp = {
+      send: async (method: string) =>
+        method === "Network.getResponseBody" ? { body: fakeBody, base64Encoded: false } : undefined,
+      readEvents: async () =>
+        reads++ === 0
+          ? { cursor: 1, events: [] }
+          : reads === 2
+            ? {
+                cursor: 2,
+                events: [
+                  {
+                    method: "Network.responseReceived",
+                    params: { requestId: "r1", response: { url: responseUrl, status: 200 } },
+                  },
+                ],
+              }
+            : {
+                cursor: 3,
+                events: [{ method: "Network.loadingFinished", params: { requestId: "r1" } }],
+              },
+    };
+    const helperResult = await captureAndIngestSalesNavPage(
+      {
+        url: async () => `${sourceUrl}&query=(filters%3AList())&sessionId=synthetic`,
+        title: async () => "",
+        capabilities: { get: async () => fakeCdp },
+      },
+      async () => {},
+      { runId: "helper-run", start: 0, sourceUrl, stateDir: helperState },
+    );
+    if (!helperResult?.ok) throw new Error("Sales Nav fake CDP capture failed");
+  }
+
+  // Account-first staffing coverage: exact search/response contracts, additive
+  // migration, normalization, organization-scoped decisions, canonical retries,
+  // and preservation of the existing people-first sample in the same database.
+  {
+    const accountQuery =
+      "(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C),(id:D))),(type:INDUSTRY,values:List((id:104))),(type:REGION,values:List((id:103644278)))),keywords:software OR engineering OR product)";
+    const sourceUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(accountQuery))}`;
+    const responseUrl =
+      "https://www.linkedin.com/sales-api/salesApiAccountSearch?q=searchQuery&start=0&count=25&decorationId=com.linkedin.sales.deco.desktop.searchv2.AccountSearchResult-4";
+    if (!isAccountSearchUrl(sourceUrl) || !isAccountResponseUrl(responseUrl, 0)) {
+      throw new Error("Sales Nav account URL contract rejected the supported search");
+    }
+    const extraSize = sourceUrl.replace(
+      encodeURIComponent(encodeURIComponent("(id:D)")),
+      encodeURIComponent(encodeURIComponent("(id:D),(id:E)")),
+    );
+    if (isAccountSearchUrl(extraSize)) {
+      throw new Error("Sales Nav account search accepted an extra headcount filter");
+    }
+
+    const db = openDatabase(join(root, "salesnav.db"));
+    try {
+      if (db.migrations.currentVersion < 19) {
+        throw new Error("Sales Nav account migration 19 missing");
+      }
+      const peopleCount = Number(
+        (
+          db.database.query("SELECT count(*) n FROM salesnav_staffing_leads").get() as {
+            n: number;
+          }
+        ).n,
+      );
+      if (peopleCount !== 2) throw new Error("account migration changed the people-first sample");
+
+      const store = new SalesNavAccountStore(db.database);
+      const start = {
+        command: "account-capture-start" as const,
+        stateDir: root,
+        runId: "account-run",
+        sourceUrl,
+        checkpointJson: '{"page":1}',
+      };
+      store.start(start, "a0");
+      const body = JSON.stringify({
+        metadata: {},
+        elements: [
+          {
+            companyName: "Acme Staffing",
+            description: "Software and product staffing",
+            industry: "Staffing and Recruiting",
+            employeeCountRange: { start: 11, end: 50 },
+            employeeDisplayCount: "11-50 employees",
+            entityUrn: "urn:li:fs_salesCompany:42",
+            spotlightBadges: [],
+            trackingId: "track-42",
+          },
+        ],
+        paging: { start: 0, count: 25, total: 1 },
+      });
+      const ingest = {
+        command: "account-capture-ingest" as const,
+        stateDir: root,
+        runId: "account-run",
+        start: 0,
+        payloadPath: "-",
+        sourceUrl,
+        responseUrl,
+      };
+      store.ingest(ingest, body, "a1");
+      store.start(start, "a2");
+      if (store.ingest(ingest, body, "a2").inserted) {
+        throw new Error("Sales Nav account retry was not idempotent");
+      }
+      store.normalize({ command: "account-normalize", stateDir: root, runId: "account-run" }, "a3");
+      const next = store.next({
+        command: "account-qualify-next",
+        stateDir: root,
+        runId: "account-run",
+      });
+      if (!next) throw new Error("Sales Nav account qualification queue was empty");
+      if (
+        next.name !== "Acme Staffing" ||
+        next.linkedin_company_url !== "https://www.linkedin.com/sales/company/42"
+      ) {
+        throw new Error("Sales Nav account qualification packet is incomplete");
+      }
+      const organizationId = String(next.organization_id);
+      const decision = {
+        command: "account-qualify-record" as const,
+        stateDir: root,
+        runId: "account-run",
+        organizationId,
+        fit: "kept" as const,
+        evidenceJson: '{"website":"reviewed","linkedin":"reviewed"}',
+        unknownsJson: '["ownership"]',
+        reason: "Relevant technical staffing firm",
+        policyVersion: "staffing-account-v1",
+      };
+      const recorded = store.record(decision, "a4");
+      if (recorded.accountId !== "42")
+        throw new Error("account decision stored the wrong account ID");
+      store.record(
+        { ...decision, evidenceJson: '{"linkedin":"reviewed", "website":"reviewed"}' },
+        "a5",
+      );
+      if (store.next({ ...decision, command: "account-qualify-next" }) !== null) {
+        throw new Error("qualified organization remained in the account queue");
+      }
+      const org = db.database
+        .query("SELECT * FROM organizations WHERE id=?")
+        .get(organizationId) as Record<string, unknown>;
+      if (org.linkedin_company_url !== "https://www.linkedin.com/sales/company/42") {
+        throw new Error("Sales Nav account normalization stored the wrong company URL");
+      }
+      const qualification = db.database
+        .query(
+          "SELECT account_id,evidence_json FROM salesnav_account_qualifications WHERE organization_id=?",
+        )
+        .get(organizationId) as Record<string, unknown>;
+      if (
+        qualification.account_id !== "42" ||
+        qualification.evidence_json !== '{"linkedin":"reviewed","website":"reviewed"}'
+      ) {
+        throw new Error("Sales Nav account qualification was not stored canonically");
+      }
+      const status = store.status("account-run");
+      if (status.accounts !== 1 || status.pending !== 0 || status.kept !== 1) {
+        throw new Error("Sales Nav account status counts are wrong");
+      }
+      const finish = {
+        command: "account-capture-finish" as const,
+        stateDir: root,
+        runId: "account-run",
+        state: "complete" as const,
+        checkpointJson: '{"done":true}',
+      };
+      store.finish(finish, "a6");
+      store.finish(finish, "a7");
+
+      const studioKeyword =
+        '("product studio" OR "digital product" OR "custom software" OR "web application") NOT (staffing OR recruiting OR "digital marketing")';
+      const studioQuery = `(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C))),(type:INDUSTRY,values:List((id:96),(id:7))),(type:REGION,values:List((id:103644278))),keywords:${studioKeyword})`;
+      const studioUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(studioQuery))}`;
+      const studioStart = {
+        command: "account-capture-start" as const,
+        lane: "studio" as const,
+        stateDir: root,
+        runId: "studio-run",
+        sourceUrl: studioUrl,
+      };
+      store.start(studioStart, "s0");
+      let conflict = false;
+      try {
+        store.start({ ...studioStart, lane: "staffing" }, "s1");
+      } catch (error) {
+        conflict = error instanceof CliError && error.code === "SALESNAV_WRONG_SEARCH";
+      }
+      if (!conflict) throw new Error("studio/staffing lane conflict was accepted");
+      store.ingest(
+        {
+          command: "account-capture-ingest",
+          lane: "studio",
+          stateDir: root,
+          runId: "studio-run",
+          start: 0,
+          payloadPath: "-",
+          sourceUrl: studioUrl,
+          responseUrl,
+        },
+        body,
+        "s1",
+      );
+      store.normalize(
+        { command: "account-normalize", lane: "studio", stateDir: root, runId: "studio-run" },
+        "s2",
+      );
+      const studioNext = store.next({
+        command: "account-qualify-next",
+        lane: "studio",
+        stateDir: root,
+        runId: "studio-run",
+      });
+      if (!studioNext) throw new Error("studio qualification queue was empty");
+      let researchRequired = false;
+      try {
+        store.record(
+          {
+            command: "account-qualify-record",
+            lane: "studio",
+            stateDir: root,
+            runId: "studio-run",
+            organizationId: String(studioNext.organization_id),
+            fit: "kept",
+            evidenceJson: "{}",
+            unknownsJson: "[]",
+            reason: "fit",
+            policyVersion: "studio-v1",
+          },
+          "s3",
+        );
+      } catch (error) {
+        researchRequired =
+          error instanceof CliError && error.code === "SALESNAV_FIRM_RESEARCH_REQUIRED";
+      }
+      if (!researchRequired) throw new Error("studio keep did not require firm research");
+      store.firmResearch(
+        {
+          command: "firm-research-record",
+          lane: "studio",
+          stateDir: root,
+          runId: "studio-run",
+          organizationId: String(studioNext.organization_id),
+          sourceUrlsJson: '["https://www.linkedin.com/company/acme","https://acme.example"]',
+          services: "Product design and custom software",
+          concreteFact: "Built a customer portal",
+          unknownsJson: '["team size"]',
+          reviewedAt: "2026-08-19T00:00:00Z",
+        },
+        "s4",
+      );
+      store.record(
+        {
+          command: "account-qualify-record",
+          lane: "studio",
+          stateDir: root,
+          runId: "studio-run",
+          organizationId: String(studioNext.organization_id),
+          fit: "kept",
+          evidenceJson: "{}",
+          unknownsJson: "[]",
+          reason: "fit",
+          policyVersion: "studio-v1",
+        },
+        "s5",
+      );
+      if (store.status("studio-run").kept !== 1)
+        throw new Error("studio qualification was not lane-scoped");
+    } finally {
+      db.database.close();
+    }
+  }
+
   const doctorOutput = await invoke(
     [
       "--json",
@@ -1217,14 +1673,14 @@ try {
       throw new Error("all-section: employmentType/title text query failed");
     }
 
-    const kindQuery = visibleGroups(groups, "all", "all", "applied");
+    const kindQuery = visibleGroups(groups, "all", "all", "apply");
     if (kindQuery.length !== 1 || kindQuery[0]?.jobs[0]?.id !== "s1") {
-      throw new Error("all-section: applied type label not searchable");
+      throw new Error("all-section: apply type label not searchable");
     }
 
     if (
       outreachKindLabel("direct") !== "Direct" ||
-      outreachKindLabel("application_followup") !== "Applied"
+      outreachKindLabel("application_followup") !== "Apply + follow up"
     ) {
       throw new Error("all-section: kind label wrong");
     }
@@ -1232,16 +1688,16 @@ try {
     const hay = groupSearchHaystack([contract]);
     if (
       !hay.includes("contract") ||
-      !hay.includes("applied") ||
+      !hay.includes("apply follow up") ||
       !hay.includes("application follow-up")
     ) {
       throw new Error("all-section: haystack missing employmentType or type label");
     }
 
-    // Reminder keying: an Applied group shows the reminder in All too, while
+    // Reminder keying: an Apply + follow up group shows the reminder in All too, while
     // Direct groups never do.
     if (!showsApplicationReminder(followup[0]?.jobs ?? [])) {
-      throw new Error("all-section: Applied group must show the reminder in All");
+      throw new Error("all-section: Apply + follow up group must show the reminder in All");
     }
     const directGroups = visibleGroups(groups, "direct", "all", "");
     if (directGroups.length !== 2 || directGroups.some((g) => showsApplicationReminder(g.jobs))) {
@@ -1559,6 +2015,7 @@ try {
 
   const calls: string[] = [];
   const fakeOperations: CliOperations = {
+    salesnav: async () => ({ ok: true }),
     doctor: async () => ({ ready: true }),
     networkStatus: async () => {
       calls.push("network status");

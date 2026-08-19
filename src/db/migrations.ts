@@ -531,6 +531,230 @@ const migrations: readonly Migration[] = [
       CREATE INDEX job_enrichment_responses_job_idx ON job_enrichment_responses(job_id, captured_at);
     `,
   },
+  {
+    id: 17,
+    name: "salesnav_staffing_intake",
+    sql: `
+      CREATE TABLE salesnav_runs (
+        id TEXT PRIMARY KEY, source_url TEXT NOT NULL, saved_search_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','complete','failed')),
+        checkpoint_json TEXT NOT NULL DEFAULT '{}', error TEXT, started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE TABLE organizations (
+        id TEXT PRIMARY KEY, company_urn TEXT UNIQUE, normalized_name TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE salesnav_pages (
+        run_id TEXT NOT NULL REFERENCES salesnav_runs(id) ON DELETE CASCADE, start INTEGER NOT NULL,
+        source_url TEXT NOT NULL, response_url TEXT NOT NULL, status INTEGER NOT NULL,
+        paging_count INTEGER NOT NULL, paging_total INTEGER NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        captured_at TEXT NOT NULL, PRIMARY KEY(run_id,start)
+      );
+      CREATE TABLE salesnav_page_normalizations (
+        run_id TEXT NOT NULL REFERENCES salesnav_runs(id) ON DELETE CASCADE, start INTEGER NOT NULL,
+        normalized_at TEXT NOT NULL, observed_count INTEGER NOT NULL, PRIMARY KEY(run_id,start)
+      );
+      CREATE TABLE salesnav_leads (
+        sales_nav_id TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES people(id),
+        organization_id TEXT REFERENCES organizations(id), full_name TEXT NOT NULL, geo_region TEXT NOT NULL,
+        degree TEXT NOT NULL, current_title TEXT NOT NULL, current_company TEXT NOT NULL,
+        current_company_urn TEXT NOT NULL, current_description TEXT NOT NULL, current_tenure TEXT NOT NULL,
+        summary TEXT NOT NULL, spotlight_json TEXT NOT NULL DEFAULT '{}', source_evidence_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE salesnav_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES salesnav_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL, sales_nav_id TEXT NOT NULL REFERENCES salesnav_leads(sales_nav_id),
+        observed_at TEXT NOT NULL, source_evidence_json TEXT NOT NULL,
+        UNIQUE(run_id,start,sales_nav_id)
+      );
+      CREATE TABLE salesnav_qualifications (
+        run_id TEXT NOT NULL REFERENCES salesnav_runs(id) ON DELETE CASCADE, sales_nav_id TEXT NOT NULL REFERENCES salesnav_leads(sales_nav_id),
+        fit TEXT NOT NULL CHECK(fit IN ('kept','dropped')), matched_terms_json TEXT NOT NULL,
+        evidence_json TEXT NOT NULL, reason TEXT NOT NULL, policy_version TEXT NOT NULL, filtered_at TEXT NOT NULL,
+        PRIMARY KEY(run_id,sales_nav_id)
+      );
+      CREATE INDEX salesnav_pages_run_idx ON salesnav_pages(run_id,start);
+    `,
+  },
+  {
+    id: 18,
+    name: "salesnav_staffing_schema_v2",
+    sql: `
+      DROP TABLE IF EXISTS salesnav_qualifications;
+      DROP TABLE IF EXISTS salesnav_observations;
+      DROP TABLE IF EXISTS salesnav_leads;
+      DROP TABLE IF EXISTS salesnav_page_normalizations;
+      DROP TABLE IF EXISTS salesnav_pages;
+      DROP TABLE IF EXISTS salesnav_runs;
+      DROP TABLE IF EXISTS organizations;
+
+      CREATE TABLE salesnav_staffing_runs (
+        id TEXT PRIMARY KEY,
+        source_url TEXT NOT NULL,
+        saved_search_id TEXT NOT NULL CHECK(saved_search_id = '2006360906'),
+        state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','complete','failed')),
+        checkpoint_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checkpoint_json)),
+        error TEXT,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      CREATE TABLE organizations (
+        id TEXT PRIMARY KEY,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        company_urn TEXT UNIQUE,
+        normalized_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        linkedin_company_url TEXT NOT NULL DEFAULT '',
+        website_url TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '',
+        industry TEXT NOT NULL DEFAULT '',
+        size_text TEXT NOT NULL DEFAULT '',
+        evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE salesnav_staffing_pages (
+        run_id TEXT NOT NULL REFERENCES salesnav_staffing_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL CHECK(start >= 0),
+        source_url TEXT NOT NULL,
+        response_url TEXT NOT NULL,
+        status INTEGER NOT NULL CHECK(status BETWEEN 200 AND 299),
+        paging_count INTEGER NOT NULL CHECK(paging_count BETWEEN 0 AND 1000),
+        paging_total INTEGER NOT NULL CHECK(paging_total BETWEEN 0 AND 1000000),
+        parser_version TEXT NOT NULL,
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        captured_at TEXT NOT NULL,
+        PRIMARY KEY(run_id, start)
+      );
+      CREATE TABLE salesnav_staffing_page_normalizations (
+        run_id TEXT NOT NULL REFERENCES salesnav_staffing_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL CHECK(start >= 0),
+        parser_version TEXT NOT NULL,
+        observed_count INTEGER NOT NULL CHECK(observed_count >= 0),
+        normalized_at TEXT NOT NULL,
+        PRIMARY KEY(run_id, start)
+      );
+      CREATE TABLE salesnav_staffing_leads (
+        sales_nav_id TEXT PRIMARY KEY,
+        person_id TEXT NOT NULL REFERENCES people(id),
+        organization_id TEXT REFERENCES organizations(id),
+        lead_url TEXT NOT NULL UNIQUE,
+        full_name TEXT NOT NULL DEFAULT '',
+        geo_region TEXT NOT NULL DEFAULT '',
+        degree TEXT NOT NULL DEFAULT '',
+        current_title TEXT NOT NULL DEFAULT '',
+        current_company TEXT NOT NULL DEFAULT '',
+        current_company_urn TEXT NOT NULL DEFAULT '',
+        current_description TEXT NOT NULL DEFAULT '',
+        current_tenure TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        spotlight_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(spotlight_json) AND json_type(spotlight_json) = 'array'),
+        source_evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(source_evidence_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE salesnav_staffing_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES salesnav_staffing_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL,
+        sales_nav_id TEXT NOT NULL REFERENCES salesnav_staffing_leads(sales_nav_id),
+        observed_at TEXT NOT NULL,
+        source_evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(source_evidence_json)),
+        UNIQUE(run_id, start, sales_nav_id)
+      );
+      CREATE TABLE salesnav_staffing_qualifications (
+        run_id TEXT NOT NULL REFERENCES salesnav_staffing_runs(id) ON DELETE CASCADE,
+        sales_nav_id TEXT NOT NULL REFERENCES salesnav_staffing_leads(sales_nav_id),
+        fit TEXT NOT NULL CHECK(fit IN ('kept','dropped')),
+        matched_role_terms_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(matched_role_terms_json) AND json_type(matched_role_terms_json) = 'array'),
+        matched_technical_terms_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(matched_technical_terms_json) AND json_type(matched_technical_terms_json) = 'array'),
+        evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(evidence_json)),
+        reason TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        filtered_at TEXT NOT NULL,
+        PRIMARY KEY(run_id, sales_nav_id)
+      );
+      CREATE INDEX salesnav_staffing_pages_run_idx ON salesnav_staffing_pages(run_id, start);
+    `,
+  },
+  {
+    id: 19,
+    name: "salesnav_account_capture",
+    sql: `
+      CREATE TABLE salesnav_account_runs (
+        id TEXT PRIMARY KEY, source_url TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','complete','failed')),
+        checkpoint_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(checkpoint_json)), error TEXT,
+        started_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE TABLE salesnav_account_pages (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL CHECK(start >= 0), source_url TEXT NOT NULL, response_url TEXT NOT NULL,
+        status INTEGER NOT NULL CHECK(status BETWEEN 200 AND 299), paging_count INTEGER NOT NULL,
+        paging_total INTEGER NOT NULL, parser_version TEXT NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        captured_at TEXT NOT NULL, PRIMARY KEY(run_id, start)
+      );
+      CREATE TABLE salesnav_account_page_normalizations (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL, parser_version TEXT NOT NULL, observed_count INTEGER NOT NULL,
+        normalized_at TEXT NOT NULL, PRIMARY KEY(run_id, start)
+      );
+      CREATE TABLE salesnav_account_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL, account_id TEXT NOT NULL, organization_id TEXT REFERENCES organizations(id),
+        observed_at TEXT NOT NULL, source_evidence_json TEXT NOT NULL CHECK(json_valid(source_evidence_json)),
+        UNIQUE(run_id, start, account_id)
+      );
+      CREATE TABLE salesnav_account_qualifications (
+        organization_id TEXT PRIMARY KEY REFERENCES organizations(id),
+        source_run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id),
+        account_id TEXT NOT NULL,
+        fit TEXT NOT NULL CHECK(fit IN ('kept','dropped')), evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        unknowns_json TEXT NOT NULL CHECK(json_valid(unknowns_json) AND json_type(unknowns_json)='array'),
+        reason TEXT NOT NULL, policy_version TEXT NOT NULL, filtered_at TEXT NOT NULL
+      );
+      CREATE INDEX salesnav_account_pages_run_idx ON salesnav_account_pages(run_id,start);
+      CREATE INDEX salesnav_account_observations_org_idx ON salesnav_account_observations(organization_id);
+    `,
+  },
+  {
+    id: 20,
+    name: "salesnav_account_lanes",
+    sql: `
+      ALTER TABLE salesnav_account_runs ADD COLUMN lane TEXT NOT NULL DEFAULT 'staffing' CHECK(lane IN ('staffing','studio'));
+      ALTER TABLE salesnav_account_runs ADD COLUMN search_config_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(search_config_json));
+      ALTER TABLE salesnav_account_runs ADD COLUMN keyword_query TEXT NOT NULL DEFAULT '';
+      CREATE TABLE salesnav_account_lane_qualifications (
+        lane TEXT NOT NULL CHECK(lane IN ('staffing','studio')),
+        organization_id TEXT NOT NULL REFERENCES organizations(id),
+        source_run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id),
+        account_id TEXT NOT NULL,
+        fit TEXT NOT NULL CHECK(fit IN ('kept','dropped')),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        unknowns_json TEXT NOT NULL CHECK(json_valid(unknowns_json) AND json_type(unknowns_json)='array'),
+        reason TEXT NOT NULL, policy_version TEXT NOT NULL, filtered_at TEXT NOT NULL,
+        PRIMARY KEY(lane, organization_id)
+      );
+      INSERT OR IGNORE INTO salesnav_account_lane_qualifications
+        (lane,organization_id,source_run_id,account_id,fit,evidence_json,unknowns_json,reason,policy_version,filtered_at)
+        SELECT 'staffing',organization_id,source_run_id,account_id,fit,evidence_json,unknowns_json,reason,policy_version,filtered_at
+        FROM salesnav_account_qualifications;
+      CREATE TABLE salesnav_studio_firm_research (
+        lane TEXT NOT NULL DEFAULT 'studio' CHECK(lane='studio'),
+        organization_id TEXT NOT NULL REFERENCES organizations(id),
+        source_urls_json TEXT NOT NULL CHECK(json_valid(source_urls_json) AND json_type(source_urls_json)='array'),
+        services TEXT NOT NULL,
+        concrete_fact TEXT NOT NULL,
+        unknowns_json TEXT NOT NULL CHECK(json_valid(unknowns_json) AND json_type(unknowns_json)='array'),
+        reviewed_at TEXT NOT NULL,
+        PRIMARY KEY(lane, organization_id)
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {
