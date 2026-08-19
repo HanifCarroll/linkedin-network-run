@@ -16,15 +16,24 @@
     "lint": "biome lint .",
     "smoke": "bun run scripts/smoke.ts",
     "typecheck": "tsc --noEmit",
-    "view": "bun run ./src/view/server.ts"
+    "view": "bun run view:build && HOST=127.0.0.1 PORT=${PORT:-${LINKEDIN_TOOLS_VIEW_PORT:-4567}} bun ./build/index.js",
+    "view:dev": "bun --bun ./node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port ${PORT:-${LINKEDIN_TOOLS_VIEW_PORT:-4567}}",
+    "view:build": "bun --bun ./node_modules/vite/bin/vite.js build",
+    "view:start": "HOST=127.0.0.1 PORT=${PORT:-${LINKEDIN_TOOLS_VIEW_PORT:-4567}} bun ./build/index.js",
+    "view:check": "svelte-kit sync && tsc --noEmit",
+    "viewer:smoke": "bun run view:build && bun run scripts/viewer-smoke.ts"
   },
   "dependencies": {
     "playwriter": "0.4.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.4",
+    "@sveltejs/kit": "2.70.3",
     "@types/bun": "1.3.14",
-    "typescript": "5.9.2"
+    "svelte": "5.56.9",
+    "svelte-adapter-bun": "1.0.1",
+    "typescript": "5.9.2",
+    "vite": "8.2.1"
   },
   "engines": {
     "bun": ">=1.3.14"

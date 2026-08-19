@@ -231,10 +231,12 @@ composers are unaffected.
 Review happens in the local queue, not through the CLI:
 
 ```sh
-bun run view   # http://127.0.0.1:4567
+bun run view   # SvelteKit production server at http://127.0.0.1:4567
+# For development with component reload:
+bun run view:dev   # set PORT=... to override 4567
 ```
 
-The queue splits people into top-level sections with person counts: **All outreach**, **Direct
+The SvelteKit viewer (built for Bun with `svelte-adapter-bun`) is the intake queue. The queue splits people into top-level sections with person counts: **All outreach**, **Direct
 outreach**, and **Application follow-up**. All outreach shows every person group once and marks
 each with a compact Direct/Applied badge. Contract roles — and full-time roles that are really
 contract engagements (contract-to-hire, or W2/C2C/1099-only) — appear only under Application
