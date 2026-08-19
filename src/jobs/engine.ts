@@ -5,7 +5,7 @@ import type {
   CapturedJob,
   CollectedJob,
   HiringTeamMember,
-  JobDetail,
+  JobEnrichment,
   JobRow,
   JobStatus,
   ReviewDecision,
@@ -41,6 +41,15 @@ type JobRowRaw = {
   readonly posted_at: string;
   readonly applicant_count: string;
   readonly benefits_json: string;
+  readonly enrichment_outcome: string;
+  readonly enrichment_captured_at: string | null;
+  readonly enrichment_parser_version: string;
+  readonly enrichment_evidence_json: string;
+  readonly company_profile_url: string;
+  readonly company_evidence_json: string;
+  readonly external_application_url: string;
+  readonly applicant_tracking_system: string;
+  readonly geo_id: string;
   readonly work_focus: string;
   readonly product_system: string;
   readonly work_summary: string;
@@ -147,34 +156,215 @@ export class JobsEngine {
     });
     return tx();
   }
-  storeJobDetails(details: readonly JobDetail[], now: string): number {
-    if (details.length === 0) return 0;
-    const stmt = this.database.prepare(`
-      UPDATE jobs SET
-        description = ?, workplace_type = ?, employment_type = ?, apply_method = ?,
-        promoted = ?, actively_reviewing = ?, posted_at = ?, applicant_count = ?,
-        benefits_json = ?, updated_at = ?
-      WHERE id = ?
-    `);
-    const tx = this.database.transaction(() => {
-      for (const d of details) {
-        stmt.run(
-          d.description,
-          d.workplaceType,
-          d.employmentType,
-          d.applyMethod,
-          d.promoted ? 1 : 0,
-          d.activelyReviewing ? 1 : 0,
-          d.postedAt,
-          d.applicantCount,
-          JSON.stringify(d.benefits),
-          now,
-          d.id,
-        );
+  recordEnrichment(enrichment: JobEnrichment, now: string): JobRow {
+    const current = this.requireJob(enrichment.id);
+    if (current.fit === "dropped")
+      throw new CliError(
+        "JOB_NOT_ELIGIBLE",
+        `job ${enrichment.id} was dropped and cannot be enriched`,
+        { exitCode: 2 },
+      );
+    if (
+      normalizeJobUrl(current.postingUrl) !== normalizeJobUrl(enrichment.sourceUrl) ||
+      normalizeJobUrl(enrichment.postingUrl) !== normalizeJobUrl(enrichment.sourceUrl)
+    ) {
+      throw new CliError(
+        "JOBS_SOURCE_MISMATCH",
+        `enrichment source does not match job ${enrichment.id}`,
+        { exitCode: 2 },
+      );
+    }
+    const complete =
+      enrichment.outcome === "complete_hiring_team" ||
+      enrichment.outcome === "complete_no_hiring_team";
+    if (enrichment.rawResponses && enrichment.rawResponses.length > 4)
+      throw new CliError("INVALID_ARGUMENT", "at most four raw enrichment responses are allowed", {
+        exitCode: 2,
+      });
+    for (const response of enrichment.rawResponses ?? []) {
+      if (
+        response.body.length > 1_000_000 ||
+        (response.component !== "document" && response.body.length > 120_000)
+      )
+        throw new CliError("INVALID_ARGUMENT", "raw enrichment response is too large", {
+          exitCode: 2,
+        });
+      if (response.status < 100 || response.status > 599)
+        throw new CliError("INVALID_ARGUMENT", "raw enrichment response has invalid status", {
+          exitCode: 2,
+        });
+    }
+    if (complete && enrichment.description.trim() === "")
+      throw new CliError(
+        "JOBS_ENRICHMENT_INCOMPLETE",
+        `complete enrichment for ${enrichment.id} requires a description`,
+        { exitCode: 2 },
+      );
+    if (enrichment.outcome === "complete_hiring_team" && enrichment.hiringTeam.length === 0)
+      throw new CliError(
+        "JOBS_ENRICHMENT_INCOMPLETE",
+        `hiring-team outcome for ${enrichment.id} requires members`,
+        { exitCode: 2 },
+      );
+    if (enrichment.outcome === "complete_no_hiring_team" && enrichment.hiringTeam.length !== 0)
+      throw new CliError(
+        "JOBS_ENRICHMENT_INVALID",
+        `no-team outcome for ${enrichment.id} cannot include members`,
+        { exitCode: 2 },
+      );
+    const peopleResponse = (enrichment.rawResponses ?? []).find(
+      (response) => response.component === "peopleWhoCanHelp",
+    );
+    if (enrichment.outcome === "complete_no_hiring_team" && !peopleResponse)
+      throw new CliError(
+        "JOBS_ENRICHMENT_INVALID",
+        `no-team outcome for ${enrichment.id} requires a captured peopleWhoCanHelp response`,
+        { exitCode: 2 },
+      );
+    if (
+      enrichment.outcome === "complete_no_hiring_team" &&
+      (peopleResponse?.status !== 200 || /meet the hiring team/i.test(peopleResponse.body))
+    )
+      throw new CliError(
+        "JOBS_ENRICHMENT_INVALID",
+        `no-team outcome for ${enrichment.id} requires a conclusive empty hiring-team response`,
+        { exitCode: 2 },
+      );
+    const same = enrichmentMatches(current, enrichment);
+    if (same) {
+      for (const response of enrichment.rawResponses ?? []) {
+        this.database
+          .prepare(
+            `INSERT INTO job_enrichment_responses (job_id, source_url, response_url, status, component, captured_at, parser_version, body, body_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_id, component) DO UPDATE SET source_url=excluded.source_url, response_url=excluded.response_url, status=excluded.status, captured_at=excluded.captured_at, parser_version=excluded.parser_version, body=excluded.body, body_bytes=excluded.body_bytes`,
+          )
+          .run(
+            enrichment.id,
+            response.sourceUrl,
+            response.responseUrl,
+            response.status,
+            response.component,
+            response.capturedAt,
+            response.parserVersion,
+            response.body,
+            new TextEncoder().encode(response.body).byteLength,
+          );
       }
-    });
-    tx();
-    return details.length;
+      return current;
+    }
+    if (current.enrichmentOutcome !== "retry_required" || current.triageBucket !== "pending") {
+      throw new CliError(
+        "JOBS_ENRICHMENT_CONFLICT",
+        `enrichment for ${enrichment.id} would overwrite completed or triaged state`,
+        { exitCode: 2 },
+      );
+    }
+    if (enrichment.outcome === "retry_required") {
+      this.database
+        .prepare(
+          `UPDATE jobs SET enrichment_outcome=?, enrichment_captured_at=?, enrichment_parser_version=?, enrichment_evidence_json=?, external_application_url=?, applicant_tracking_system=?, geo_id=?, updated_at=? WHERE id=?`,
+        )
+        .run(
+          enrichment.outcome,
+          enrichment.capturedAt,
+          enrichment.parserVersion,
+          JSON.stringify(enrichment.sourceEvidence),
+          enrichment.externalApplicationUrl,
+          enrichment.applicantTrackingSystem,
+          enrichment.geoId,
+          now,
+          enrichment.id,
+        );
+      for (const response of enrichment.rawResponses ?? []) {
+        this.database
+          .prepare(
+            `INSERT INTO job_enrichment_responses (job_id, source_url, response_url, status, component, captured_at, parser_version, body, body_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_id, component) DO UPDATE SET source_url=excluded.source_url, response_url=excluded.response_url, status=excluded.status, captured_at=excluded.captured_at, parser_version=excluded.parser_version, body=excluded.body, body_bytes=excluded.body_bytes`,
+          )
+          .run(
+            enrichment.id,
+            response.sourceUrl,
+            response.responseUrl,
+            response.status,
+            response.component,
+            response.capturedAt,
+            response.parserVersion,
+            response.body,
+            new TextEncoder().encode(response.body).byteLength,
+          );
+      }
+      return this.requireJob(enrichment.id);
+    }
+    const saved =
+      enrichment.outcome === "closed"
+        ? {
+            ...enrichment,
+            title: enrichment.title || current.title,
+            company: enrichment.company || current.company,
+            location: enrichment.location || current.location,
+            postingUrl: current.postingUrl,
+            description: enrichment.description || current.description,
+            workplaceType: enrichment.workplaceType || current.workplaceType,
+            employmentType: enrichment.employmentType || current.employmentType,
+            applyMethod: enrichment.applyMethod || current.applyMethod,
+            postedAt: enrichment.postedAt || current.postedAt,
+            applicantCount: enrichment.applicantCount || current.applicantCount,
+            benefits: enrichment.benefits.length ? enrichment.benefits : current.benefits,
+            hiringTeam: enrichment.hiringTeam.length ? enrichment.hiringTeam : current.hiringTeam,
+            companyProfileUrl: enrichment.companyProfileUrl || current.companyProfileUrl,
+            companyEvidence: enrichment.companyEvidence.length
+              ? enrichment.companyEvidence
+              : current.companyEvidence,
+          }
+        : enrichment;
+    this.database
+      .prepare(
+        `UPDATE jobs SET title=?, company=?, location=?, posting_url=?, description=?, workplace_type=?, employment_type=?, apply_method=?, promoted=?, actively_reviewing=?, posted_at=?, applicant_count=?, benefits_json=?, hiring_team_json=?, has_hiring_team=?, enrichment_outcome=?, enrichment_captured_at=?, enrichment_parser_version=?, enrichment_evidence_json=?, company_profile_url=?, company_evidence_json=?, external_application_url=?, applicant_tracking_system=?, geo_id=?, updated_at=? WHERE id=?`,
+      )
+      .run(
+        saved.title,
+        saved.company,
+        saved.location,
+        normalizeJobUrl(saved.postingUrl),
+        saved.description,
+        saved.workplaceType,
+        saved.employmentType,
+        saved.applyMethod,
+        saved.promoted ? 1 : 0,
+        saved.activelyReviewing ? 1 : 0,
+        saved.postedAt,
+        saved.applicantCount,
+        JSON.stringify(saved.benefits),
+        JSON.stringify(saved.hiringTeam),
+        saved.hiringTeam.length > 0 ? 1 : 0,
+        saved.outcome,
+        saved.capturedAt,
+        saved.parserVersion,
+        JSON.stringify(saved.sourceEvidence),
+        saved.companyProfileUrl,
+        JSON.stringify(saved.companyEvidence),
+        saved.externalApplicationUrl,
+        saved.applicantTrackingSystem,
+        saved.geoId,
+        now,
+        saved.id,
+      );
+    for (const response of enrichment.rawResponses ?? []) {
+      this.database
+        .prepare(
+          `INSERT INTO job_enrichment_responses (job_id, source_url, response_url, status, component, captured_at, parser_version, body, body_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(job_id, component) DO UPDATE SET source_url=excluded.source_url, response_url=excluded.response_url, status=excluded.status, captured_at=excluded.captured_at, parser_version=excluded.parser_version, body=excluded.body, body_bytes=excluded.body_bytes`,
+        )
+        .run(
+          enrichment.id,
+          response.sourceUrl,
+          response.responseUrl,
+          response.status,
+          response.component,
+          response.capturedAt,
+          response.parserVersion,
+          response.body,
+          new TextEncoder().encode(response.body).byteLength,
+        );
+    }
+    return this.requireJob(enrichment.id);
   }
 
   listJobs(options: {
@@ -618,6 +808,61 @@ function normalizeTriageList(
   return normalized;
 }
 
+export function normalizeJobUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+    url.pathname = url.pathname.replace(/\/+$/, "/");
+    return url.toString();
+  } catch {
+    return value
+      .trim()
+      .replace(/[?#].*$/, "")
+      .replace(/\/+$/, "/");
+  }
+}
+
+function enrichmentMatches(current: JobRow, incoming: JobEnrichment): boolean {
+  const metadata =
+    current.enrichmentOutcome === incoming.outcome &&
+    current.enrichmentCapturedAt === incoming.capturedAt &&
+    current.enrichmentParserVersion === incoming.parserVersion &&
+    JSON.stringify(current.enrichmentEvidence) === JSON.stringify(incoming.sourceEvidence) &&
+    normalizeJobUrl(current.postingUrl) === normalizeJobUrl(incoming.sourceUrl);
+  if (!metadata) return false;
+  if (incoming.outcome === "closed")
+    return (
+      (!incoming.title || incoming.title === current.title) &&
+      (!incoming.company || incoming.company === current.company) &&
+      (!incoming.location || incoming.location === current.location) &&
+      (!incoming.description || incoming.description === current.description) &&
+      (!incoming.postingUrl ||
+        normalizeJobUrl(incoming.postingUrl) === normalizeJobUrl(current.postingUrl))
+    );
+  return (
+    current.title === incoming.title &&
+    current.company === incoming.company &&
+    current.location === incoming.location &&
+    current.description === incoming.description &&
+    current.workplaceType === incoming.workplaceType &&
+    current.employmentType === incoming.employmentType &&
+    current.applyMethod === incoming.applyMethod &&
+    current.promoted === incoming.promoted &&
+    current.activelyReviewing === incoming.activelyReviewing &&
+    current.postedAt === incoming.postedAt &&
+    current.applicantCount === incoming.applicantCount &&
+    JSON.stringify(current.benefits) === JSON.stringify(incoming.benefits) &&
+    JSON.stringify(current.hiringTeam) === JSON.stringify(incoming.hiringTeam) &&
+    current.companyProfileUrl === incoming.companyProfileUrl &&
+    JSON.stringify(current.companyEvidence) === JSON.stringify(incoming.companyEvidence) &&
+    current.externalApplicationUrl === incoming.externalApplicationUrl &&
+    current.applicantTrackingSystem === incoming.applicantTrackingSystem &&
+    current.geoId === incoming.geoId
+  );
+}
+
 function conflictDetails(job: JobRow): Record<string, unknown> {
   return {
     jobId: job.id,
@@ -675,6 +920,15 @@ function rowToJob(row: JobRowRaw): JobRow {
     postedAt: row.posted_at,
     applicantCount: row.applicant_count,
     benefits,
+    enrichmentOutcome: (row.enrichment_outcome || "retry_required") as JobRow["enrichmentOutcome"],
+    enrichmentCapturedAt: row.enrichment_captured_at,
+    enrichmentParserVersion: row.enrichment_parser_version,
+    enrichmentEvidence: strings(row.enrichment_evidence_json),
+    companyProfileUrl: row.company_profile_url,
+    companyEvidence: strings(row.company_evidence_json),
+    externalApplicationUrl: row.external_application_url,
+    applicantTrackingSystem: row.applicant_tracking_system,
+    geoId: row.geo_id,
     workFocus: row.work_focus,
     productSystem: row.product_system,
     workSummary: row.work_summary,

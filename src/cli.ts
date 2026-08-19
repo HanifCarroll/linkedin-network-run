@@ -105,10 +105,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsNormalize(invocation.input);
     case "jobs filter":
       return operations.jobsFilter(invocation.input);
-    case "jobs enrich":
-      return operations.jobsEnrich(invocation.input);
-    case "jobs detail":
-      return operations.jobsDetail(invocation.input);
+    case "jobs enrich-next":
+      return operations.jobsEnrichNext(invocation.input);
+    case "jobs enrich-record":
+      return operations.jobsEnrichRecord(invocation.input);
     case "jobs list":
       return operations.jobsList(invocation.input);
     case "jobs check":

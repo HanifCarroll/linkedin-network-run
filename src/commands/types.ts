@@ -112,14 +112,14 @@ export type JobsFilterInput = {
   readonly maxAgeDays?: number;
 };
 
-export type JobsEnrichInput = {
+export type JobsEnrichNextInput = {
   readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  /** Max jobs to enrich this run (default: all captured). */
-  readonly limit?: number;
-  /** Optional capture run scope; omitted preserves legacy behavior. */
   readonly runId?: string;
+  readonly id?: string;
+};
+export type JobsEnrichRecordInput = {
+  readonly stateDir: string;
+  readonly payloadPath: string;
 };
 
 export type JobsListInput = {
@@ -136,15 +136,6 @@ export type JobsCheckInput = {
   readonly withHiringTeam: boolean;
   /** Max jobs to check this run (default: all matching). */
   readonly limit?: number;
-};
-
-export type JobsDetailInput = {
-  readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  /** Max jobs to detail this run (default: all collected missing detail). */
-  readonly limit?: number;
-  readonly runId?: string;
 };
 
 export type JobsFavoriteInput = {
@@ -234,8 +225,8 @@ export interface CliOperations {
   jobsCaptureFinish(input: JobsCaptureFinishInput): Promise<unknown>;
   jobsNormalize(input: JobsNormalizeInput): Promise<unknown>;
   jobsFilter(input: JobsFilterInput): Promise<unknown>;
-  jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
-  jobsDetail(input: JobsDetailInput): Promise<unknown>;
+  jobsEnrichNext(input: JobsEnrichNextInput): Promise<unknown>;
+  jobsEnrichRecord(input: JobsEnrichRecordInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
   jobsCheck(input: JobsCheckInput): Promise<unknown>;
   jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
@@ -320,8 +311,16 @@ export type ParsedInvocation =
       readonly input: JobsNormalizeInput;
     }
   | { readonly kind: "command"; readonly command: "jobs filter"; readonly input: JobsFilterInput }
-  | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
-  | { readonly kind: "command"; readonly command: "jobs detail"; readonly input: JobsDetailInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs enrich-next";
+      readonly input: JobsEnrichNextInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs enrich-record";
+      readonly input: JobsEnrichRecordInput;
+    }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }
   | { readonly kind: "command"; readonly command: "jobs check"; readonly input: JobsCheckInput }
   | {

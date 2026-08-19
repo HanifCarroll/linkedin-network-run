@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
-import { jobsDetail, jobsEnrich, jobsSend } from "../src/commands/jobs.ts";
+import { jobsEnrichNext, jobsEnrichRecord, jobsSend } from "../src/commands/jobs.ts";
 import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
@@ -821,6 +821,15 @@ try {
       postedAt: "",
       applicantCount: "",
       benefits: [],
+      enrichmentOutcome: "retry_required",
+      enrichmentCapturedAt: null,
+      enrichmentParserVersion: "",
+      enrichmentEvidence: [],
+      companyProfileUrl: "",
+      companyEvidence: [],
+      externalApplicationUrl: "",
+      applicantTrackingSystem: "",
+      geoId: "",
       workFocus: "",
       productSystem: "",
       workSummary: "",
@@ -1001,6 +1010,15 @@ try {
       postedAt: "",
       applicantCount: "",
       benefits: [],
+      enrichmentOutcome: "retry_required",
+      enrichmentCapturedAt: null,
+      enrichmentParserVersion: "",
+      enrichmentEvidence: [],
+      companyProfileUrl: "",
+      companyEvidence: [],
+      externalApplicationUrl: "",
+      applicantTrackingSystem: "",
+      geoId: "",
       workFocus: "",
       productSystem: "",
       workSummary: "",
@@ -1113,6 +1131,15 @@ try {
       postedAt: "",
       applicantCount: "",
       benefits: [],
+      enrichmentOutcome: "retry_required",
+      enrichmentCapturedAt: null,
+      enrichmentParserVersion: "",
+      enrichmentEvidence: [],
+      companyProfileUrl: "",
+      companyEvidence: [],
+      externalApplicationUrl: "",
+      applicantTrackingSystem: "",
+      geoId: "",
       workFocus: "",
       productSystem: "",
       workSummary: "",
@@ -1283,172 +1310,6 @@ try {
       throw new Error("send script must not use an untrusted DOM click");
     if (!script.includes('out.status=out.confirmed?"sent":"failed"')) {
       throw new Error("send script must report sent only when the message needle is visible");
-    }
-  }
-
-  // Enrichment/detail selection is fit-gated in code, with or without a run ID.
-  // Fake scripts prove pending/dropped rows never dispatch.
-  {
-    const seed = (stateDir: string, status: "captured" | "collected") => {
-      const opened = openDatabase(join(stateDir, "linkedin-tools.db"));
-      const jobs = new JobsEngine(opened.database);
-      if (status === "captured") {
-        jobs.storeCapturedJobs(
-          ["keep-enrich", "pending-enrich", "drop-enrich"].map((id) => ({ id, title: id })),
-          "2026-08-03T12:00:00Z",
-        );
-      } else {
-        jobs.upsertJobs(
-          ["keep-detail", "pending-detail", "drop-detail"].map((id) => ({
-            id,
-            title: id,
-            company: "Example",
-            location: "Remote",
-            postingUrl: `https://www.linkedin.com/jobs/view/${id}/`,
-            hiringTeam: [
-              {
-                name: "Hiring",
-                profileUrl: "https://www.linkedin.com/in/hiring",
-                degree: "1st",
-                headline: "Recruiter",
-              },
-            ],
-            hasHiringTeam: true,
-          })),
-          "2026-08-03T12:00:00Z",
-        );
-      }
-      opened.database
-        .prepare(
-          "UPDATE jobs SET fit = CASE id WHEN ? THEN 'kept' WHEN ? THEN 'pending' ELSE 'dropped' END",
-        )
-        .run(
-          `${status === "captured" ? "keep-enrich" : "keep-detail"}`,
-          `${status === "captured" ? "pending-enrich" : "pending-detail"}`,
-        );
-      opened.database
-        .prepare(
-          "INSERT INTO capture_runs (id, source_url, search_config_json, started_at, updated_at, checkpoint_json) VALUES ('fit-run', 'https://example.test', '{}', '2026-08-03', '2026-08-03', '{}')",
-        )
-        .run();
-      const ids =
-        status === "captured"
-          ? ["keep-enrich", "pending-enrich", "drop-enrich"]
-          : ["keep-detail", "pending-detail", "drop-detail"];
-      for (const id of ids)
-        opened.database
-          .prepare(
-            "INSERT INTO job_observations (run_id, page_identity, job_id, observed_title, observed_at) VALUES ('fit-run', ?, ?, ?, '2026-08-03')",
-          )
-          .run(id, id, id);
-      opened.database.close();
-    };
-    for (const runId of [undefined, "fit-run"] as const) {
-      const stateDir = join(root, `fit-enrich-${runId ?? "all-runs"}`);
-      seed(stateDir, "captured");
-      const dispatchedScripts: string[] = [];
-      const result = await jobsEnrich(
-        {
-          stateDir,
-          playwriterBin: fakePlaywriter,
-          sessionId: 7,
-          ...(runId === undefined ? {} : { runId }),
-        },
-        {
-          resolveSession: async () => 7,
-          runScript: async ({ script }) => {
-            dispatchedScripts.push(script);
-            return {
-              ok: true,
-              data: script.includes("keep-enrich")
-                ? {
-                    completed: [
-                      {
-                        id: "keep-enrich",
-                        title: "keep-enrich",
-                        company: "Example",
-                        location: "Remote",
-                        postingUrl: "https://www.linkedin.com/jobs/view/keep-enrich/",
-                        hiringTeam: [],
-                        hasHiringTeam: false,
-                      },
-                    ],
-                  }
-                : {},
-            };
-          },
-        },
-      );
-      const dispatchText = dispatchedScripts.join("\n");
-      if (
-        !dispatchText.includes("keep-enrich") ||
-        dispatchText.includes("pending-enrich") ||
-        dispatchText.includes("drop-enrich")
-      ) {
-        throw new Error(`enrichment dispatched an unqualified job for ${runId ?? "all-runs"}`);
-      }
-      if (
-        (result as { enriched: number; remaining: number }).enriched !== 1 ||
-        (result as { remaining: number }).remaining !== 0
-      )
-        throw new Error(
-          `enrichment fit gate failed for ${runId ?? "all-runs"}: ${JSON.stringify(result)}`,
-        );
-    }
-    for (const runId of [undefined, "fit-run"] as const) {
-      const stateDir = join(root, `fit-detail-${runId ?? "all-runs"}`);
-      seed(stateDir, "collected");
-      const dispatchedScripts: string[] = [];
-      const result = await jobsDetail(
-        {
-          stateDir,
-          playwriterBin: fakePlaywriter,
-          sessionId: 7,
-          ...(runId === undefined ? {} : { runId }),
-        },
-        {
-          resolveSession: async () => 7,
-          runScript: async ({ script }) => {
-            dispatchedScripts.push(script);
-            return {
-              ok: true,
-              data: script.includes("keep-detail")
-                ? {
-                    completed: [
-                      {
-                        id: "keep-detail",
-                        description: "Details",
-                        workplaceType: "",
-                        employmentType: "",
-                        applyMethod: "",
-                        promoted: false,
-                        activelyReviewing: false,
-                        postedAt: "",
-                        applicantCount: "",
-                        benefits: [],
-                      },
-                    ],
-                  }
-                : {},
-            };
-          },
-        },
-      );
-      const dispatchText = dispatchedScripts.join("\n");
-      if (
-        !dispatchText.includes("keep-detail") ||
-        dispatchText.includes("pending-detail") ||
-        dispatchText.includes("drop-detail")
-      ) {
-        throw new Error(`detail dispatched an unqualified job for ${runId ?? "all-runs"}`);
-      }
-      if (
-        (result as { detailed: number; remaining: number }).detailed !== 1 ||
-        (result as { remaining: number }).remaining !== 0
-      )
-        throw new Error(
-          `detail fit gate failed for ${runId ?? "all-runs"}: ${JSON.stringify(result)}`,
-        );
     }
   }
 
@@ -1781,13 +1642,13 @@ try {
       calls.push("jobs filter");
       return { command: "jobs filter" };
     },
-    jobsEnrich: async () => {
-      calls.push("jobs enrich");
-      return { enriched: 0 };
+    jobsEnrichNext: async () => {
+      calls.push("jobs enrich-next");
+      return { found: false };
     },
-    jobsDetail: async () => {
-      calls.push("jobs detail");
-      return { detailed: 0, remaining: 0 };
+    jobsEnrichRecord: async () => {
+      calls.push("jobs enrich-record");
+      return { outcome: "retry_required" };
     },
     jobsList: async () => {
       calls.push("jobs list");
@@ -2045,6 +1906,496 @@ try {
   if (summaryRejected.exitCode !== 2 || summaryRejected.value?.error?.code !== "INVALID_ARGUMENT") {
     throw new Error("classification summary validation smoke failed");
   }
+  // Chrome enrichment handoff: strict payloads, durable outcomes, idempotent retry, and run scope.
+  {
+    const stateDir = join(root, "enrichment");
+    const db = openDatabase(join(stateDir, "linkedin-tools.db"));
+    const engine = new JobsEngine(db.database);
+    engine.storeCapturedJobs(
+      [
+        { id: "e1", title: "Role" },
+        { id: "e2", title: "Other" },
+      ],
+      "2026-08-03T00:00:00Z",
+    );
+    engine.upsertJobs(
+      [
+        {
+          id: "e1",
+          title: "Role",
+          company: "Acme",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/e1/",
+          hiringTeam: [],
+          hasHiringTeam: false,
+        },
+        {
+          id: "e2",
+          title: "Other",
+          company: "Acme",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/e2/",
+          hiringTeam: [],
+          hasHiringTeam: false,
+        },
+      ],
+      "2026-08-03T00:00:00Z",
+    );
+    db.database.prepare("UPDATE jobs SET fit='kept' WHERE id IN ('e1','e2')").run();
+    db.database
+      .prepare(
+        "INSERT INTO capture_runs (id, source_url, started_at, updated_at, checkpoint_json) VALUES ('erun','https://example.test','2026-08-03','2026-08-03','{}')",
+      )
+      .run();
+    db.database
+      .prepare(
+        "INSERT INTO job_observations (run_id,page_identity,job_id,observed_title,observed_at) VALUES ('erun','e1','e1','Role','2026-08-03')",
+      )
+      .run();
+    db.database.close();
+    const next = await jobsEnrichNext({ stateDir, runId: "erun" });
+    if (!(next as { found: boolean }).found || (next as { job: JobRow }).job.id !== "e1")
+      throw new Error("enrich-next run scope failed");
+    const payload = {
+      id: "e1",
+      sourceUrl: "https://www.linkedin.com/jobs/view/e1/",
+      outcome: "complete_no_hiring_team",
+      title: "Role",
+      company: "Acme",
+      location: "Remote",
+      postingUrl: "https://www.linkedin.com/jobs/view/e1/",
+      description: "Full description",
+      workplaceType: "Remote",
+      employmentType: "Full-time",
+      applyMethod: "Easy Apply",
+      promoted: false,
+      activelyReviewing: false,
+      postedAt: "2 days ago",
+      applicantCount: "10 applicants",
+      benefits: [],
+      hiringTeam: [],
+      companyProfileUrl: "https://www.linkedin.com/company/acme",
+      companyEvidence: ["Acme"],
+      capturedAt: "2026-08-03T00:01:00Z",
+      parserVersion: "jobs-chrome-enrichment-v1",
+      externalApplicationUrl: "https://apply.example.test/e1",
+      applicantTrackingSystem: "Greenhouse",
+      geoId: "9001",
+      rawResponses: [
+        {
+          component: "peopleWhoCanHelp",
+          sourceUrl: "https://www.linkedin.com/jobs/view/e1/",
+          responseUrl:
+            "https://www.linkedin.com/voyager/api/flagship-web?componentId=peopleWhoCanHelp",
+          status: 200,
+          capturedAt: "2026-08-03T00:01:00Z",
+          parserVersion: "jobs-chrome-enrichment-v2",
+          body: "{}",
+        },
+      ],
+      sourceEvidence: ["Role | Acme | Remote"],
+    };
+    const path = join(stateDir, "payload.json");
+    const inconclusiveNoTeam = {
+      ...payload,
+      id: "e2",
+      sourceUrl: "https://www.linkedin.com/jobs/view/e2/",
+      postingUrl: "https://www.linkedin.com/jobs/view/e2/",
+      title: "Other",
+      rawResponses: payload.rawResponses.map((response) => ({
+        ...response,
+        sourceUrl: "https://www.linkedin.com/jobs/view/e2/",
+        body: '0:{"props":{"textProps":{"children":["Meet the hiring team"]}}}',
+      })),
+    };
+    await writeFile(path, JSON.stringify(inconclusiveNoTeam));
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("inconclusive no-team outcome accepted");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "JOBS_ENRICHMENT_INVALID") throw error;
+    }
+    await writeFile(path, JSON.stringify(payload));
+    const recorded = await jobsEnrichRecord({ stateDir, payloadPath: path });
+    if ((recorded as { outcome: string }).outcome !== "complete_no_hiring_team")
+      throw new Error("no-team outcome was not recorded");
+    const repeated = await jobsEnrichRecord({ stateDir, payloadPath: path });
+    if ((repeated as { job: JobRow }).job.enrichmentOutcome !== "complete_no_hiring_team")
+      throw new Error("enrich-record was not idempotent");
+    const persisted = openDatabase(join(stateDir, "linkedin-tools.db"));
+    const rawCount = persisted.database
+      .query<{ count: number }, [string]>(
+        "SELECT COUNT(*) AS count FROM job_enrichment_responses WHERE job_id=?",
+      )
+      .get("e1")?.count;
+    if (rawCount !== 1) throw new Error("raw enrichment response was not persisted");
+    persisted.database.close();
+    await writeFile(path, JSON.stringify({ ...payload, description: "different" }));
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("conflicting replay accepted");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "JOBS_ENRICHMENT_CONFLICT") throw error;
+    }
+    const oversized = {
+      ...payload,
+      rawResponses: [
+        {
+          component: "document",
+          sourceUrl: payload.sourceUrl,
+          responseUrl: payload.sourceUrl,
+          status: 200,
+          capturedAt: payload.capturedAt,
+          parserVersion: payload.parserVersion,
+          body: "x".repeat(1_000_001),
+        },
+      ],
+    };
+    const tooMany = {
+      ...payload,
+      rawResponses: Array.from({ length: 5 }, (_, index) => ({
+        component: "peopleWhoCanHelp",
+        sourceUrl: payload.sourceUrl,
+        responseUrl: `${payload.sourceUrl}${index}`,
+        status: 200,
+        capturedAt: payload.capturedAt,
+        parserVersion: payload.parserVersion,
+        body: "{}",
+      })),
+    };
+    await writeFile(path, JSON.stringify(tooMany));
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("too many raw responses accepted");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "INVALID_ARGUMENT") throw error;
+    }
+    await writeFile(path, JSON.stringify(oversized));
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("oversized raw response accepted");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "INVALID_ARGUMENT") throw error;
+    }
+    const droppedDb = openDatabase(join(stateDir, "linkedin-tools.db"));
+    droppedDb.database.prepare("UPDATE jobs SET fit='dropped' WHERE id='e2'").run();
+    droppedDb.database.close();
+    await writeFile(path, JSON.stringify({ ...payload, id: "e2" }));
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("dropped job entered enrichment");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "JOB_NOT_ELIGIBLE") throw error;
+    }
+    const restoreDb = openDatabase(join(stateDir, "linkedin-tools.db"));
+    restoreDb.database.prepare("UPDATE jobs SET fit='kept' WHERE id='e2'").run();
+    restoreDb.database.close();
+    const closed = {
+      ...payload,
+      id: "e2",
+      sourceUrl: "https://www.linkedin.com/jobs/view/e2/?trk=foo",
+      postingUrl: "",
+      outcome: "closed",
+      title: "",
+      company: "",
+      location: "",
+      description: "",
+    };
+    await writeFile(path, JSON.stringify(closed));
+    await jobsEnrichRecord({ stateDir, payloadPath: path });
+    const check = openDatabase(join(stateDir, "linkedin-tools.db"));
+    const rows = new JobsEngine(check.database);
+    if (rows.requireJob("e2").enrichmentOutcome !== "closed")
+      throw new Error("closed outcome was lost");
+    check.database.close();
+    await writeFile(
+      path,
+      JSON.stringify({ ...payload, id: "e1", sourceUrl: "https://bad.example/" }),
+    );
+    try {
+      await jobsEnrichRecord({ stateDir, payloadPath: path });
+      throw new Error("source mismatch accepted");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "JOBS_SOURCE_MISMATCH") throw error;
+    }
+  }
+  const helperImport = new Function(
+    "return import('./linkedin-jobs-chrome-helper.mjs')",
+  ) as () => Promise<{
+    captureDirectPage: (
+      tab: unknown,
+      sourceUrl: string,
+      action: () => Promise<void>,
+    ) => Promise<{ captured: readonly { component: string; body: string }[] }>;
+    parseJobSnapshot: (
+      snapshot: unknown,
+      expected?: unknown,
+    ) => {
+      outcome: string;
+      title: string;
+      description: string;
+      hiringTeam: readonly { profileUrl: string }[];
+      applicantCount: string;
+      sourceEvidence: readonly string[];
+      benefits: readonly string[];
+      companyEvidence: readonly string[];
+    };
+    parseScopedRsc: (responses: readonly unknown[]) => {
+      description: string;
+      externalApplicationUrl: string;
+      applicantTrackingSystem: string;
+      geoId: string;
+      hiringTeam: readonly { name: string; profileUrl: string; degree: string }[];
+      companyEvidence: readonly string[];
+      peopleHasUrls: boolean;
+      peopleConclusiveEmpty: boolean;
+    };
+  }>;
+  const { captureDirectPage, parseJobSnapshot, parseScopedRsc } = await helperImport();
+  let fakeNavigated = false;
+  const fakeBodies = new Map([
+    ["doc", { body: "document" }],
+    ["job-old", { body: "old" }],
+    ["job-new", { body: "new" }],
+    ["people", { body: "people" }],
+    ["company", { body: "company" }],
+  ]);
+  const fakeEvents = [
+    {
+      method: "Network.responseReceived",
+      params: {
+        requestId: "doc",
+        response: { url: "https://www.linkedin.com/jobs/view/1/", status: 200 },
+      },
+    },
+    { method: "Network.loadingFinished", params: { requestId: "doc" } },
+    {
+      method: "Network.responseReceived",
+      params: {
+        requestId: "job-old",
+        response: {
+          url: "https://www.linkedin.com/voyager/api/flagship-web?componentId=aboutTheJob&parentSpanId=old",
+          status: 200,
+        },
+      },
+    },
+    { method: "Network.loadingFinished", params: { requestId: "job-old" } },
+    {
+      method: "Network.responseReceived",
+      params: {
+        requestId: "job-new",
+        response: {
+          url: "https://www.linkedin.com/voyager/api/flagship-web?componentId=aboutTheJob&parentSpanId=new",
+          status: 200,
+        },
+      },
+    },
+    { method: "Network.loadingFinished", params: { requestId: "job-new" } },
+    {
+      method: "Network.responseReceived",
+      params: {
+        requestId: "people",
+        response: {
+          url: "https://www.linkedin.com/voyager/api/flagship-web?componentId=peopleWhoCanHelp",
+          status: 200,
+        },
+      },
+    },
+    { method: "Network.loadingFinished", params: { requestId: "people" } },
+    {
+      method: "Network.responseReceived",
+      params: {
+        requestId: "company",
+        response: {
+          url: "https://www.linkedin.com/voyager/api/flagship-web?componentId=aboutTheCompanyForJobDetails",
+          status: 200,
+        },
+      },
+    },
+    { method: "Network.loadingFinished", params: { requestId: "company" } },
+  ];
+  const noisyEvents = [
+    ...Array.from({ length: 250 }, (_, index) => ({
+      method: "Network.requestWillBeSent",
+      params: { requestId: `noise-${index}` },
+    })),
+    ...fakeEvents,
+  ];
+  let fakePoll = 0;
+  let maxReadLimit = 0;
+  const fakeCdp = {
+    async send(method: string, args?: { requestId?: string }) {
+      if (method === "Network.getResponseBody")
+        return fakeBodies.get(args?.requestId ?? "") ?? { body: "" };
+      return {};
+    },
+    async readEvents(args: { limit?: number }) {
+      maxReadLimit = Math.max(maxReadLimit, args.limit ?? 0);
+      fakePoll += 1;
+      return { cursor: fakePoll, events: fakePoll === 2 ? noisyEvents : [], truncated: false };
+    },
+  };
+  const captured = await captureDirectPage(
+    { capabilities: { get: async () => fakeCdp } },
+    "https://www.linkedin.com/jobs/view/1/",
+    async () => {
+      fakeNavigated = true;
+    },
+  );
+  if (
+    !fakeNavigated ||
+    maxReadLimit !== 1000 ||
+    captured.captured.filter((item: { component: string }) => item.component === "aboutTheJob")
+      .length !== 1 ||
+    captured.captured.find(
+      (item: { component: string; body: string }) => item.component === "aboutTheJob",
+    )?.body !== "new"
+  )
+    throw new Error("CDP same-component capture dedupe failed");
+  const rscFixture = parseScopedRsc([
+    {
+      component: "aboutTheJob",
+      body: '{"description":"Build durable systems for customers.","externalApplyUrl":"https://jobs.example/apply/1","applicantTrackingSystem":"Greenhouse","geoId":"123"}',
+    },
+    {
+      component: "aboutTheCompanyForJobDetails",
+      body: '{"companyName":"Acme","industry":"Software"}',
+    },
+    {
+      component: "peopleWhoCanHelp",
+      body: '{"title":"Meet the hiring team","name":"Jane Doe","profileUrl":"https://www.linkedin.com/in/jane-doe","degree":"2nd","headline":"Engineering Manager"}',
+    },
+  ]);
+  if (
+    rscFixture.description !== "Build durable systems for customers." ||
+    rscFixture.externalApplicationUrl !== "https://jobs.example/apply/1" ||
+    rscFixture.applicantTrackingSystem !== "Greenhouse" ||
+    rscFixture.geoId !== "123" ||
+    rscFixture.hiringTeam[0]?.profileUrl !== "https://linkedin.com/in/jane-doe"
+  )
+    throw new Error("RSC enrichment parser failed");
+  const flightFixture = parseScopedRsc([
+    {
+      component: "document",
+      body: '0:{"offsiteApplyUrl":"https://apply.example/jobs/1","applicantTrackingSystemName":"Greenhouse","jobGeoId":"103644278"}\n1:{"props":{"textProps":{"children":["Senior Platform Engineer"]}}}',
+    },
+    {
+      component: "aboutTheJob",
+      body: '0:{"props":{"textProps":{"children":["About the job","Build reliable customer systems.","About the company"]}}}',
+    },
+    {
+      component: "aboutTheCompanyForJobDetails",
+      body: '0:{"props":{"textProps":{"children":["Acme","1,001-5,000 employees","12,000 followers","We build useful software."]}}}',
+    },
+    {
+      component: "peopleWhoCanHelp",
+      body: '0:{"props":{"textProps":{"children":["Meet the hiring team","https://www.linkedin.com/in/jane-doe","Jane Doe","• 2nd","Engineering Manager"]}}}',
+    },
+  ]);
+  if (
+    flightFixture.description !== "Build reliable customer systems." ||
+    flightFixture.externalApplicationUrl !== "https://apply.example/jobs/1" ||
+    flightFixture.applicantTrackingSystem !== "Greenhouse" ||
+    flightFixture.geoId !== "103644278" ||
+    flightFixture.hiringTeam[0]?.name !== "Jane Doe" ||
+    flightFixture.hiringTeam[0]?.degree !== "2nd" ||
+    flightFixture.companyEvidence.length < 3
+  )
+    throw new Error("real React Flight enrichment parser failed");
+  const inconclusivePeople = parseScopedRsc([
+    {
+      component: "peopleWhoCanHelp",
+      body: '0:{"props":{"textProps":{"children":["Meet the hiring team","https://www.linkedin.com/in/not-a-contact","People who can help"]}}}',
+    },
+  ]);
+  if (
+    !inconclusivePeople.peopleHasUrls ||
+    inconclusivePeople.hiringTeam.length !== 0 ||
+    inconclusivePeople.peopleConclusiveEmpty
+  )
+    throw new Error("inconclusive people response was treated as empty");
+  const networkContactOnly = parseScopedRsc([
+    {
+      component: "peopleWhoCanHelp",
+      body: '0:{"props":{"textProps":{"children":["People you can reach out to","https://www.linkedin.com/in/network-contact","Network Contact","• 2nd","Product Designer"]}}}',
+    },
+  ]);
+  if (
+    networkContactOnly.peopleHasUrls ||
+    networkContactOnly.hiringTeam.length !== 0 ||
+    !networkContactOnly.peopleConclusiveEmpty
+  )
+    throw new Error("general network contact was treated as a hiring-team contact");
+  const emptyCompany = parseScopedRsc([{ component: "aboutTheCompanyForJobDetails", body: "{}" }]);
+  if (emptyCompany.companyEvidence.length !== 0)
+    throw new Error("empty company component erased fallback evidence");
+  const fixture = parseJobSnapshot(
+    {
+      documentTitle:
+        "Senior Software Engineer - Full Stack Developer - React, Node.js | Elsevier | LinkedIn",
+      url: "https://www.linkedin.com/jobs/view/4452992815/?trk=foo",
+      text: [
+        "Senior Software Engineer - Full Stack Developer - React, Node.js",
+        "Philadelphia, PA · 5 days ago · Over 100 applicants",
+        "Promoted by hirer · Actively reviewing applicants",
+        "On-site",
+        "Full-time",
+        "Easy Apply",
+        "Meet the hiring team",
+        "Jane Doe\n2nd\nEngineering Manager\nJob poster",
+        "About the job",
+        "Build software for researchers.",
+        "Benefits found in job post",
+        "Health insurance",
+        "Set alert for similar jobs",
+      ].join("\n"),
+      team: [
+        {
+          profileUrl: "https://www.linkedin.com/in/jane-doe/?miniProfileUrn=1",
+          innerText: "Jane Doe\n2nd\nEngineering Manager\nJob poster",
+        },
+      ],
+    },
+    { id: "4452992815", sourceUrl: "https://www.linkedin.com/jobs/view/4452992815/" },
+  );
+  if (
+    fixture.outcome !== "complete_hiring_team" ||
+    fixture.title === "" ||
+    fixture.description !== "Build software for researchers." ||
+    fixture.hiringTeam[0]?.profileUrl !== "https://linkedin.com/in/jane-doe/"
+  )
+    throw new Error("Chrome enrichment fixture parser regressed");
+  const boundedFixture = parseJobSnapshot(
+    {
+      documentTitle: "Product Engineer | Acme | LinkedIn",
+      url: "https://www.linkedin.com/jobs/view/4452992816/",
+      text: [
+        "Product Engineer",
+        "United States · 1 day ago · 10 people clicked apply",
+        "Remote",
+        "Full-time",
+        "About the job",
+        "x".repeat(2_000),
+        "Benefits found in job post",
+        "y".repeat(600),
+        "About the company",
+        ...Array.from({ length: 30 }, (_, index) => `Company evidence ${index}`),
+        "Set alert for similar jobs",
+      ].join("\n"),
+      team: [],
+    },
+    { id: "4452992816", sourceUrl: "https://www.linkedin.com/jobs/view/4452992816/" },
+  );
+  if (
+    boundedFixture.applicantCount !== "10 people clicked apply" ||
+    !boundedFixture.sourceEvidence.includes("Remote") ||
+    !boundedFixture.sourceEvidence.includes("Full-time") ||
+    boundedFixture.sourceEvidence.some((value: string) => value.length > 1_000) ||
+    boundedFixture.benefits.some((value: string) => value.length > 300) ||
+    boundedFixture.companyEvidence.length > 20 ||
+    boundedFixture.companyEvidence.some((value: string) => value.length > 1_000)
+  )
+    throw new Error("Chrome enrichment packet exceeded CLI bounds");
   if (calls.length !== commands.length) throw new Error("fake operation dispatch count mismatch");
   console.log(
     JSON.stringify({

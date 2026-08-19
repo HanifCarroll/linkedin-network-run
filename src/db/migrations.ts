@@ -490,6 +490,47 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN triaged_at TEXT;
     `,
   },
+  {
+    id: 15,
+    name: "jobs_chrome_enrichment",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN enrichment_outcome TEXT NOT NULL DEFAULT 'retry_required'
+        CHECK(enrichment_outcome IN ('complete_hiring_team', 'complete_no_hiring_team', 'retry_required', 'closed'));
+      ALTER TABLE jobs ADD COLUMN enrichment_captured_at TEXT;
+      ALTER TABLE jobs ADD COLUMN enrichment_parser_version TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN enrichment_evidence_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE jobs ADD COLUMN company_profile_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN company_evidence_json TEXT NOT NULL DEFAULT '[]';
+      UPDATE jobs SET enrichment_outcome = CASE
+        WHEN description <> '' AND has_hiring_team = 1 THEN 'complete_hiring_team'
+        ELSE 'retry_required'
+      END,
+      enrichment_captured_at = CASE WHEN description <> '' THEN updated_at ELSE NULL END,
+      enrichment_parser_version = CASE WHEN description <> '' THEN 'legacy-detail-v1' ELSE '' END;
+    `,
+  },
+  {
+    id: 16,
+    name: "jobs_chrome_response_bodies",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN external_application_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN applicant_tracking_system TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN geo_id TEXT NOT NULL DEFAULT '';
+      CREATE TABLE job_enrichment_responses (
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        source_url TEXT NOT NULL,
+        response_url TEXT NOT NULL,
+        status INTEGER NOT NULL CHECK(status BETWEEN 100 AND 599),
+        component TEXT NOT NULL CHECK(component IN ('document', 'aboutTheJob', 'aboutTheCompanyForJobDetails', 'peopleWhoCanHelp')),
+        captured_at TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        body TEXT NOT NULL,
+        body_bytes INTEGER NOT NULL CHECK(body_bytes >= 0),
+        PRIMARY KEY(job_id, component)
+      );
+      CREATE INDEX job_enrichment_responses_job_idx ON job_enrichment_responses(job_id, captured_at);
+    `,
+  },
 ];
 
 export type MigrationResult = {

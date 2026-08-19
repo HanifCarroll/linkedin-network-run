@@ -18,10 +18,7 @@ hiring-team outreach with the explicit `--allow-send` flag.
 - Use Bun, strict TypeScript, one package, `bun:sqlite`, and one `linkedin-tools` binary.
 - Emit stable `{ "ok": true, "data": ... }` or `{ "ok": false, "error": ... }` JSON envelopes.
 - Reject unknown, duplicate, conflicting, malformed, and out-of-range arguments before dispatch.
-- LinkedIn Jobs CAPTURE ONLY uses the Codex Chrome handoff helper and CLI SQLite ingest. Never add
-  CLI browser control, browser leases, or cross-automation locks. Jobs enrichment, live-job checking,
-  networking, analytics, and sending remain on their current Playwriter paths for this step; migrate
-  those paths to the Chrome boundary later, after capture is stable.
+- LinkedIn Jobs capture and direct-page enrichment use caller-owned Codex Chrome handoffs plus CLI SQLite ingest. Direct enrichment is request-first: arm CDP before navigation, retain only the target Document and aboutTheJob/aboutTheCompanyForJobDetails/peopleWhoCanHelp response bodies, parse locally, then verify with stable DOM reads. Never add CLI browser control, browser leases, or cross-automation locks. Jobs liveness checking, networking, analytics, and sending remain on Playwriter.
 - Scheduled browser commands use `--session auto`. Command-owned exact bindings keep network and
   analytics sessions distinct.
 - Real network ticks require the exact `--allow-send` flag.

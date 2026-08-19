@@ -27,8 +27,8 @@ The daily target is exactly 30 durable requests, shared across the two configure
 or planned attempts, and a complete final sent-list reconciliation. A possible send is reserved
 until reconciliation proves its outcome.
 
-LinkedIn Jobs result capture uses the caller-owned Codex Chrome tab and stores raw responses through
-the CLI. Networking, analytics, Jobs enrichment/checking, and sending remain on distinct,
+LinkedIn Jobs result capture and direct-page enrichment use the caller-owned Codex Chrome tab and store durable evidence through
+the CLI. Networking, analytics, Jobs liveness checking, and sending remain on distinct,
 command-bound Playwriter sessions for now. The repository does not implement browser leases or
 cross-automation locks.
 
@@ -156,9 +156,13 @@ LinkedIn job ID, preserve run/page provenance, and resume safely. It does not fi
 or fit and does not enrich. Run `jobs filter --run-id ID --terms '["product engineer","software engineer"]' --policy-version jobs-fit-v1`
 with explicit title terms and a caller-supplied policy version; `--max-age-days` defaults to 30.
 It never reads `JOB_SEARCH_TERMS`, uses no location, records deterministic
-fit/freshness reasons, and keeps unknown freshness while reporting it. Enrichment and detail remain
-on their existing Playwriter paths, but only `fit=kept` jobs are eligible whether or not
-`--run-id ID` is supplied. Live-job checks, networking, analytics, and sending remain unchanged;
+fit/freshness reasons, and keeps unknown freshness while reporting it. Direct-page enrichment is request-first:
+the helper arms CDP before caller-owned navigation, captures only the target Document and the three named
+flagship-web components, parses their bodies locally, then verifies with two stable DOM reads. DOM data
+fills missing or empty component fields; only `fit=kept` jobs are eligible. Raw scoped bodies and provenance
+are stored in SQLite, with bounded size/count validation. A no-team result requires stable DOM plus an
+observed (possibly empty) `peopleWhoCanHelp` response; otherwise the job remains `retry_required`.
+Live-job checks, networking, analytics, and sending remain unchanged;
 triage prioritizes opportunities but never automatically pursues or rejects them.
 Before human review, `jobs triage-next` hands one eligible kept job to an agent. `jobs triage-record`
 stores an evidence-backed `strong`, `possible`, or `weak` fit brief under policy

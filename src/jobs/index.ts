@@ -15,8 +15,6 @@ export { runJobsScript } from "./playwriter.ts";
 export {
   buildCheckLivenessScript,
   buildCleanupTabsScript,
-  buildDetailScript,
-  buildEnrichPoolScript,
   buildSendScript,
 } from "./scripts.ts";
 export { JOB_SEARCH_LOCATION, JOB_SEARCH_TERMS } from "./terms.ts";
@@ -24,7 +22,6 @@ export type {
   CapturedJob,
   CollectedJob,
   HiringTeamMember,
-  JobDetail,
   JobRow,
   JobStatus,
   TriageBucket,

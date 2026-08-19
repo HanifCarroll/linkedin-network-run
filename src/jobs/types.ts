@@ -46,8 +46,20 @@ export type CapturedJob = {
 };
 
 /** Full posting-page details captured by the detail-enrich pass. */
-export type JobDetail = {
+export type EnrichmentOutcome =
+  | "complete_hiring_team"
+  | "complete_no_hiring_team"
+  | "retry_required"
+  | "closed";
+
+export type JobEnrichment = {
   readonly id: string;
+  readonly sourceUrl: string;
+  readonly outcome: EnrichmentOutcome;
+  readonly title: string;
+  readonly company: string;
+  readonly location: string;
+  readonly postingUrl: string;
   readonly description: string;
   readonly workplaceType: string;
   readonly employmentType: string;
@@ -57,6 +69,26 @@ export type JobDetail = {
   readonly postedAt: string;
   readonly applicantCount: string;
   readonly benefits: readonly string[];
+  readonly hiringTeam: readonly HiringTeamMember[];
+  readonly companyProfileUrl: string;
+  readonly companyEvidence: readonly string[];
+  readonly externalApplicationUrl: string;
+  readonly applicantTrackingSystem: string;
+  readonly geoId: string;
+  readonly rawResponses?: readonly JobEnrichmentResponse[];
+  readonly capturedAt: string;
+  readonly parserVersion: string;
+  readonly sourceEvidence: readonly string[];
+};
+
+export type JobEnrichmentResponse = {
+  readonly component: "document" | "aboutTheJob" | "aboutTheCompanyForJobDetails" | "peopleWhoCanHelp";
+  readonly sourceUrl: string;
+  readonly responseUrl: string;
+  readonly status: number;
+  readonly capturedAt: string;
+  readonly parserVersion: string;
+  readonly body: string;
 };
 
 export type JobsListInput = {
@@ -116,6 +148,15 @@ export type JobRow = {
   readonly postedAt: string;
   readonly applicantCount: string;
   readonly benefits: readonly string[];
+  readonly enrichmentOutcome: EnrichmentOutcome;
+  readonly enrichmentCapturedAt: string | null;
+  readonly enrichmentParserVersion: string;
+  readonly enrichmentEvidence: readonly string[];
+  readonly companyProfileUrl: string;
+  readonly companyEvidence: readonly string[];
+  readonly externalApplicationUrl: string;
+  readonly applicantTrackingSystem: string;
+  readonly geoId: string;
   /** Functional area the role centers on (e.g. "Growth", "Backend platform"). */
   readonly workFocus: string;
   /** Tool or platform the role is built around (e.g. "Salesforce", "HubSpot"). */

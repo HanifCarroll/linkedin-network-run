@@ -8,8 +8,6 @@ import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
   buildCheckLivenessScript,
   buildCleanupTabsScript,
-  buildDetailScript,
-  buildEnrichPoolScript,
   buildSendScript,
   filterRun,
   JobsEngine,
@@ -18,7 +16,7 @@ import {
   runJobsScript,
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
-import type { CollectedJob, JobDetail, JobRow } from "../jobs/types.ts";
+import type { JobEnrichment, JobEnrichmentResponse, JobRow } from "../jobs/types.ts";
 import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
@@ -28,9 +26,9 @@ import type {
   JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
-  JobsDetailInput,
   JobsDraftInput,
-  JobsEnrichInput,
+  JobsEnrichNextInput,
+  JobsEnrichRecordInput,
   JobsFavoriteInput,
   JobsFilterInput,
   JobsHubSpotNextInput,
@@ -177,216 +175,258 @@ export async function jobsFilter(
   }
 }
 
-export async function jobsEnrich(
-  input: JobsEnrichInput,
-  dependencies: JobsDependencies = defaultDependencies,
-): Promise<unknown> {
-  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
-  const runScript = dependencies.runScript ?? runJobsScript;
-  const now = dependencies.now ?? nowDefault;
-  const sessionId = await resolveSession({
-    workflow: "jobs",
-    selection: input.sessionId,
-    stateDir: input.stateDir,
-    playwriterBin: input.playwriterBin,
-  });
-  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
-  const dbPath = join(input.stateDir, "linkedin-tools.db");
-  const batchSize = 3;
-  // Stay well under Chrome's ~5-minute MV3 single-event termination: a soft
-  // 3-minute budget plus one in-flight batch keeps each invocation below the
-  // limit that reclaims the extension service worker mid-drain.
-  const BUDGET_MS = 180_000;
-  const startedAt = Date.now();
-  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
-    try {
-      return await runScript({
-        playwriterBin: input.playwriterBin,
-        sessionId,
-        script,
-        timeoutMs,
-        stateDir: input.stateDir,
-      });
-    } catch (error) {
-      if (isSessionFailure(error)) {
-        await resetSession(sessionId).catch(() => {});
-        return null;
-      }
-      throw error;
-    }
-  };
-  const capturedRows = (): JobRow[] => {
-    const opened = openDatabase(dbPath);
-    try {
-      return new JobsEngine(opened.database).listJobs({
-        status: "captured",
+export async function jobsEnrichNext(input: JobsEnrichNextInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const engine = new JobsEngine(opened.database);
+    const ids = input.runId === undefined ? undefined : runJobIds(opened.database, input.runId);
+    const jobs = engine
+      .listJobs({
         withHiringTeam: false,
         fit: "kept",
-        ...(input.runId === undefined ? {} : { jobIds: runJobIds(opened.database, input.runId) }),
-      });
-    } finally {
-      opened.database.close();
-    }
-  };
-  const upsert = (jobs: CollectedJob[]): void => {
-    if (jobs.length === 0) return;
-    const opened = openDatabase(dbPath);
-    try {
-      new JobsEngine(opened.database).upsertJobs(jobs, now());
-    } finally {
-      opened.database.close();
-    }
-  };
-  const deleteJobs = (ids: string[]): void => {
-    if (ids.length === 0) return;
-    const opened = openDatabase(dbPath);
-    try {
-      new JobsEngine(opened.database).deleteJobs(ids);
-    } finally {
-      opened.database.close();
-    }
-  };
-
-  // Trim accumulated blank automation tabs before draining: MV3 service
-  // workers get reclaimed under tab-buildup memory pressure, so this reduces
-  // reconnect-drop frequency. Best-effort; the enrich loop surfaces the real
-  // session failure if the bridge is already down.
-  try {
-    const cleanup = buildCleanupTabsScript();
-    await runPhase(cleanup.script, cleanup.timeoutMs);
-  } catch {
-    // ignore — enrichment below reports the actual failure
+        ...(ids === undefined ? {} : { jobIds: ids }),
+      })
+      .filter(
+        (job) => job.enrichmentOutcome === "retry_required" && job.triageBucket === "pending",
+      );
+    const selected = input.id === undefined ? jobs[0] : jobs.find((job) => job.id === input.id);
+    if (input.id !== undefined && selected === undefined)
+      throw new CliError(
+        "JOB_NOT_ELIGIBLE",
+        `job ${input.id} is not an eligible kept job in the requested run`,
+        { exitCode: 2 },
+      );
+    return {
+      command: "jobs enrich-next",
+      found: selected !== undefined,
+      ...(selected === undefined ? {} : { job: selected, sourceUrl: selected.postingUrl }),
+    };
+  } finally {
+    opened.database.close();
   }
-
-  const pool = capturedRows();
-  const toEnrich = input.limit === undefined ? pool : pool.slice(0, input.limit);
-  let enriched = 0;
-  for (let i = 0; i < toEnrich.length && Date.now() - startedAt < BUDGET_MS; i += batchSize) {
-    const batch = toEnrich.slice(i, i + batchSize).map((r) => ({ id: r.id, title: r.title }));
-    const { script, timeoutMs } = buildEnrichPoolScript({ jobs: batch });
-    const result = await runPhase(script, timeoutMs);
-    if (result === null) break;
-    const completed = Array.isArray(result.data?.completed) ? result.data.completed : [];
-    const real = completed.filter(
-      (job): job is CollectedJob => isRecord(job) && String(job.company ?? "").length > 0,
-    );
-    // Removed postings ("Job id provided may not be valid...") load with the
-    // generic "Jobs" title and no company. Drop them so they don't sit at the
-    // top of the pool and burn the budget every run; transient empties stay
-    // captured for a later retry.
-    const deadIds = completed
-      .filter((job) => isRecord(job) && job.dead === true && String(job.company ?? "") === "")
-      .map((job) => String(job.id))
-      .filter(Boolean);
-    if (deadIds.length > 0) deleteJobs(deadIds);
-    upsert(real);
-    enriched += real.length;
-  }
-  const remaining = capturedRows().length;
-  return { command: "jobs enrich", enriched, remaining };
 }
 
-export async function jobsDetail(
-  input: JobsDetailInput,
+export async function jobsEnrichRecord(
+  input: JobsEnrichRecordInput,
   dependencies: JobsDependencies = defaultDependencies,
 ): Promise<unknown> {
-  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
-  const runScript = dependencies.runScript ?? runJobsScript;
-  const now = dependencies.now ?? nowDefault;
-  const sessionId = await resolveSession({
-    workflow: "jobs",
-    selection: input.sessionId,
-    stateDir: input.stateDir,
-    playwriterBin: input.playwriterBin,
-  });
-  const resetSession = dependencies.resetSession ?? defaultResetSession(input);
-  const dbPath = join(input.stateDir, "linkedin-tools.db");
-  // One job per playwriter invocation: the detail result carries the full
-  // description (~2.5–6 KB), and the playwriter relay truncates an execute's
-  // response text at 10 000 chars (executor.js MAX_LENGTH). A 3-job batch
-  // exceeds that and returns unparseable JSON. Single jobs stay well under it.
-  const batchSize = 1;
-  const BUDGET_MS = 180_000;
-  const startedAt = Date.now();
-  const runPhase = async (script: string, timeoutMs: number): Promise<JobsScriptOutcome | null> => {
-    try {
-      return await runScript({
-        playwriterBin: input.playwriterBin,
-        sessionId,
-        script,
-        timeoutMs,
-        stateDir: input.stateDir,
-      });
-    } catch (error) {
-      if (isSessionFailure(error)) {
-        await resetSession(sessionId).catch(() => {});
-        return null;
-      }
-      throw error;
-    }
-  };
-  const pendingRows = (): JobRow[] => {
-    const opened = openDatabase(dbPath);
-    try {
-      return new JobsEngine(opened.database).listJobs({
-        withHiringTeam: true,
-        needsDetail: true,
-        fit: "kept",
-        ...(input.runId === undefined ? {} : { jobIds: runJobIds(opened.database, input.runId) }),
-      });
-    } finally {
-      opened.database.close();
-    }
-  };
-  const store = (details: JobDetail[]): void => {
-    if (details.length === 0) return;
-    const opened = openDatabase(dbPath);
-    try {
-      new JobsEngine(opened.database).storeJobDetails(details, now());
-    } finally {
-      opened.database.close();
-    }
-  };
-  const deleteJobs = (ids: string[]): void => {
-    if (ids.length === 0) return;
-    const opened = openDatabase(dbPath);
-    try {
-      new JobsEngine(opened.database).deleteJobs(ids);
-    } finally {
-      opened.database.close();
-    }
-  };
-
+  let payload: unknown;
   try {
-    const cleanup = buildCleanupTabsScript();
-    await runPhase(cleanup.script, cleanup.timeoutMs);
-  } catch {
-    // ignore — the detail loop below surfaces the real session failure
-  }
-
-  const pool = pendingRows();
-  const toDetail = input.limit === undefined ? pool : pool.slice(0, input.limit);
-  let detailed = 0;
-  for (let i = 0; i < toDetail.length && Date.now() - startedAt < BUDGET_MS; i += batchSize) {
-    const batch = toDetail.slice(i, i + batchSize).map((r) => ({ id: r.id }));
-    const { script, timeoutMs } = buildDetailScript({ jobs: batch });
-    const result = await runPhase(script, timeoutMs);
-    if (result === null) break;
-    const completed = Array.isArray(result.data?.completed) ? result.data.completed : [];
-    const real = completed.filter(
-      (d): d is JobDetail =>
-        isRecord(d) && typeof d.description === "string" && d.description.length > 0,
+    payload = JSON.parse(
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8"),
     );
-    const deadIds = completed
-      .filter((d) => isRecord(d) && d.dead === true)
-      .map((d) => String(d.id))
-      .filter(Boolean);
-    if (deadIds.length > 0) deleteJobs(deadIds);
-    store(real);
-    detailed += real.length;
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", "enrichment payload must be valid JSON", {
+      exitCode: 2,
+    });
   }
-  const remaining = pendingRows().length;
-  return { command: "jobs detail", detailed, remaining };
+  const enrichment = parseEnrichment(payload);
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const job = new JobsEngine(opened.database).recordEnrichment(
+      enrichment,
+      (dependencies.now ?? nowDefault)(),
+    );
+    return { command: "jobs enrich-record", outcome: enrichment.outcome, job };
+  } finally {
+    opened.database.close();
+  }
+}
+
+function parseEnrichment(value: unknown): JobEnrichment {
+  if (!isRecord(value))
+    throw new CliError("INVALID_ARGUMENT", "enrichment payload must be a JSON object", {
+      exitCode: 2,
+    });
+  const allowed = new Set([
+    "id",
+    "sourceUrl",
+    "outcome",
+    "title",
+    "company",
+    "location",
+    "postingUrl",
+    "description",
+    "workplaceType",
+    "employmentType",
+    "applyMethod",
+    "promoted",
+    "activelyReviewing",
+    "postedAt",
+    "applicantCount",
+    "benefits",
+    "hiringTeam",
+    "companyProfileUrl",
+    "companyEvidence",
+    "externalApplicationUrl",
+    "applicantTrackingSystem",
+    "geoId",
+    "rawResponses",
+    "capturedAt",
+    "parserVersion",
+    "sourceEvidence",
+  ]);
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown !== undefined)
+    throw new CliError("INVALID_ARGUMENT", `unknown enrichment field ${unknown}`, { exitCode: 2 });
+  const text = (key: string, max: number): string => {
+    const item = value[key];
+    if (typeof item !== "string" || item.trim().length === 0 || item.length > max)
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `${key} must be a non-empty string of at most ${max} characters`,
+        { exitCode: 2 },
+      );
+    return item.trim();
+  };
+  const optionalText = (key: string, max: number) =>
+    typeof value[key] === "string" ? String(value[key]).trim().slice(0, max) : "";
+  const list = (key: string, maxItems: number, maxText: number): string[] => {
+    const item = value[key];
+    if (
+      !Array.isArray(item) ||
+      item.length > maxItems ||
+      item.some((x) => typeof x !== "string" || x.length > maxText || x.trim() === "")
+    )
+      throw new CliError("INVALID_ARGUMENT", `${key} must be a bounded array of strings`, {
+        exitCode: 2,
+      });
+    return item.map((x) => String(x).trim());
+  };
+  const outcome = text("outcome", 40) as JobEnrichment["outcome"];
+  if (
+    !["complete_hiring_team", "complete_no_hiring_team", "retry_required", "closed"].includes(
+      outcome,
+    )
+  )
+    throw new CliError("INVALID_ARGUMENT", "invalid enrichment outcome", { exitCode: 2 });
+  const hiringTeamRaw = value.hiringTeam;
+  if (!Array.isArray(hiringTeamRaw) || hiringTeamRaw.length > 50)
+    throw new CliError("INVALID_ARGUMENT", "hiringTeam must be an array of at most 50 objects", {
+      exitCode: 2,
+    });
+  const hiringTeam = hiringTeamRaw.map((member) => {
+    if (
+      !isRecord(member) ||
+      Object.keys(member).some((key) => !["name", "profileUrl", "degree", "headline"].includes(key))
+    )
+      throw new CliError("INVALID_ARGUMENT", "invalid hiringTeam member", { exitCode: 2 });
+    return {
+      name: textFrom(member, "name", 200),
+      profileUrl: textFrom(member, "profileUrl", 500),
+      degree: textFrom(member, "degree", 20, true),
+      headline: textFrom(member, "headline", 300, true),
+    };
+  });
+  if (
+    hiringTeam.some(
+      (member) => !/^https:\/\/(?:www\.)?linkedin\.com\/in\//i.test(member.profileUrl),
+    )
+  )
+    throw new CliError(
+      "INVALID_ARGUMENT",
+      "hiring-team profileUrl must be a LinkedIn profile URL",
+      { exitCode: 2 },
+    );
+  const closed = outcome === "closed";
+  const rawResponses = value.rawResponses === undefined ? [] : value.rawResponses;
+  if (!Array.isArray(rawResponses) || rawResponses.length > 4)
+    throw new CliError("INVALID_ARGUMENT", "rawResponses must contain at most four responses", {
+      exitCode: 2,
+    });
+  const allowedComponents = new Set([
+    "document",
+    "aboutTheJob",
+    "aboutTheCompanyForJobDetails",
+    "peopleWhoCanHelp",
+  ]);
+  const seenComponents = new Set<string>();
+  const parsedRawResponses = rawResponses.map((item) => {
+    if (
+      !isRecord(item) ||
+      Object.keys(item).some(
+        (key) =>
+          ![
+            "component",
+            "sourceUrl",
+            "responseUrl",
+            "status",
+            "capturedAt",
+            "parserVersion",
+            "body",
+          ].includes(key),
+      )
+    )
+      throw new CliError("INVALID_ARGUMENT", "invalid raw response", { exitCode: 2 });
+    const component = textFrom(item, "component", 60);
+    if (seenComponents.has(component))
+      throw new CliError("INVALID_ARGUMENT", "duplicate raw response component", { exitCode: 2 });
+    seenComponents.add(component);
+    const body = textFrom(item, "body", component === "document" ? 1_000_000 : 120_000);
+    const bodyBytes = new TextEncoder().encode(body).byteLength;
+    if (bodyBytes > (component === "document" ? 1_000_000 : 120_000))
+      throw new CliError("INVALID_ARGUMENT", "raw response body exceeds byte limit", {
+        exitCode: 2,
+      });
+    if (
+      !allowedComponents.has(component) ||
+      typeof item.status !== "number" ||
+      !Number.isInteger(item.status) ||
+      item.status < 100 ||
+      item.status > 599
+    )
+      throw new CliError("INVALID_ARGUMENT", "invalid raw response component or status", {
+        exitCode: 2,
+      });
+    return {
+      component,
+      sourceUrl: textFrom(item, "sourceUrl", 1000),
+      responseUrl: textFrom(item, "responseUrl", 2000),
+      status: item.status,
+      capturedAt: textFrom(item, "capturedAt", 100),
+      parserVersion: textFrom(item, "parserVersion", 100),
+      body,
+    } as JobEnrichmentResponse;
+  });
+  return {
+    id: text("id", 200),
+    sourceUrl: text("sourceUrl", 1000),
+    outcome,
+    title: closed ? optionalText("title", 300) : text("title", 300),
+    company: closed ? optionalText("company", 300) : text("company", 300),
+    location: closed ? optionalText("location", 300) : text("location", 300),
+    postingUrl: closed
+      ? optionalText("postingUrl", 1000) || text("sourceUrl", 1000)
+      : text("postingUrl", 1000),
+    description:
+      outcome === "complete_hiring_team" || outcome === "complete_no_hiring_team"
+        ? text("description", 50_000)
+        : optionalText("description", 50_000),
+    workplaceType: optionalText("workplaceType", 100),
+    employmentType: optionalText("employmentType", 100),
+    applyMethod: optionalText("applyMethod", 100),
+    promoted: value.promoted === true,
+    activelyReviewing: value.activelyReviewing === true,
+    postedAt: optionalText("postedAt", 100),
+    applicantCount: optionalText("applicantCount", 100),
+    benefits: list("benefits", 50, 300),
+    hiringTeam,
+    companyProfileUrl: optionalText("companyProfileUrl", 1000),
+    companyEvidence: list("companyEvidence", 20, 1000),
+    externalApplicationUrl: optionalText("externalApplicationUrl", 2000),
+    applicantTrackingSystem: optionalText("applicantTrackingSystem", 200),
+    geoId: optionalText("geoId", 100),
+    rawResponses: parsedRawResponses,
+    capturedAt: text("capturedAt", 100),
+    parserVersion: text("parserVersion", 100),
+    sourceEvidence: list("sourceEvidence", 50, 1000),
+  };
+}
+function textFrom(value: Record<string, unknown>, key: string, max: number, empty = false): string {
+  const item = value[key];
+  if (typeof item !== "string" || item.length > max || (!empty && item.trim() === ""))
+    throw new CliError("INVALID_ARGUMENT", `invalid ${key}`, { exitCode: 2 });
+  return item.trim();
 }
 
 function runJobIds(database: import("bun:sqlite").Database, runId: string): string[] {

@@ -14,9 +14,9 @@ import type {
   JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
-  JobsDetailInput,
   JobsDraftInput,
-  JobsEnrichInput,
+  JobsEnrichNextInput,
+  JobsEnrichRecordInput,
   JobsFavoriteInput,
   JobsHubSpotNextInput,
   JobsHubSpotRecordInput,
@@ -63,8 +63,8 @@ Commands:
   jobs capture-finish    Complete or fail a capture run with final checkpoint
   jobs normalize         Normalize captured pages into deduplicated jobs
   jobs filter            Filter one run with explicit title terms
-  jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
-  jobs detail            Pull full posting-page detail (description + structured fields)
+  jobs enrich-next       Select one kept job for caller-owned Chrome enrichment
+  jobs enrich-record     Record one strictly validated Chrome enrichment payload
   jobs list              List collected jobs from the local store
   jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
@@ -146,10 +146,9 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs filter --run-id ID --terms '["term"]' --policy-version ID
     [--max-age-days N]
     [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs enrich [--run-id ID] [--limit N]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs detail [--run-id ID] [--limit N]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs enrich-next [--run-id ID] [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs enrich-record --payload - [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs triage-next [--run-id ID] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs triage-record --id ID --bucket strong|possible|weak
     --company-summary TEXT --work-summary TEXT --responsibilities JSON_ARRAY
@@ -487,8 +486,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "capture-finish",
         "normalize",
         "filter",
-        "enrich",
-        "detail",
+        "enrich-next",
+        "enrich-record",
         "list",
         "check",
         "favorite",
@@ -750,51 +749,32 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         },
       };
     }
-    if (verb === "enrich") {
+    if (verb === "enrich-next") {
       const options = parseOptions(argv.slice(2), {
-        "--limit": "value",
         "--run-id": "value",
+        "--id": "value",
         "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
       });
-      const limitRaw = options.values.get("--limit");
       const runId = options.values.get("--run-id");
-      const input: JobsEnrichInput = {
+      const id = options.values.get("--id");
+      const input: JobsEnrichNextInput = {
         stateDir: stateDir(options, context),
-        playwriterBin: playwriterBin(options, context),
-        sessionId: requiredWorkflowSession(
-          options.values.get("--session"),
-          context.env.LINKEDIN_TOOLS_JOBS_SESSION,
-          "--session",
-        ),
-        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 200) }),
-        ...(runId === undefined ? {} : { runId }),
+        ...(runId === undefined ? {} : { runId: boundedText(runId, "--run-id", 200) }),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
       };
-      return { kind: "command", command: "jobs enrich", input };
+      return { kind: "command", command: "jobs enrich-next", input };
     }
-    if (verb === "detail") {
-      const options = parseOptions(argv.slice(2), {
-        "--limit": "value",
-        "--run-id": "value",
-        "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
-      });
-      const limitRaw = options.values.get("--limit");
-      const runId = options.values.get("--run-id");
-      const input: JobsDetailInput = {
-        stateDir: stateDir(options, context),
-        playwriterBin: playwriterBin(options, context),
-        sessionId: requiredWorkflowSession(
-          options.values.get("--session"),
-          context.env.LINKEDIN_TOOLS_JOBS_SESSION,
-          "--session",
-        ),
-        ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 500) }),
-        ...(runId === undefined ? {} : { runId }),
+    if (verb === "enrich-record") {
+      const options = parseOptions(argv.slice(2), { "--payload": "value", "--state-dir": "value" });
+      const payload = required(options, "--payload");
+      return {
+        kind: "command",
+        command: "jobs enrich-record",
+        input: {
+          stateDir: stateDir(options, context),
+          payloadPath: payload === "-" ? "-" : absolutePath(payload, "--payload"),
+        } as JobsEnrichRecordInput,
       };
-      return { kind: "command", command: "jobs detail", input };
     }
     if (verb === "list") {
       const options = parseOptions(argv.slice(2), {
