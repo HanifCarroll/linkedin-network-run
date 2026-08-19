@@ -217,9 +217,8 @@ export async function jobsEnrich(
       return new JobsEngine(opened.database).listJobs({
         status: "captured",
         withHiringTeam: false,
-        ...(input.runId === undefined
-          ? {}
-          : { fit: "kept" as const, jobIds: runJobIds(opened.database, input.runId) }),
+        fit: "kept",
+        ...(input.runId === undefined ? {} : { jobIds: runJobIds(opened.database, input.runId) }),
       });
     } finally {
       opened.database.close();
@@ -328,9 +327,8 @@ export async function jobsDetail(
       return new JobsEngine(opened.database).listJobs({
         withHiringTeam: true,
         needsDetail: true,
-        ...(input.runId === undefined
-          ? {}
-          : { fit: "kept" as const, jobIds: runJobIds(opened.database, input.runId) }),
+        fit: "kept",
+        ...(input.runId === undefined ? {} : { jobIds: runJobIds(opened.database, input.runId) }),
       });
     } finally {
       opened.database.close();

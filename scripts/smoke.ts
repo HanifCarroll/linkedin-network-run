@@ -4,7 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
-import { jobsSend } from "../src/commands/jobs.ts";
+import { jobsDetail, jobsEnrich, jobsSend } from "../src/commands/jobs.ts";
 import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
@@ -1102,6 +1102,172 @@ try {
     }
   }
 
+  // Enrichment/detail selection is fit-gated in code, with or without a run ID.
+  // Fake scripts prove pending/dropped rows never dispatch.
+  {
+    const seed = (stateDir: string, status: "captured" | "collected") => {
+      const opened = openDatabase(join(stateDir, "linkedin-tools.db"));
+      const jobs = new JobsEngine(opened.database);
+      if (status === "captured") {
+        jobs.storeCapturedJobs(
+          ["keep-enrich", "pending-enrich", "drop-enrich"].map((id) => ({ id, title: id })),
+          "2026-08-03T12:00:00Z",
+        );
+      } else {
+        jobs.upsertJobs(
+          ["keep-detail", "pending-detail", "drop-detail"].map((id) => ({
+            id,
+            title: id,
+            company: "Example",
+            location: "Remote",
+            postingUrl: `https://www.linkedin.com/jobs/view/${id}/`,
+            hiringTeam: [
+              {
+                name: "Hiring",
+                profileUrl: "https://www.linkedin.com/in/hiring",
+                degree: "1st",
+                headline: "Recruiter",
+              },
+            ],
+            hasHiringTeam: true,
+          })),
+          "2026-08-03T12:00:00Z",
+        );
+      }
+      opened.database
+        .prepare(
+          "UPDATE jobs SET fit = CASE id WHEN ? THEN 'kept' WHEN ? THEN 'pending' ELSE 'dropped' END",
+        )
+        .run(
+          `${status === "captured" ? "keep-enrich" : "keep-detail"}`,
+          `${status === "captured" ? "pending-enrich" : "pending-detail"}`,
+        );
+      opened.database
+        .prepare(
+          "INSERT INTO capture_runs (id, source_url, search_config_json, started_at, updated_at, checkpoint_json) VALUES ('fit-run', 'https://example.test', '{}', '2026-08-03', '2026-08-03', '{}')",
+        )
+        .run();
+      const ids =
+        status === "captured"
+          ? ["keep-enrich", "pending-enrich", "drop-enrich"]
+          : ["keep-detail", "pending-detail", "drop-detail"];
+      for (const id of ids)
+        opened.database
+          .prepare(
+            "INSERT INTO job_observations (run_id, page_identity, job_id, observed_title, observed_at) VALUES ('fit-run', ?, ?, ?, '2026-08-03')",
+          )
+          .run(id, id, id);
+      opened.database.close();
+    };
+    for (const runId of [undefined, "fit-run"] as const) {
+      const stateDir = join(root, `fit-enrich-${runId ?? "all-runs"}`);
+      seed(stateDir, "captured");
+      const dispatchedScripts: string[] = [];
+      const result = await jobsEnrich(
+        {
+          stateDir,
+          playwriterBin: fakePlaywriter,
+          sessionId: 7,
+          ...(runId === undefined ? {} : { runId }),
+        },
+        {
+          resolveSession: async () => 7,
+          runScript: async ({ script }) => {
+            dispatchedScripts.push(script);
+            return {
+              ok: true,
+              data: script.includes("keep-enrich")
+                ? {
+                    completed: [
+                      {
+                        id: "keep-enrich",
+                        title: "keep-enrich",
+                        company: "Example",
+                        location: "Remote",
+                        postingUrl: "https://www.linkedin.com/jobs/view/keep-enrich/",
+                        hiringTeam: [],
+                        hasHiringTeam: false,
+                      },
+                    ],
+                  }
+                : {},
+            };
+          },
+        },
+      );
+      const dispatchText = dispatchedScripts.join("\n");
+      if (
+        !dispatchText.includes("keep-enrich") ||
+        dispatchText.includes("pending-enrich") ||
+        dispatchText.includes("drop-enrich")
+      ) {
+        throw new Error(`enrichment dispatched an unqualified job for ${runId ?? "all-runs"}`);
+      }
+      if (
+        (result as { enriched: number; remaining: number }).enriched !== 1 ||
+        (result as { remaining: number }).remaining !== 0
+      )
+        throw new Error(
+          `enrichment fit gate failed for ${runId ?? "all-runs"}: ${JSON.stringify(result)}`,
+        );
+    }
+    for (const runId of [undefined, "fit-run"] as const) {
+      const stateDir = join(root, `fit-detail-${runId ?? "all-runs"}`);
+      seed(stateDir, "collected");
+      const dispatchedScripts: string[] = [];
+      const result = await jobsDetail(
+        {
+          stateDir,
+          playwriterBin: fakePlaywriter,
+          sessionId: 7,
+          ...(runId === undefined ? {} : { runId }),
+        },
+        {
+          resolveSession: async () => 7,
+          runScript: async ({ script }) => {
+            dispatchedScripts.push(script);
+            return {
+              ok: true,
+              data: script.includes("keep-detail")
+                ? {
+                    completed: [
+                      {
+                        id: "keep-detail",
+                        description: "Details",
+                        workplaceType: "",
+                        employmentType: "",
+                        applyMethod: "",
+                        promoted: false,
+                        activelyReviewing: false,
+                        postedAt: "",
+                        applicantCount: "",
+                        benefits: [],
+                      },
+                    ],
+                  }
+                : {},
+            };
+          },
+        },
+      );
+      const dispatchText = dispatchedScripts.join("\n");
+      if (
+        !dispatchText.includes("keep-detail") ||
+        dispatchText.includes("pending-detail") ||
+        dispatchText.includes("drop-detail")
+      ) {
+        throw new Error(`detail dispatched an unqualified job for ${runId ?? "all-runs"}`);
+      }
+      if (
+        (result as { detailed: number; remaining: number }).detailed !== 1 ||
+        (result as { remaining: number }).remaining !== 0
+      )
+        throw new Error(
+          `detail fit gate failed for ${runId ?? "all-runs"}: ${JSON.stringify(result)}`,
+        );
+    }
+  }
+
   // Capture handoff checks: SQLite owns durable state, repeated pages are a
   // no-op, malformed payloads are rejected before insert, and no browser runs.
   {
@@ -1149,6 +1315,31 @@ try {
       });
       if (resumed.checkpoint.last_page !== "start:0") {
         throw new Error("capture run did not resume from its advanced checkpoint");
+      }
+      const nextPage = store.ingestPage({
+        runId: "run-1",
+        pageIdentity: "page:1",
+        cursor: "cursor-1",
+        sourceUrl: run.sourceUrl,
+        responseUrl: "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+        capturedAt: "2026-08-03T12:00:03Z",
+        payloadText: payload,
+      });
+      const nextRetry = store.ingestPage({
+        runId: "run-1",
+        pageIdentity: "page:1",
+        cursor: "cursor-1",
+        sourceUrl: run.sourceUrl,
+        responseUrl: "https://www.linkedin.com/voyager/api/voyagerJobsDashJobCards",
+        capturedAt: "2026-08-03T12:00:04Z",
+        payloadText: payload,
+      });
+      if (
+        !nextPage.inserted ||
+        nextRetry.inserted ||
+        nextRetry.run.checkpoint.last_page !== "page:1"
+      ) {
+        throw new Error("multi-page capture retry was not durable and idempotent");
       }
       try {
         store.ingestPage({
@@ -1252,8 +1443,8 @@ try {
       const pages = captureDb.database
         .query("SELECT COUNT(*) AS count FROM capture_pages")
         .get() as { count: number };
-      if (pages.count !== 1)
-        throw new Error("capture page duplicated or malformed payload persisted");
+      if (pages.count !== 2)
+        throw new Error("capture pages duplicated or malformed payload persisted");
     } finally {
       captureDb.database.close();
     }

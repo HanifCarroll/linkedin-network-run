@@ -145,20 +145,21 @@ supported for explicit operator control. Tests fake this boundary and never crea
 
 ## Jobs and review queue
 
-Step 1 captures LinkedIn Jobs XHR responses through the Codex Chrome handoff and stores
-raw JSON durably in SQLite. Start a run with `jobs capture-start`, pipe each helper `rawBody`
-directly to `jobs capture-ingest --payload -`, and use the saved page/cursor checkpoint to
-resume. No per-page artifact is required (a file is diagnostic-only). The helper can pipe and
-parse the CLI's stable JSON envelope with `captureAndIngestJobsPage`. Run
+Jobs capture uses the caller's already logged-in Codex Chrome tab to observe
+`voyagerJobsDashJobCards` responses and stores raw JSON durably in SQLite. The capture commands
+need no Playwriter binary or browser session: start a run with `jobs capture-start`, pipe each
+helper `rawBody` directly to `jobs capture-ingest --payload -`, and use the saved page/cursor
+checkpoint to resume. No per-page artifact is required (a file is diagnostic-only). The helper can
+pipe and parse the CLI's stable JSON envelope with `captureAndIngestJobsPage`. Run
 `jobs normalize --run-id ID [--limit N]` to process pages transactionally, deduplicate by
 LinkedIn job ID, preserve run/page provenance, and resume safely. It does not filter by location
 or fit and does not enrich. Run `jobs filter --run-id ID --terms '["product engineer","software engineer"]' --policy-version jobs-fit-v1`
 with explicit title terms and a caller-supplied policy version; `--max-age-days` defaults to 30.
 It never reads `JOB_SEARCH_TERMS`, uses no location, records deterministic
 fit/freshness reasons, and keeps unknown freshness while reporting it. Enrichment and detail remain
-on Playwriter; pass `--run-id ID` to scope either to that run's kept jobs, or omit it for legacy
-behavior. Live-job checks, networking, analytics, and sending remain unchanged for now and are
-planned for later migration to the same Chrome boundary.
+on their existing Playwriter paths, but only `fit=kept` jobs are eligible whether or not
+`--run-id ID` is supplied. Live-job checks, networking, analytics, and sending remain unchanged;
+no post-enrichment pursuit policy is implemented.
 `jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
 two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
 
