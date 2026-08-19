@@ -17,3 +17,9 @@ export const JOB_SEARCH_TERMS: readonly string[] = [
   '"backend engineer"',
   '"ai product engineer"',
 ];
+
+/** Approved LinkedIn Jobs capture scope. */
+export const JOB_SEARCH_LOCATION = {
+  name: "United States",
+  geoId: "103644278",
+} as const;

@@ -19,7 +19,7 @@ export {
   buildEnrichPoolScript,
   buildSendScript,
 } from "./scripts.ts";
-export { JOB_SEARCH_TERMS } from "./terms.ts";
+export { JOB_SEARCH_LOCATION, JOB_SEARCH_TERMS } from "./terms.ts";
 export type {
   CapturedJob,
   CollectedJob,
