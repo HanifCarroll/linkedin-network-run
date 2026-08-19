@@ -4,8 +4,8 @@
  * quotes force LinkedIn's phrase matching instead of loose keyword OR, which
  * keeps results on-role (product/software/fullstack/frontend/backend).
  *
- * These remain reusable metadata configuration for capture-start/search-config;
- * they are not production-approved intake terms yet.
+ * Hanif approved these intake terms on 2026-08-19. Keep the surrounding
+ * double quotes whenever a term is entered into LinkedIn.
  */
 export const JOB_SEARCH_TERMS: readonly string[] = [
   '"product engineer"',
