@@ -249,6 +249,28 @@ the same day or next day. There is no Send button and the viewer performs no
 browser mutation; writes go through tight same-origin local JSON endpoints that route through
 `JobsEngine`.
 
+### HubSpot import handoff
+
+After approval, `jobs hubspot-next` prepares or resumes one person-centred import. It returns the
+company, contact, deal, association, and Day 1 task mapping plus any HubSpot IDs already recorded.
+An authorized agent performs each lookup-before-create action through the official HubSpot
+connection. The CLI stores only durable receipts; it has no HubSpot token and performs no network
+request itself.
+
+```sh
+linkedin-tools --json jobs hubspot-next --id JOB_ID
+linkedin-tools --json jobs hubspot-record --prospect-id PROSPECT_ID --company-id 123
+linkedin-tools --json jobs hubspot-record --prospect-id PROSPECT_ID --contact-id 456 --deal-id 789
+linkedin-tools --json jobs hubspot-record --prospect-id PROSPECT_ID --task-id 1011 \
+  --associations-complete
+```
+
+The handoff accepts only kept, approved jobs with a company and a usable hiring-team profile. The
+prospect ID is derived from that normalized profile, so sibling roles remain one prospect. On a
+retry, the agent searches HubSpot using the packet's stable keys before creating anything. Replayed
+IDs are no-ops, conflicting IDs stop the import, and completion requires company, contact, deal,
+task, and association receipts. This stage creates a task only; it never sends outreach.
+
 `jobs send` selects approved drafted jobs only (review = approved) and still requires the exact
 `--allow-send` flag. Recipient uniqueness holds across time: approving conflicts with another
 approved draft or an already-sent job for the same hiring-team profile URL (normalized: trim,

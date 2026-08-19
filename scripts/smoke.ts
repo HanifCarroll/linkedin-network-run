@@ -12,9 +12,11 @@ import type { JobRow } from "../src/jobs/index.ts";
 import {
   buildSendScript,
   filterRun,
+  HubSpotImportEngine,
   JobsEngine,
   JobsNormalizer,
   normalizeProfileUrl,
+  prospectIdForProfile,
 } from "../src/jobs/index.ts";
 import {
   bucketFor,
@@ -88,6 +90,96 @@ try {
         job.productSummary !== "Salesforce CPQ"
       ) {
         throw new Error("classification roundtrip smoke failed");
+      }
+    } finally {
+      opened.database.close();
+    }
+  }
+
+  // Bounded temp-state check: an approved person produces a stable HubSpot
+  // handoff and partial receipts resume without duplicate local state.
+  {
+    const opened = openDatabase(join(root, "hubspot.db"));
+    try {
+      if (!opened.migrations.applied.includes("hubspot_imports")) {
+        throw new Error("HubSpot imports migration (13) not applied");
+      }
+      const jobs = new JobsEngine(opened.database);
+      jobs.upsertJobs(
+        [
+          {
+            id: "hubspot-job",
+            title: "Product Engineer",
+            company: "Example Studio",
+            location: "Remote",
+            postingUrl: "https://www.linkedin.com/jobs/view/hubspot-job/",
+            hiringTeam: [
+              {
+                name: "Alice Example",
+                profileUrl: "https://www.linkedin.com/in/alice-example/?trk=jobs",
+                degree: "2nd",
+                headline: "Head of Engineering",
+              },
+            ],
+            hasHiringTeam: true,
+          },
+        ],
+        "2026-08-03T10:00:00Z",
+      );
+      opened.database
+        .prepare(
+          `UPDATE jobs SET fit = 'kept', review = 'approved', employment_type = 'Full-time',
+           matched_term = 'product engineer', filter_reason = 'title matched'
+           WHERE id = 'hubspot-job'`,
+        )
+        .run();
+      const engine = new HubSpotImportEngine(opened.database);
+      const first = engine.next("hubspot-job", "2026-08-03T10:01:00Z");
+      const retry = engine.next("hubspot-job", "2026-08-03T10:02:00Z");
+      if (first === null || retry === null || JSON.stringify(first) !== JSON.stringify(retry)) {
+        throw new Error("HubSpot next was not stable on retry");
+      }
+      const prospectId = prospectIdForProfile(
+        "https://www.linkedin.com/in/alice-example/?trk=jobs",
+      );
+      if (!JSON.stringify(first).includes(`${prospectId}:day-1`)) {
+        throw new Error("HubSpot packet is missing the deterministic task marker");
+      }
+      const failed = engine.record(
+        { prospectId, error: "temporary HubSpot failure" },
+        "2026-08-03T10:03:00Z",
+      );
+      if (failed.lastError === null) throw new Error("HubSpot error receipt was not stored");
+      const company = engine.record({ prospectId, companyId: "101" }, "2026-08-03T10:04:00Z");
+      if (company.companyId !== "101" || company.lastError !== null) {
+        throw new Error("HubSpot success did not clear the stored error");
+      }
+      const replay = engine.record({ prospectId, companyId: "101" }, "2026-08-03T10:05:00Z");
+      if (replay.updatedAt !== company.updatedAt) {
+        throw new Error("identical HubSpot receipt replay was not a no-op");
+      }
+      let conflict = false;
+      try {
+        engine.record({ prospectId, companyId: "999" }, "2026-08-03T10:06:00Z");
+      } catch (error) {
+        conflict = error instanceof CliError && error.code === "HUBSPOT_RECEIPT_CONFLICT";
+      }
+      if (!conflict) throw new Error("conflicting HubSpot receipt was not rejected");
+      opened.database
+        .prepare("UPDATE jobs SET review = 'needs_review' WHERE id = 'hubspot-job'")
+        .run();
+      const complete = engine.record(
+        {
+          prospectId,
+          contactId: "202",
+          dealId: "303",
+          taskId: "404",
+          associationsComplete: true,
+        },
+        "2026-08-03T10:07:00Z",
+      );
+      if (complete.completedAt === null || !complete.associationsComplete) {
+        throw new Error("HubSpot import did not complete after all receipts");
       }
     } finally {
       opened.database.close();
@@ -1354,6 +1446,18 @@ try {
       calls.push("jobs classify");
       return { job: { id: "111" } };
     },
+    jobsHubSpotNext: async (input) => {
+      if (input.id !== "111") throw new Error("hubspot-next did not parse --id");
+      calls.push("jobs hubspot-next");
+      return { found: false, packet: null };
+    },
+    jobsHubSpotRecord: async (input) => {
+      if (input.companyId !== "101" || input.associationsComplete !== true) {
+        throw new Error("hubspot-record did not parse receipts");
+      }
+      calls.push("jobs hubspot-record");
+      return { complete: false };
+    },
   };
   const common = {
     operations: fakeOperations,
@@ -1450,6 +1554,17 @@ try {
       "Salesforce CPQ",
     ],
     ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
+    ["--json", "jobs", "hubspot-next", "--id", "111"],
+    [
+      "--json",
+      "jobs",
+      "hubspot-record",
+      "--prospect-id",
+      `co:need-led:v1:${"a".repeat(64)}`,
+      "--company-id",
+      "101",
+      "--associations-complete",
+    ],
   ];
   for (const command of commands) {
     const output = await invoke(command, common);
@@ -1467,6 +1582,16 @@ try {
     jobsSendDenied.value?.error?.code !== "SEND_NOT_AUTHORIZED"
   ) {
     throw new Error("jobs send authorization smoke failed");
+  }
+  const hubSpotReceiptDenied = await invoke(
+    ["--json", "jobs", "hubspot-record", "--prospect-id", `co:need-led:v1:${"a".repeat(64)}`],
+    common,
+  );
+  if (
+    hubSpotReceiptDenied.exitCode !== 2 ||
+    hubSpotReceiptDenied.value?.error?.code !== "INVALID_ARGUMENT"
+  ) {
+    throw new Error("HubSpot empty receipt validation smoke failed");
   }
   const classifyRejected = await invoke(
     [

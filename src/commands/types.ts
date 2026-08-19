@@ -182,6 +182,22 @@ export type JobsClassifyInput = {
   readonly productSummary: string;
 };
 
+export type JobsHubSpotNextInput = {
+  readonly stateDir: string;
+  readonly id?: string;
+};
+
+export type JobsHubSpotRecordInput = {
+  readonly stateDir: string;
+  readonly prospectId: string;
+  readonly companyId?: string;
+  readonly contactId?: string;
+  readonly dealId?: string;
+  readonly taskId?: string;
+  readonly associationsComplete?: true;
+  readonly error?: string;
+};
+
 export type MigrationDryRunInput = {
   readonly sourceRoot: string;
 };
@@ -213,6 +229,8 @@ export interface CliOperations {
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
   jobsSend(input: JobsSendInput): Promise<unknown>;
   jobsClassify(input: JobsClassifyInput): Promise<unknown>;
+  jobsHubSpotNext(input: JobsHubSpotNextInput): Promise<unknown>;
+  jobsHubSpotRecord(input: JobsHubSpotRecordInput): Promise<unknown>;
 }
 
 export type ParsedInvocation =
@@ -302,4 +320,14 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "jobs classify";
       readonly input: JobsClassifyInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs hubspot-next";
+      readonly input: JobsHubSpotNextInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs hubspot-record";
+      readonly input: JobsHubSpotRecordInput;
     };

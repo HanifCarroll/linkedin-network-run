@@ -18,6 +18,8 @@ import type {
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
+  JobsHubSpotNextInput,
+  JobsHubSpotRecordInput,
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
@@ -67,6 +69,8 @@ Commands:
   jobs draft             Store a drafted subject + message for a job
   jobs send              Send approved drafted messages to hiring team members (--allow-send)
   jobs classify          Set work-focus and product-system phrases for a job
+  jobs hubspot-next      Prepare or resume one approved prospect for HubSpot
+  jobs hubspot-record    Record HubSpot object and association receipts locally
 
 Browser boundary:
   LinkedIn Jobs CAPTURE ONLY uses the Codex Chrome handoff helper; the CLI only
@@ -156,6 +160,11 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs classify --id JOB_ID --work-focus "..." --product-system "..."
     --work-summary "..." --product-summary "..."
     [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs hubspot-next [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs hubspot-record --prospect-id ID
+    [--company-id ID] [--contact-id ID] [--deal-id ID] [--task-id ID]
+    [--associations-complete | --error TEXT] [--state-dir ABSOLUTE_PATH]
 
 jobs capture-start records source/search metadata for a run. Use the
 importable scripts/linkedin-jobs-chrome-helper.mjs from the Codex Chrome
@@ -202,6 +211,10 @@ jobs classify stores the two brief review phrases for a posting: --work-focus
 platform it is built around), plus two longer summaries: --work-summary (what
 you'd do) and --product-summary (what you'd build). All four are required,
 trimmed, and length-bounded (phrases 80 chars, summaries 320 chars).
+jobs hubspot-next returns one deterministic, lookup-before-create packet for an
+approved kept person. An agent performs the packet through the official HubSpot
+connection, then records each returned ID with jobs hubspot-record. The local
+receipt makes interruption and retry safe; neither command sends outreach.
 `;
 
 type OptionKind = "boolean" | "value" | "repeatable";
@@ -474,11 +487,70 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "send",
         "remove",
         "classify",
+        "hubspot-next",
+        "hubspot-record",
       ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
     if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
+    if (verb === "hubspot-next") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--state-dir": "value",
+      });
+      const id = options.values.get("--id");
+      const input: JobsHubSpotNextInput = {
+        stateDir: stateDir(options, context),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs hubspot-next", input };
+    }
+    if (verb === "hubspot-record") {
+      const options = parseOptions(argv.slice(2), {
+        "--prospect-id": "value",
+        "--company-id": "value",
+        "--contact-id": "value",
+        "--deal-id": "value",
+        "--task-id": "value",
+        "--associations-complete": "boolean",
+        "--error": "value",
+        "--state-dir": "value",
+      });
+      const prospectId = required(options, "--prospect-id").trim();
+      if (!/^co:need-led:v1:[a-f0-9]{64}$/.test(prospectId)) {
+        invalid("--prospect-id must be a co:need-led:v1 SHA-256 identifier");
+      }
+      const companyId = hubSpotId(options.values.get("--company-id"), "--company-id");
+      const contactId = hubSpotId(options.values.get("--contact-id"), "--contact-id");
+      const dealId = hubSpotId(options.values.get("--deal-id"), "--deal-id");
+      const taskId = hubSpotId(options.values.get("--task-id"), "--task-id");
+      const associationsComplete = options.booleans.has("--associations-complete");
+      const error = options.values.get("--error");
+      const hasReceipt =
+        companyId !== undefined ||
+        contactId !== undefined ||
+        dealId !== undefined ||
+        taskId !== undefined ||
+        associationsComplete;
+      if (!hasReceipt && error === undefined) {
+        invalid("jobs hubspot-record requires a HubSpot ID, --associations-complete, or --error");
+      }
+      if (hasReceipt && error !== undefined) {
+        invalid("--error conflicts with HubSpot receipt options");
+      }
+      const input: JobsHubSpotRecordInput = {
+        stateDir: stateDir(options, context),
+        prospectId,
+        ...(companyId === undefined ? {} : { companyId }),
+        ...(contactId === undefined ? {} : { contactId }),
+        ...(dealId === undefined ? {} : { dealId }),
+        ...(taskId === undefined ? {} : { taskId }),
+        ...(associationsComplete ? { associationsComplete: true as const } : {}),
+        ...(error === undefined ? {} : { error: boundedText(error, "--error", 2000) }),
+      };
+      return { kind: "command", command: "jobs hubspot-record", input };
+    }
     if (verb === "capture-start") {
       const options = parseOptions(argv.slice(2), {
         "--run-id": "value",
@@ -1052,6 +1124,13 @@ function boundedText(value: string, label: string, maximum: number): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) invalid(`${label} requires a non-empty value`);
   if (trimmed.length > maximum) invalid(`${label} must be at most ${maximum} characters`);
+  return trimmed;
+}
+
+function hubSpotId(value: string | undefined, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) invalid(`${label} must be a numeric HubSpot object ID`);
   return trimmed;
 }
 

@@ -454,6 +454,27 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN filtered_at TEXT;
     `,
   },
+  {
+    id: 13,
+    name: "hubspot_imports",
+    sql: `
+      CREATE TABLE hubspot_imports (
+        prospect_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        company_id TEXT,
+        contact_id TEXT,
+        deal_id TEXT,
+        task_id TEXT,
+        associations_complete INTEGER NOT NULL DEFAULT 0
+          CHECK(associations_complete IN (0, 1)),
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE(job_id)
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {

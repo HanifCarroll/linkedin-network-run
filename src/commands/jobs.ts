@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsCaptureStore } from "../jobs/capture.ts";
+import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
   buildCheckLivenessScript,
   buildCleanupTabsScript,
@@ -30,6 +31,8 @@ import type {
   JobsEnrichInput,
   JobsFavoriteInput,
   JobsFilterInput,
+  JobsHubSpotNextInput,
+  JobsHubSpotRecordInput,
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
@@ -582,6 +585,38 @@ export async function jobsClassify(
       now(),
     );
     return { command: "jobs classify", job: row };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsHubSpotNext(
+  input: JobsHubSpotNextInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const now = dependencies.now ?? nowDefault;
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const packet = new HubSpotImportEngine(opened.database).next(input.id, now());
+    return { command: "jobs hubspot-next", found: packet !== null, packet };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsHubSpotRecord(
+  input: JobsHubSpotRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const now = dependencies.now ?? nowDefault;
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const receipt = new HubSpotImportEngine(opened.database).record(input, now());
+    return {
+      command: "jobs hubspot-record",
+      complete: receipt.completedAt !== null,
+      receipt,
+    };
   } finally {
     opened.database.close();
   }
