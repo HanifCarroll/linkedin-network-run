@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const MAX_BODY_BYTES = 2_000_000;
+const STUDIO_SEARCH_QUERIES = new Set([
+  '("product development" OR "software development" OR "web development" OR "application development") NOT (staffing OR recruiting OR "digital marketing")',
+  '("product studio" OR "digital product" OR "custom software" OR "web application") NOT (staffing OR recruiting OR "digital marketing")',
+]);
 const decodeQuery = (value) => {
   let decoded = value;
   for (let i = 0; i < 3; i++) {
@@ -45,16 +49,23 @@ const sourceContract = (value) => {
         u.hostname === "www.linkedin.com" &&
         u.pathname === "/sales/search/company" &&
         query.includes("keywords:") &&
-        exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C", "D"]) &&
-        exactSet(filterIds(query, "INDUSTRY"), ["104"]) &&
-        exactSet(filterIds(query, "REGION"), ["103644278"]) &&
         keywords.length > 0 &&
         keywords.length <= 500 &&
         !hasControlCharacter
       )
-    )
-      return null;
-    return query;
+    ) return null;
+    if (
+      exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C", "D"]) &&
+      exactSet(filterIds(query, "INDUSTRY"), ["104"]) &&
+      exactSet(filterIds(query, "REGION"), ["103644278"])
+    ) return { lane: "staffing", query };
+    if (
+      exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C"]) &&
+      exactSet(filterIds(query, "INDUSTRY"), ["96", "7"]) &&
+      exactSet(filterIds(query, "REGION"), ["103644278"]) &&
+      STUDIO_SEARCH_QUERIES.has(keywords)
+    ) return { lane: "studio", query };
+    return null;
   } catch {
     return null;
   }
@@ -110,7 +121,8 @@ export async function captureAndIngestSalesNavAccountPage(tab, action, config) {
     sourceUrl = config.sourceUrl ?? tabUrl,
     tabContract = sourceContract(tabUrl),
     source = sourceContract(sourceUrl);
-  if (!tabContract || !source) return { ok: false, reason: "source-url-mismatch", status: 0 };
+  if (!tabContract || !source || tabContract.lane !== source.lane || tabContract.query !== source.query)
+    return { ok: false, reason: "source-url-mismatch", status: 0 };
   if (typeof action !== "function") return { ok: false, reason: "action-required", status: 0 };
   const cdp = await tab.capabilities.get("cdp");
   await cdp.send("Network.enable");
@@ -154,14 +166,15 @@ export async function captureAndIngestSalesNavAccountPage(tab, action, config) {
         await cdp.send("Network.getResponseBody", { requestId: id }, { timeoutMs: 10_000 }),
       );
       await actionPromise;
-      if (sourceContract(await tab.url()) !== source)
+      const current = sourceContract(await tab.url());
+      if (!current || current.lane !== source.lane || current.query !== source.query)
         return { ok: false, reason: "source-url-mismatch", status: 0 };
       return pipe(
         body,
         [
           "--json",
           "salesnav",
-          "staffing",
+          source.lane,
           "account-capture-ingest",
           "--run-id",
           config.runId,
