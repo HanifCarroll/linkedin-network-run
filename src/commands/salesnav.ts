@@ -40,6 +40,8 @@ export async function salesnav(input: SalesNavInput): Promise<unknown> {
         }
         case "account-qualify-record":
           return { command: `${prefix} ${input.command}`, ...account.record(input, now) };
+        case "account-people-candidates":
+          return { command: `${prefix} ${input.command}`, ...account.peopleCandidates(input) };
         case "firm-research-record":
           return { command: `${prefix} ${input.command}`, ...account.firmResearch(input, now) };
       }

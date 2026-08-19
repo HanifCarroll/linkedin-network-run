@@ -581,6 +581,23 @@ export class SalesNavAccountStore {
       .run(organizationId, ...values);
     return { lane: "studio", organizationId, reviewedAt: values[4] };
   }
+  peopleCandidates(input: SalesNavInput) {
+    const run = this.run(input.runId),
+      lane = String(run.lane ?? input.lane ?? "staffing");
+    const accounts = this.db
+      .query<Row, [string, string]>(
+        `SELECT DISTINCT o.account_id,o.organization_id,org.name,org.linkedin_company_url,
+          org.website_url,org.industry,org.size_text,q.reason,q.policy_version
+         FROM salesnav_account_observations o
+         JOIN organizations org ON org.id=o.organization_id
+         JOIN salesnav_account_lane_qualifications q
+           ON q.organization_id=o.organization_id AND q.lane=? AND q.fit='kept'
+         WHERE o.run_id=?
+         ORDER BY org.name,o.account_id`,
+      )
+      .all(lane, input.runId);
+    return { runId: input.runId, lane, accounts };
+  }
   status(runId: string) {
     const run = this.run(runId),
       lane = String(run.lane ?? "staffing"),

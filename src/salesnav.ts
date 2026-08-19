@@ -26,6 +26,7 @@ export type SalesNavInput = {
     | "account-status"
     | "account-qualify-next"
     | "account-qualify-record"
+    | "account-people-candidates"
     | "firm-research-record";
   readonly lane?: SalesNavLane;
   readonly stateDir: string;

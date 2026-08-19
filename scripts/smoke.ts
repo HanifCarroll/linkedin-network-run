@@ -403,6 +403,52 @@ try {
         '("product studio" OR "digital product" OR "custom software" OR "web application") NOT (staffing OR recruiting OR "digital marketing")';
       const studioQuery = `(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C))),(type:INDUSTRY,values:List((id:96),(id:7))),(type:REGION,values:List((id:103644278))),keywords:${studioKeyword})`;
       const studioUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(studioQuery))}`;
+      const studioCliState = join(root, "studio-cli-state");
+      const studioCliStart = await invoke(
+        [
+          "--json",
+          "salesnav",
+          "studio",
+          "account-capture-start",
+          "--run-id",
+          "studio-cli-run",
+          "--source-url",
+          studioUrl,
+          "--state-dir",
+          studioCliState,
+        ],
+        undefined,
+      );
+      const studioCliStartData = (studioCliStart.value as { data?: Record<string, unknown> }).data;
+      if (
+        studioCliStart.exitCode !== 0 ||
+        studioCliStart.value.ok !== true ||
+        studioCliStartData?.command !== "salesnav studio account-capture-start"
+      ) {
+        throw new Error("studio account start did not reach the CLI operation");
+      }
+      const emptyPeopleBoundary = await invoke(
+        [
+          "--json",
+          "salesnav",
+          "studio",
+          "account-people-candidates",
+          "--run-id",
+          "studio-cli-run",
+          "--state-dir",
+          studioCliState,
+        ],
+        undefined,
+      );
+      const emptyPeopleData = (emptyPeopleBoundary.value as { data?: { accounts?: unknown[] } })
+        .data;
+      if (
+        emptyPeopleBoundary.exitCode !== 0 ||
+        emptyPeopleBoundary.value.ok !== true ||
+        emptyPeopleData?.accounts?.length !== 0
+      ) {
+        throw new Error("studio people boundary did not reach the CLI operation");
+      }
       const studioStart = {
         command: "account-capture-start" as const,
         lane: "studio" as const,
@@ -411,6 +457,32 @@ try {
         sourceUrl: studioUrl,
       };
       store.start(studioStart, "s0");
+      const studioBody = JSON.stringify({
+        metadata: {},
+        elements: [
+          {
+            companyName: "Acme Product Studio",
+            description: "Product design and custom software delivery",
+            industry: "IT Services and IT Consulting",
+            employeeCountRange: { start: 11, end: 50 },
+            employeeDisplayCount: "11-50 employees",
+            entityUrn: "urn:li:fs_salesCompany:142",
+            spotlightBadges: [],
+            trackingId: "track-142",
+          },
+          {
+            companyName: "Acme Marketing Studio",
+            description: "Brand campaigns and social media",
+            industry: "Design Services",
+            employeeCountRange: { start: 11, end: 50 },
+            employeeDisplayCount: "11-50 employees",
+            entityUrn: "urn:li:fs_salesCompany:143",
+            spotlightBadges: [],
+            trackingId: "track-143",
+          },
+        ],
+        paging: { start: 0, count: 25, total: 2 },
+      });
       let conflict = false;
       try {
         store.start({ ...studioStart, lane: "staffing" }, "s1");
@@ -429,7 +501,7 @@ try {
           sourceUrl: studioUrl,
           responseUrl,
         },
-        body,
+        studioBody,
         "s1",
       );
       store.normalize(
@@ -495,7 +567,49 @@ try {
         },
         "s5",
       );
-      if (store.status("studio-run").kept !== 1)
+      const studioDropped = store.next({
+        command: "account-qualify-next",
+        lane: "studio",
+        stateDir: root,
+        runId: "studio-run",
+      });
+      if (!studioDropped || studioDropped.account_id !== "143") {
+        throw new Error("studio dropped account was not next in the qualification queue");
+      }
+      store.record(
+        {
+          command: "account-qualify-record",
+          lane: "studio",
+          stateDir: root,
+          runId: "studio-run",
+          organizationId: String(studioDropped.organization_id),
+          fit: "dropped",
+          evidenceJson: '{"linkedin":"reviewed","website":"reviewed"}',
+          unknownsJson: "[]",
+          reason: "Marketing only",
+          policyVersion: "studio-v1",
+        },
+        "s6",
+      );
+      const studioCandidates = store.peopleCandidates({
+        command: "account-people-candidates",
+        lane: "studio",
+        stateDir: root,
+        runId: "studio-run",
+      });
+      if (
+        studioCandidates.accounts.length !== 1 ||
+        studioCandidates.accounts[0]?.account_id !== "142"
+      ) {
+        throw new Error("studio people boundary did not return only kept accounts");
+      }
+      const studioStatus = store.status("studio-run");
+      if (
+        studioStatus.accounts !== 2 ||
+        studioStatus.pending !== 0 ||
+        studioStatus.kept !== 1 ||
+        studioStatus.dropped !== 1
+      )
         throw new Error("studio qualification was not lane-scoped");
     } finally {
       db.database.close();

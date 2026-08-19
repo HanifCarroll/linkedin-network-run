@@ -262,6 +262,7 @@ export type ParsedInvocation =
         | "salesnav staffing account-status"
         | "salesnav staffing account-qualify-next"
         | "salesnav staffing account-qualify-record"
+        | "salesnav staffing account-people-candidates"
         | "salesnav staffing firm-research-record"
         | "salesnav studio capture-start"
         | "salesnav studio capture-ingest"
@@ -276,6 +277,7 @@ export type ParsedInvocation =
         | "salesnav studio account-status"
         | "salesnav studio account-qualify-next"
         | "salesnav studio account-qualify-record"
+        | "salesnav studio account-people-candidates"
         | "salesnav studio firm-research-record";
       readonly input: SalesNavInput;
     }

@@ -362,6 +362,7 @@ linkedin-tools salesnav staffing account-qualify-next --run-id ID
 linkedin-tools salesnav staffing account-qualify-record --run-id ID \
   --organization-id ID --fit kept --evidence '{}' --unknowns '[]' \
   --reason 'Relevant staffing firm' --policy-version staffing-account-v1
+linkedin-tools salesnav staffing account-people-candidates --run-id ID
 linkedin-tools salesnav staffing account-status --run-id ID
 ```
 
@@ -377,10 +378,24 @@ Services, with the approved product-development or product-studio query. Decisio
 record manual evidence:
 
 ```sh
+linkedin-tools salesnav studio account-capture-start --run-id ID \
+  --source-url '<approved-studio-account-search-url>'
+linkedin-tools salesnav studio account-capture-ingest --run-id ID --start 0 \
+  --payload - --source-url '<same-url>' --response-url '<captured-account-response-url>'
+linkedin-tools salesnav studio account-capture-finish --run-id ID --state complete
+linkedin-tools salesnav studio account-normalize --run-id ID
+linkedin-tools salesnav studio account-qualify-next --run-id ID
 linkedin-tools salesnav studio firm-research-record --run-id ID --organization-id ORG \
   --source-urls '["https://www.linkedin.com/company/example","https://example.com"]' \
   --services 'Product design and custom software' --fact 'Built a customer portal' \
   --unknowns '["team size"]'
+linkedin-tools salesnav studio account-qualify-record --run-id ID \
+  --organization-id ORG --fit kept --evidence '{"linkedin":"reviewed","website":"reviewed"}' \
+  --unknowns '[]' --reason 'Engineering delivery demonstrated' \
+  --policy-version studio-account-v1
+linkedin-tools salesnav studio account-people-candidates --run-id ID
+linkedin-tools salesnav studio account-status --run-id ID
 ```
 
-This lane is research-only: it has no HubSpot or sending path.
+`account-people-candidates` is the read-only downstream boundary: it returns only kept accounts
+observed in that lane and run. It does not capture people. This lane has no HubSpot or sending path.

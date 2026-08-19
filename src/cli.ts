@@ -84,6 +84,17 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
     case "salesnav staffing account-status":
     case "salesnav staffing account-qualify-next":
     case "salesnav staffing account-qualify-record":
+    case "salesnav staffing account-people-candidates":
+    case "salesnav staffing firm-research-record":
+    case "salesnav studio account-capture-start":
+    case "salesnav studio account-capture-ingest":
+    case "salesnav studio account-capture-finish":
+    case "salesnav studio account-normalize":
+    case "salesnav studio account-status":
+    case "salesnav studio account-qualify-next":
+    case "salesnav studio account-qualify-record":
+    case "salesnav studio account-people-candidates":
+    case "salesnav studio firm-research-record":
       return operations.salesnav(invocation.input);
     case "doctor":
       return operations.doctor(invocation.input);

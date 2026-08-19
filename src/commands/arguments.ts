@@ -160,7 +160,11 @@ const SALESNAV_HELP = `Usage:
   linkedin-tools [--json] salesnav studio account-normalize --run-id ID
   linkedin-tools [--json] salesnav studio account-status --run-id ID
   linkedin-tools [--json] salesnav studio account-qualify-next --run-id ID
+  linkedin-tools [--json] salesnav studio account-qualify-record --run-id ID --organization-id ID --fit kept|dropped --evidence JSON_OBJECT --unknowns JSON_ARRAY --reason TEXT --policy-version ID
+  linkedin-tools [--json] salesnav studio account-people-candidates --run-id ID
   linkedin-tools [--json] salesnav staffing account-qualify-next --run-id ID
+  linkedin-tools [--json] salesnav staffing account-qualify-record --run-id ID --organization-id ID --fit kept|dropped --evidence JSON_OBJECT --unknowns JSON_ARRAY --reason TEXT --policy-version ID
+  linkedin-tools [--json] salesnav staffing account-people-candidates --run-id ID
   linkedin-tools [--json] salesnav studio firm-research-record --run-id ID --organization-id ID --source-urls JSON_ARRAY --services TEXT --fact TEXT --unknowns JSON_ARRAY [--reviewed-at ISO]
 
 Staffing keeps savedSearchId 2006360906. Studio has exactly two approved US 11-50 IT/design Boolean searches. Account capture requires the lane contract. Capture is caller-owned Chrome handoff;
@@ -529,11 +533,24 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       "account-status",
       "account-qualify-next",
       "account-qualify-record",
+      "account-people-candidates",
       "firm-research-record",
     ] as const;
     const isSalesNavVerb = (value: string): value is SalesNavInput["command"] =>
       verbs.includes(value as (typeof verbs)[number]);
     if (!isSalesNavVerb(verb)) invalid(`unknown salesnav staffing command: ${verb}`);
+    if (
+      lane === "studio" &&
+      [
+        "capture-start",
+        "capture-ingest",
+        "capture-finish",
+        "normalize",
+        "qualify",
+        "status",
+      ].includes(verb)
+    )
+      invalid(`unknown salesnav studio command: ${verb}`);
     const specs: Readonly<Record<string, OptionKind>> = verb.endsWith("capture-start")
       ? {
           "--run-id": "value",
