@@ -18,6 +18,8 @@ import {
   jobsNormalize,
   jobsRemove,
   jobsSend,
+  jobsTriageNext,
+  jobsTriageRecord,
 } from "./jobs.ts";
 import { migrationDryRun } from "./migration.ts";
 import {
@@ -61,5 +63,7 @@ export function createDefaultOperations(): CliOperations {
     jobsDraft,
     jobsSend,
     jobsClassify,
+    jobsTriageNext,
+    jobsTriageRecord,
   };
 }

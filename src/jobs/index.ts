@@ -27,6 +27,7 @@ export type {
   JobDetail,
   JobRow,
   JobStatus,
+  TriageBucket,
   JobsDraftInput,
   JobsFavoriteInput,
   JobsListInput,

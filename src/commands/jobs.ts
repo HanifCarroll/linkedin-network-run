@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsCaptureStore } from "../jobs/capture.ts";
+import { evidenceGaps } from "../jobs/filter.ts";
 import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
   buildCheckLivenessScript,
@@ -18,6 +19,7 @@ import {
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
 import type { CollectedJob, JobDetail, JobRow } from "../jobs/types.ts";
+import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
@@ -37,6 +39,8 @@ import type {
   JobsNormalizeInput,
   JobsRemoveInput,
   JobsSendInput,
+  JobsTriageNextInput,
+  JobsTriageRecordInput,
 } from "./types.ts";
 
 export type JobsDependencies = {
@@ -583,6 +587,58 @@ export async function jobsClassify(
       now(),
     );
     return { command: "jobs classify", job: row };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsTriageNext(input: JobsTriageNextInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const job = new JobsEngine(opened.database).triageNext(input.runId);
+    return {
+      command: "jobs triage-next",
+      found: job !== null,
+      ...(job === null
+        ? {}
+        : {
+            packet: {
+              rubric: {
+                policyVersion: TRIAGE_POLICY_VERSION,
+                anchors: [
+                  "customer-facing software",
+                  "full-stack product work",
+                  "TypeScript/React/Node",
+                  "integrations/automation/applied AI",
+                  "end-to-end production ownership",
+                ],
+                definitions: {
+                  strong: "multiple explicit anchors and the central work aligns",
+                  possible: "partial alignment or material uncertainty",
+                  weak: "little explicit evidence of those anchors or the central work appears elsewhere; still reviewable",
+                },
+              },
+              job,
+              evidenceGaps: evidenceGaps(job),
+            },
+          }),
+    };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsTriageRecord(
+  input: JobsTriageRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const job = new JobsEngine(opened.database).recordTriage({
+      ...input,
+      now: (dependencies.now ?? nowDefault)(),
+    });
+    return { command: "jobs triage-record", job };
   } finally {
     opened.database.close();
   }

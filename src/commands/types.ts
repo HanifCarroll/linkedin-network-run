@@ -182,6 +182,20 @@ export type JobsClassifyInput = {
   readonly productSummary: string;
 };
 
+export type JobsTriageNextInput = { readonly stateDir: string; readonly runId?: string };
+export type JobsTriageRecordInput = {
+  readonly stateDir: string;
+  readonly id: string;
+  readonly bucket: "strong" | "possible" | "weak";
+  readonly companySummary: string;
+  readonly workSummary: string;
+  readonly responsibilities: readonly string[];
+  readonly skillMatches: readonly string[];
+  readonly skillGaps: readonly string[];
+  readonly reason: string;
+  readonly policyVersion: string;
+};
+
 export type JobsHubSpotNextInput = {
   readonly stateDir: string;
   readonly id?: string;
@@ -230,6 +244,8 @@ export interface CliOperations {
   jobsSend(input: JobsSendInput): Promise<unknown>;
   jobsClassify(input: JobsClassifyInput): Promise<unknown>;
   jobsHubSpotNext(input: JobsHubSpotNextInput): Promise<unknown>;
+  jobsTriageNext(input: JobsTriageNextInput): Promise<unknown>;
+  jobsTriageRecord(input: JobsTriageRecordInput): Promise<unknown>;
   jobsHubSpotRecord(input: JobsHubSpotRecordInput): Promise<unknown>;
 }
 
@@ -320,6 +336,16 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "jobs classify";
       readonly input: JobsClassifyInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs triage-next";
+      readonly input: JobsTriageNextInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs triage-record";
+      readonly input: JobsTriageRecordInput;
     }
   | {
       readonly kind: "command";

@@ -136,6 +136,7 @@
   .badge.rev.approved { color: var(--accent); background: var(--accent-soft); }
   .badge.rev.skipped { color: var(--warn); background: var(--warn-soft); }
   .badge.rev.sent { color: var(--ok); background: var(--ok-soft); }
+  .badge.triage { color: var(--ink-2); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
   .badge.dup { color: var(--warn); background: var(--warn-soft); }
   .badge.kind-direct { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .badge.kind-applied { background: var(--ok-soft); color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
@@ -169,6 +170,8 @@
   .summary .block { font-size: 16px; line-height: 1.55; color: var(--ink); margin: 0 0 var(--s3); }
   .summary .block:last-child { margin-bottom: 0; }
   .summary .label { font-size: 14px; font-weight: 650; color: var(--ink-2); margin-bottom: 1px; }
+  .summary ul { margin: 2px 0 0 18px; padding: 0; }
+  .summary li { margin: 1px 0; }
 
   .benefits { margin-top: var(--s4); }
   .benefits h3 { font-size: 14px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 0 0 var(--s2); }
@@ -251,7 +254,7 @@
 <div class="filters" id="filters"></div>
 <main>
   <section class="list" id="list"></section>
-  <section class="detail" id="detail"><div class="empty">Select a person to review their draft</div></section>
+  <section class="detail" id="detail"><div class="empty">Select an opportunity to review</div></section>
 </main>
 <div class="flash" id="flash"></div>
 <script type="module">
@@ -309,6 +312,11 @@
   function badge(deg) {
     if (!deg) return "";
     return `<span class="badge d${deg[0]}" title="${DEGREE_TITLE[deg] || ""}">${esc(deg)}</span>`;
+  }
+
+  function triageBadge(job) {
+    const label = { strong: "Strong fit", possible: "Possible fit", weak: "Weak fit" }[job.triageBucket];
+    return label ? `<span class="badge triage">${label}</span>` : "";
   }
 
   function reviewBadge(bucket) {
@@ -383,6 +391,7 @@
           ? `<span class="badge kind ${kind === "direct" ? "kind-direct" : "kind-applied"}">${esc(outreachKindLabel(kind))}</span>`
           : "",
         roles > 1 ? `<span class="badge dup" title="${roles} roles list this person">${roles} roles</span>` : "",
+        triageBadge(primary),
         reviewBadge(bucket),
       ].join("");
       const sel = group.key === state.selectedKey ? " selected" : "";
@@ -412,7 +421,7 @@
   function renderDetail() {
     const d = el("detail");
     const group = selectedGroup();
-    if (!group) { d.innerHTML = `<div class="empty">Select a person to review their draft</div>`; return; }
+    if (!group) { d.innerHTML = `<div class="empty">Select an opportunity to review</div>`; return; }
     const primary = primaryOf(group);
     const bucket = bucketFor(group.jobs);
     const name = recipientName(group);
@@ -440,11 +449,15 @@
       : "";
     const summaryBlocks = [
       primary.productSummary ? `<div class="block"><div class="label">What you'd build</div>${esc(primary.productSummary)}</div>` : "",
-      primary.workSummary ? `<div class="block"><div class="label">What you'd do</div>${esc(primary.workSummary)}</div>` : "",
     ].filter(Boolean).join("");
-    const summaryHtml = summaryBlocks
-      ? `<div class="summary"><h3>Summary</h3>${summaryBlocks}</div>`
-      : "";
+    const fitBrief = `<div class="summary"><h3>Fit brief</h3>
+      <div class="block"><div class="label">Company</div>${esc(primary.companySummary || primary.company || "Unknown")}</div>
+      <div class="block"><div class="label">What you'd work on</div>${esc(primary.workSummary)}</div>
+      <div class="block"><div class="label">Responsibilities</div>${primary.responsibilities.length ? `<ul>${primary.responsibilities.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : "Unknown"}</div>
+      <div class="block"><div class="label">Skill match</div>${primary.skillMatches.length ? `<ul>${primary.skillMatches.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : "Unknown"}</div>
+      <div class="block"><div class="label">Gaps</div>${primary.skillGaps.length ? `<ul>${primary.skillGaps.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : "Unknown"}</div>
+    </div>`;
+    const summaryHtml = summaryBlocks ? `<div class="summary"><h3>Summary</h3>${summaryBlocks}</div>` : "";
     const benefitsHtml = benefits.length
       ? `<div class="benefits"><h3>Benefits</h3><div class="list">${benefits.map((b) => `<span class="benefit">${esc(b)}</span>`).join("")}</div></div>`
       : "";
@@ -476,7 +489,7 @@
         </div>`;
     d.innerHTML = `
       <div class="detail-head">
-        <span class="status ${bucket}">${statusLabel}</span>
+        <span class="status ${bucket}">${statusLabel}</span> ${triageBadge(primary)}
         <h2>${esc(displayName)} ${badge(first?.degree)}</h2>
         <div class="company">${esc(primary.title || "—")}${primary.company ? ` · ${esc(primary.company)}` : ""}</div>
         ${primary.location ? `<div class="loc">${esc(primary.location)}</div>` : ""}
@@ -486,6 +499,7 @@
         <div><a class="open" href="${esc(primary.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
       </div>
       ${rolesHtml}
+      ${fitBrief}
       ${reminderHtml}
       ${draftHtml}
       ${summaryHtml}

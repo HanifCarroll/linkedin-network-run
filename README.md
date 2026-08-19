@@ -159,7 +159,12 @@ It never reads `JOB_SEARCH_TERMS`, uses no location, records deterministic
 fit/freshness reasons, and keeps unknown freshness while reporting it. Enrichment and detail remain
 on their existing Playwriter paths, but only `fit=kept` jobs are eligible whether or not
 `--run-id ID` is supplied. Live-job checks, networking, analytics, and sending remain unchanged;
-no post-enrichment pursuit policy is implemented.
+triage prioritizes opportunities but never automatically pursues or rejects them.
+Before human review, `jobs triage-next` hands one eligible kept job to an agent. `jobs triage-record`
+stores an evidence-backed `strong`, `possible`, or `weak` fit brief under policy
+`jobs-triage-v1-20260819`; it never rejects a job or changes review, and weak jobs remain visible.
+Pending review shows only triaged kept jobs with hiring-team people, ordered Strong, Possible, Weak.
+Previously decided or sent history remains visible after the migration.
 `jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
 two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
 

@@ -96,6 +96,166 @@ try {
     }
   }
 
+  // Bounded temp-state check: triage is fit/review/team/detail/run gated,
+  // records atomically, retries exactly, and conflicts without replacement.
+  {
+    const opened = openDatabase(join(root, "triage.db"));
+    try {
+      const engine = new JobsEngine(opened.database);
+      engine.upsertJobs(
+        [
+          {
+            id: "triage-1",
+            title: "Product Engineer",
+            company: "Acme",
+            location: "Remote",
+            postingUrl: "https://www.linkedin.com/jobs/view/triage-1/",
+            hiringTeam: [
+              {
+                name: "HM",
+                profileUrl: "https://www.linkedin.com/in/hm",
+                degree: "2nd",
+                headline: "VP",
+              },
+            ],
+            hasHiringTeam: true,
+          },
+        ],
+        "t0",
+      );
+      opened.database
+        .prepare(
+          "UPDATE jobs SET fit='kept', description='Build customer software', review='needs_review' WHERE id='triage-1'",
+        )
+        .run();
+      opened.database.exec(
+        "INSERT INTO capture_runs (id, source_url, started_at, updated_at) VALUES ('triage-run','x','t0','t0')",
+      );
+      opened.database.exec(
+        "INSERT INTO job_observations (run_id,page_identity,job_id,observed_title,observed_at) VALUES ('triage-run','p','triage-1','Product Engineer','t0')",
+      );
+      if (
+        engine.triageNext("triage-run")?.id !== "triage-1" ||
+        engine.triageNext("other-run") !== null
+      )
+        throw new Error("triage next eligibility/run scope failed");
+      const args = {
+        id: "triage-1",
+        bucket: "strong" as const,
+        companySummary: "Acme makes customer software",
+        workSummary: "Build customer software",
+        responsibilities: ["Ship features"],
+        skillMatches: ["TypeScript"],
+        skillGaps: ["Unknown domain"],
+        reason: "Explicit customer software and production ownership anchors",
+        policyVersion: "jobs-triage-v1-20260819",
+        now: "t1",
+      };
+      const first = engine.recordTriage(args);
+      const retry = engine.recordTriage({ ...args, now: "t2" });
+      if (first.triageBucket !== "strong" || JSON.stringify(first) !== JSON.stringify(retry))
+        throw new Error("triage exact retry failed");
+      let classifyConflict = false;
+      try {
+        engine.classifyJob(
+          "triage-1",
+          "Product",
+          "Web application",
+          "Replace the stored fit brief",
+          "Customer software",
+          "t2",
+        );
+      } catch (error) {
+        classifyConflict = error instanceof CliError && error.code === "JOBS_TRIAGE_CONFLICT";
+      }
+      if (!classifyConflict) throw new Error("classification replaced a triaged fit brief");
+      let conflict = false;
+      try {
+        engine.recordTriage({ ...args, bucket: "weak", now: "t3" });
+      } catch (error) {
+        conflict = error instanceof CliError && error.code === "JOBS_TRIAGE_CONFLICT";
+      }
+      if (!conflict) throw new Error("triage conflict failed");
+      const eligibility = (id: string, update: string) => {
+        engine.upsertJobs(
+          [
+            {
+              id,
+              title: id,
+              company: "Acme",
+              location: "Remote",
+              postingUrl: `https://www.linkedin.com/jobs/view/${id}/`,
+              hiringTeam: [
+                {
+                  name: "HM",
+                  profileUrl: `https://www.linkedin.com/in/${id}`,
+                  degree: "2nd",
+                  headline: "VP",
+                },
+              ],
+              hasHiringTeam: true,
+            },
+          ],
+          "t0",
+        );
+        opened.database.prepare(`UPDATE jobs SET ${update} WHERE id=?`).run(id);
+        let failed = false;
+        try {
+          engine.recordTriage({ ...args, id, now: "t4" });
+        } catch (error) {
+          failed = error instanceof CliError && error.code === "JOBS_TRIAGE_NOT_ELIGIBLE";
+        }
+        if (!failed) throw new Error(`triage eligibility failed for ${id}`);
+      };
+      eligibility("triage-pending", "fit='pending', description='x'");
+      eligibility("triage-dropped", "fit='dropped', description='x'");
+      eligibility("triage-no-description", "fit='kept', description=''");
+      eligibility("triage-decided", "fit='kept', description='x', review='approved'");
+      eligibility(
+        "triage-no-team",
+        "fit='kept', description='x', has_hiring_team=0, hiring_team_json='[]'",
+      );
+      if (
+        !groupSearchHaystack([first]).includes("explicit customer") ||
+        !groupSearchHaystack([first]).includes("strong")
+      )
+        throw new Error("triage search haystack failed");
+      const ordered = ["triage-order-strong", "triage-order-weak"].map((id) => ({
+        id,
+        title: id,
+        company: "Acme",
+        location: "Remote",
+        postingUrl: `https://www.linkedin.com/jobs/view/${id}/`,
+        hiringTeam: [
+          {
+            name: id,
+            profileUrl: `https://www.linkedin.com/in/${id}`,
+            degree: "2nd",
+            headline: "VP",
+          },
+        ],
+        hasHiringTeam: true,
+      }));
+      engine.upsertJobs(ordered, "t0");
+      for (const job of ordered)
+        opened.database
+          .prepare("UPDATE jobs SET fit='kept', description='x' WHERE id=?")
+          .run(job.id);
+      const strong = engine.recordTriage({ ...args, id: "triage-order-strong", now: "t5" });
+      const weak = engine.recordTriage({
+        ...args,
+        id: "triage-order-weak",
+        bucket: "weak",
+        now: "t5",
+      });
+      const orderedGroups = groupJobs([weak, strong]);
+      if (orderedGroups[0]?.jobs[0]?.id !== strong.id)
+        throw new Error("displayed-primary triage ordering failed");
+    } finally {
+      opened.database.close();
+    }
+  }
+
   // Bounded temp-state check: an approved person produces a stable HubSpot
   // handoff and partial receipts resume without duplicate local state.
   {
@@ -672,6 +832,14 @@ try {
       matchedTerm: "",
       filterPolicyVersion: "",
       filteredAt: null,
+      triageBucket: "pending",
+      companySummary: "",
+      responsibilities: [],
+      skillMatches: [],
+      skillGaps: [],
+      triageReason: "",
+      triagePolicyVersion: "",
+      triagedAt: null,
       ...overrides,
     });
     const role = (id: string, review: JobRow["review"], updatedAt: string, team = alice) =>
@@ -844,6 +1012,14 @@ try {
       matchedTerm: "",
       filterPolicyVersion: "",
       filteredAt: null,
+      triageBucket: "pending",
+      companySummary: "",
+      responsibilities: [],
+      skillMatches: [],
+      skillGaps: [],
+      triageReason: "",
+      triagePolicyVersion: "",
+      triagedAt: null,
       ...overrides,
     });
     const role = (
@@ -948,6 +1124,14 @@ try {
       matchedTerm: "",
       filterPolicyVersion: "",
       filteredAt: null,
+      triageBucket: "pending",
+      companySummary: "",
+      responsibilities: [],
+      skillMatches: [],
+      skillGaps: [],
+      triageReason: "",
+      triagePolicyVersion: "",
+      triagedAt: null,
       ...overrides,
     });
     const contract = row("s1", {
@@ -1637,6 +1821,14 @@ try {
       calls.push("jobs classify");
       return { job: { id: "111" } };
     },
+    jobsTriageNext: async () => {
+      calls.push("jobs triage-next");
+      return { found: false };
+    },
+    jobsTriageRecord: async () => {
+      calls.push("jobs triage-record");
+      return { job: { id: "111" } };
+    },
     jobsHubSpotNext: async (input) => {
       if (input.id !== "111") throw new Error("hubspot-next did not parse --id");
       calls.push("jobs hubspot-next");
@@ -1728,6 +1920,30 @@ try {
       "smoke-v1",
       "--max-age-days",
       "14",
+    ],
+    ["--json", "jobs", "triage-next", "--run-id", "run-1"],
+    [
+      "--json",
+      "jobs",
+      "triage-record",
+      "--id",
+      "111",
+      "--bucket",
+      "strong",
+      "--company-summary",
+      "Acme",
+      "--work-summary",
+      "Build it",
+      "--responsibilities",
+      '["Ship"]',
+      "--skill-matches",
+      '["TypeScript"]',
+      "--skill-gaps",
+      '["Unknown"]',
+      "--reason",
+      "Explicit anchors",
+      "--policy-version",
+      "jobs-triage-v1-20260819",
     ],
     [
       "--json",

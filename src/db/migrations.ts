@@ -475,6 +475,21 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 14,
+    name: "jobs_triage",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN triage_bucket TEXT NOT NULL DEFAULT 'pending'
+        CHECK(triage_bucket IN ('pending', 'strong', 'possible', 'weak'));
+      ALTER TABLE jobs ADD COLUMN company_summary TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN responsibilities_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE jobs ADD COLUMN skill_matches_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE jobs ADD COLUMN skill_gaps_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE jobs ADD COLUMN triage_reason TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN triage_policy_version TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN triaged_at TEXT;
+    `,
+  },
 ];
 
 export type MigrationResult = {

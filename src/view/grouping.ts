@@ -98,6 +98,12 @@ export function groupJobs(jobs: readonly JobRow[]): RecipientGroup[] {
   return [...map.entries()]
     .map(([key, group]) => ({ key, jobs: group }))
     .sort((a, b) => {
+      const rank = (group: RecipientGroup) =>
+        ({ strong: 0, possible: 1, weak: 2, pending: 3 })[
+          primaryRoleFor(group.jobs, undefined).triageBucket
+        ];
+      const byTriage = rank(a) - rank(b);
+      if (byTriage !== 0) return byTriage;
       const byTime =
         updatedOf(primaryRoleFor(b.jobs, undefined)) - updatedOf(primaryRoleFor(a.jobs, undefined));
       return byTime !== 0 ? byTime : a.key.localeCompare(b.key);
@@ -229,6 +235,12 @@ export function groupSearchHaystack(jobs: readonly JobRow[]): string {
       job.productSystem,
       job.workSummary,
       job.productSummary,
+      job.companySummary,
+      job.triageReason,
+      job.triageBucket,
+      ...job.responsibilities,
+      ...job.skillMatches,
+      ...job.skillGaps,
       job.subject,
       job.message ?? "",
       job.employmentType,

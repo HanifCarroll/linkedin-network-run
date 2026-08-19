@@ -15,6 +15,8 @@ import {
   DRAFT_MAX_LENGTH,
   SUBJECT_MAX_LENGTH,
   SUMMARY_MAX_LENGTH,
+  TRIAGE_POLICY_VERSION,
+  type TriageBucket,
 } from "./types.ts";
 
 type JobRowRaw = {
@@ -50,6 +52,14 @@ type JobRowRaw = {
   readonly matched_term: string;
   readonly filter_policy_version: string;
   readonly filtered_at: string | null;
+  readonly triage_bucket: string;
+  readonly company_summary: string;
+  readonly responsibilities_json: string;
+  readonly skill_matches_json: string;
+  readonly skill_gaps_json: string;
+  readonly triage_reason: string;
+  readonly triage_policy_version: string;
+  readonly triaged_at: string | null;
 };
 
 export class JobsEngine {
@@ -173,6 +183,7 @@ export class JobsEngine {
     readonly uncheckedOnly?: boolean;
     readonly needsDetail?: boolean;
     readonly fit?: "pending" | "kept" | "dropped";
+    readonly triageBucket?: TriageBucket;
     readonly jobIds?: readonly string[];
   }): JobRow[] {
     const clauses: string[] = [];
@@ -187,6 +198,10 @@ export class JobsEngine {
     if (options.fit !== undefined) {
       clauses.push("fit = ?");
       params.push(options.fit);
+    }
+    if (options.triageBucket !== undefined) {
+      clauses.push("triage_bucket = ?");
+      params.push(options.triageBucket);
     }
     if (options.jobIds !== undefined) {
       if (options.jobIds.length === 0) return [];
@@ -389,6 +404,130 @@ export class JobsEngine {
     return this.requireJob(id);
   }
 
+  triageNext(runId?: string): JobRow | null {
+    const ids = runId === undefined ? undefined : this.jobIdsForRun(runId);
+    const rows = this.listJobs({
+      withHiringTeam: true,
+      fit: "kept",
+      triageBucket: "pending",
+      ...(ids === undefined ? {} : { jobIds: ids }),
+    }).filter(
+      (job) =>
+        job.review === "needs_review" && job.status !== "sent" && job.description.trim() !== "",
+    );
+    return rows[0] ?? null;
+  }
+
+  recordTriage(input: {
+    id: string;
+    bucket: Exclude<TriageBucket, "pending">;
+    companySummary: string;
+    workSummary: string;
+    responsibilities: readonly string[];
+    skillMatches: readonly string[];
+    skillGaps: readonly string[];
+    reason: string;
+    policyVersion: string;
+    now: string;
+  }): JobRow {
+    const companySummary = input.companySummary.trim();
+    const workSummary = input.workSummary.trim();
+    const reason = input.reason.trim();
+    const responsibilities = normalizeTriageList(input.responsibilities, "responsibilities", 5, 1);
+    const skillMatches = normalizeTriageList(input.skillMatches, "skill matches", 8);
+    const skillGaps = normalizeTriageList(input.skillGaps, "skill gaps", 8);
+    if (
+      !companySummary ||
+      !workSummary ||
+      !reason ||
+      companySummary.length > 500 ||
+      workSummary.length > 500 ||
+      reason.length > 500
+    ) {
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        "triage company summary, work summary, and reason must be non-empty and at most 500 characters",
+        { exitCode: 2 },
+      );
+    }
+    if (input.bucket !== "strong" && input.bucket !== "possible" && input.bucket !== "weak") {
+      throw new CliError("INVALID_ARGUMENT", "triage bucket must be strong, possible, or weak", {
+        exitCode: 2,
+      });
+    }
+    if (input.policyVersion !== TRIAGE_POLICY_VERSION)
+      throw new CliError(
+        "JOBS_TRIAGE_POLICY_VERSION",
+        `triage policy version must be ${TRIAGE_POLICY_VERSION}`,
+        { exitCode: 2 },
+      );
+    const current = this.requireJob(input.id);
+    const same =
+      current.triageBucket !== "pending" &&
+      current.triageBucket === input.bucket &&
+      current.companySummary === companySummary &&
+      current.workSummary === workSummary &&
+      JSON.stringify(current.responsibilities) === JSON.stringify(responsibilities) &&
+      JSON.stringify(current.skillMatches) === JSON.stringify(skillMatches) &&
+      JSON.stringify(current.skillGaps) === JSON.stringify(skillGaps) &&
+      current.triageReason === reason &&
+      current.triagePolicyVersion === input.policyVersion;
+    if (same) return current;
+    if (
+      current.triageBucket === "pending" &&
+      (current.fit !== "kept" ||
+        !current.hasHiringTeam ||
+        current.description.trim() === "" ||
+        current.review !== "needs_review" ||
+        current.status === "sent")
+    ) {
+      throw new CliError("JOBS_TRIAGE_NOT_ELIGIBLE", `job ${input.id} is not eligible for triage`, {
+        exitCode: 2,
+      });
+    }
+    if (
+      current.triageBucket !== "pending" ||
+      current.fit !== "kept" ||
+      !current.hasHiringTeam ||
+      current.description.trim() === "" ||
+      current.review !== "needs_review" ||
+      current.status === "sent"
+    ) {
+      throw new CliError(
+        "JOBS_TRIAGE_CONFLICT",
+        `job ${input.id} already has a different triage result or is not eligible`,
+        { exitCode: 2 },
+      );
+    }
+    this.database
+      .prepare(
+        `UPDATE jobs SET triage_bucket=?, company_summary=?, work_summary=?, responsibilities_json=?, skill_matches_json=?, skill_gaps_json=?, triage_reason=?, triage_policy_version=?, triaged_at=?, updated_at=? WHERE id=?`,
+      )
+      .run(
+        input.bucket,
+        companySummary,
+        workSummary,
+        JSON.stringify(responsibilities),
+        JSON.stringify(skillMatches),
+        JSON.stringify(skillGaps),
+        reason,
+        input.policyVersion,
+        input.now,
+        input.now,
+        input.id,
+      );
+    return this.requireJob(input.id);
+  }
+
+  private jobIdsForRun(runId: string): string[] {
+    return this.database
+      .query<{ job_id: string }, [string]>(
+        "SELECT DISTINCT job_id FROM job_observations WHERE run_id = ? ORDER BY job_id",
+      )
+      .all(runId)
+      .map((row) => row.job_id);
+  }
+
   classifyJob(
     id: string,
     workFocus: string,
@@ -397,6 +536,14 @@ export class JobsEngine {
     productSummary: string,
     now: string,
   ): JobRow {
+    const current = this.requireJob(id);
+    if (current.triageBucket !== "pending") {
+      throw new CliError(
+        "JOBS_TRIAGE_CONFLICT",
+        `job ${id} is already triaged; classification cannot replace its fit brief`,
+        { exitCode: 2 },
+      );
+    }
     const focus = workFocus.trim();
     const system = productSystem.trim();
     const summary = workSummary.trim();
@@ -442,6 +589,35 @@ export class JobsEngine {
   }
 }
 
+function normalizeTriageList(
+  values: readonly string[],
+  label: string,
+  maximum: number,
+  minimum = 0,
+): string[] {
+  if (values.length < minimum || values.length > maximum) {
+    throw new CliError(
+      "INVALID_ARGUMENT",
+      `triage ${label} must contain between ${minimum} and ${maximum} items`,
+      { exitCode: 2 },
+    );
+  }
+  const normalized = values.map((value) => value.trim());
+  if (normalized.some((value) => value.length === 0 || value.length > 200)) {
+    throw new CliError(
+      "INVALID_ARGUMENT",
+      `triage ${label} items must be non-empty and at most 200 characters`,
+      { exitCode: 2 },
+    );
+  }
+  if (new Set(normalized).size !== normalized.length) {
+    throw new CliError("INVALID_ARGUMENT", `triage ${label} must not contain duplicate items`, {
+      exitCode: 2,
+    });
+  }
+  return normalized;
+}
+
 function conflictDetails(job: JobRow): Record<string, unknown> {
   return {
     jobId: job.id,
@@ -460,6 +636,16 @@ function rowToJob(row: JobRowRaw): JobRow {
   } catch {
     hiringTeam = [];
   }
+  const strings = (value: string): readonly string[] => {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  };
   let benefits: readonly string[] = [];
   try {
     const parsed = JSON.parse(row.benefits_json) as unknown;
@@ -500,6 +686,14 @@ function rowToJob(row: JobRowRaw): JobRow {
     matchedTerm: row.matched_term,
     filterPolicyVersion: row.filter_policy_version,
     filteredAt: row.filtered_at,
+    triageBucket: row.triage_bucket as JobRow["triageBucket"],
+    companySummary: row.company_summary,
+    responsibilities: strings(row.responsibilities_json),
+    skillMatches: strings(row.skill_matches_json),
+    skillGaps: strings(row.skill_gaps_json),
+    triageReason: row.triage_reason,
+    triagePolicyVersion: row.triage_policy_version,
+    triagedAt: row.triaged_at,
   };
 }
 

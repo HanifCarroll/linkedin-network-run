@@ -14,6 +14,8 @@ export const DRAFT_MAX_LENGTH = 5000;
 
 /** A review decision is orthogonal to the status lifecycle. */
 export type ReviewDecision = "needs_review" | "approved" | "skipped";
+export type TriageBucket = "pending" | "strong" | "possible" | "weak";
+export const TRIAGE_POLICY_VERSION = "jobs-triage-v1-20260819";
 
 export const REVIEW_DECISIONS: readonly ReviewDecision[] = ["needs_review", "approved", "skipped"];
 
@@ -131,4 +133,12 @@ export type JobRow = {
   readonly matchedTerm: string;
   readonly filterPolicyVersion: string;
   readonly filteredAt: string | null;
+  readonly triageBucket: TriageBucket;
+  readonly companySummary: string;
+  readonly responsibilities: readonly string[];
+  readonly skillMatches: readonly string[];
+  readonly skillGaps: readonly string[];
+  readonly triageReason: string;
+  readonly triagePolicyVersion: string;
+  readonly triagedAt: string | null;
 };

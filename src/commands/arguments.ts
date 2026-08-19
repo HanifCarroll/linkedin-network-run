@@ -24,6 +24,8 @@ import type {
   JobsNormalizeInput,
   JobsRemoveInput,
   JobsSendInput,
+  JobsTriageNextInput,
+  JobsTriageRecordInput,
   MigrationDryRunInput,
   NetworkIncidentClearInput,
   NetworkIncidentStatusInput,
@@ -69,6 +71,8 @@ Commands:
   jobs draft             Store a drafted subject + message for a job
   jobs send              Send approved drafted messages to hiring team members (--allow-send)
   jobs classify          Set work-focus and product-system phrases for a job
+  jobs triage-next       Hand one eligible kept job to agent triage
+  jobs triage-record     Store an agent triage result before human review
   jobs hubspot-next      Prepare or resume one approved prospect for HubSpot
   jobs hubspot-record    Record HubSpot object and association receipts locally
 
@@ -146,6 +150,11 @@ const JOBS_HELP = `Usage:
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs detail [--run-id ID] [--limit N]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs triage-next [--run-id ID] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs triage-record --id ID --bucket strong|possible|weak
+    --company-summary TEXT --work-summary TEXT --responsibilities JSON_ARRAY
+    --skill-matches JSON_ARRAY --skill-gaps JSON_ARRAY --reason TEXT
+    --policy-version jobs-triage-v1-20260819 [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs list [--status captured|collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs check [--status captured|collected|favorite|drafted|sent]
@@ -487,6 +496,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "send",
         "remove",
         "classify",
+        "triage-next",
+        "triage-record",
         "hubspot-next",
         "hubspot-record",
       ].includes(verb ?? "")
@@ -494,6 +505,69 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
     if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
+    if (verb === "triage-next") {
+      const options = parseOptions(argv.slice(2), { "--run-id": "value", "--state-dir": "value" });
+      const runId = options.values.get("--run-id");
+      const input: JobsTriageNextInput = {
+        stateDir: stateDir(options, context),
+        ...(runId === undefined ? {} : { runId: boundedText(runId, "--run-id", 200) }),
+      };
+      return { kind: "command", command: "jobs triage-next", input };
+    }
+    if (verb === "triage-record") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--bucket": "value",
+        "--company-summary": "value",
+        "--work-summary": "value",
+        "--responsibilities": "value",
+        "--skill-matches": "value",
+        "--skill-gaps": "value",
+        "--reason": "value",
+        "--policy-version": "value",
+        "--state-dir": "value",
+      });
+      const array = (name: string, maxCount: number): string[] => {
+        let value: unknown;
+        try {
+          value = JSON.parse(required(options, name));
+        } catch {
+          invalid(`${name} must be a JSON array of strings`);
+        }
+        if (
+          !Array.isArray(value) ||
+          value.some((item) => typeof item !== "string") ||
+          value.length > maxCount
+        )
+          invalid(`${name} must be a JSON array of at most ${maxCount} strings`);
+        return value.map((item) => boundedText(item, name, 200));
+      };
+      const bucket = required(options, "--bucket");
+      if (bucket !== "strong" && bucket !== "possible" && bucket !== "weak")
+        invalid("--bucket must be strong, possible, or weak");
+      const policyVersion = boundedText(
+        required(options, "--policy-version"),
+        "--policy-version",
+        80,
+      );
+      const input: JobsTriageRecordInput = {
+        stateDir: stateDir(options, context),
+        id: boundedText(required(options, "--id"), "--id", 200),
+        bucket,
+        companySummary: boundedText(
+          required(options, "--company-summary"),
+          "--company-summary",
+          500,
+        ),
+        workSummary: boundedText(required(options, "--work-summary"), "--work-summary", 500),
+        responsibilities: array("--responsibilities", 5),
+        skillMatches: array("--skill-matches", 8),
+        skillGaps: array("--skill-gaps", 8),
+        reason: boundedText(required(options, "--reason"), "--reason", 500),
+        policyVersion,
+      };
+      return { kind: "command", command: "jobs triage-record", input };
+    }
     if (verb === "hubspot-next") {
       const options = parseOptions(argv.slice(2), {
         "--id": "value",

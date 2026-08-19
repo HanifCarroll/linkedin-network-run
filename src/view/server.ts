@@ -60,6 +60,10 @@ function readJobs(): unknown {
     opened.database.exec("PRAGMA query_only = ON;");
     return new JobsEngine(opened.database)
       .listJobs({ withHiringTeam: true, fit: "kept" })
+      .filter(
+        (job) =>
+          job.triageBucket !== "pending" || job.review !== "needs_review" || job.status === "sent",
+      )
       .map((job) => ({
         ...job,
         evidenceGaps: evidenceGaps(job),

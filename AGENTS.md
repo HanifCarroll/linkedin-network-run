@@ -40,7 +40,7 @@ hiring-team outreach with the explicit `--allow-send` flag.
 - Migration never applies or writes legacy state.
 - `jobs normalize` processes captured pages one SQLite transaction at a time, deduplicates only by LinkedIn job ID, records page/job provenance, and resumes from completed pages. It never filters by location or fit and never enriches.
 - `jobs filter` requires explicit `--terms` JSON; it never imports or activates `JOB_SEARCH_TERMS`, never uses location, and scopes filtering to jobs observed in the requested run. Unknown freshness is kept and reported. Enrichment/detail may optionally use `--run-id` to process only that run's kept jobs.
-- The review viewer shows only kept jobs with hiring-team people; approval may exist without a draft, but send still requires drafted + approved + `--allow-send`.
+- Jobs triage precedes human review: every kept job with hiring-team people remains available; an agent records strong|possible|weak plus an evidence-backed fit brief under `jobs-triage-v1-20260819`. Triage never rejects or changes review, and weak remains reviewable. Pending review shows only triaged jobs; previously decided or sent history remains visible. Approval may exist without a draft, but send still requires drafted + approved + `--allow-send`.
 - HubSpot import is an agent handoff: `jobs hubspot-next` emits the deterministic lookup-before-create packet and `jobs hubspot-record` stores IDs and association completion. The CLI holds no HubSpot credentials, performs no CRM request, and never treats task creation as send authority.
 - Do not add the retired acceptance, radar, recruiter, opportunity, Python, uv,
   or web UI workflows. The `jobs` workflow is a distinct, approved workflow for

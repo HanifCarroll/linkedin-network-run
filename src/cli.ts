@@ -123,6 +123,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsSend(invocation.input);
     case "jobs classify":
       return operations.jobsClassify(invocation.input);
+    case "jobs triage-next":
+      return operations.jobsTriageNext(invocation.input);
+    case "jobs triage-record":
+      return operations.jobsTriageRecord(invocation.input);
     case "jobs hubspot-next":
       return operations.jobsHubSpotNext(invocation.input);
     case "jobs hubspot-record":
