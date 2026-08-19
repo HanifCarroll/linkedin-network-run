@@ -442,6 +442,18 @@ const migrations: readonly Migration[] = [
       CREATE INDEX job_observations_job_idx ON job_observations(job_id);
     `,
   },
+  {
+    id: 12,
+    name: "jobs_intake_filter",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN fit TEXT NOT NULL DEFAULT 'pending'
+        CHECK(fit IN ('pending', 'kept', 'dropped'));
+      ALTER TABLE jobs ADD COLUMN filter_reason TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN matched_term TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN filter_policy_version TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN filtered_at TEXT;
+    `,
+  },
 ];
 
 export type MigrationResult = {

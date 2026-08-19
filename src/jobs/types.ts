@@ -126,4 +126,9 @@ export type JobRow = {
   readonly subject: string;
   /** Review decision, orthogonal to status. */
   readonly review: ReviewDecision;
+  readonly fit: "pending" | "kept" | "dropped";
+  readonly filterReason: string;
+  readonly matchedTerm: string;
+  readonly filterPolicyVersion: string;
+  readonly filteredAt: string | null;
 };

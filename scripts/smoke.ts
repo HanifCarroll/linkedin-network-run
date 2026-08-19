@@ -11,6 +11,7 @@ import { openDatabase } from "../src/db/database.ts";
 import type { JobRow } from "../src/jobs/index.ts";
 import {
   buildSendScript,
+  filterRun,
   JobsEngine,
   JobsNormalizer,
   normalizeProfileUrl,
@@ -88,6 +89,42 @@ try {
       ) {
         throw new Error("classification roundtrip smoke failed");
       }
+    } finally {
+      opened.database.close();
+    }
+  }
+
+  // Bounded temp-state check: explicit terms, title/freshness filtering, and run scope.
+  {
+    const opened = openDatabase(join(root, "filter.db"));
+    try {
+      opened.database.exec(
+        "INSERT INTO capture_runs (id, source_url, started_at, updated_at) VALUES ('r1','x','2026-08-01','2026-08-01'),('r2','x','2026-08-01','2026-08-01')",
+      );
+      const engine = new JobsEngine(opened.database);
+      engine.storeCapturedJobs(
+        [
+          { id: "f1", title: " Product   Engineer " },
+          { id: "f2", title: "Designer" },
+          { id: "f3", title: "Software Engineer" },
+        ],
+        "2026-08-01",
+      );
+      opened.database.exec(
+        "INSERT INTO job_observations (run_id,page_identity,job_id,observed_title,observed_at) VALUES ('r1','p','f1',' Product Engineer ','2026-08-01'),('r1','p','f2','Designer','2026-08-01'),('r2','p','f3','Software Engineer','2026-08-01')",
+      );
+      const result = filterRun(opened.database, {
+        runId: "r1",
+        terms: ['  "Product   Engineer"  '],
+        policyVersion: "smoke-v1",
+        maxAgeDays: 30,
+        now: "2026-08-03T00:00:00Z",
+      });
+      const untouched = opened.database
+        .query<{ fit: string }, []>("SELECT fit FROM jobs WHERE id='f3'")
+        .get();
+      if (result.kept !== 1 || result.dropped !== 1 || untouched?.fit !== "pending")
+        throw new Error("filter smoke failed");
     } finally {
       opened.database.close();
     }
@@ -171,14 +208,11 @@ try {
         throw new Error("new draft should be needs_review + drafted");
       }
 
-      // Approval guard: a collected (non-drafted) job cannot be approved.
-      let notDrafted = false;
-      try {
-        engine.setReview("c3", "approved", "2026-08-03T00:00:02Z");
-      } catch (error) {
-        notDrafted = error instanceof CliError && error.code === "JOBS_NOT_DRAFTED";
+      // Intake approval does not require a draft; sending remains guarded later.
+      const approvedWithoutDraft = engine.setReview("c3", "approved", "2026-08-03T00:00:02Z");
+      if (approvedWithoutDraft.review !== "approved" || approvedWithoutDraft.status === "drafted") {
+        throw new Error("approve without draft smoke failed");
       }
-      if (!notDrafted) throw new Error("approve non-draft guard smoke failed");
 
       // Approval guard: a drafted job without a usable profile URL cannot be approved.
       engine.storeDraft("d4", "", body, "2026-08-03T00:00:03Z");
@@ -434,9 +468,15 @@ try {
         throw new Error("group skip: unrelated recipient mutated");
       }
 
+      // A later posting for the rejected person inherits the group decision.
+      engine.upsertJobs([job("h5", "Role Five", [alice])], "t4a");
+      if (engine.requireJob("h5").review !== "skipped") {
+        throw new Error("group skip: later sibling did not inherit rejection");
+      }
+
       // Group return: every non-sent sibling returns to needs_review.
       engine.setGroupReview("h2", "needs_review", "t5");
-      for (const id of ["h1", "h2", "h3"]) {
+      for (const id of ["h1", "h2", "h3", "h5"]) {
         if (engine.requireJob(id).review !== "needs_review") {
           throw new Error(`group return: ${id} not returned`);
         }
@@ -535,6 +575,11 @@ try {
       productSummary: "",
       subject: "",
       review: "needs_review",
+      fit: "pending",
+      filterReason: "",
+      matchedTerm: "",
+      filterPolicyVersion: "",
+      filteredAt: null,
       ...overrides,
     });
     const role = (id: string, review: JobRow["review"], updatedAt: string, team = alice) =>
@@ -702,6 +747,11 @@ try {
       productSummary: "",
       subject: "",
       review: "needs_review",
+      fit: "pending",
+      filterReason: "",
+      matchedTerm: "",
+      filterPolicyVersion: "",
+      filteredAt: null,
       ...overrides,
     });
     const role = (
@@ -801,6 +851,11 @@ try {
       productSummary: "",
       subject: "",
       review: "needs_review",
+      fit: "pending",
+      filterReason: "",
+      matchedTerm: "",
+      filterPolicyVersion: "",
+      filteredAt: null,
       ...overrides,
     });
     const contract = row("s1", {
@@ -1247,6 +1302,18 @@ try {
       calls.push("jobs normalize");
       return { command: "jobs normalize" };
     },
+    jobsFilter: async (input) => {
+      if (
+        input.runId !== "run-1" ||
+        input.policyVersion !== "smoke-v1" ||
+        input.maxAgeDays !== 14 ||
+        input.terms.join(",") !== "product engineer"
+      ) {
+        throw new Error("jobs filter did not parse arguments");
+      }
+      calls.push("jobs filter");
+      return { command: "jobs filter" };
+    },
     jobsEnrich: async () => {
       calls.push("jobs enrich");
       return { enriched: 0 };
@@ -1354,6 +1421,19 @@ try {
     ],
     ["--json", "jobs", "capture-finish", "--run-id", "run-1", "--state", "complete"],
     ["--json", "jobs", "normalize", "--run-id", "run-1", "--limit", "2"],
+    [
+      "--json",
+      "jobs",
+      "filter",
+      "--run-id",
+      "run-1",
+      "--terms",
+      '["product engineer"]',
+      "--policy-version",
+      "smoke-v1",
+      "--max-age-days",
+      "14",
+    ],
     [
       "--json",
       "jobs",

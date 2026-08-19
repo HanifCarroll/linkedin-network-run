@@ -58,6 +58,7 @@ Commands:
   jobs capture-ingest    Ingest one captured Jobs XHR response into SQLite
   jobs capture-finish    Complete or fail a capture run with final checkpoint
   jobs normalize         Normalize captured pages into deduplicated jobs
+  jobs filter            Filter one run with explicit title terms
   jobs enrich            Enrich captured postings into enriched rows (company/hiring team)
   jobs detail            Pull full posting-page detail (description + structured fields)
   jobs list              List collected jobs from the local store
@@ -134,9 +135,12 @@ const JOBS_HELP = `Usage:
     [--checkpoint JSON] [--error TEXT] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs normalize --run-id ID [--limit N]
     [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs enrich [--limit N]
+  linkedin-tools [--json] jobs filter --run-id ID --terms '["term"]' --policy-version ID
+    [--max-age-days N]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs enrich [--run-id ID] [--limit N]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs detail [--limit N]
+  linkedin-tools [--json] jobs detail [--run-id ID] [--limit N]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs list [--status captured|collected|favorite|drafted|sent]
     [--with-hiring-team] [--state-dir ABSOLUTE_PATH]
@@ -460,6 +464,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "capture-ingest",
         "capture-finish",
         "normalize",
+        "filter",
         "enrich",
         "detail",
         "list",
@@ -562,14 +567,53 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       };
       return { kind: "command", command: "jobs normalize", input };
     }
+    if (verb === "filter") {
+      const options = parseOptions(argv.slice(2), {
+        "--run-id": "value",
+        "--terms": "value",
+        "--policy-version": "value",
+        "--max-age-days": "value",
+        "--state-dir": "value",
+      });
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(required(options, "--terms"));
+      } catch {
+        invalid("--terms must be a JSON array of strings");
+      }
+      if (
+        !Array.isArray(parsed) ||
+        parsed.length === 0 ||
+        parsed.some((term) => typeof term !== "string" || term.trim() === "")
+      )
+        invalid("--terms must be a non-empty JSON array of strings");
+      const policyVersion = required(options, "--policy-version").trim();
+      if (policyVersion === "") invalid("--policy-version must be non-empty");
+      const maxAgeRaw = options.values.get("--max-age-days");
+      return {
+        kind: "command",
+        command: "jobs filter",
+        input: {
+          stateDir: stateDir(options, context),
+          runId: required(options, "--run-id"),
+          terms: parsed as string[],
+          policyVersion,
+          ...(maxAgeRaw === undefined
+            ? {}
+            : { maxAgeDays: boundedInteger(maxAgeRaw, "--max-age-days", 1, 365) }),
+        },
+      };
+    }
     if (verb === "enrich") {
       const options = parseOptions(argv.slice(2), {
         "--limit": "value",
+        "--run-id": "value",
         "--state-dir": "value",
         "--session": "value",
         "--playwriter-bin": "value",
       });
       const limitRaw = options.values.get("--limit");
+      const runId = options.values.get("--run-id");
       const input: JobsEnrichInput = {
         stateDir: stateDir(options, context),
         playwriterBin: playwriterBin(options, context),
@@ -579,17 +623,20 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
           "--session",
         ),
         ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 200) }),
+        ...(runId === undefined ? {} : { runId }),
       };
       return { kind: "command", command: "jobs enrich", input };
     }
     if (verb === "detail") {
       const options = parseOptions(argv.slice(2), {
         "--limit": "value",
+        "--run-id": "value",
         "--state-dir": "value",
         "--session": "value",
         "--playwriter-bin": "value",
       });
       const limitRaw = options.values.get("--limit");
+      const runId = options.values.get("--run-id");
       const input: JobsDetailInput = {
         stateDir: stateDir(options, context),
         playwriterBin: playwriterBin(options, context),
@@ -599,6 +646,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
           "--session",
         ),
         ...(limitRaw === undefined ? {} : { limit: boundedInteger(limitRaw, "--limit", 1, 500) }),
+        ...(runId === undefined ? {} : { runId }),
       };
       return { kind: "command", command: "jobs detail", input };
     }

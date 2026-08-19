@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsEngine } from "../jobs/engine.ts";
+import { evidenceGaps } from "../jobs/filter.ts";
 import { REVIEW_DECISIONS, type ReviewDecision } from "../jobs/types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,7 +58,12 @@ function readJobs(): unknown {
   const opened = openDatabase(dbPath);
   try {
     opened.database.exec("PRAGMA query_only = ON;");
-    return new JobsEngine(opened.database).listJobs({ withHiringTeam: true });
+    return new JobsEngine(opened.database)
+      .listJobs({ withHiringTeam: true, fit: "kept" })
+      .map((job) => ({
+        ...job,
+        evidenceGaps: evidenceGaps(job),
+      }));
   } finally {
     opened.database.close();
   }

@@ -1,12 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
 import { recipientProfileUrl } from "./recipient.ts";
-import {
-  CLASSIFICATION_MAX_LENGTH,
-  DRAFT_MAX_LENGTH,
-  SUBJECT_MAX_LENGTH,
-  SUMMARY_MAX_LENGTH,
-} from "./types.ts";
 import type {
   CapturedJob,
   CollectedJob,
@@ -15,6 +9,12 @@ import type {
   JobRow,
   JobStatus,
   ReviewDecision,
+} from "./types.ts";
+import {
+  CLASSIFICATION_MAX_LENGTH,
+  DRAFT_MAX_LENGTH,
+  SUBJECT_MAX_LENGTH,
+  SUMMARY_MAX_LENGTH,
 } from "./types.ts";
 
 type JobRowRaw = {
@@ -45,6 +45,11 @@ type JobRowRaw = {
   readonly product_summary: string;
   readonly subject: string;
   readonly review: string;
+  readonly fit: string;
+  readonly filter_reason: string;
+  readonly matched_term: string;
+  readonly filter_policy_version: string;
+  readonly filtered_at: string | null;
 };
 
 export class JobsEngine {
@@ -82,6 +87,23 @@ export class JobsEngine {
           now,
           now,
         );
+        const current = this.requireJob(job.id);
+        const profile = recipientProfileUrl(current);
+        if (profile !== null && current.review === "needs_review") {
+          const siblings = this.listJobs({ withHiringTeam: false }).filter(
+            (candidate) =>
+              candidate.id !== current.id && recipientProfileUrl(candidate) === profile,
+          );
+          const rejected = siblings.some((candidate) => candidate.review === "skipped");
+          const covered = siblings.some(
+            (candidate) => candidate.review === "approved" || candidate.status === "sent",
+          );
+          if (rejected && !covered) {
+            this.database
+              .prepare(`UPDATE jobs SET review = 'skipped', updated_at = ? WHERE id = ?`)
+              .run(now, current.id);
+          }
+        }
       }
     });
     tx();
@@ -150,6 +172,8 @@ export class JobsEngine {
     readonly withHiringTeam: boolean;
     readonly uncheckedOnly?: boolean;
     readonly needsDetail?: boolean;
+    readonly fit?: "pending" | "kept" | "dropped";
+    readonly jobIds?: readonly string[];
   }): JobRow[] {
     const clauses: string[] = [];
     const params: string[] = [];
@@ -160,6 +184,15 @@ export class JobsEngine {
     if (options.withHiringTeam) clauses.push("has_hiring_team = 1");
     if (options.uncheckedOnly) clauses.push("checked_at IS NULL");
     if (options.needsDetail) clauses.push("description = ''");
+    if (options.fit !== undefined) {
+      clauses.push("fit = ?");
+      params.push(options.fit);
+    }
+    if (options.jobIds !== undefined) {
+      if (options.jobIds.length === 0) return [];
+      clauses.push(`id IN (${options.jobIds.map(() => "?").join(",")})`);
+      params.push(...options.jobIds);
+    }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.database
       .query<JobRowRaw, string[]>(`SELECT * FROM jobs ${where} ORDER BY collected_at DESC`)
@@ -239,16 +272,6 @@ export class JobsEngine {
       );
     }
     if (review === "approved") {
-      if (job.status !== "drafted") {
-        throw new CliError("JOBS_NOT_DRAFTED", `job ${id} is not a pending draft`, {
-          exitCode: 2,
-        });
-      }
-      if (job.message === null || job.message.trim().length === 0) {
-        throw new CliError("JOBS_NO_DRAFT", `job ${id} has no drafted message`, {
-          exitCode: 2,
-        });
-      }
       const profile = recipientProfileUrl(job);
       if (profile === null) {
         throw new CliError(
@@ -472,6 +495,11 @@ function rowToJob(row: JobRowRaw): JobRow {
     productSummary: row.product_summary,
     subject: row.subject,
     review: row.review as ReviewDecision,
+    fit: row.fit as "pending" | "kept" | "dropped",
+    filterReason: row.filter_reason,
+    matchedTerm: row.matched_term,
+    filterPolicyVersion: row.filter_policy_version,
+    filteredAt: row.filtered_at,
   };
 }
 

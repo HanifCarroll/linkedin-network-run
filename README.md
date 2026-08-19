@@ -152,8 +152,13 @@ resume. No per-page artifact is required (a file is diagnostic-only). The helper
 parse the CLI's stable JSON envelope with `captureAndIngestJobsPage`. Run
 `jobs normalize --run-id ID [--limit N]` to process pages transactionally, deduplicate by
 LinkedIn job ID, preserve run/page provenance, and resume safely. It does not filter by location
-or fit and does not enrich. Enrichment, detail, live-job checks, networking, analytics, and
-sending remain unchanged for now and are planned for later migration to the same Chrome boundary.
+or fit and does not enrich. Run `jobs filter --run-id ID --terms '["product engineer","software engineer"]' --policy-version jobs-fit-v1`
+with explicit title terms and a caller-supplied policy version; `--max-age-days` defaults to 30.
+It never reads `JOB_SEARCH_TERMS`, uses no location, records deterministic
+fit/freshness reasons, and keeps unknown freshness while reporting it. Enrichment and detail remain
+on Playwriter; pass `--run-id ID` to scope either to that run's kept jobs, or omit it for legacy
+behavior. Live-job checks, networking, analytics, and sending remain unchanged for now and are
+planned for later migration to the same Chrome boundary.
 `jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
 two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
 
@@ -171,6 +176,11 @@ linkedin-tools --json jobs normalize --run-id run-20260818-1
 
 Normalization reports stable counts for pages processed, jobs observed, newly inserted jobs,
 deduplicated observations, and remaining pages.
+
+The viewer is the intake queue for kept jobs with listed hiring-team people. It shows Pending,
+Approved, and Rejected decisions plus matched term, filter reason, employment/posting/capture facts,
+links, and evidence gaps. Approval does not require a draft; sending remains guarded by drafted +
+approved + `--allow-send`, and rejection persists across sibling jobs.
 
 Every hiring-team job gets a draft — there is no pre-draft qualification. Draft once per
 recipient: when several postings list the same person, draft the best-fitting role; the other

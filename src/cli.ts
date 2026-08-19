@@ -103,6 +103,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsCaptureFinish(invocation.input);
     case "jobs normalize":
       return operations.jobsNormalize(invocation.input);
+    case "jobs filter":
+      return operations.jobsFilter(invocation.input);
     case "jobs enrich":
       return operations.jobsEnrich(invocation.input);
     case "jobs detail":

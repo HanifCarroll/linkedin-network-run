@@ -264,9 +264,9 @@
   const SECTION_LABELS = { all: "All outreach", direct: "Direct outreach", application_followup: "Application follow-up" };
   const SECTIONS = ["all", "direct", "application_followup"];
   const FILTERS = [
-    { key: "needs_review", label: "Needs review" },
+    { key: "needs_review", label: "Pending" },
     { key: "approved", label: "Approved" },
-    { key: "skipped", label: "Skipped" },
+    { key: "skipped", label: "Rejected" },
     { key: "sent", label: "Sent" },
     { key: "all", label: "All" },
   ];
@@ -312,8 +312,8 @@
   }
 
   function reviewBadge(bucket) {
-    if (bucket === "needs_review") return "";
-    const label = { approved: "Approved", skipped: "Skipped", sent: "Sent" }[bucket];
+    if (bucket === "needs_review") return `<span class="badge rev needs_review">Pending</span>`;
+    const label = { approved: "Approved", skipped: "Rejected", sent: "Sent" }[bucket];
     return `<span class="badge rev ${bucket}">${label}</span>`;
   }
 
@@ -325,8 +325,8 @@
   function roleStateLabel(role) {
     if (role.status === "sent") return { bucket: "sent", label: "Sent", note: "message sent for this role" };
     if (role.review === "approved") return { bucket: "approved", label: "Approved", note: "owns the approved message" };
-    if (role.review === "skipped") return { bucket: "skipped", label: "Skipped", note: "" };
-    return { bucket: "needs_review", label: "Needs review", note: "" };
+    if (role.review === "skipped") return { bucket: "skipped", label: "Rejected", note: "" };
+    return { bucket: "needs_review", label: "Pending", note: "" };
   }
 
   function renderDescription(text) {
@@ -426,6 +426,8 @@
       primary.productSystem ? `<span class="fact">Building: ${esc(primary.productSystem)}</span>` : "",
       primary.workplaceType ? `<span class="fact">${esc(primary.workplaceType)}</span>` : "",
       primary.employmentType ? `<span class="fact">${esc(primary.employmentType)}</span>` : "",
+      primary.matchedTerm ? `<span class="fact flag">Matched: ${esc(primary.matchedTerm)}</span>` : "",
+      primary.filterReason ? `<span class="fact muted">${esc(primary.filterReason)}</span>` : "",
       primary.applyMethod ? `<span class="fact">${esc(primary.applyMethod)}</span>` : "",
       primary.promoted ? `<span class="fact flag">Promoted</span>` : "",
       primary.activelyReviewing ? `<span class="fact flag">Actively reviewing</span>` : "",
@@ -446,7 +448,7 @@
     const benefitsHtml = benefits.length
       ? `<div class="benefits"><h3>Benefits</h3><div class="list">${benefits.map((b) => `<span class="benefit">${esc(b)}</span>`).join("")}</div></div>`
       : "";
-    const statusLabel = { needs_review: "needs review", approved: "approved", skipped: "skipped", sent: "sent" }[bucket];
+    const statusLabel = { needs_review: "pending", approved: "approved", skipped: "rejected", sent: "sent" }[bucket];
     const reminderHtml = showsApplicationReminder(group.jobs)
       ? `<div class="reminder"><strong>Apply first, then send this application note the same day or next day.</strong> Keep it brief: name the role and company, include one specific relevant proof, and don't ask for a call. No message is sent from this page.</div>`
       : "";
@@ -460,7 +462,7 @@
           <div class="draft-actions">
             <button data-action="save">Save</button>
             <button data-action="approve" class="primary">${action.replace ? "Use this draft instead" : "Approve &amp; next"}</button>
-            <button data-action="skip">Skip &amp; next</button>
+            <button data-action="skip">Reject &amp; next</button>
           </div>
           <div class="draft-hint">Blank lines between paragraphs are preserved. No message is sent from this page.</div>
         </div>`
@@ -478,6 +480,7 @@
         <h2>${esc(displayName)} ${badge(first?.degree)}</h2>
         <div class="company">${esc(primary.title || "—")}${primary.company ? ` · ${esc(primary.company)}` : ""}</div>
         ${primary.location ? `<div class="loc">${esc(primary.location)}</div>` : ""}
+        ${first?.profileUrl ? `<div class="loc"><a class="role-url" href="${esc(first.profileUrl)}" target="_blank" rel="noopener">Hiring profile ↗</a></div>` : ""}
         ${first?.headline ? `<div class="loc">${esc(first.headline)}</div>` : ""}
         ${facts ? `<div class="facts">${facts}</div>` : ""}
         <div><a class="open" href="${esc(primary.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
@@ -488,12 +491,13 @@
       ${summaryHtml}
       ${descHtml}
       ${benefitsHtml}
-      <div class="meta">ID <span class="mono">${esc(primary.id)}</span> · collected ${esc((primary.collectedAt || "").slice(0, 10))}</div>`;
+      ${(primary.evidenceGaps?.length ?? 0) ? `<div class="meta">Evidence gaps: ${primary.evidenceGaps.map(esc).join(", ")}</div>` : ""}
+      <div class="meta">ID <span class="mono">${esc(primary.id)}</span> · captured ${esc((primary.collectedAt || "").slice(0, 10))}</div>`;
   }
 
   function renderSummary() {
     const c = counts();
-    el("summary").textContent = `${SECTION_LABELS[state.section]} — ${c.needs_review} need review · ${c.approved} approved · ${c.skipped} skipped · ${c.sent} sent`;
+    el("summary").textContent = `${SECTION_LABELS[state.section]} — ${c.needs_review} pending · ${c.approved} approved · ${c.skipped} rejected · ${c.sent} sent`;
   }
 
   function renderAll() { renderSummary(); renderSections(); renderFilters(); renderList(); renderDetail(); }
@@ -560,14 +564,15 @@
   async function approve() {
     const jobId = currentPrimaryId();
     if (!jobId) return;
-    let saved;
+    let saved = null;
     try {
-      saved = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, { subject: subjVal(), message: bodyVal() });
+      if (bodyVal().trim()) {
+        saved = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, { subject: subjVal(), message: bodyVal() });
+        state.jobs = state.jobs.map((j) => (j.id === jobId ? saved : j));
+        refreshGroups();
+        renderAll();
+      }
     } catch (e) { flashError(e.message); return; }
-    // Reflect the save immediately so a later approval failure can't make the edit look lost.
-    state.jobs = state.jobs.map((j) => (j.id === jobId ? saved : j));
-    refreshGroups();
-    renderAll();
     try {
       await post(`/api/jobs/${encodeURIComponent(jobId)}/review`, { review: "approved" });
       await loadJobs();
@@ -606,7 +611,7 @@
       await loadJobs();
       advanceAfterAction();
       renderAll();
-      flash("Skipped");
+      flash("Rejected");
     } catch (e) { flashError(e.message); }
   }
 

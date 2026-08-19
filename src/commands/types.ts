@@ -104,12 +104,22 @@ export type JobsNormalizeInput = {
   readonly limit?: number;
 };
 
+export type JobsFilterInput = {
+  readonly stateDir: string;
+  readonly runId: string;
+  readonly terms: readonly string[];
+  readonly policyVersion: string;
+  readonly maxAgeDays?: number;
+};
+
 export type JobsEnrichInput = {
   readonly stateDir: string;
   readonly playwriterBin: string;
   readonly sessionId: PlaywriterSessionSelection;
   /** Max jobs to enrich this run (default: all captured). */
   readonly limit?: number;
+  /** Optional capture run scope; omitted preserves legacy behavior. */
+  readonly runId?: string;
 };
 
 export type JobsListInput = {
@@ -134,6 +144,7 @@ export type JobsDetailInput = {
   readonly sessionId: PlaywriterSessionSelection;
   /** Max jobs to detail this run (default: all collected missing detail). */
   readonly limit?: number;
+  readonly runId?: string;
 };
 
 export type JobsFavoriteInput = {
@@ -192,6 +203,7 @@ export interface CliOperations {
   jobsCaptureIngest(input: JobsCaptureIngestInput): Promise<unknown>;
   jobsCaptureFinish(input: JobsCaptureFinishInput): Promise<unknown>;
   jobsNormalize(input: JobsNormalizeInput): Promise<unknown>;
+  jobsFilter(input: JobsFilterInput): Promise<unknown>;
   jobsEnrich(input: JobsEnrichInput): Promise<unknown>;
   jobsDetail(input: JobsDetailInput): Promise<unknown>;
   jobsList(input: JobsListInput): Promise<unknown>;
@@ -273,6 +285,7 @@ export type ParsedInvocation =
       readonly command: "jobs normalize";
       readonly input: JobsNormalizeInput;
     }
+  | { readonly kind: "command"; readonly command: "jobs filter"; readonly input: JobsFilterInput }
   | { readonly kind: "command"; readonly command: "jobs enrich"; readonly input: JobsEnrichInput }
   | { readonly kind: "command"; readonly command: "jobs detail"; readonly input: JobsDetailInput }
   | { readonly kind: "command"; readonly command: "jobs list"; readonly input: JobsListInput }

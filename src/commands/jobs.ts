@@ -9,6 +9,7 @@ import {
   buildDetailScript,
   buildEnrichPoolScript,
   buildSendScript,
+  filterRun,
   JobsEngine,
   JobsNormalizer,
   recipientProfileUrl,
@@ -28,6 +29,7 @@ import type {
   JobsDraftInput,
   JobsEnrichInput,
   JobsFavoriteInput,
+  JobsFilterInput,
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
@@ -150,6 +152,24 @@ export async function jobsNormalize(
   }
 }
 
+export async function jobsFilter(
+  input: JobsFilterInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return filterRun(opened.database, {
+      runId: input.runId,
+      terms: input.terms,
+      policyVersion: input.policyVersion,
+      ...(input.maxAgeDays === undefined ? {} : { maxAgeDays: input.maxAgeDays }),
+      now: (dependencies.now ?? nowDefault)(),
+    });
+  } finally {
+    opened.database.close();
+  }
+}
+
 export async function jobsEnrich(
   input: JobsEnrichInput,
   dependencies: JobsDependencies = defaultDependencies,
@@ -194,6 +214,9 @@ export async function jobsEnrich(
       return new JobsEngine(opened.database).listJobs({
         status: "captured",
         withHiringTeam: false,
+        ...(input.runId === undefined
+          ? {}
+          : { fit: "kept" as const, jobIds: runJobIds(opened.database, input.runId) }),
       });
     } finally {
       opened.database.close();
@@ -299,7 +322,13 @@ export async function jobsDetail(
   const pendingRows = (): JobRow[] => {
     const opened = openDatabase(dbPath);
     try {
-      return new JobsEngine(opened.database).listJobs({ withHiringTeam: true, needsDetail: true });
+      return new JobsEngine(opened.database).listJobs({
+        withHiringTeam: true,
+        needsDetail: true,
+        ...(input.runId === undefined
+          ? {}
+          : { fit: "kept" as const, jobIds: runJobIds(opened.database, input.runId) }),
+      });
     } finally {
       opened.database.close();
     }
@@ -353,6 +382,15 @@ export async function jobsDetail(
   }
   const remaining = pendingRows().length;
   return { command: "jobs detail", detailed, remaining };
+}
+
+function runJobIds(database: import("bun:sqlite").Database, runId: string): string[] {
+  return database
+    .query<{ job_id: string }, [string]>(
+      "SELECT DISTINCT job_id FROM job_observations WHERE run_id = ? ORDER BY job_id",
+    )
+    .all(runId)
+    .map((row) => row.job_id);
 }
 
 function isSessionFailure(error: unknown): boolean {
