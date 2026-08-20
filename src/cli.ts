@@ -176,6 +176,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsHubSpotNext(invocation.input);
     case "jobs hubspot-record":
       return operations.jobsHubSpotRecord(invocation.input);
+    case "jobs instantly-next":
+      return operations.jobsInstantlyNext(invocation.input);
+    case "jobs instantly-record":
+      return operations.jobsInstantlyRecord(invocation.input);
   }
 }
 

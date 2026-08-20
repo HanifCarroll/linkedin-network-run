@@ -848,6 +848,24 @@ const migrations: readonly Migration[] = [
         ON jobs_chrome_send_receipts(job_id) WHERE state IN ('prepared', 'possible');
     `,
   },
+  {
+    id: 25,
+    name: "jobs_instantly_handoffs",
+    sql: `
+      CREATE TABLE instantly_handoffs (
+        prospect_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        email TEXT,
+        no_email INTEGER NOT NULL DEFAULT 0 CHECK(no_email IN (0, 1)),
+        campaign_enrollment_id TEXT,
+        stop_reply_status TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {

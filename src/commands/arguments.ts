@@ -23,6 +23,8 @@ import type {
   JobsFavoriteInput,
   JobsHubSpotNextInput,
   JobsHubSpotRecordInput,
+  JobsInstantlyNextInput,
+  JobsInstantlyRecordInput,
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
@@ -83,6 +85,8 @@ Commands:
   jobs triage-record     Store an agent triage result before human review
   jobs hubspot-next      Prepare or resume one approved prospect for HubSpot
   jobs hubspot-record    Record HubSpot object and association receipts locally
+  jobs instantly-next    Prepare an approved HubSpot-ready prospect for Instantly
+  jobs instantly-record  Record an Instantly API receipt from JSON
 
 Browser boundary:
   LinkedIn Jobs capture, enrichment, and outreach use caller-owned Codex Chrome handoff helpers;
@@ -285,6 +289,9 @@ jobs classify stores the two brief review phrases for a posting: --work-focus
 platform it is built around), plus two longer summaries: --work-summary (what
 you'd do) and --product-summary (what you'd build). All four are required,
 trimmed, and length-bounded (phrases 80 chars, summaries 320 chars).
+jobs instantly-next returns a deterministic, read-only official Instantly API v2 packet. The agent
+must record exactly one SuperSearch work email or an explicit no-email outcome; ambiguous email blocks.
+Campaign cadence and stop-on-reply remain owned by the selected Instantly campaign.
 jobs hubspot-next returns one deterministic, lookup-before-create packet for an
 approved kept person. An agent performs the packet through the official HubSpot
 connection, then records each returned ID with jobs hubspot-record. The local
@@ -799,6 +806,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "triage-record",
         "hubspot-next",
         "hubspot-record",
+        "instantly-next",
+        "instantly-record",
       ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
@@ -916,6 +925,28 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
       };
       return { kind: "command", command: "jobs hubspot-next", input };
+    }
+    if (verb === "instantly-next") {
+      const options = parseOptions(argv.slice(2), { "--id": "value", "--state-dir": "value" });
+      const id = options.values.get("--id");
+      const input: JobsInstantlyNextInput = {
+        stateDir: stateDir(options, context),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs instantly-next", input };
+    }
+    if (verb === "instantly-record") {
+      const options = parseOptions(argv.slice(2), {
+        "--prospect-id": "value",
+        "--payload": "value",
+        "--state-dir": "value",
+      });
+      const input: JobsInstantlyRecordInput = {
+        stateDir: stateDir(options, context),
+        prospectId: boundedText(required(options, "--prospect-id"), "--prospect-id", 120),
+        payloadPath: required(options, "--payload"),
+      };
+      return { kind: "command", command: "jobs instantly-record", input };
     }
     if (verb === "hubspot-record") {
       const options = parseOptions(argv.slice(2), {

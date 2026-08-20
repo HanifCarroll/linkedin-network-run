@@ -294,6 +294,16 @@ agent searches HubSpot using the packet's stable keys before creating anything. 
 no-ops, conflicting IDs stop the import, and completion requires company, contact, deal, task, and
 association receipts. This stage creates a task only; it never sends outreach.
 
+### Instantly email handoff
+
+`jobs instantly-next` emits a read-only official Instantly API v2 packet only for an approved,
+kept contract-outreach prospect whose HubSpot receipt is complete. An authorized agent performs
+SuperSearch work-email enrichment, records either exactly one work email or explicit no-email,
+enrolls the email in the approved campaign, and records enrollment plus stop/reply status with
+`jobs instantly-record`. Ambiguous email blocks. No Instantly call, credential, email send, local
+scheduler, or live-state mutation is performed by this CLI; campaign cadence and stop-on-reply
+remain Instantly-owned. See `docs/jobs-instantly.md`.
+
 `jobs applied --id JOB_ID [--application-url URL] [--applied-at ISO]` records the application
 checkpoint for application-followup jobs (the timestamp defaults to now).
 

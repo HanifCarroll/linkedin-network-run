@@ -21,6 +21,7 @@ import type { JobRow } from "../src/jobs/index.ts";
 import {
   filterRun,
   HubSpotImportEngine,
+  InstantlyHandoffEngine,
   JobsEngine,
   JobsNormalizer,
   normalizeProfileUrl,
@@ -1264,6 +1265,42 @@ try {
       if (complete.completedAt === null || !complete.associationsComplete) {
         throw new Error("HubSpot import did not complete after all receipts");
       }
+    } finally {
+      opened.database.close();
+    }
+  }
+
+  // Bounded temp-state check: Instantly handoff is gated by approval and complete HubSpot receipt;
+  // recording an ambiguous email fails closed and a single email receipt is durable.
+  {
+    const opened = openDatabase(join(root, "hubspot.db"));
+    try {
+      opened.database.prepare("UPDATE jobs SET review = 'approved' WHERE id = 'hubspot-job'").run();
+      const engine = new InstantlyHandoffEngine(opened.database);
+      const first = engine.next("hubspot-job", "2026-08-03T10:08:00Z");
+      if (first === null || !JSON.stringify(first).includes("/api/v2/supersearch-enrichment"))
+        throw new Error("Instantly packet missing SuperSearch");
+      const prospectId = (first as { prospect: { prospectId: string } }).prospect.prospectId;
+      let ambiguous = false;
+      try {
+        engine.record(
+          { prospectId, email: "one@example.com", noEmail: true },
+          "2026-08-03T10:09:00Z",
+        );
+      } catch (error) {
+        ambiguous = error instanceof CliError && error.code === "INSTANTLY_AMBIGUOUS_EMAIL";
+      }
+      if (!ambiguous) throw new Error("Instantly ambiguous email was accepted");
+      const receipt = engine.record(
+        {
+          prospectId,
+          email: "one@example.com",
+          campaignEnrollmentId: "enroll-1",
+          stopReplyStatus: "active",
+        },
+        "2026-08-03T10:10:00Z",
+      );
+      if (receipt.completedAt === null) throw new Error("Instantly receipt did not complete");
     } finally {
       opened.database.close();
     }
@@ -2991,6 +3028,17 @@ try {
         throw new Error("hubspot-record did not parse receipts");
       }
       calls.push("jobs hubspot-record");
+      return { complete: false };
+    },
+    jobsInstantlyNext: async (input) => {
+      if (input.id !== "111") throw new Error("instantly-next did not parse --id");
+      calls.push("jobs instantly-next");
+      return { found: false };
+    },
+    jobsInstantlyRecord: async (input) => {
+      if (input.prospectId !== "co:instantly:v1:x")
+        throw new Error("instantly-record did not parse prospect");
+      calls.push("jobs instantly-record");
       return { complete: false };
     },
   };

@@ -14,6 +14,7 @@ import {
   JobsNormalizer,
   runJobsScript,
 } from "../jobs/index.ts";
+import { InstantlyHandoffEngine } from "../jobs/instantly.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
 import type { JobEnrichment, JobEnrichmentResponse, JobRow } from "../jobs/types.ts";
 import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
@@ -35,6 +36,8 @@ import type {
   JobsFilterInput,
   JobsHubSpotNextInput,
   JobsHubSpotRecordInput,
+  JobsInstantlyNextInput,
+  JobsInstantlyRecordInput,
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
@@ -743,6 +746,76 @@ export async function jobsHubSpotNext(
   try {
     const packet = new HubSpotImportEngine(opened.database).next(input.id, now());
     return { command: "jobs hubspot-next", found: packet !== null, packet };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsInstantlyNext(
+  input: JobsInstantlyNextInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const packet = new InstantlyHandoffEngine(opened.database).next(
+      input.id,
+      (dependencies.now ?? nowDefault)(),
+    );
+    return { command: "jobs instantly-next", found: packet !== null, packet };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsInstantlyRecord(
+  input: JobsInstantlyRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8"),
+    );
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", "Instantly receipt payload must be valid JSON", {
+      exitCode: 2,
+    });
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload))
+    throw new CliError("INVALID_ARGUMENT", "Instantly receipt payload must be an object", {
+      exitCode: 2,
+    });
+  const p = payload as Record<string, unknown>;
+  const emails = p.emails;
+  if (
+    emails !== undefined &&
+    (!Array.isArray(emails) || emails.length !== 1 || typeof emails[0] !== "string")
+  )
+    throw new CliError("INSTANTLY_AMBIGUOUS_EMAIL", "receipt must contain zero or one work email", {
+      exitCode: 2,
+    });
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return {
+      command: "jobs instantly-record",
+      receipt: new InstantlyHandoffEngine(opened.database).record(
+        {
+          prospectId: input.prospectId,
+          ...(typeof p.email === "string"
+            ? { email: p.email }
+            : Array.isArray(emails)
+              ? { email: emails[0] as string }
+              : {}),
+          ...(p.noEmail === true ? { noEmail: true as const } : {}),
+          ...(typeof p.campaignEnrollmentId === "string"
+            ? { campaignEnrollmentId: p.campaignEnrollmentId }
+            : {}),
+          ...(typeof p.stopReplyStatus === "string" ? { stopReplyStatus: p.stopReplyStatus } : {}),
+          ...(typeof p.error === "string" ? { error: p.error } : {}),
+        },
+        (dependencies.now ?? nowDefault)(),
+      ),
+    };
   } finally {
     opened.database.close();
   }

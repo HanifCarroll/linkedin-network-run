@@ -10,6 +10,8 @@ export {
   prospectIdForProfile,
 } from "./hubspot.ts";
 export type { HubSpotImportReceipt, HubSpotRecordInput } from "./hubspot.ts";
+export { InstantlyHandoffEngine, prospectIdForJob } from "./instantly.ts";
+export type { InstantlyReceiptInput } from "./instantly.ts";
 export type { JobsScriptOutcome } from "./playwriter.ts";
 export { runJobsScript } from "./playwriter.ts";
 export { prepareChromeSend, recordChromeSend } from "./chrome-send.ts";

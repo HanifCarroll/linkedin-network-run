@@ -209,6 +209,13 @@ export type JobsHubSpotNextInput = {
   readonly id?: string;
 };
 
+export type JobsInstantlyNextInput = { readonly stateDir: string; readonly id?: string };
+export type JobsInstantlyRecordInput = {
+  readonly stateDir: string;
+  readonly prospectId: string;
+  readonly payloadPath: string;
+};
+
 export type JobsHubSpotRecordInput = {
   readonly stateDir: string;
   readonly prospectId: string;
@@ -260,6 +267,8 @@ export interface CliOperations {
   jobsTriageNext(input: JobsTriageNextInput): Promise<unknown>;
   jobsTriageRecord(input: JobsTriageRecordInput): Promise<unknown>;
   jobsHubSpotRecord(input: JobsHubSpotRecordInput): Promise<unknown>;
+  jobsInstantlyNext(input: JobsInstantlyNextInput): Promise<unknown>;
+  jobsInstantlyRecord(input: JobsInstantlyRecordInput): Promise<unknown>;
 }
 
 export type ParsedInvocation =
@@ -444,4 +453,14 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "jobs hubspot-record";
       readonly input: JobsHubSpotRecordInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs instantly-next";
+      readonly input: JobsInstantlyNextInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs instantly-record";
+      readonly input: JobsInstantlyRecordInput;
     };
