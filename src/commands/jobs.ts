@@ -762,6 +762,7 @@ export async function jobsInstantlyNext(
   try {
     const packet = new InstantlyHandoffEngine(opened.database).next(
       input.id,
+      input.campaignId,
       (dependencies.now ?? nowDefault)(),
     );
     return { command: "jobs instantly-next", found: packet !== null, packet };
@@ -810,10 +811,12 @@ export async function jobsInstantlyRecord(
               ? { email: emails[0] as string }
               : {}),
           ...(p.noEmail === true ? { noEmail: true as const } : {}),
-          ...(typeof p.campaignEnrollmentId === "string"
-            ? { campaignEnrollmentId: p.campaignEnrollmentId }
+          ...(typeof p.campaignId === "string" ? { campaignId: p.campaignId } : {}),
+          ...(typeof p.leadId === "string" ? { leadId: p.leadId } : {}),
+          ...(typeof p.enrichmentId === "string" ? { enrichmentId: p.enrichmentId } : {}),
+          ...(typeof p.campaignStopOnReply === "boolean"
+            ? { campaignStopOnReply: p.campaignStopOnReply }
             : {}),
-          ...(typeof p.stopReplyStatus === "string" ? { stopReplyStatus: p.stopReplyStatus } : {}),
           ...(typeof p.error === "string" ? { error: p.error } : {}),
         },
         (dependencies.now ?? nowDefault)(),

@@ -1278,9 +1278,16 @@ try {
     try {
       opened.database.prepare("UPDATE jobs SET review = 'approved' WHERE id = 'hubspot-job'").run();
       const engine = new InstantlyHandoffEngine(opened.database);
-      const first = engine.next("hubspot-job", "2026-08-03T10:08:00Z");
-      if (first === null || !JSON.stringify(first).includes("/api/v2/supersearch-enrichment"))
-        throw new Error("Instantly packet missing SuperSearch");
+      const first = engine.next("hubspot-job", "campaign-1", "2026-08-03T10:08:00Z");
+      const packetJson = JSON.stringify(first);
+      if (
+        first === null ||
+        !packetJson.includes("/api/v2/campaigns/campaign-1") ||
+        !packetJson.includes("/api/v2/supersearch-enrichment") ||
+        !packetJson.includes("/api/v2/leads") ||
+        packetJson.includes("/api/v2/emails")
+      )
+        throw new Error("Instantly packet API contract failed");
       const prospectId = (first as { prospect: { prospectId: string } }).prospect.prospectId;
       let ambiguous = false;
       try {
@@ -1292,12 +1299,13 @@ try {
         ambiguous = error instanceof CliError && error.code === "INSTANTLY_AMBIGUOUS_EMAIL";
       }
       if (!ambiguous) throw new Error("Instantly ambiguous email was accepted");
+      engine.record({ prospectId, enrichmentId: "enrich-1" }, "2026-08-03T10:09:30Z");
       const receipt = engine.record(
         {
           prospectId,
           email: "one@example.com",
-          campaignEnrollmentId: "enroll-1",
-          stopReplyStatus: "active",
+          leadId: "lead-1",
+          campaignStopOnReply: true,
         },
         "2026-08-03T10:10:00Z",
       );

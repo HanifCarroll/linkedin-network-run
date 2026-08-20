@@ -298,9 +298,11 @@ association receipts. This stage creates a task only; it never sends outreach.
 
 `jobs instantly-next` emits a read-only official Instantly API v2 packet only for an approved,
 kept contract-outreach prospect whose HubSpot receipt is complete. An authorized agent performs
-SuperSearch work-email enrichment, records either exactly one work email or explicit no-email,
-enrolls the email in the approved campaign, and records enrollment plus stop/reply status with
-`jobs instantly-record`. Ambiguous email blocks. No Instantly call, credential, email send, local
+first verifies `GET /api/v2/campaigns/{id}` returns `stop_on_reply:true`, then performs
+SuperSearch work-email enrichment, records its async enrichment receipt, and accepts either exactly
+one work email or explicit no-email. It enrolls the email with `POST /api/v2/leads` and records
+explicit campaign, lead/enrichment, and `campaignStopOnReply:true` fields with `jobs instantly-record`.
+Ambiguous email blocks. No Instantly call, credential, email send, local
 scheduler, or live-state mutation is performed by this CLI; campaign cadence and stop-on-reply
 remain Instantly-owned. See `docs/jobs-instantly.md`.
 

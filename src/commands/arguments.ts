@@ -241,6 +241,9 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs hubspot-record --prospect-id ID
     [--company-id ID] [--contact-id ID] [--deal-id ID] [--task-id ID]
     [--associations-complete | --error TEXT] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs instantly-next --campaign-id CAMPAIGN_ID [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs instantly-record --prospect-id ID --payload -|ABSOLUTE_PATH
 
 jobs capture-start records source/search metadata for a run. Use the
 importable scripts/linkedin-jobs-chrome-helper.mjs from the Codex Chrome
@@ -299,8 +302,9 @@ platform it is built around), plus two longer summaries: --work-summary (what
 you'd do) and --product-summary (what you'd build). All four are required,
 trimmed, and length-bounded (phrases 80 chars, summaries 320 chars).
 jobs instantly-next returns a deterministic, read-only official Instantly API v2 packet. The agent
-must record exactly one SuperSearch work email or an explicit no-email outcome; ambiguous email blocks.
-Campaign cadence and stop-on-reply remain owned by the selected Instantly campaign.
+must verify the campaign with GET /api/v2/campaigns/{id}, require stop_on_reply=true, and record
+an async SuperSearch receipt followed by exactly one work email or an explicit no-email outcome.
+Ambiguous email blocks. Campaign cadence and stop-on-reply remain owned by Instantly.
 jobs hubspot-next returns one deterministic, lookup-before-create packet for an
 approved kept person. An agent performs the packet through the official HubSpot
 connection, then records each returned ID with jobs hubspot-record. The local
@@ -938,10 +942,15 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       return { kind: "command", command: "jobs hubspot-next", input };
     }
     if (verb === "instantly-next") {
-      const options = parseOptions(argv.slice(2), { "--id": "value", "--state-dir": "value" });
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--campaign-id": "value",
+        "--state-dir": "value",
+      });
       const id = options.values.get("--id");
       const input: JobsInstantlyNextInput = {
         stateDir: stateDir(options, context),
+        campaignId: boundedText(required(options, "--campaign-id"), "--campaign-id", 200),
         ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
       };
       return { kind: "command", command: "jobs instantly-next", input };

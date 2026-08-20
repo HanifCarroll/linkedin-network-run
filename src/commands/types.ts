@@ -218,7 +218,11 @@ export type JobsHubSpotNextInput = {
   readonly id?: string;
 };
 
-export type JobsInstantlyNextInput = { readonly stateDir: string; readonly id?: string };
+export type JobsInstantlyNextInput = {
+  readonly stateDir: string;
+  readonly campaignId: string;
+  readonly id?: string;
+};
 export type JobsInstantlyRecordInput = {
   readonly stateDir: string;
   readonly prospectId: string;

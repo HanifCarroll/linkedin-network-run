@@ -868,6 +868,33 @@ const migrations: readonly Migration[] = [
   },
   {
     id: 26,
+    name: "jobs_instantly_api_v2_receipts",
+    sql: `
+      ALTER TABLE instantly_handoffs RENAME TO instantly_handoffs_legacy;
+      CREATE TABLE instantly_handoffs (
+        prospect_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        campaign_id TEXT,
+        email TEXT,
+        no_email INTEGER NOT NULL DEFAULT 0 CHECK(no_email IN (0, 1)),
+        lead_id TEXT,
+        enrichment_id TEXT,
+        campaign_stop_on_reply INTEGER NOT NULL DEFAULT 0 CHECK(campaign_stop_on_reply IN (0, 1)),
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO instantly_handoffs
+        (prospect_id, job_id, email, no_email, last_error, created_at, updated_at, completed_at)
+      SELECT prospect_id, job_id, email, no_email, last_error, created_at, updated_at,
+        CASE WHEN no_email = 1 THEN completed_at ELSE NULL END
+      FROM instantly_handoffs_legacy;
+      DROP TABLE instantly_handoffs_legacy;
+    `,
+  },
+  {
+    id: 27,
     name: "jobs_contract_outreach_receipts",
     sql: `
       CREATE TABLE jobs_contract_outreach_receipts (

@@ -10,8 +10,10 @@ export type InstantlyReceiptInput = {
   readonly prospectId: string;
   readonly email?: string;
   readonly noEmail?: true;
-  readonly campaignEnrollmentId?: string;
-  readonly stopReplyStatus?: string;
+  readonly campaignId?: string;
+  readonly leadId?: string;
+  readonly enrichmentId?: string;
+  readonly campaignStopOnReply?: boolean;
   readonly error?: string;
 };
 
@@ -20,8 +22,10 @@ type ReceiptRow = {
   job_id: string;
   email: string | null;
   no_email: number;
-  campaign_enrollment_id: string | null;
-  stop_reply_status: string | null;
+  campaign_id: string | null;
+  lead_id: string | null;
+  enrichment_id: string | null;
+  campaign_stop_on_reply: number;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -34,7 +38,7 @@ export class InstantlyHandoffEngine {
     this.jobs = new JobsEngine(database);
   }
 
-  next(jobId: string | undefined, now: string): Record<string, unknown> | null {
+  next(jobId: string | undefined, campaignId: string, now: string): Record<string, unknown> | null {
     const existing =
       jobId === undefined
         ? this.database
@@ -45,6 +49,20 @@ export class InstantlyHandoffEngine {
         : (this.database
             .prepare("SELECT * FROM instantly_handoffs WHERE prospect_id = ? OR job_id = ? LIMIT 1")
             .get(jobId, jobId) as ReceiptRow | null);
+    if (existing !== null && existing.campaign_id !== null && existing.campaign_id !== campaignId)
+      throw new CliError(
+        "INSTANTLY_CAMPAIGN_CONFLICT",
+        "campaign ID conflicts with the existing handoff",
+        { exitCode: 2 },
+      );
+    if (existing !== null && existing.campaign_id === null) {
+      this.database
+        .prepare(
+          "UPDATE instantly_handoffs SET campaign_id = ?, updated_at = ? WHERE prospect_id = ?",
+        )
+        .run(campaignId, now, existing.prospect_id);
+      existing.campaign_id = campaignId;
+    }
     const job = existing ? this.jobs.requireJob(existing.job_id) : this.candidate(jobId);
     if (job === null) return null;
     assertEligible(this.database, job);
@@ -57,16 +75,24 @@ export class InstantlyHandoffEngine {
     if (receipt === null) {
       this.database
         .prepare(
-          "INSERT INTO instantly_handoffs (prospect_id, job_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          "INSERT INTO instantly_handoffs (prospect_id, job_id, campaign_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         )
-        .run(prospectId, job.id, now, now);
+        .run(prospectId, job.id, campaignId, now, now);
       receipt = this.require(prospectId);
     }
+    if (receipt.campaign_id === null)
+      throw new CliError("INSTANTLY_CAMPAIGN_REQUIRED", "an approved campaign ID is required", {
+        exitCode: 2,
+      });
     return packet(job, rowToReceipt(receipt));
   }
 
   record(input: InstantlyReceiptInput, now: string): Record<string, unknown> {
     const current = this.require(input.prospectId);
+    if (input.campaignId !== undefined && input.campaignId !== current.campaign_id)
+      throw new CliError("INSTANTLY_CAMPAIGN_CONFLICT", "campaign ID conflicts with the handoff", {
+        exitCode: 2,
+      });
     if (current.completed_at !== null)
       throw new CliError(
         "INSTANTLY_HANDOFF_COMPLETE",
@@ -77,10 +103,15 @@ export class InstantlyHandoffEngine {
       throw new CliError("INSTANTLY_AMBIGUOUS_EMAIL", "email and no-email conflict", {
         exitCode: 2,
       });
-    if (input.email === undefined && input.noEmail !== true && input.error === undefined)
+    if (
+      input.email === undefined &&
+      input.noEmail !== true &&
+      input.error === undefined &&
+      input.enrichmentId === undefined
+    )
       throw new CliError(
         "INSTANTLY_EMAIL_REQUIRED",
-        "record exactly one work email, --no-email, or --error",
+        "record one work email, --no-email, enrichment receipt, or --error",
         { exitCode: 2 },
       );
     if (input.email !== undefined && !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(input.email))
@@ -89,21 +120,32 @@ export class InstantlyHandoffEngine {
       });
     const email = input.email ?? current.email;
     const noEmail = input.noEmail === true || current.no_email === 1;
-    const enrollment = input.campaignEnrollmentId ?? current.campaign_enrollment_id;
-    const status = input.stopReplyStatus ?? current.stop_reply_status;
+    if (input.campaignStopOnReply === false)
+      throw new CliError(
+        "INSTANTLY_STOP_ON_REPLY_REQUIRED",
+        "campaign stop_on_reply must be true",
+        { exitCode: 2 },
+      );
+    const leadId = input.leadId ?? current.lead_id;
+    const enrichmentId = input.enrichmentId ?? current.enrichment_id;
+    const campaignStopOnReply =
+      input.campaignStopOnReply === true || current.campaign_stop_on_reply === 1;
     const error =
       input.error ??
-      (input.email !== undefined || input.noEmail === true ? null : current.last_error);
-    const complete = noEmail || (email !== null && enrollment !== null && status !== null);
+      (input.email !== undefined || input.noEmail === true || input.enrichmentId !== undefined
+        ? null
+        : current.last_error);
+    const complete = noEmail || (email !== null && leadId !== null && campaignStopOnReply);
     this.database
       .prepare(
-        `UPDATE instantly_handoffs SET email=?, no_email=?, campaign_enrollment_id=?, stop_reply_status=?, last_error=?, updated_at=?, completed_at=? WHERE prospect_id=?`,
+        `UPDATE instantly_handoffs SET email=?, no_email=?, lead_id=?, enrichment_id=?, campaign_stop_on_reply=?, last_error=?, updated_at=?, completed_at=? WHERE prospect_id=?`,
       )
       .run(
         email,
         noEmail ? 1 : 0,
-        enrollment,
-        status,
+        leadId,
+        enrichmentId,
+        campaignStopOnReply ? 1 : 0,
         error,
         now,
         complete ? (current.completed_at ?? now) : null,
@@ -190,8 +232,10 @@ function rowToReceipt(row: ReceiptRow): Record<string, unknown> {
     jobId: row.job_id,
     email: row.email,
     noEmail: row.no_email === 1,
-    campaignEnrollmentId: row.campaign_enrollment_id,
-    stopReplyStatus: row.stop_reply_status,
+    campaignId: row.campaign_id,
+    leadId: row.lead_id,
+    enrichmentId: row.enrichment_id,
+    campaignStopOnReply: row.campaign_stop_on_reply === 1,
     lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -220,32 +264,42 @@ function packet(job: JobRow, receipt: Record<string, unknown>): Record<string, u
     receipt,
     instantly: {
       apiVersion: "v2",
+      campaignId: receipt.campaignId,
       cadence: "use the selected campaign's existing cadence",
-      stopOnReply: "verify campaign stop_on_reply=true; do not create local follow-ups",
+      stopOnReply: "campaign GET must return stop_on_reply=true; otherwise block",
       steps: [
+        {
+          method: "GET",
+          path: `/api/v2/campaigns/${receipt.campaignId}`,
+          result:
+            "require stop_on_reply=true before any lead operation; record campaignStopOnReply=true",
+        },
         {
           method: "POST",
           path: "/api/v2/supersearch-enrichment/enrich-leads-from-supersearch",
           body: {
+            search_filters: { name: [person.name], company_name: { include: [job.company] } },
+            limit: 1,
             work_email_enrichment: true,
-            skip_rows_without_email: false,
-            search_filters: { company: [job.company], linkedin_url: [recipientProfileUrl(job)] },
+            list_name: receipt.prospectId,
           },
-          result: "record exactly one work email or explicit no-email; ambiguous results block",
+          result:
+            "record the async enrichment/list receipt as enrichmentId; it is not an email result",
         },
         {
           method: "POST",
-          path: "/api/v2/leads/add",
+          path: "/api/v2/leads",
           body: {
-            campaign_id: "<approved-campaign-id>",
-            leads: [{ email: "<recorded-work-email>" }],
+            campaign: receipt.campaignId,
+            email: "<recorded-work-email>",
+            first_name: "<first-name>",
+            last_name: "<last-name>",
+            company_name: job.company,
+            job_title: person.headline,
+            skip_if_in_workspace: true,
+            skip_if_in_campaign: true,
           },
-          result: "record campaign enrollment ID",
-        },
-        {
-          method: "GET",
-          path: "/api/v2/emails",
-          result: "record stop/reply status and preserve campaign cadence",
+          result: "record leadId; preserve the campaign cadence and stop-on-reply behavior",
         },
       ],
     },
