@@ -20,6 +20,7 @@ import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
+  JobsApplicationNextInput,
   JobsAppliedInput,
   JobsCaptureFinishInput,
   JobsCaptureIngestInput,
@@ -607,6 +608,20 @@ export async function jobsApplied(
       (dependencies.now ?? nowDefault)(),
     );
     return { command: "jobs applied", job };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsApplicationNext(input: JobsApplicationNextInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const result = new JobsEngine(opened.database).applicationNext(input.id);
+    return {
+      command: "jobs application-next",
+      found: result.packet !== null,
+      ...(result.packet === null ? {} : { packet: result.packet }),
+    };
   } finally {
     opened.database.close();
   }

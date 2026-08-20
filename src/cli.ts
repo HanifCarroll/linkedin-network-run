@@ -158,6 +158,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsDraft(invocation.input);
     case "jobs draft-next":
       return operations.jobsDraftNext(invocation.input);
+    case "jobs application-next":
+      return operations.jobsApplicationNext(invocation.input);
     case "jobs applied":
       return operations.jobsApplied(invocation.input);
     case "jobs send-prepare":

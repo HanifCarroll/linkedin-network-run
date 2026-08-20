@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
 import { parseInvocation } from "../src/commands/arguments.ts";
 import {
+  jobsApplicationNext,
   jobsDraftNext,
   jobsEnrichNext,
   jobsEnrichRecord,
@@ -2752,9 +2753,30 @@ try {
     );
     db.database
       .prepare(
-        "UPDATE jobs SET fit='kept', review='approved', triage_bucket='strong', description='Build a billing dashboard', employment_type=CASE WHEN id IN ('applied','blocked','blocked-2') THEN 'Contract' ELSE employment_type END, skill_matches_json=? WHERE id IN ('direct','applied','blocked','blocked-2')",
+        "UPDATE jobs SET fit='kept', review='approved', triage_bucket='strong', description='Build a billing dashboard', employment_type=CASE WHEN id IN ('applied','blocked','blocked-2') THEN 'Contract' ELSE employment_type END, external_application_url=CASE WHEN id IN ('applied','blocked','blocked-2') THEN 'https://example.test/apply' ELSE external_application_url END, skill_matches_json=? WHERE id IN ('direct','applied','blocked','blocked-2')",
       )
       .run(JSON.stringify(["billing dashboards"]));
+    const application = await jobsApplicationNext({ stateDir, id: "applied" });
+    if (
+      (
+        application as {
+          packet: {
+            job: { applicationUrl: string | null };
+            checkpoint: { required: boolean };
+            stopPoints: string[];
+          };
+        }
+      ).packet.job.applicationUrl !== "https://example.test/apply" ||
+      !(application as { packet: { checkpoint: { required: boolean } } }).packet.checkpoint
+        .required ||
+      (application as { packet: { stopPoints: string[] } }).packet.stopPoints.length !== 4
+    )
+      throw new Error("application-next packet failed");
+    const beforeCheckpoint = db.database
+      .query("SELECT applied_at FROM jobs WHERE id='applied'")
+      .get() as { applied_at: string | null };
+    if (beforeCheckpoint.applied_at !== null)
+      throw new Error("application handoff mutated checkpoint");
     engine.recordApplied(
       "applied",
       "https://example.test/apply",
@@ -2926,6 +2948,11 @@ try {
       calls.push("jobs draft-next");
       return { found: false, blockedApplications: 0 };
     },
+    jobsApplicationNext: async (input) => {
+      if (input.id !== "111") throw new Error("jobs application-next did not parse --id");
+      calls.push("jobs application-next");
+      return { found: false };
+    },
     jobsApplied: async (input) => {
       if (input.id !== "111" || input.applicationUrl !== "https://example.com/apply") {
         throw new Error("jobs applied did not parse checkpoint");
@@ -3086,6 +3113,7 @@ try {
       "Salesforce CPQ",
     ],
     ["--json", "jobs", "draft-next", "--id", "111"],
+    ["--json", "jobs", "application-next", "--id", "111"],
     ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
     ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
     ["--json", "jobs", "send-prepare", "--allow-send", "--id", "111"],

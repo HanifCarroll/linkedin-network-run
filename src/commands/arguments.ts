@@ -9,6 +9,7 @@ import {
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsApplicationNextInput,
   JobsAppliedInput,
   JobsCaptureFinishInput,
   JobsCaptureIngestInput,
@@ -213,6 +214,7 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--subject "..."]
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs application-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs applied --id JOB_ID [--application-url URL]
     [--applied-at ISO] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send-prepare --allow-send [--id JOB_ID]
@@ -258,6 +260,7 @@ several postings list the same person, draft the best-fitting role; sibling
 roles are context and at most one approved/sent message per person holds. The
 local review queue (bun run
 view) is where drafts are reviewed and approved or skipped.
+jobs application-next emits one approved contract/application-followup handoff for caller-owned browser work. It is read-only: no form filling, uploads, assessments, compensation/legal answers, or submission. Stop on unknown questions and before submit; after a successful external ATS submission, record the durable checkpoint with jobs applied.
 jobs applied records the application date and optional application URL for a
 contract/application-follow-up role. These roles cannot enter send eligibility
 until that checkpoint exists. Full-time/direct roles reject jobs applied and
@@ -783,6 +786,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "enrich-record",
         "list",
         "draft-next",
+        "application-next",
         "check",
         "favorite",
         "draft",
@@ -828,6 +832,15 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
           : { applicationUrl: boundedText(applicationUrl, "--application-url", 2000) }),
       };
       return { kind: "command", command: "jobs applied", input };
+    }
+    if (verb === "application-next") {
+      const options = parseOptions(argv.slice(2), { "--id": "value", "--state-dir": "value" });
+      const id = options.values.get("--id");
+      const input: JobsApplicationNextInput = {
+        stateDir: stateDir(options, context),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs application-next", input };
     }
     if (verb === "triage-next") {
       const options = parseOptions(argv.slice(2), { "--run-id": "value", "--state-dir": "value" });

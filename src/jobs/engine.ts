@@ -734,6 +734,86 @@ export class JobsEngine {
     return { packet: null, blockedApplications };
   }
 
+  applicationNext(id?: string): {
+    readonly packet: {
+      readonly job: {
+        readonly id: string;
+        readonly title: string;
+        readonly company: string;
+        readonly postingUrl: string;
+        readonly applicationUrl: string | null;
+        readonly applicantTrackingSystem: string;
+      };
+      readonly roleEvidence: Record<string, unknown>;
+      readonly companyEvidence: {
+        readonly name: string;
+        readonly profileUrl: string;
+        readonly evidence: readonly string[];
+      };
+      readonly checkpoint: {
+        readonly required: true;
+        readonly command: "jobs applied";
+        readonly action: string;
+      };
+      readonly stopPoints: readonly string[];
+    } | null;
+  } {
+    const candidates = this.listJobs({ withHiringTeam: false, fit: "kept" }).filter(
+      (job) =>
+        outreachKindFor(job) === "application_followup" &&
+        job.review === "approved" &&
+        job.triageBucket !== "pending" &&
+        job.appliedAt === null &&
+        job.status !== "sent" &&
+        job.message === null,
+    );
+    const job = id === undefined ? candidates[0] : candidates.find((candidate) => candidate.id === id);
+    if (job === undefined) {
+      if (id !== undefined)
+        throw new CliError("JOB_NOT_ELIGIBLE", `job ${id} is not an eligible application handoff`, {
+          exitCode: 2,
+        });
+      return { packet: null };
+    }
+    return {
+      packet: {
+        job: {
+          id: job.id,
+          title: job.title,
+          company: job.company,
+          postingUrl: job.postingUrl,
+          applicationUrl: job.externalApplicationUrl || null,
+          applicantTrackingSystem: job.applicantTrackingSystem,
+        },
+        roleEvidence: {
+          title: job.title,
+          description: job.description,
+          responsibilities: job.responsibilities,
+          skillMatches: job.skillMatches,
+          skillGaps: job.skillGaps,
+          location: job.location,
+          employmentType: job.employmentType,
+        },
+        companyEvidence: {
+          name: job.company,
+          profileUrl: job.companyProfileUrl,
+          evidence: job.companyEvidence,
+        },
+        checkpoint: {
+          required: true,
+          command: "jobs applied",
+          action: "After the operator submits successfully on the external ATS, record the durable application checkpoint with jobs applied --id JOB_ID --application-url APPLICATION_URL.",
+        },
+        stopPoints: [
+          "STOP on any unknown application question; do not guess.",
+          "STOP for uploads, assessments, compensation, legal or eligibility questions.",
+          "STOP before any submit action; the operator submits on the external ATS.",
+          "STOP if the application URL is missing or the page is not the recorded ATS.",
+        ],
+      },
+    };
+  }
+
   triageNext(runId?: string): JobRow | null {
     const ids = runId === undefined ? undefined : this.jobIdsForRun(runId);
     const rows = this.listJobs({

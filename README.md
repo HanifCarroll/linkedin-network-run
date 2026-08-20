@@ -234,6 +234,12 @@ The subject line is normally `[Role] at [Company]` or `About the [Role] opening`
 fills the composer's subject field only when the composer exposes one; normal no-subject DM
 composers are unaffected.
 
+For an approved application-followup role, `jobs application-next --id JOB_ID` emits one
+read-only, caller-owned browser handoff with the posting/application URL, stored role/company
+evidence, and the required `jobs applied` checkpoint. The operator completes the external ATS;
+the handoff stops on unknown questions, uploads, assessments, compensation, legal/eligibility,
+or before submit. It is not a form filler and never submits.
+
 Review happens in the local queue, not through the CLI:
 
 ```sh

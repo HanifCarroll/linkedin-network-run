@@ -2,6 +2,7 @@ import { analyticsExport } from "./analytics.ts";
 import { doctor } from "./doctor.ts";
 import { networkIncidentClear, networkIncidentStatus } from "./incident.ts";
 import {
+  jobsApplicationNext,
   jobsApplied,
   jobsCaptureFinish,
   jobsCaptureIngest,
@@ -67,6 +68,7 @@ export function createDefaultOperations(): CliOperations {
     jobsRemove,
     jobsDraft,
     jobsDraftNext,
+    jobsApplicationNext,
     jobsApplied,
     jobsSendPrepare,
     jobsSendRecord,
