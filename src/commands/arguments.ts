@@ -16,6 +16,8 @@ import type {
   JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
+  JobsContractOutreachPrepareInput,
+  JobsContractOutreachRecordInput,
   JobsDraftInput,
   JobsDraftNextInput,
   JobsEnrichNextInput,
@@ -80,6 +82,8 @@ Commands:
   jobs draft-next        Hand one eligible person/role to the companion agent
   jobs send-prepare      Prepare one approved draft for caller-owned Chrome (--allow-send)
   jobs send-record       Record bounded visible UI evidence from one handoff
+  jobs contract-outreach-prepare  Reserve an approved applied contract prospect (--allow-send)
+  jobs contract-outreach-record   Record bounded invitation evidence from one handoff
   jobs classify          Set work-focus and product-system phrases for a job
   jobs triage-next       Hand one eligible kept job to agent triage
   jobs triage-record     Store an agent triage result before human review
@@ -225,6 +229,10 @@ const JOBS_HELP = `Usage:
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send-record [--payload -|ABSOLUTE_PATH]
     [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs contract-outreach-prepare --allow-send [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs contract-outreach-record [--payload -|ABSOLUTE_PATH]
+    [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs classify --id JOB_ID --work-focus "..." --product-system "..."
     --work-summary "..." --product-summary "..."
     [--state-dir ABSOLUTE_PATH]
@@ -249,6 +257,7 @@ jobs check verifies stored postings are still live by loading each direct
 view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
 {checked, live, dead, unclear}.
+jobs contract-outreach-prepare reserves exactly one approved, applied contract prospect plus a unique invitation attempt. It never uses the generic network tick.
 jobs send-prepare reserves exactly one approved draft plus a unique attempt
 identity. It requires --allow-send and mutates only the attempt ledger. The
 caller-owned Chrome helper performs visible UI only, then jobs send-record
@@ -800,6 +809,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "applied",
         "send-prepare",
         "send-record",
+        "contract-outreach-prepare",
+        "contract-outreach-record",
         "remove",
         "classify",
         "triage-next",
@@ -1285,6 +1296,38 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         productSummary: boundedText(productSummary, "--product-summary", SUMMARY_MAX_LENGTH),
       };
       return { kind: "command", command: "jobs classify", input };
+    }
+    if (verb === "contract-outreach-prepare") {
+      const options = parseOptions(argv.slice(2), {
+        "--allow-send": "boolean",
+        "--id": "value",
+        "--state-dir": "value",
+      });
+      if (!options.booleans.has("--allow-send"))
+        throw new CliError(
+          "SEND_NOT_AUTHORIZED",
+          "jobs contract-outreach-prepare requires the explicit --allow-send flag",
+          { exitCode: 3 },
+        );
+      const id = options.values.get("--id");
+      const input: JobsContractOutreachPrepareInput = {
+        stateDir: stateDir(options, context),
+        allowSend: true,
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs contract-outreach-prepare", input };
+    }
+    if (verb === "contract-outreach-record") {
+      const options = parseOptions(argv.slice(2), { "--payload": "value", "--state-dir": "value" });
+      const payload = options.values.get("--payload") ?? "-";
+      return {
+        kind: "command",
+        command: "jobs contract-outreach-record",
+        input: {
+          stateDir: stateDir(options, context),
+          payloadPath: payload === "-" ? "-" : absolutePath(payload, "--payload"),
+        } as JobsContractOutreachRecordInput,
+      };
     }
     if (verb === "send-prepare") {
       const options = parseOptions(argv.slice(2), {

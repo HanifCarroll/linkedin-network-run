@@ -322,6 +322,15 @@ in the matching recipient's thread. A prepared or unresolved `possible` receipt 
 needed to populate the exact DM and InMail endpoint patterns and any observable recipient URN
 binding in the caller's LinkedIn account.
 
+`jobs contract-outreach-prepare --allow-send [--id JOB_ID]` is the separate connection-request
+path for an approved, applied contract prospect. It reserves before the caller acts; the companion
+`scripts/linkedin-jobs-outreach-chrome-helper.mjs` observes the exact POST caused by visible Connect
+UI and confirms the visible Pending state. It never replays that request. `contract-outreach-record`
+requires bounded request evidence plus the matching visible confirmation; unresolved possible
+attempts block retry and `proven_no_send` is the only release. The production endpoint allowlist is
+empty until a live spike learns and reviews the exact account-specific contract, so production
+recording fails closed today.
+
 ## JSON contract
 
 With `--json`, stdout contains exactly one envelope and diagnostics use stable error codes.

@@ -866,6 +866,24 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 26,
+    name: "jobs_contract_outreach_receipts",
+    sql: `
+      CREATE TABLE jobs_contract_outreach_receipts (
+        attempt_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        recipient_url TEXT NOT NULL,
+        draft_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','possible','confirmed','proven_no_send')),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX jobs_contract_outreach_open_job_idx
+        ON jobs_contract_outreach_receipts(job_id) WHERE state IN ('prepared','possible');
+    `,
+  },
 ];
 
 export type MigrationResult = {

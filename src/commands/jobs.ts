@@ -4,6 +4,7 @@ import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsCaptureStore } from "../jobs/capture.ts";
 import { prepareChromeSend, recordChromeSend } from "../jobs/chrome-send.ts";
+import { prepareContractOutreach, recordContractOutreach } from "../jobs/contract-outreach.ts";
 import { evidenceGaps } from "../jobs/filter.ts";
 import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
@@ -28,6 +29,8 @@ import type {
   JobsCaptureStartInput,
   JobsCheckInput,
   JobsClassifyInput,
+  JobsContractOutreachPrepareInput,
+  JobsContractOutreachRecordInput,
   JobsDraftInput,
   JobsDraftNextInput,
   JobsEnrichNextInput,
@@ -848,6 +851,50 @@ export async function jobsSendPrepare(
     return {
       command: "jobs send-prepare",
       packet: prepareChromeSend(opened.database, input.id, (dependencies.now ?? nowDefault)()),
+    };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsContractOutreachPrepare(
+  input: JobsContractOutreachPrepareInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return {
+      command: "jobs contract-outreach-prepare",
+      packet: prepareContractOutreach(
+        opened.database,
+        input.id,
+        (dependencies.now ?? nowDefault)(),
+      ),
+    };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsContractOutreachRecord(
+  input: JobsContractOutreachRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8"),
+    );
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", "contract outreach record payload must be valid JSON", {
+      exitCode: 2,
+    });
+  }
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return {
+      command: "jobs contract-outreach-record",
+      receipt: recordContractOutreach(opened.database, payload, (dependencies.now ?? nowDefault)()),
     };
   } finally {
     opened.database.close();

@@ -17,6 +17,7 @@ import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
 import { recordChromeSend } from "../src/jobs/chrome-send.ts";
+import { prepareContractOutreach, recordContractOutreach } from "../src/jobs/contract-outreach.ts";
 import type { JobRow } from "../src/jobs/index.ts";
 import {
   filterRun,
@@ -2287,6 +2288,86 @@ try {
     } finally {
       reopened.database.close();
     }
+    const invitationDb = openDatabase(join(stateDir, "linkedin-tools.db"));
+    try {
+      const packet = prepareContractOutreach(
+        invitationDb.database,
+        "send-contract-job",
+        "2026-08-03T12:05:00Z",
+      );
+      recordContractOutreach(
+        invitationDb.database,
+        {
+          attemptId: packet.attemptId,
+          jobId: packet.jobId,
+          route: packet.route,
+          draftFingerprint: packet.draftFingerprint,
+          state: "possible",
+          evidence: { commitStarted: true },
+        },
+        "2026-08-03T12:05:01Z",
+      );
+      try {
+        prepareContractOutreach(invitationDb.database, "send-contract-job", "2026-08-03T12:05:02Z");
+        throw new Error("possible invitation did not block retry");
+      } catch (error) {
+        if (
+          !(error instanceof CliError) ||
+          error.code !== "JOBS_CONTRACT_OUTREACH_RECONCILIATION_REQUIRED"
+        )
+          throw error;
+      }
+      recordContractOutreach(
+        invitationDb.database,
+        {
+          attemptId: packet.attemptId,
+          jobId: packet.jobId,
+          route: packet.route,
+          draftFingerprint: packet.draftFingerprint,
+          state: "proven_no_send",
+          evidence: {
+            reconciliation: { reason: "smoke", noRequestObserved: true, operatorConfirmed: true },
+          },
+        },
+        "2026-08-03T12:05:03Z",
+      );
+      const retry = prepareContractOutreach(
+        invitationDb.database,
+        "send-contract-job",
+        "2026-08-03T12:05:04Z",
+      );
+      try {
+        recordContractOutreach(
+          invitationDb.database,
+          {
+            attemptId: retry.attemptId,
+            jobId: retry.jobId,
+            route: retry.route,
+            draftFingerprint: retry.draftFingerprint,
+            state: "confirmed",
+            evidence: {
+              request: {
+                method: "POST",
+                url: "https://www.linkedin.com/learned-later",
+                status: 201,
+                bodySha256: "x",
+              },
+              invitation: { pending: true, profileUrl: retry.recipientUrl },
+            },
+          },
+          "2026-08-03T12:05:05Z",
+        );
+        throw new Error("unlearned endpoint did not fail closed");
+      } catch (error) {
+        if (
+          !(error instanceof CliError) ||
+          error.code !== "JOBS_CONTRACT_OUTREACH_ENDPOINT_UNVERIFIED"
+        )
+          throw error;
+      }
+    } finally {
+      invitationDb.database.close();
+    }
   }
 
   // Chrome outreach receipt checks: reserve before the handoff, persist
@@ -3006,6 +3087,15 @@ try {
       calls.push("jobs send-record");
       return { receipt: null };
     },
+    jobsContractOutreachPrepare: async (input) => {
+      if (!input.allowSend) throw new Error("contract outreach prepare did not require allow-send");
+      calls.push("jobs contract-outreach-prepare");
+      return { packet: null };
+    },
+    jobsContractOutreachRecord: async () => {
+      calls.push("jobs contract-outreach-record");
+      return { receipt: null };
+    },
     jobsClassify: async () => {
       calls.push("jobs classify");
       return { job: { id: "111" } };
@@ -3166,6 +3256,8 @@ try {
     ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
     ["--json", "jobs", "send-prepare", "--allow-send", "--id", "111"],
     ["--json", "jobs", "send-record", "--payload", "-"],
+    ["--json", "jobs", "contract-outreach-prepare", "--allow-send", "--id", "111"],
+    ["--json", "jobs", "contract-outreach-record", "--payload", "-"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],
     [
       "--json",
@@ -3194,6 +3286,16 @@ try {
     jobsSendDenied.value?.error?.code !== "SEND_NOT_AUTHORIZED"
   ) {
     throw new Error("jobs send authorization smoke failed");
+  }
+  const contractOutreachDenied = await invoke(
+    ["--json", "jobs", "contract-outreach-prepare"],
+    common,
+  );
+  if (
+    contractOutreachDenied.exitCode !== 3 ||
+    contractOutreachDenied.value?.error?.code !== "SEND_NOT_AUTHORIZED"
+  ) {
+    throw new Error("contract outreach authorization smoke failed");
   }
   const hubSpotReceiptDenied = await invoke(
     ["--json", "jobs", "hubspot-record", "--prospect-id", `co:need-led:v1:${"a".repeat(64)}`],

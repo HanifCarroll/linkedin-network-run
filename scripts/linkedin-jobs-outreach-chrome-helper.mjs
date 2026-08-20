@@ -147,3 +147,19 @@ export async function sendAndRecordJobMessage(tab, config) {
   const observedUrn = result.evidence.request.recipientUrn;
   return record("confirmed", result.evidence, observedUrn);
 }
+
+/** Caller-owned connection-request handoff. It observes a request caused by visible UI only. */
+export async function sendContractOutreachInvitation(tab, config) {
+  if (!config || config.route !== "application_followup") return { ok: false, reason: "contract-route-required" };
+  if (typeof config.endpointUrl !== "string" || config.endpointUrl.length < 1 || typeof config.beforeAction !== "function" || typeof config.action !== "function" || typeof config.invitationCheck !== "function") return { ok: false, reason: "exact-endpoint-reservation-action-and-invitation-check-required" };
+  const cdp = await tab.capabilities.get("cdp"); await cdp.send("Network.enable"); const armed = await cdp.readEvents({ limit: 1, timeoutMs: 0 }); await config.beforeAction(); await config.action();
+  let cursor = armed.cursor; let request = null; let response = null;
+  for (let i = 0; i < 30; i += 1) { const batch = await cdp.readEvents({ afterSequence: cursor, limit: 200, timeoutMs: 1000, methods: ["Network.requestWillBeSent", "Network.responseReceived", "Network.loadingFailed"] }); cursor = batch.cursor; if (batch.truncated) return { ok: false, reason: "cdp-truncated" }; for (const event of batch.events) { const p = event.params ?? {}; if (event.method === "Network.requestWillBeSent" && p.request?.method === "POST" && String(p.request.url) === config.endpointUrl) { const body = typeof p.request.postData === "string" ? p.request.postData : ""; request = { requestId: String(p.requestId), method: "POST", url: String(p.request.url), bodySha256: sha(body), recipientUrn: body.match(/urn:li:[^"'&\\]+/)?.[0] ?? "" }; } if (event.method === "Network.responseReceived" && request && String(p.requestId) === request.requestId) response = { status: Number(p.response?.status ?? 0) }; } if (request && response) break; }
+  const invitation = await config.invitationCheck(); const confirmed = Boolean(request && response && response.status >= 200 && response.status <= 299 && invitation?.pending === true && bounded(invitation?.profileUrl, 1000) === bounded(config.packet.recipientUrl, 1000));
+  return { ok: true, state: confirmed ? "confirmed" : "possible", evidence: { request: request ? { method: request.method, url: bounded(request.url, 1000), status: response?.status ?? 0, bodySha256: request.bodySha256, ...(request.recipientUrn ? { recipientUrn: request.recipientUrn } : {}) } : { method: "POST", url: "", status: 0, bodySha256: "" }, invitation: { pending: invitation?.pending === true, profileUrl: bounded(invitation?.profileUrl, 1000) } } };
+}
+
+export async function sendAndRecordContractOutreachInvitation(tab, config) {
+  const record = (state, evidence) => pipeRawBodyToCli(JSON.stringify({ attemptId: config.packet.attemptId, jobId: config.packet.jobId, route: config.packet.route, draftFingerprint: config.packet.draftFingerprint, state, evidence }), ["--json", "jobs", "contract-outreach-record", "--payload", "-", ...(config.stateDir ? ["--state-dir", config.stateDir] : [])], config.executable);
+  const result = await sendContractOutreachInvitation(tab, { ...config, beforeAction: () => record("possible", { commitStarted: true }) }); if (!result.ok || result.state === "possible") return result; return record("confirmed", result.evidence);
+}

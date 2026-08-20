@@ -180,6 +180,15 @@ export type JobsSendPrepareInput = {
   readonly allowSend: true;
 };
 export type JobsSendRecordInput = { readonly stateDir: string; readonly payloadPath: string };
+export type JobsContractOutreachPrepareInput = {
+  readonly stateDir: string;
+  readonly id?: string;
+  readonly allowSend: true;
+};
+export type JobsContractOutreachRecordInput = {
+  readonly stateDir: string;
+  readonly payloadPath: string;
+};
 
 export type JobsClassifyInput = {
   readonly stateDir: string;
@@ -262,6 +271,8 @@ export interface CliOperations {
   jobsApplied(input: JobsAppliedInput): Promise<unknown>;
   jobsSendPrepare(input: JobsSendPrepareInput): Promise<unknown>;
   jobsSendRecord(input: JobsSendRecordInput): Promise<unknown>;
+  jobsContractOutreachPrepare(input: JobsContractOutreachPrepareInput): Promise<unknown>;
+  jobsContractOutreachRecord(input: JobsContractOutreachRecordInput): Promise<unknown>;
   jobsClassify(input: JobsClassifyInput): Promise<unknown>;
   jobsHubSpotNext(input: JobsHubSpotNextInput): Promise<unknown>;
   jobsTriageNext(input: JobsTriageNextInput): Promise<unknown>;
@@ -428,6 +439,16 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "jobs send-record";
       readonly input: JobsSendRecordInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs contract-outreach-prepare";
+      readonly input: JobsContractOutreachPrepareInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs contract-outreach-record";
+      readonly input: JobsContractOutreachRecordInput;
     }
   | {
       readonly kind: "command";

@@ -166,6 +166,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsSendPrepare(invocation.input);
     case "jobs send-record":
       return operations.jobsSendRecord(invocation.input);
+    case "jobs contract-outreach-prepare":
+      return operations.jobsContractOutreachPrepare(invocation.input);
+    case "jobs contract-outreach-record":
+      return operations.jobsContractOutreachRecord(invocation.input);
     case "jobs classify":
       return operations.jobsClassify(invocation.input);
     case "jobs triage-next":
