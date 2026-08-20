@@ -27,11 +27,29 @@ new JobsEngine(opened.database).upsertJobs(
       ],
       hasHiringTeam: true,
     },
+    {
+      id: "viewer-smoke-contract",
+      title: "Contract Product Engineer",
+      company: "Contract Example Co",
+      location: "Remote",
+      postingUrl: "https://www.linkedin.com/jobs/view/viewer-smoke-contract/",
+      hiringTeam: [
+        {
+          name: "Casey",
+          profileUrl: "https://www.linkedin.com/in/casey",
+          degree: "2nd",
+          headline: "Hiring manager",
+        },
+      ],
+      hasHiringTeam: true,
+    },
   ],
   new Date().toISOString(),
 );
 opened.database.exec(
-  "UPDATE jobs SET fit = 'kept', triage_bucket = 'strong', status = 'collected' WHERE id = 'viewer-smoke-job'",
+  `UPDATE jobs SET fit = 'kept', triage_bucket = 'strong', status = 'collected'
+   WHERE id IN ('viewer-smoke-job', 'viewer-smoke-contract');
+   UPDATE jobs SET employment_type = 'Contract' WHERE id = 'viewer-smoke-contract';`,
 );
 opened.database.close();
 const server = Bun.spawn(["bun", "./build/index.js"], {
@@ -62,6 +80,17 @@ try {
   );
   if (directApplication.status !== 400)
     throw new Error(`direct job exposed application checkpoint: ${directApplication.status}`);
+  const contractApplication = await fetch(
+    `http://127.0.0.1:${port}/api/jobs/viewer-smoke-contract/application`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appliedAt: "2026-08-20", applicationUrl: "" }),
+    },
+  );
+  if (contractApplication.status !== 200 || !(await contractApplication.json()).ok) {
+    throw new Error(`contract application checkpoint failed: ${contractApplication.status}`);
+  }
   const jobs = await fetch(`http://127.0.0.1:${port}/api/jobs`);
   if ((await jobs.json()).ok !== true) throw new Error("jobs endpoint envelope missing");
   const draft = await fetch(`http://127.0.0.1:${port}/api/jobs/viewer-smoke-job/draft`, {
@@ -98,6 +127,10 @@ try {
     if (job?.subject !== "Hello" || job.message !== "A saved draft")
       throw new Error("draft did not persist through JobsEngine");
     if (job.review !== "skipped") throw new Error("review decision did not persist");
+    const contract = new JobsEngine(persisted.database).requireJob("viewer-smoke-contract");
+    if (contract.appliedAt !== "2026-08-20" || contract.applicationUrl !== null) {
+      throw new Error("contract application checkpoint did not persist without an optional URL");
+    }
   } finally {
     persisted.database.close();
   }

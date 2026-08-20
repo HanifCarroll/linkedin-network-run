@@ -487,7 +487,8 @@ export class JobsEngine {
       );
     if (current.status === "sent")
       throw new CliError("JOBS_ALREADY_SENT", `job ${id} was already sent`, { exitCode: 2 });
-    if (Number.isNaN(Date.parse(appliedAt)))
+    const normalizedAppliedAt = normalizeAppliedAt(appliedAt);
+    if (normalizedAppliedAt === null)
       throw new CliError("INVALID_ARGUMENT", "appliedAt must be a valid ISO timestamp", {
         exitCode: 2,
       });
@@ -505,7 +506,7 @@ export class JobsEngine {
     }
     this.database
       .prepare(`UPDATE jobs SET applied_at = ?, application_url = ?, updated_at = ? WHERE id = ?`)
-      .run(appliedAt, normalizedUrl, now, id);
+      .run(normalizedAppliedAt, normalizedUrl, now, id);
     return this.requireJob(id);
   }
 
@@ -913,6 +914,19 @@ function conflictDetails(job: JobRow): Record<string, unknown> {
     status: job.status,
     review: job.review,
   };
+}
+
+function normalizeAppliedAt(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+    return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== trimmed
+      ? null
+      : trimmed;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(trimmed)) return null;
+  const parsed = new Date(trimmed);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function rowToJob(row: JobRowRaw): JobRow {

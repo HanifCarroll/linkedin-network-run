@@ -1169,6 +1169,58 @@ try {
       if (!JSON.stringify(first).includes(`${prospectId}:day-1`)) {
         throw new Error("HubSpot packet is missing the deterministic task marker");
       }
+      const directPacket = JSON.stringify(first);
+      if (
+        !directPacket.includes("Offer short-term contract help") ||
+        directPacket.includes("Submit application")
+      ) {
+        throw new Error("HubSpot direct route task mapping failed");
+      }
+
+      const contractJob = {
+        id: "hubspot-contract-job",
+        title: "Contract Product Engineer",
+        company: "Contract Studio",
+        location: "Remote",
+        postingUrl: "https://www.linkedin.com/jobs/view/hubspot-contract-job/",
+        hiringTeam: [
+          {
+            name: "Casey Contract",
+            profileUrl: "https://www.linkedin.com/in/casey-contract/",
+            degree: "2nd",
+            headline: "Engineering Director",
+          },
+        ],
+        hasHiringTeam: true,
+      };
+      jobs.upsertJobs([contractJob], "2026-08-03T10:00:00Z");
+      opened.database
+        .prepare(
+          `UPDATE jobs SET fit = 'kept', review = 'approved', employment_type = 'Contract'
+           WHERE id = 'hubspot-contract-job'`,
+        )
+        .run();
+      const beforeApplication = engine.next("hubspot-contract-job", "2026-08-03T10:01:00Z");
+      const beforeApplicationJson = JSON.stringify(beforeApplication);
+      if (
+        !beforeApplicationJson.includes("Submit application") ||
+        !beforeApplicationJson.includes('"hs_task_type":"TODO"')
+      ) {
+        throw new Error("HubSpot contract pre-application task mapping failed");
+      }
+      jobs.recordApplied("hubspot-contract-job", undefined, "2026-08-03", "2026-08-03T10:02:00Z");
+      jobs.upsertJobs([contractJob], "2026-08-03T10:02:30Z");
+      if (jobs.requireJob("hubspot-contract-job").appliedAt !== "2026-08-03") {
+        throw new Error("application checkpoint was not preserved by re-upsert");
+      }
+      const afterApplication = engine.next("hubspot-contract-job", "2026-08-03T10:03:00Z");
+      const afterApplicationJson = JSON.stringify(afterApplication);
+      if (
+        !afterApplicationJson.includes("Send application follow-up") ||
+        !afterApplicationJson.includes('"hs_task_type":"LINKED_IN_CONNECT"')
+      ) {
+        throw new Error("HubSpot contract post-application task mapping failed");
+      }
       const failed = engine.record(
         { prospectId, error: "temporary HubSpot failure" },
         "2026-08-03T10:03:00Z",
@@ -2147,6 +2199,90 @@ try {
       if (!(error instanceof CliError) || error.code !== "JOBS_NOTHING_TO_SEND") throw error;
     }
     if (sessionResolved) throw new Error("jobs send resolved a session before target validation");
+  }
+
+  // Bounded temp-state check: a contract follow-up cannot reach browser
+  // session resolution until its application checkpoint exists.
+  {
+    const stateDir = join(root, "send-contract");
+    const opened = openDatabase(join(stateDir, "linkedin-tools.db"));
+    try {
+      const engine = new JobsEngine(opened.database);
+      engine.upsertJobs(
+        [
+          {
+            id: "send-contract-job",
+            title: "Contract Product Engineer",
+            company: "Contract Co",
+            location: "Remote",
+            postingUrl: "https://www.linkedin.com/jobs/view/send-contract-job/",
+            hiringTeam: [
+              {
+                name: "Contract Manager",
+                profileUrl: "https://www.linkedin.com/in/contract-manager/",
+                degree: "2nd",
+                headline: "Hiring manager",
+              },
+            ],
+            hasHiringTeam: true,
+          },
+        ],
+        "2026-08-03T12:00:00Z",
+      );
+      opened.database
+        .prepare("UPDATE jobs SET employment_type = 'Contract' WHERE id = 'send-contract-job'")
+        .run();
+      engine.storeDraft(
+        "send-contract-job",
+        "Contract role",
+        "Hi.\n\nI applied and wanted to follow up.",
+        "2026-08-03T12:01:00Z",
+      );
+      engine.setReview("send-contract-job", "approved", "2026-08-03T12:02:00Z");
+      if (engine.approvedDrafts().length !== 0) {
+        throw new Error("unapplied contract draft entered bulk send eligibility");
+      }
+    } finally {
+      opened.database.close();
+    }
+    let sessionResolved = false;
+    try {
+      await jobsSend(
+        {
+          stateDir,
+          playwriterBin: fakePlaywriter,
+          sessionId: "auto",
+          allowSend: true,
+          id: "send-contract-job",
+        },
+        {
+          resolveSession: async () => {
+            sessionResolved = true;
+            return 1;
+          },
+          runScript: async () => {
+            throw new Error("contract send should not reach the browser before application");
+          },
+          now: () => "2026-08-03T12:03:00Z",
+        },
+      );
+      throw new Error("contract send should require an application checkpoint");
+    } catch (error) {
+      if (!(error instanceof CliError) || error.code !== "JOBS_APPLICATION_REQUIRED") throw error;
+    }
+    if (sessionResolved) {
+      throw new Error("contract send resolved a session before application validation");
+    }
+    const reopened = openDatabase(join(stateDir, "linkedin-tools.db"));
+    try {
+      const engine = new JobsEngine(reopened.database);
+      engine.recordApplied("send-contract-job", undefined, "2026-08-03", "2026-08-03T12:04:00Z");
+      if (engine.approvedDrafts()[0]?.id !== "send-contract-job") {
+        throw new Error("applied contract draft did not enter send eligibility");
+      }
+    } finally {
+      reopened.database.close();
+    }
   }
 
   // Bounded static check: the send script binds the executor page (never the

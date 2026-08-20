@@ -294,6 +294,10 @@ input[type="search"]:focus {
   border: 1px solid var(--line);
   border-radius: 12px;
 }
+
+.salesnav-review[hidden] {
+  display: none;
+}
 .sn-person {
   display: flex;
   justify-content: space-between;

@@ -344,14 +344,15 @@ onMount(() => {
         ? `<div class="reminder"><strong>Route: Apply first</strong><span>After your application is recorded, review and send an application follow-up.</span></div>`
         : `<div class="reminder"><strong>Route: Direct/full-time</strong><span>Do not apply. Offer a short contract bridge while they hire.</span></div>`;
     const appliedAt = primary.appliedAt ?? "";
+    const appliedDate = appliedAt.slice(0, 10);
     const applicationUrl = primary.applicationUrl ?? "";
     const applicationHtml =
       kind === "application_followup"
         ? `<div class="application-checkpoint">
             <h3>Application checkpoint</h3>
-            ${appliedAt ? `<div class="application-recorded">Applied ${esc(appliedAt)}${applicationUrl ? ` · <a class="role-url" href="${esc(applicationUrl)}" target="_blank" rel="noopener">Application ↗</a>` : ""}</div>` : ""}
+            ${appliedAt ? `<div class="application-recorded">Applied ${esc(appliedDate)}${applicationUrl ? ` · <a class="role-url" href="${esc(applicationUrl)}" target="_blank" rel="noopener">Application ↗</a>` : ""}</div>` : ""}
             <label for="application-date">Application date</label>
-            <input type="date" id="application-date" value="${esc(appliedAt)}">
+            <input type="date" id="application-date" value="${esc(appliedDate)}">
             <label for="application-url">Application link <span class="optional">(optional)</span></label>
             <input type="url" id="application-url" placeholder="https://…" value="${esc(applicationUrl)}">
             <div class="draft-actions"><button data-action="record-applied" class="primary">${appliedAt ? "Update application" : "Mark applied"}</button></div>
@@ -415,6 +416,7 @@ onMount(() => {
   }
 
   function renderAll() {
+    el("salesnav-review").hidden = state.section !== "all";
     renderSummary();
     renderSections();
     renderFilters();
@@ -788,7 +790,7 @@ onMount(() => {
 </header>
 <div class="sections" id="sections"></div>
 <div class="filters" id="filters"></div>
-<section class="salesnav-review"><h2>Sales Navigator people</h2><div id="salesnav-people"></div></section>
+<section class="salesnav-review" id="salesnav-review"><h2>Sales Navigator people</h2><div id="salesnav-people"></div></section>
 <main>
   <section class="list" id="list"></section>
   <section class="detail" id="detail"><div class="empty">Select an opportunity to review</div></section>

@@ -112,11 +112,13 @@ export const writeApplication = (r: Request, id: string) =>
       throw new CliError("INVALID_ARGUMENT", "appliedAt must be a YYYY-MM-DD date");
     if (v.applicationUrl !== undefined && typeof v.applicationUrl !== "string")
       throw new CliError("INVALID_ARGUMENT", "applicationUrl must be a string");
-    return (
-      e as JobsEngine & {
-        recordApplied(id: string, applicationUrl: string, appliedAt: string, now: string): unknown;
-      }
-    ).recordApplied(id, v.applicationUrl ?? "", v.appliedAt, new Date().toISOString());
+    const applicationUrl = v.applicationUrl?.trim();
+    return e.recordApplied(
+      id,
+      applicationUrl === "" ? undefined : applicationUrl,
+      v.appliedAt,
+      new Date().toISOString(),
+    );
   });
 export const writeGroupReview = (r: Request, id: string) =>
   write(r, (e, v) => {

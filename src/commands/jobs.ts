@@ -771,7 +771,7 @@ export async function jobsSend(
       if (outreachKindFor(job) === "application_followup" && job.appliedAt === null)
         throw new CliError(
           "JOBS_APPLICATION_REQUIRED",
-          `job ${job.id} requires application-record before sending`,
+          `job ${job.id} requires jobs applied before sending`,
           { exitCode: 2 },
         );
       targets = [job];
