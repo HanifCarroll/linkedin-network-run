@@ -2603,12 +2603,21 @@ try {
           hiringTeam: [member("B Person", "b-person")],
           hasHiringTeam: true,
         },
+        {
+          id: "blocked-2",
+          title: "Contract Researcher",
+          company: "Delta",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/blocked-2/",
+          hiringTeam: [member("C Person", "c-person")],
+          hasHiringTeam: true,
+        },
       ],
       "2026-08-03T00:00:00Z",
     );
     db.database
       .prepare(
-        "UPDATE jobs SET fit='kept', review='approved', triage_bucket='strong', description='Build a billing dashboard', employment_type=CASE WHEN id IN ('applied','blocked') THEN 'Contract' ELSE employment_type END, skill_matches_json=? WHERE id IN ('direct','applied','blocked')",
+        "UPDATE jobs SET fit='kept', review='approved', triage_bucket='strong', description='Build a billing dashboard', employment_type=CASE WHEN id IN ('applied','blocked','blocked-2') THEN 'Contract' ELSE employment_type END, skill_matches_json=? WHERE id IN ('direct','applied','blocked','blocked-2')",
       )
       .run(JSON.stringify(["billing dashboards"]));
     engine.recordApplied(
@@ -2627,6 +2636,12 @@ try {
     const applied = await jobsDraftNext({ stateDir, id: "applied" });
     if ((applied as { packet: { route: string } }).packet.route !== "application_followup")
       throw new Error("draft-next applied route failed");
+    const automatic = await jobsDraftNext({ stateDir });
+    if (
+      !(automatic as { found: boolean }).found ||
+      (automatic as { blockedApplications: number }).blockedApplications !== 2
+    )
+      throw new Error("draft-next did not report all blocked applications");
     const blockedDb = openDatabase(join(stateDir, "linkedin-tools.db"));
     blockedDb.database
       .prepare("UPDATE jobs SET message='existing' WHERE id IN ('direct','applied')")
@@ -2635,7 +2650,7 @@ try {
     const blockedAuto = await jobsDraftNext({ stateDir });
     if (
       (blockedAuto as { found: boolean }).found ||
-      (blockedAuto as { blockedApplications: number }).blockedApplications !== 1
+      (blockedAuto as { blockedApplications: number }).blockedApplications !== 2
     )
       throw new Error("draft-next blocked application count failed");
     let blocked = false;
@@ -2771,7 +2786,11 @@ try {
       calls.push("jobs draft");
       return { job: { id: input.id } };
     },
-    jobsDraftNext: async () => ({ found: false, blockedApplications: 0 }),
+    jobsDraftNext: async (input) => {
+      if (input.id !== "111") throw new Error("jobs draft-next did not parse --id");
+      calls.push("jobs draft-next");
+      return { found: false, blockedApplications: 0 };
+    },
     jobsApplied: async (input) => {
       if (input.id !== "111" || input.applicationUrl !== "https://example.com/apply") {
         throw new Error("jobs applied did not parse checkpoint");
@@ -2927,6 +2946,7 @@ try {
       "--product-summary",
       "Salesforce CPQ",
     ],
+    ["--json", "jobs", "draft-next", "--id", "111"],
     ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
     ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],

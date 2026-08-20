@@ -662,14 +662,22 @@ export class JobsEngine {
         primary.triageBucket !== "pending"
       );
     });
-    let blockedApplications = 0;
+    const blockedApplications = groups.filter((group) => {
+      const selected =
+        id === undefined ? primaryRoleFor(group.jobs) : group.jobs.find((job) => job.id === id);
+      return (
+        selected !== undefined &&
+        selected.review === "approved" &&
+        outreachKindFor(selected) === "application_followup" &&
+        selected.appliedAt === null
+      );
+    }).length;
     for (const group of groups) {
       const selected =
         id === undefined ? primaryRoleFor(group.jobs) : group.jobs.find((job) => job.id === id);
       if (selected === undefined || selected.review !== "approved") continue;
       const route = outreachKindFor(selected);
       if (route === "application_followup" && selected.appliedAt === null) {
-        blockedApplications += 1;
         if (id !== undefined)
           throw new CliError(
             "JOB_NOT_ELIGIBLE",
