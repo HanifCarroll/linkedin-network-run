@@ -84,7 +84,7 @@ Commands:
   jobs draft-next        Hand one eligible person/role to the companion agent
   jobs send-prepare      Prepare one approved draft for caller-owned Chrome (--allow-send)
   jobs send-record       Record bounded visible UI evidence from one handoff
-  jobs contract-outreach-prepare  Reserve an approved applied contract prospect (--allow-send)
+  jobs contract-outreach-prepare  Reserve an approved prospect connection request (--allow-send)
   jobs contract-outreach-record   Record bounded invitation evidence from one handoff
   jobs classify          Set work-focus and product-system phrases for a job
   jobs triage-next       Hand one eligible kept job to agent triage
@@ -266,7 +266,7 @@ jobs check verifies stored postings are still live by loading each direct
 view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
 {checked, live, dead, unclear}.
-jobs contract-outreach-prepare reserves exactly one approved, applied contract prospect plus a unique invitation attempt. It never uses the generic network tick.
+jobs contract-outreach-prepare reserves exactly one approved direct prospect, or one approved applied application-followup prospect, plus a unique invitation attempt. It never uses the generic network tick.
 jobs send-prepare reserves exactly one approved draft plus a unique attempt
 identity. It requires --allow-send and mutates only the attempt ledger. The
 caller-owned Chrome helper performs visible UI only, then jobs send-record
