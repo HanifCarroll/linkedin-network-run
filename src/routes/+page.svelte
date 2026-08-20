@@ -1,6 +1,8 @@
 <script lang="ts">
 // @ts-nocheck
 import { onMount } from "svelte";
+import { pushState, replaceState } from "$app/navigation";
+import { resolve } from "$app/paths";
 import {
   groupJobs,
   bucketFor,
@@ -35,13 +37,14 @@ onMount(() => {
   };
 
   const SECTION_LABELS = {
-    all: "All outreach",
+    all: "All jobs",
     direct: "Direct outreach",
     application_followup: "Apply + follow up",
   };
+  const LANES = ["relationship", "need"];
   const SECTIONS = ["all", "direct", "application_followup"];
   const FILTERS = [
-    { key: "all", label: "All" },
+    { key: "all", label: "Any status" },
     { key: "needs_review", label: "Pending" },
     { key: "approved", label: "Approved" },
     { key: "skipped", label: "Rejected" },
@@ -51,6 +54,7 @@ onMount(() => {
     jobs: [],
     people: [],
     groups: [],
+    lane: "relationship",
     section: "all",
     filter: "needs_review",
     query: "",
@@ -104,8 +108,10 @@ onMount(() => {
 
   function restoreFilterState() {
     const params = new URLSearchParams(window.location.search);
+    const lane = params.get("lane");
     const section = params.get("section");
     const filter = params.get("status");
+    state.lane = LANES.includes(lane) ? lane : "relationship";
     state.section = SECTIONS.includes(section) ? section : "all";
     state.filter = FILTERS.some((item) => item.key === filter) ? filter : "needs_review";
     state.query = (params.get("q") ?? "").trim();
@@ -114,13 +120,17 @@ onMount(() => {
 
   function persistFilterState(mode = "replace") {
     const url = new URL(window.location.href);
+    if (state.lane === "relationship") url.searchParams.delete("lane");
+    else url.searchParams.set("lane", state.lane);
     if (state.section === "all") url.searchParams.delete("section");
     else url.searchParams.set("section", state.section);
     if (state.filter === "needs_review") url.searchParams.delete("status");
     else url.searchParams.set("status", state.filter);
     if (state.query === "") url.searchParams.delete("q");
     else url.searchParams.set("q", state.query);
-    window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (mode === "push") pushState(resolve(nextUrl), {});
+    else replaceState(resolve(nextUrl), {});
   }
 
   function badge(deg) {
@@ -202,6 +212,26 @@ onMount(() => {
     ).join("");
   }
 
+  function renderLanes() {
+    const firms = new Set(state.people.map((person) => person.runId)).size;
+    const lanes = [
+      { key: "relationship", label: "Relationship-led", count: firms, unit: "firms" },
+      { key: "need", label: "Need-led", count: state.groups.length, unit: "jobs" },
+    ];
+    el("lanes").innerHTML = lanes
+      .map(
+        ({ key, label, count, unit }) =>
+          `<button type="button" class="lane-btn${state.lane === key ? " active" : ""}" data-lane="${key}"${state.lane === key ? ' aria-current="page"' : ""}><span>${label}</span><small>${count} ${unit}</small></button>`,
+      )
+      .join("");
+    el("workspace-title").textContent =
+      state.lane === "relationship" ? "Choose the right person" : "Review job opportunities";
+    el("workspace-subtitle").textContent =
+      state.lane === "relationship"
+        ? `${firms} firms waiting · Select one contact per firm.`
+        : `${state.groups.length} jobs waiting · Review the evidence and make a decision.`;
+  }
+
   function renderFilters() {
     const c = counts();
     const clear = defaultsActive()
@@ -234,6 +264,7 @@ onMount(() => {
         const displayName = name || primary.title || "—";
         const roles = group.jobs.length;
         const side = [
+          '<span class="badge source">LinkedIn job</span>',
           state.section === "all"
             ? `<span class="badge kind ${kind === "direct" ? "kind-direct" : "kind-applied"}">${esc(outreachKindLabel(kind))}</span>`
             : "",
@@ -360,20 +391,24 @@ onMount(() => {
         : "";
     const draftHtml = action.editable
       ? `<div class="draft">
-          <h3>Draft message</h3>
-          <label for="draft-subject">Subject</label>
-          <input type="text" id="draft-subject" placeholder="(optional — only used when the composer shows a subject field)" value="${esc(primary.subject ?? "")}">
-          <label for="draft-body">Body</label>
+          <h3>Outreach drafts</h3>
+          <label for="draft-connection-note">Connection note <span class="optional">Day 1 · 200 characters maximum · no subject</span></label>
+          <textarea id="draft-connection-note" class="connection-note" maxlength="200" spellcheck="true">${esc(primary.connectionNote ?? "")}</textarea>
+          <label for="draft-subject">Follow-up subject <span class="optional">Optional · InMail only</span></label>
+          <input type="text" id="draft-subject" placeholder="About the role opening" value="${esc(primary.subject ?? "")}">
+          <label for="draft-body">Follow-up message <span class="optional">Used later for DM, InMail, or email</span></label>
           <textarea id="draft-body" spellcheck="true">${esc(primary.message ?? "")}</textarea>
           <div class="draft-actions">
             <button data-action="save">Save</button>
             <button data-action="approve" class="primary">${action.replace ? "Use this draft instead" : "Approve &amp; next"}</button>
             <button data-action="skip">Reject &amp; next</button>
           </div>
-          <div class="draft-hint">Blank lines between paragraphs are preserved. No message is sent from this page.</div>
+          <div class="draft-hint">The connection note and follow-up must be different. No outreach is sent from this page.</div>
         </div>`
       : `<div class="draft">
-          <h3>Draft message</h3>
+          <h3>Connection note</h3>
+          <div class="draft-read">${esc(primary.connectionNote ?? "")}</div>
+          <h3 class="follow-up-heading">Follow-up message</h3>
           ${primary.subject ? `<div class="draft-subject-read">${esc(primary.subject)}</div>` : ""}
           <div class="draft-read">${esc(primary.message ?? "")}</div>
           ${
@@ -384,7 +419,7 @@ onMount(() => {
         </div>`;
     d.innerHTML = `
       <div class="detail-head">
-        <div class="detail-kicker"><span class="status ${bucket}">${statusLabel}</span>${triageBadge(primary)}</div>
+        <div class="detail-kicker"><span class="badge source">LinkedIn job</span><span class="status ${bucket}">${statusLabel}</span>${triageBadge(primary)}</div>
         <div class="person-line"><h2>${esc(displayName)}</h2>${badge(first?.degree)}</div>
         <div class="company">${esc(primary.title || "—")}${primary.company ? ` <span>at</span> ${esc(primary.company)}` : ""}</div>
         <div class="person-context">
@@ -416,7 +451,9 @@ onMount(() => {
   }
 
   function renderAll() {
-    el("salesnav-review").hidden = state.section !== "all";
+    el("salesnav-review").hidden = state.lane !== "relationship";
+    el("jobs-review").hidden = state.lane !== "need";
+    renderLanes();
     renderSummary();
     renderSections();
     renderFilters();
@@ -469,49 +506,82 @@ onMount(() => {
   function renderPeople() {
     const elPeople = el("salesnav-people");
     if (!elPeople) return;
-    elPeople.innerHTML = state.people.length
-      ? state.people
-          .map((p) => {
-            const firmBrief = [p.services, p.concreteFact, p.firmReason].filter(Boolean),
-              sourceUrls = jsonArray(p.firmSourceUrls),
+    const firms = new Map();
+    for (const person of state.people) {
+      const key = person.runId;
+      if (!firms.has(key)) firms.set(key, []);
+      firms.get(key).push(person);
+    }
+    elPeople.innerHTML = firms.size
+      ? [...firms.values()]
+          .map((people) => {
+            const firm = people[0],
+              firmBrief = [firm.services, firm.concreteFact, firm.firmReason].filter(Boolean),
+              sourceUrls = jsonArray(firm.firmSourceUrls),
               researchedWebsite = sourceUrls.find((value) => !value.includes("linkedin.com")),
-              unknowns = jsonArray(p.firmUnknowns);
-            return `<article class="sn-person">
-                <div class="sn-person-main">
-                  <div class="sn-person-kicker">${esc(p.lane)} · ${esc(p.slot)}</div>
-                  <strong>${esc(p.name)}</strong>
-                  <div>${esc(p.title)} at ${esc(p.organizationName || p.company)}</div>
-                  ${p.location ? `<small>${esc(p.location)}</small>` : ""}
-                  <p><b>Why this person:</b> ${esc(p.selectionReason || `Matched ${p.matchedRole}`)}</p>
-                  ${firmBrief.length ? `<p><b>Why this firm:</b> ${firmBrief.map(esc).join(" · ")}</p>` : ""}
-                  ${unknowns.length ? `<p><b>Unknowns:</b> ${unknowns.map(esc).join(" · ")}</p>` : ""}
+              unknowns = jsonArray(firm.firmUnknowns),
+              reviewed = people.filter((person) => person.review !== "needs_review").length;
+            return `<article class="sn-firm">
+              <header class="sn-firm-head">
+                <div>
+                  <div class="sn-firm-kicker"><span>${esc(firm.lane)}</span><span>${reviewed}/${people.length} reviewed</span></div>
+                  <h3>${esc(firm.organizationName || firm.company)}</h3>
+                  ${firmBrief.length ? `<p>${firmBrief.map(esc).join(" · ")}</p>` : ""}
+                  ${unknowns.length ? `<p class="sn-unknowns"><b>Still unknown:</b> ${unknowns.map(esc).join(" · ")}</p>` : ""}
                 </div>
-                <div class="sn-person-actions">
-                  <a href="${esc(p.profileUrl)}" target="_blank" rel="noopener">Profile ↗</a>
-                  ${p.companyUrl ? `<a href="${esc(p.companyUrl)}" target="_blank" rel="noopener">LinkedIn company ↗</a>` : ""}
-                  ${p.websiteUrl || researchedWebsite ? `<a href="${esc(p.websiteUrl || researchedWebsite)}" target="_blank" rel="noopener">Website ↗</a>` : ""}
-                  <button data-sn-review="approved" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">Approve</button>
-                  <button data-sn-review="rejected" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">Reject</button>
-                </div>
-              </article>`;
+                <nav class="sn-firm-links" aria-label="Firm research links">
+                  ${firm.companyUrl ? `<a href="${esc(firm.companyUrl)}" target="_blank" rel="noopener">LinkedIn ↗</a>` : ""}
+                  ${firm.websiteUrl || researchedWebsite ? `<a href="${esc(firm.websiteUrl || researchedWebsite)}" target="_blank" rel="noopener">Website ↗</a>` : ""}
+                </nav>
+              </header>
+              <div class="sn-candidates">
+                ${people
+                  .map(
+                    (p) => `<div class="sn-person sn-review-${esc(p.review)}">
+                      <div class="sn-person-main">
+                        <div class="sn-person-kicker"><span class="badge source">Sales Navigator — ${esc(p.lane)}</span><span class="sn-slot">${esc(p.slot)}</span>${p.review !== "needs_review" ? `<span class="sn-review-state">${esc(p.review)}</span>` : ""}</div>
+                        <strong>${esc(p.name)}</strong>
+                        <div class="sn-title">${esc(p.title)}</div>
+                        ${p.location ? `<small>${esc(p.location)}</small>` : ""}
+                        <p><b>Why this person</b>${esc(p.selectionReason || `Matched ${p.matchedRole}`)}</p>
+                      </div>
+                      <div class="sn-person-actions">
+                        <a href="${esc(p.profileUrl)}" target="_blank" rel="noopener">View profile ↗</a>
+                        <div class="sn-decision" aria-label="Review ${esc(p.name)}">
+                          <button type="button" class="sn-approve${p.review === "approved" ? " active" : ""}" data-sn-review="approved" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">${p.review === "approved" ? "Approved" : "Approve"}</button>
+                          <button type="button" class="sn-reject${p.review === "rejected" ? " active" : ""}" data-sn-review="rejected" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">${p.review === "rejected" ? "Rejected" : "Reject"}</button>
+                        </div>
+                      </div>
+                    </div>`,
+                  )
+                  .join("")}
+              </div>
+            </article>`;
           })
           .join("")
-      : '<div class="empty">No Sales Navigator people pending.</div>';
+      : '<div class="sn-empty"><strong>You’re caught up.</strong><span>No Sales Navigator people are waiting for review.</span></div>';
   }
 
   async function reviewPerson(button) {
-    const res = await fetch(
-      `/api/salesnav/people/${encodeURIComponent(button.dataset.run)}/${encodeURIComponent(button.dataset.person)}/review`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ review: button.dataset.snReview }),
-      },
-    );
-    if (!res.ok) return;
-    await loadPeople();
-    renderPeople();
-    flash(button.dataset.snReview === "approved" ? "Approved" : "Rejected");
+    button.disabled = true;
+    try {
+      const res = await fetch(
+        `/api/salesnav/people/${encodeURIComponent(button.dataset.run)}/${encodeURIComponent(button.dataset.person)}/review`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ review: button.dataset.snReview }),
+        },
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.error?.message ?? "Could not save review");
+      await loadPeople();
+      renderPeople();
+      flash(button.dataset.snReview === "approved" ? "Approved" : "Rejected");
+    } catch (error) {
+      button.disabled = false;
+      flashError(error.message);
+    }
   }
 
   async function loadJobs() {
@@ -527,6 +597,9 @@ onMount(() => {
 
   function subjVal() {
     return el("draft-subject").value;
+  }
+  function connectionNoteVal() {
+    return el("draft-connection-note").value;
   }
   function bodyVal() {
     return el("draft-body").value;
@@ -559,6 +632,7 @@ onMount(() => {
     try {
       const data = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, {
         subject: subjVal(),
+        connectionNote: connectionNoteVal(),
         message: bodyVal(),
       });
       state.jobs = state.jobs.map((j) => (j.id === jobId ? data : j));
@@ -575,9 +649,10 @@ onMount(() => {
     if (!jobId) return;
     let saved = null;
     try {
-      if (bodyVal().trim()) {
+      if (connectionNoteVal().trim() || bodyVal().trim()) {
         saved = await post(`/api/jobs/${encodeURIComponent(jobId)}/draft`, {
           subject: subjVal(),
+          connectionNote: connectionNoteVal(),
           message: bodyVal(),
         });
         state.jobs = state.jobs.map((j) => (j.id === jobId ? saved : j));
@@ -671,6 +746,14 @@ onMount(() => {
     renderList();
     renderDetail();
   });
+  el("lanes").addEventListener("click", (e) => {
+    const button = e.target.closest("[data-lane]");
+    if (!button) return;
+    state.lane = button.dataset.lane;
+    persistFilterState("push");
+    renderAll();
+    window.scrollTo({ top: 0, behavior: "auto" });
+  });
   el("showDraft").addEventListener("change", (e) => {
     el("detail").classList.toggle("hide-draft", !e.target.checked);
   });
@@ -706,6 +789,9 @@ onMount(() => {
     state.selectedKey = row.dataset.key;
     renderList();
     renderDetail();
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      el("detail").scrollIntoView({ block: "start", behavior: "smooth" });
+    }
   });
   el("list").addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
@@ -715,6 +801,9 @@ onMount(() => {
     state.selectedKey = row.dataset.key;
     renderList();
     renderDetail();
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      el("detail").scrollIntoView({ block: "start", behavior: "smooth" });
+    }
   });
   el("salesnav-people").addEventListener("click", (e) => {
     const button = e.target.closest("[data-sn-review]");
@@ -778,21 +867,29 @@ onMount(() => {
 </script>
 
 
-<header>
+<header class="page-header">
   <div class="brand">
-    <h1>Outreach Review Queue</h1>
-    <p class="sub" id="summary">Loading…</p>
+    <h1 id="workspace-title">Choose the right person</h1>
+    <p class="sub" id="workspace-subtitle">Loading review queue…</p>
   </div>
-  <div class="controls">
-    <label class="switch"><input type="checkbox" id="showDraft" role="switch" checked> Show draft</label>
-    <input type="search" id="search" placeholder="Filter name, role, company, location, doing…" autocomplete="off">
-  </div>
+  <nav class="lane-switch" id="lanes" aria-label="Outreach lane"></nav>
 </header>
-<div class="sections" id="sections"></div>
-<div class="filters" id="filters"></div>
-<section class="salesnav-review" id="salesnav-review"><h2>Sales Navigator people</h2><div id="salesnav-people"></div></section>
-<main>
-  <section class="list" id="list"></section>
-  <section class="detail" id="detail"><div class="empty">Select an opportunity to review</div></section>
-</main>
+<section class="salesnav-review" id="salesnav-review">
+  <div id="salesnav-people"></div>
+</section>
+<section class="jobs-review" id="jobs-review">
+  <div class="jobs-toolbar">
+    <p id="summary">Loading…</p>
+    <div class="controls">
+      <label class="switch"><input type="checkbox" id="showDraft" role="switch" checked> Show draft</label>
+      <input type="search" id="search" placeholder="Filter name, role, company, location, doing…" autocomplete="off">
+    </div>
+  </div>
+  <div class="sections" id="sections"></div>
+  <div class="filters" id="filters"></div>
+  <main>
+    <section class="list" id="list"></section>
+    <section class="detail" id="detail"><div class="empty">Select an opportunity to review</div></section>
+  </main>
+</section>
 <div class="flash" id="flash"></div>

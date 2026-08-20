@@ -663,6 +663,7 @@ export async function jobsDraft(
       input.subject,
       input.message,
       now(),
+      input.connectionNote,
     );
     return { command: "jobs draft", job: row };
   } finally {

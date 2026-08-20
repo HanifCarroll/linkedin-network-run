@@ -2,6 +2,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { CliError } from "../core/errors.ts";
 import {
   CLASSIFICATION_MAX_LENGTH,
+  CONNECTION_NOTE_MAX_LENGTH,
   DRAFT_MAX_LENGTH,
   SUBJECT_MAX_LENGTH,
   SUMMARY_MAX_LENGTH,
@@ -80,7 +81,7 @@ Commands:
   jobs list              List collected jobs from the local store
   jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
-  jobs draft             Store a drafted subject + message for a job
+  jobs draft             Store separate connection-note and follow-up drafts
   jobs draft-next        Hand one eligible person/role to the companion agent
   jobs send-prepare      Prepare one approved draft for caller-owned Chrome (--allow-send)
   jobs send-record       Record bounded visible UI evidence from one handoff
@@ -223,7 +224,7 @@ const JOBS_HELP = `Usage:
     [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs favorite --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs remove --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--subject "..."]
+  linkedin-tools [--json] jobs draft --id JOB_ID --connection-note "..." --message "..." [--subject "..."]
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs application-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
@@ -275,8 +276,10 @@ proven_no_send releases one, and only confirmed evidence marks the job sent.
 DM and InMail use separate transport evidence contracts. The helper requires
 an explicit exact endpoint URL from live observation and fails closed; no
 endpoint names are invented here.
-jobs draft stores a draft for review: --message is the body (interior blank
-lines are preserved) and --subject is an optional subject line. Storing or
+jobs draft stores two distinct drafts for review: --connection-note is the
+Day 1 LinkedIn invitation note (at most 200 characters); --message is the later
+DM/InMail/email body (interior blank lines are preserved), and --subject is an
+optional InMail subject line. Storing or
 redrafting returns the job to needs-review. Draft once per recipient — when
 several postings list the same person, draft the best-fitting role; sibling
 roles are context and at most one approved/sent message per person holds. The
@@ -289,15 +292,16 @@ until that checkpoint exists. Full-time/direct roles reject jobs applied and
 use the short-contract bridge pitch below. Its body is three paragraphs
 separated by one blank line (\\n\\n):
 
-  Hi [first name] — I saw the [role] opening at [company]. One plain, specific
-  detail about the product, users, or problem that caught my attention.
+  Hi [first name] — I saw the [role] opening at [company]. From the posting, it
+  looks like the team needs help with [specific responsibility or problem].
 
   One relevant experience or proof statement, in ordinary language, connected
-  directly to the detail in the first paragraph.
+  directly to the need in the first paragraph.
 
-  Would you be open to contract help while you're hiring?
+  I could help cover some of that work on a short contract while you fill the
+  role. Would that be useful?
 
-The proof must connect to the detail in the first paragraph, not stand alone.
+The proof must connect to the need in the first paragraph, not stand alone.
 The subject is normally "[Role] at [Company]" or "About the [Role] opening".
 For an application-follow-up draft, name the role and company, lead with one
 specific relevant proof, and close by putting a name to the application. Do not
@@ -1280,6 +1284,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (verb === "draft") {
       const options = parseOptions(argv.slice(2), {
         "--id": "value",
+        "--connection-note": "value",
         "--subject": "value",
         "--message": "value",
         "--state-dir": "value",
@@ -1291,6 +1296,16 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       if (message.trim().length > DRAFT_MAX_LENGTH) {
         invalid(`--message must be at most ${DRAFT_MAX_LENGTH} characters`);
       }
+      const connectionNote = options.values.get("--connection-note");
+      if (connectionNote === undefined || connectionNote.trim().length === 0) {
+        invalid("jobs draft requires a non-empty --connection-note");
+      }
+      if (connectionNote.trim().length > CONNECTION_NOTE_MAX_LENGTH) {
+        invalid(`--connection-note must be at most ${CONNECTION_NOTE_MAX_LENGTH} characters`);
+      }
+      if (connectionNote.trim() === message.trim()) {
+        invalid("--connection-note and --message must be different");
+      }
       const subject = (options.values.get("--subject") ?? "").trim();
       if (subject.length > SUBJECT_MAX_LENGTH) {
         invalid(`--subject must be at most ${SUBJECT_MAX_LENGTH} characters`);
@@ -1299,6 +1314,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         stateDir: stateDir(options, context),
         id: required(options, "--id"),
         subject,
+        connectionNote: connectionNote.trim(),
         message: message.trim(),
       };
       return { kind: "command", command: "jobs draft", input };

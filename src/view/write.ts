@@ -79,9 +79,18 @@ async function write(
 }
 export const writeDraft = (r: Request, id: string) =>
   write(r, (e, v) => {
-    if (typeof v.subject !== "string" || typeof v.message !== "string")
-      throw new CliError("INVALID_ARGUMENT", "draft body requires string subject and message");
-    return e.storeDraft(id, v.subject, v.message, new Date().toISOString());
+    if (
+      typeof v.subject !== "string" ||
+      typeof v.connectionNote !== "string" ||
+      typeof v.message !== "string"
+    )
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        "draft body requires string connectionNote, subject, and message",
+      );
+    if (v.connectionNote.trim() === "")
+      throw new CliError("INVALID_ARGUMENT", "draft requires a non-empty connection note");
+    return e.storeDraft(id, v.subject, v.message, new Date().toISOString(), v.connectionNote);
   });
 export const writeReview = (r: Request, id: string) =>
   write(r, (e, v) => {

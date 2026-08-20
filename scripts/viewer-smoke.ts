@@ -96,7 +96,11 @@ try {
   const draft = await fetch(`http://127.0.0.1:${port}/api/jobs/viewer-smoke-job/draft`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ subject: "Hello", message: "A saved draft" }),
+    body: JSON.stringify({
+      connectionNote: "A short connection note",
+      subject: "Hello",
+      message: "A saved follow-up draft",
+    }),
   });
   if (draft.status !== 200 || !(await draft.json()).ok) throw new Error("draft write failed");
   const approved = await fetch(`http://127.0.0.1:${port}/api/jobs/viewer-smoke-job/review`, {
@@ -124,7 +128,11 @@ try {
     const job = new JobsEngine(persisted.database)
       .listJobs({ withHiringTeam: false })
       .find((candidate) => candidate.id === "viewer-smoke-job");
-    if (job?.subject !== "Hello" || job.message !== "A saved draft")
+    if (
+      job?.connectionNote !== "A short connection note" ||
+      job.subject !== "Hello" ||
+      job.message !== "A saved follow-up draft"
+    )
       throw new Error("draft did not persist through JobsEngine");
     if (job.review !== "skipped") throw new Error("review decision did not persist");
     const contract = new JobsEngine(persisted.database).requireJob("viewer-smoke-contract");

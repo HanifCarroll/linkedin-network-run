@@ -243,6 +243,7 @@ export function groupSearchHaystack(jobs: readonly JobRow[]): string {
       ...job.skillMatches,
       ...job.skillGaps,
       job.subject,
+      job.connectionNote,
       job.message ?? "",
       job.employmentType,
       KIND_LABEL[kind],

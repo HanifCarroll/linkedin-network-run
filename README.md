@@ -196,25 +196,33 @@ roles are context, not separate messages, and at most one approved/sent message 
 person. `jobs draft-next` is a deterministic, read-only companion handoff for one person and
 one primary role from an approved kept opportunity. It emits stored person/job/company evidence, route-specific writing instructions,
 and `blockedApplications` for unapplied contract follow-ups. It never calls an LLM, stores a draft,
-approves, sends, opens a browser, or touches HubSpot. The companion writes the message, then calls
-`jobs draft`, which stores the draft and returns review to needs-review. A draft stores an editable
-subject line and a body; interior blank lines in the body round-trip unchanged. The draft template
-depends on the role's queue section.
+approves, sends, opens a browser, or touches HubSpot. The companion writes the connection note and
+follow-up message, then calls `jobs draft`, which stores them and returns review to needs-review. A
+draft stores a Day 1 connection note, editable follow-up subject, and follow-up body; interior blank
+lines in the body round-trip unchanged. The note is separate from the later message and is limited
+to 200 characters. Use this default and adapt only the bracketed evidence:
+
+```text
+Hi [first name] — I saw [company] is hiring a [role]. I help teams cover product-engineering gaps on short contracts while they hire. Thought it made sense to connect.
+```
+
+The follow-up template depends on the role's queue section.
 
 **Direct outreach** uses the existing conversational contract-help pitch (three paragraphs
 separated by one blank line, `\n\n`):
 
 ```text
-Hi [first name] — I saw the [role] opening at [company]. One plain, specific detail
-about the product, users, or problem that caught my attention.
+Hi [first name] — I saw the [role] opening at [company]. From the posting, it looks
+like the team needs help with [specific responsibility or problem].
 
 One relevant experience or proof statement, in ordinary language, connected directly
-to the detail in the first paragraph.
+to the need in the first paragraph.
 
-Would you be open to contract help while you're hiring?
+I could help cover some of that work on a short contract while you fill the role.
+Would that be useful?
 ```
 
-The proof sentence must tie back to the detail in paragraph 1, not stand alone as a résumé line.
+The proof sentence must tie back to the need in paragraph 1, not stand alone as a résumé line.
 
 **Application note** is for contract roles (and full-time roles that are really contract
 engagements: contract-to-hire, or W2/C2C/1099-only). Apply first, then send the short
@@ -332,13 +340,14 @@ binding in the caller's LinkedIn account.
 path for an approved prospect. Direct jobs are eligible immediately; application-followup jobs
 still require `jobs applied`. It reserves before the caller acts; the companion
 `scripts/linkedin-jobs-outreach-chrome-helper.mjs` observes the exact POST caused by visible Connect
-UI and confirms the visible Pending state. It never replays that request. `contract-outreach-record`
-requires bounded request evidence plus the matching visible confirmation; unresolved possible
+UI and confirms that the recipient-bound request returned 2xx and the invitation dialog closed. It
+never replays that request. `contract-outreach-record` requires the same bounded evidence; unresolved possible
 attempts block retry and `proven_no_send` is the only release. This invitation is not the final
-DM/InMail/email and does not mark the job sent. Stored outreach text is used as an invitation note
-only when it is at most 300 characters; otherwise the packet emits `noteNeeded` and no note. The production endpoint allowlist is
-empty until a live spike learns and reviews the exact account-specific contract, so production
-recording fails closed today.
+DM/InMail/email and does not mark the job sent. The separately reviewed connection note is bound to
+the invitation receipt and cannot be replaced by the follow-up message. The production invitation
+endpoint was learned from the approved 2026-08-20 caller-owned Chrome spike and is enforced as an
+exact URL. Confirmation still fails closed unless the response is recipient-bound and the visible
+invitation dialog closes after the request.
 
 ## JSON contract
 
@@ -461,3 +470,20 @@ linkedin-tools salesnav studio account-status --run-id ID
 
 `account-people-candidates` is the read-only downstream boundary: it returns only kept accounts
 observed in that lane and run. It does not capture people. This lane has no HubSpot or sending path.
+
+### Apollo capture spike
+
+Apollo is a read-only fallback experiment for both staffing and studio. The spike accepts Apollo's
+documented account or people search response on stdin, normalizes the useful evidence, and applies
+the same lane-specific person selection used by Sales Navigator. It does not write SQLite or call
+Apollo:
+
+```sh
+bun run scripts/apollo-capture-spike.ts self-check
+bun run scripts/apollo-capture-spike.ts accounts < apollo-accounts.json
+bun run scripts/apollo-capture-spike.ts people staffing < apollo-staffing-people.json
+bun run scripts/apollo-capture-spike.ts people studio < apollo-studio-people.json
+```
+
+Promote this to the intake CLI only after a successful live response has been captured and checked
+against the documented shape. Never retain browser cookies, request headers, or CSRF values.

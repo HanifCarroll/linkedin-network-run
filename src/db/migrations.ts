@@ -926,6 +926,13 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 29,
+    name: "jobs_connection_note",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN connection_note TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ];
 
 export type MigrationResult = {

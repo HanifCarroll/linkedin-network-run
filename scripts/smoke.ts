@@ -28,6 +28,7 @@ import {
   normalizeProfileUrl,
   prospectIdForProfile,
 } from "../src/jobs/index.ts";
+import { CONNECTION_NOTE_TEMPLATE } from "../src/jobs/types.ts";
 import { SalesNavStore } from "../src/salesnav.ts";
 import {
   isAccountResponseUrl,
@@ -1181,9 +1182,24 @@ try {
       const directPacket = JSON.stringify(first);
       if (
         !directPacket.includes("Offer short-term contract help") ||
-        directPacket.includes("Submit application")
+        directPacket.includes("Submit application") ||
+        !directPacket.includes('"hubspot_owner_id":"96636780"')
       ) {
         throw new Error("HubSpot direct route task mapping failed");
+      }
+      opened.database
+        .prepare(
+          `INSERT INTO jobs_contract_outreach_receipts
+           (attempt_id,job_id,recipient_url,draft_fingerprint,state,evidence_json,created_at,updated_at)
+           VALUES ('hubspot-possible','hubspot-job','https://www.linkedin.com/in/alice-example','x','possible','{"commitStarted":true}','2026-08-03T10:01:30Z','2026-08-03T10:01:30Z')`,
+        )
+        .run();
+      const possiblePacket = JSON.stringify(engine.next("hubspot-job", "2026-08-03T10:02:00Z"));
+      if (
+        !possiblePacket.includes('"hs_task_status":"WAITING"') ||
+        !possiblePacket.includes("do not resend; reconcile the existing attempt")
+      ) {
+        throw new Error("HubSpot possible invitation did not become a reconciliation task");
       }
 
       const contractJob = {
@@ -1395,7 +1411,7 @@ try {
       };
       const memberVariant = {
         name: "Ana",
-        profileUrl: "https://www.LINKEDIN.com/in/ANA/?miniProfileUrn=xyz#frag",
+        profileUrl: "https://LINKEDIN.com/in/ANA/?miniProfileUrn=xyz#frag",
         degree: "2nd",
         headline: "Hiring manager",
       };
@@ -1454,6 +1470,13 @@ try {
       if (draft.review !== "needs_review" || draft.status !== "drafted") {
         throw new Error("new draft should be needs_review + drafted");
       }
+      let longConnectionNote = false;
+      try {
+        engine.storeDraft("b2", "", body, "2026-08-03T00:00:01Z", "x".repeat(201));
+      } catch (error) {
+        longConnectionNote = error instanceof CliError && error.code === "INVALID_ARGUMENT";
+      }
+      if (!longConnectionNote) throw new Error("201-character connection note was accepted");
 
       // Intake approval does not require a draft; sending remains guarded later.
       const approvedWithoutDraft = engine.setReview("c3", "approved", "2026-08-03T00:00:02Z");
@@ -1804,6 +1827,7 @@ try {
       hasHiringTeam: false,
       status: "collected",
       message: null,
+      connectionNote: "",
       collectedAt: "2026-08-03T00:00:00Z",
       updatedAt: "2026-08-03T00:00:00Z",
       sentAt: null,
@@ -1995,6 +2019,7 @@ try {
       hasHiringTeam: false,
       status: "collected",
       message: null,
+      connectionNote: "",
       collectedAt: "2026-08-03T00:00:00Z",
       updatedAt: "2026-08-03T00:00:00Z",
       sentAt: null,
@@ -2118,6 +2143,7 @@ try {
       hasHiringTeam: false,
       status: "collected",
       message: null,
+      connectionNote: "",
       collectedAt: "2026-08-03T00:00:00Z",
       updatedAt: "2026-08-03T00:00:00Z",
       sentAt: null,
@@ -2295,6 +2321,7 @@ try {
         "Contract role",
         "Hi.\n\nI applied and wanted to follow up.",
         "2026-08-03T12:01:00Z",
+        "Hi — I applied for the contract role and would like to connect.",
       );
       engine.setReview("send-contract-job", "approved", "2026-08-03T12:02:00Z");
       if (engine.approvedDrafts().length !== 0) {
@@ -2340,13 +2367,33 @@ try {
         ],
         "2026-08-03T12:04:30Z",
       );
-      engine.storeDraft("send-direct-job", "Direct role", "Short note", "2026-08-03T12:04:31Z");
+      engine.storeDraft(
+        "send-direct-job",
+        "Direct role",
+        "A longer follow-up message about short-term contract help.",
+        "2026-08-03T12:04:31Z",
+      );
       engine.setReview("send-direct-job", "approved", "2026-08-03T12:04:32Z");
     } finally {
       reopened.database.close();
     }
     const invitationDb = openDatabase(join(stateDir, "linkedin-tools.db"));
     try {
+      try {
+        prepareContractOutreach(invitationDb.database, "send-direct-job", "2026-08-03T12:04:33Z");
+        throw new Error("connection preparation accepted a missing connection note");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "JOBS_NO_CONNECTION_NOTE") throw error;
+      }
+      const invitationEngine = new JobsEngine(invitationDb.database);
+      invitationEngine.storeDraft(
+        "send-direct-job",
+        "Direct role",
+        "A longer follow-up message about short-term contract help.",
+        "2026-08-03T12:04:34Z",
+        "Short connection note",
+      );
+      invitationEngine.setReview("send-direct-job", "approved", "2026-08-03T12:04:35Z");
       const packet = prepareContractOutreach(
         invitationDb.database,
         "send-contract-job",
@@ -2409,7 +2456,7 @@ try {
                 status: 201,
                 bodySha256: "x",
               },
-              invitation: { pending: true, profileUrl: retry.recipientUrl },
+              invitation: { dialogClosed: true },
             },
           },
           "2026-08-03T12:05:05Z",
@@ -2427,7 +2474,7 @@ try {
         "send-direct-job",
         "2026-08-03T12:05:06Z",
       );
-      if (directPacket.route !== "direct" || directPacket.note !== "Short note")
+      if (directPacket.route !== "direct" || directPacket.note !== "Short connection note")
         throw new Error("direct invitation packet contract failed");
       recordContractOutreach(
         invitationDb.database,
@@ -2440,16 +2487,15 @@ try {
           evidence: {
             request: {
               method: "POST",
-              url: "https://www.linkedin.com/learned-later",
+              url: "https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2&decorationId=com.linkedin.voyager.dash.deco.relationships.InvitationCreationResultWithInvitee-2",
               status: 201,
               bodySha256: "x",
               recipientUrn: "urn:li:fsd_profile:direct",
             },
-            invitation: { pending: true, profileUrl: directPacket.recipientUrl },
+            invitation: { dialogClosed: true },
           },
         },
         "2026-08-03T12:05:07Z",
-        { urls: ["https://www.linkedin.com/learned-later"], requireRecipientUrn: true },
       );
       const directRow = new JobsEngine(invitationDb.database).requireJob("send-direct-job");
       if (directRow.status === "sent")
@@ -2994,7 +3040,14 @@ try {
     const direct = await jobsDraftNext({ stateDir, id: "direct" });
     if (
       !(direct as { found: boolean }).found ||
-      (direct as { packet: { job: JobRow } }).packet.job.id !== "direct"
+      (direct as { packet: { job: JobRow } }).packet.job.id !== "direct" ||
+      (direct as { packet: { connectionNoteTemplate: string } }).packet.connectionNoteTemplate !==
+        CONNECTION_NOTE_TEMPLATE ||
+      !(
+        direct as { packet: { writingInstructions: string[] } }
+      ).packet.writingInstructions.includes(
+        "Close with: I could help cover some of that work on a short contract while you fill the role. Would that be useful?",
+      )
     )
       throw new Error("draft-next direct packet failed");
     const applied = await jobsDraftNext({ stateDir, id: "applied" });
@@ -3144,8 +3197,12 @@ try {
       return { removed: 0 };
     },
     jobsDraft: async (input) => {
-      if (input.subject !== "Hi" || input.message !== "Body") {
-        throw new Error("jobs draft did not parse --subject");
+      if (
+        input.connectionNote !== "Connect note" ||
+        input.subject !== "Hi" ||
+        input.message !== "Body"
+      ) {
+        throw new Error("jobs draft did not parse connection note, subject, and message");
       }
       calls.push("jobs draft");
       return { job: { id: input.id } };
@@ -3364,7 +3421,19 @@ try {
     ],
     ["--json", "jobs", "draft-next", "--id", "111"],
     ["--json", "jobs", "application-next", "--id", "111"],
-    ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
+    [
+      "--json",
+      "jobs",
+      "draft",
+      "--id",
+      "111",
+      "--connection-note",
+      "Connect note",
+      "--subject",
+      "Hi",
+      "--message",
+      "Body",
+    ],
     ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
     ["--json", "jobs", "send-prepare", "--allow-send", "--id", "111"],
     ["--json", "jobs", "send-record", "--payload", "-"],

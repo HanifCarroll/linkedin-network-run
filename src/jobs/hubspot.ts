@@ -73,7 +73,13 @@ export class HubSpotImportEngine {
         .run(prospectId, job.id, now, now);
       receipt = this.requireReceipt(prospectId);
     }
-    return buildPacket(job, rowToReceipt(receipt));
+    const invitation = this.database
+      .query<{ state: string }, [string]>(
+        `SELECT state FROM jobs_contract_outreach_receipts
+         WHERE job_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(job.id);
+    return buildPacket(job, rowToReceipt(receipt), invitation?.state);
   }
 
   record(input: HubSpotRecordInput, now: string): HubSpotImportReceipt {
@@ -270,12 +276,22 @@ function hasSuccessReceipt(input: HubSpotRecordInput): boolean {
   );
 }
 
-function buildPacket(job: JobRow, receipt: HubSpotImportReceipt): Record<string, unknown> {
+function buildPacket(
+  job: JobRow,
+  receipt: HubSpotImportReceipt,
+  invitationState?: string,
+): Record<string, unknown> {
   const member = job.hiringTeam[0];
   if (member === undefined) throw new CliError("JOBS_NO_HIRING_TEAM", "hiring team missing");
   const name = splitName(member.name);
   const marker = `${receipt.prospectId}:day-1`;
   const route = outreachKindFor(job);
+  const invitationInstruction =
+    invitationState === "possible"
+      ? "Invitation state: possible — do not resend; reconcile the existing attempt before any LinkedIn action."
+      : invitationState === "confirmed"
+        ? "Invitation state: confirmed — the connection request was sent; do not resend."
+        : null;
   const hasReceipt =
     receipt.companyId !== null ||
     receipt.contactId !== null ||
@@ -397,13 +413,20 @@ function buildPacket(job: JobRow, receipt: HubSpotImportReceipt): Record<string,
                 ? "Action: apply first; after the application is recorded, send the application follow-up."
                 : `Action: send the application follow-up; applied at ${job.appliedAt}${job.applicationUrl === null ? "" : ` (${job.applicationUrl})`}.`
               : "Action: offer short-term contract help while the company fills the full-time role.",
+            ...(invitationInstruction === null ? [] : [invitationInstruction]),
             "After sending, HubSpot owns follow-up timing and stops on reply.",
           ].join("\n"),
-          hs_task_status: "NOT_STARTED",
+          hs_task_status:
+            invitationState === "possible"
+              ? "WAITING"
+              : invitationState === "confirmed"
+                ? "COMPLETED"
+                : "NOT_STARTED",
           hs_task_type:
             route === "application_followup" && job.appliedAt === null
               ? "TODO"
               : "LINKED_IN_CONNECT",
+          hubspot_owner_id: "96636780",
           hs_timestamp: receipt.createdAt,
         },
       },

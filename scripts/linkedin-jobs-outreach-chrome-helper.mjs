@@ -159,7 +159,7 @@ export async function sendContractOutreachInvitation(tab, config) {
     typeof config.action !== "function" ||
     typeof config.invitationCheck !== "function"
   )
-    return { ok: false, reason: "exact-endpoint-reservation-action-and-invitation-check-required" };
+    return { ok: false, reason: "exact-endpoint-reservation-action-and-completion-check-required" };
   const cdp = await tab.capabilities.get("cdp");
   await cdp.send("Network.enable");
   const armed = await cdp.readEvents({ limit: 1, timeoutMs: 0 });
@@ -208,8 +208,8 @@ export async function sendContractOutreachInvitation(tab, config) {
       response &&
       response.status >= 200 &&
       response.status <= 299 &&
-      invitation?.pending === true &&
-      bounded(invitation?.profileUrl, 1000) === bounded(config.packet.recipientUrl, 1000),
+      request.recipientUrn !== "" &&
+      invitation?.dialogClosed === true,
   );
   return {
     ok: true,
@@ -225,8 +225,7 @@ export async function sendContractOutreachInvitation(tab, config) {
           }
         : { method: "POST", url: "", status: 0, bodySha256: "" },
       invitation: {
-        pending: invitation?.pending === true,
-        profileUrl: bounded(invitation?.profileUrl, 1000),
+        dialogClosed: invitation?.dialogClosed === true,
       },
     },
   };

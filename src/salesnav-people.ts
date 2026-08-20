@@ -2,34 +2,11 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { CliError } from "./core/errors.ts";
 import { inTransaction } from "./db/database.ts";
+import { type RelationshipPerson, selectRelationshipPeople } from "./relationship-selection.ts";
 import type { SalesNavInput } from "./salesnav.ts";
 
 export const PEOPLE_PARSER_VERSION = "salesnav-account-people-v1";
 const MAX_BODY_BYTES = 2_000_000;
-const ROLE_TERMS = {
-  staffing: ["technical recruiter", "recruiter", "account manager", "practice leader"],
-  studio: [
-    "owner",
-    "co-founder",
-    "founder",
-    "ceo",
-    "chief executive officer",
-    "president",
-    "cto",
-    "chief technology officer",
-    "coo",
-    "chief operating officer",
-    "cpo",
-    "chief product officer",
-    "vp",
-    "vice president",
-    "director",
-  ],
-} as const;
-const FUNCTION_TERMS = {
-  staffing: ["software", "engineering", "product", "technical"],
-  studio: ["engineering", "product", "operations", "technology", "software"],
-} as const;
 type Row = Record<string, unknown>;
 const fail = (code: string, message: string): never => {
   throw new CliError(code, message, { exitCode: 2 });
@@ -38,12 +15,6 @@ const obj = (v: unknown): Row =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Row) : {};
 const text = (v: unknown): string => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "");
 const canonical = (v: unknown): string => JSON.stringify(v ?? {}) ?? "{}";
-const roleMatch = (title: string, term: string): boolean => {
-  if (term === "owner") return title.includes("owner") && !title.includes("product owner");
-  if (term === "president") return title.includes("president") && !title.includes("vice president");
-  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b${escaped}\\b`, "i").test(title);
-};
 const idFrom = (v: unknown): string =>
   text(v).match(
     /(?:fs_salesProfile|salesLead|sales_profile|lead)[:/]?(?:\(|)([A-Za-z0-9_-]+)/i,
@@ -341,50 +312,30 @@ export class SalesNavPeopleStore {
          WHERE o.run_id=? ORDER BY o.start,p.sales_nav_id`,
       )
       .all(runId);
-    const selectedLane = lane === "studio" ? "studio" : "staffing",
-      terms = ROLE_TERMS[selectedLane],
-      functions = FUNCTION_TERMS[selectedLane];
-    const ranked = rows
-      .map((r) => {
-        const title = String(r.current_title).toLowerCase(),
-          roleEvidence =
-            selectedLane === "staffing"
-              ? `${title} ${String(r.current_description).toLowerCase()}`
-              : title,
-          functionEvidence = `${title} ${r.current_description} ${r.summary}`.toLowerCase(),
-          role = terms.find((term) => roleMatch(roleEvidence, term));
-        const fn = functions.find((term) => functionEvidence.includes(term)),
-          roleIndex = role ? [...terms].indexOf(role) : Number.MAX_SAFE_INTEGER;
-        return { r, role: role ?? "", fn: fn ?? "", roleIndex, score: role ? (fn ? 2 : 1) : 0 };
-      })
-      .filter((x) => x.score > 0)
-      .sort(
-        (a, b) =>
-          a.roleIndex - b.roleIndex ||
-          b.score - a.score ||
-          String(a.r.current_title).localeCompare(String(b.r.current_title)) ||
-          String(a.r.sales_nav_id).localeCompare(String(b.r.sales_nav_id)),
-      );
+    const selectedLane = lane === "studio" ? "studio" : "staffing";
+    const people: Array<Row & RelationshipPerson> = rows.map((r) => ({
+      ...r,
+      id: String(r.sales_nav_id),
+      title: String(r.current_title),
+      description: String(r.current_description),
+      summary: String(r.summary),
+    }));
+    const ranked = selectRelationshipPeople(people, selectedLane);
     this.db.prepare("DELETE FROM salesnav_account_people_selections WHERE run_id=?").run(runId);
-    const out = ranked.slice(0, 2);
-    for (const [i, x] of out.entries())
+    for (const [i, x] of ranked.entries())
       this.db
         .prepare(
           "INSERT INTO salesnav_account_people_selections(run_id,person_id,slot,rank,matched_role,reason) VALUES(?,?,?,?,?,?)",
         )
         .run(
           runId,
-          String(x.r.person_id),
+          String(x.person_id),
           i === 0 ? "primary" : "backup",
           i + 1,
-          x.role,
-          `matched ${x.role}`,
+          x.matchedRole,
+          `matched ${x.matchedRole}`,
         );
-    return out.map((x, i) => ({
-      ...x.r,
-      slot: i === 0 ? "primary" : "backup",
-      matchedRole: x.role,
-    }));
+    return ranked;
   }
   next(runId: string) {
     const run = this.run(runId);

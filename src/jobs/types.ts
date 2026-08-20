@@ -12,6 +12,12 @@ export const SUBJECT_MAX_LENGTH = 300;
 /** Max characters for a draft body (generous; the four-paragraph shape is far shorter). */
 export const DRAFT_MAX_LENGTH = 5000;
 
+/** LinkedIn invitation-note limit. */
+export const CONNECTION_NOTE_MAX_LENGTH = 200;
+
+export const CONNECTION_NOTE_TEMPLATE =
+  "Hi [first name] — I saw [company] is hiring a [role]. I help teams cover product-engineering gaps on short contracts while they hire. Thought it made sense to connect.";
+
 /** A review decision is orthogonal to the status lifecycle. */
 export type ReviewDecision = "needs_review" | "approved" | "skipped";
 export type TriageBucket = "pending" | "strong" | "possible" | "weak";
@@ -116,6 +122,7 @@ export type JobsDraftInput = {
   readonly id: string;
   /** Optional subject line; only used when the composer exposes a subject field. */
   readonly subject: string;
+  readonly connectionNote: string;
   readonly message: string;
 };
 
@@ -180,6 +187,8 @@ export type JobRow = {
   readonly productSummary: string;
   /** Editable draft subject line ('' when the DM composer has no subject). */
   readonly subject: string;
+  /** Reviewed Day 1 LinkedIn connection-request note. */
+  readonly connectionNote: string;
   /** Review decision, orthogonal to status. */
   readonly review: ReviewDecision;
   readonly fit: "pending" | "kept" | "dropped";

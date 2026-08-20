@@ -1,6 +1,6 @@
 import type { JobRow } from "./types.ts";
 
-const LINKEDIN_PROFILE_RE = /^https:\/\/www\.linkedin\.com\/in\//i;
+const LINKEDIN_PROFILE_RE = /^https:\/\/(?:www\.)?linkedin\.com\/in\//i;
 
 /**
  * Normalize a LinkedIn profile URL to a canonical comparison key: trim, strip
@@ -14,6 +14,7 @@ export function normalizeProfileUrl(value: string): string {
     const url = new URL(trimmed);
     url.hash = "";
     url.search = "";
+    if (url.hostname.toLowerCase() === "linkedin.com") url.hostname = "www.linkedin.com";
     const path = url.pathname.replace(/\/+$/, "");
     return `${url.protocol}//${url.host}${path}`.toLowerCase();
   } catch {

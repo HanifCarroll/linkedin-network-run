@@ -155,6 +155,7 @@ export type JobsDraftInput = {
   readonly id: string;
   /** Optional subject line; only used when the composer exposes a subject field. */
   readonly subject: string;
+  readonly connectionNote: string;
   readonly message: string;
 };
 export type JobsDraftNextInput = { readonly stateDir: string; readonly id?: string };

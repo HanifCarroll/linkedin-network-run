@@ -13,6 +13,8 @@ import type {
 } from "./types.ts";
 import {
   CLASSIFICATION_MAX_LENGTH,
+  CONNECTION_NOTE_MAX_LENGTH,
+  CONNECTION_NOTE_TEMPLATE,
   DRAFT_MAX_LENGTH,
   SUBJECT_MAX_LENGTH,
   SUMMARY_MAX_LENGTH,
@@ -56,6 +58,7 @@ type JobRowRaw = {
   readonly work_summary: string;
   readonly product_summary: string;
   readonly subject: string;
+  readonly connection_note: string;
   readonly review: string;
   readonly fit: string;
   readonly filter_reason: string;
@@ -428,9 +431,16 @@ export class JobsEngine {
     return ids.map((id) => this.requireJob(id));
   }
 
-  storeDraft(id: string, subject: string, message: string, now: string): JobRow {
+  storeDraft(
+    id: string,
+    subject: string,
+    message: string,
+    now: string,
+    connectionNote = "",
+  ): JobRow {
     const body = message.trim();
     const subj = subject.trim();
+    const note = connectionNote.trim();
     if (body.length === 0)
       throw new CliError("INVALID_ARGUMENT", "draft requires a non-empty message");
     if (body.length > DRAFT_MAX_LENGTH)
@@ -442,6 +452,16 @@ export class JobsEngine {
       throw new CliError(
         "INVALID_ARGUMENT",
         `draft subject must be at most ${SUBJECT_MAX_LENGTH} characters`,
+      );
+    if (note.length > CONNECTION_NOTE_MAX_LENGTH)
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        `connection note must be at most ${CONNECTION_NOTE_MAX_LENGTH} characters`,
+      );
+    if (note !== "" && note === body)
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        "connection note and follow-up message must be different",
       );
     const existing = this.requireJob(id);
     if (existing.status === "sent") {
@@ -455,9 +475,9 @@ export class JobsEngine {
     }
     this.database
       .prepare(
-        `UPDATE jobs SET status = 'drafted', message = ?, subject = ?, review = 'needs_review', updated_at = ? WHERE id = ?`,
+        `UPDATE jobs SET status = 'drafted', message = ?, subject = ?, connection_note = ?, review = 'needs_review', updated_at = ? WHERE id = ?`,
       )
-      .run(body, subj, now, id);
+      .run(body, subj, note, now, id);
     return this.requireJob(id);
   }
 
@@ -649,6 +669,7 @@ export class JobsEngine {
       };
       readonly jobEvidence: Record<string, unknown>;
       readonly writingInstructions: readonly string[];
+      readonly connectionNoteTemplate: string;
     } | null;
     readonly blockedApplications: number;
   } {
@@ -715,15 +736,19 @@ export class JobsEngine {
           writingInstructions:
             route === "application_followup"
               ? [
+                  "Adapt the connection-note template using only stored evidence and keep it at most 200 characters.",
                   "Name the role and company.",
                   `Use one specific stored proof: ${proof || "choose one concrete stored fit detail"}.`,
-                  "Put a name to the application; do not ask about contract help or request a call.",
+                  "Write a distinct follow-up that puts a name to the application; do not ask about contract help or request a call.",
                 ]
               : [
-                  "Offer short-term contract help while the full-time role is being filled.",
-                  "Use one concrete stored job or company detail and connect it to one stored proof.",
+                  "Adapt the connection-note template using only stored evidence and keep it at most 200 characters.",
+                  "State the immediate need as: From the posting, it looks like the team needs help with [specific responsibility or problem].",
+                  "Connect one concrete stored proof directly to that need.",
+                  "Close with: I could help cover some of that work on a short contract while you fill the role. Would that be useful?",
                   "Keep it concise and do not invent evidence.",
                 ],
+          connectionNoteTemplate: CONNECTION_NOTE_TEMPLATE,
         },
       };
     }
@@ -1169,6 +1194,7 @@ function rowToJob(row: JobRowRaw): JobRow {
     workSummary: row.work_summary,
     productSummary: row.product_summary,
     subject: row.subject,
+    connectionNote: row.connection_note,
     review: row.review as ReviewDecision,
     fit: row.fit as "pending" | "kept" | "dropped",
     filterReason: row.filter_reason,

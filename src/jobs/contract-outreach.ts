@@ -7,7 +7,7 @@ import type { JobRow } from "./types.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const fingerprint = (job: JobRow, recipient: string) =>
-  sha(JSON.stringify({ id: job.id, recipient, message: job.message }));
+  sha(JSON.stringify({ id: job.id, recipient, connectionNote: job.connectionNote }));
 const object = (value: unknown, name: string): Record<string, unknown> => {
   if (value === null || typeof value !== "object" || Array.isArray(value))
     throw new CliError("INVALID_ARGUMENT", `${name} must be a JSON object`, { exitCode: 2 });
@@ -29,8 +29,10 @@ const exact = (value: Record<string, unknown>, keys: readonly string[], name: st
     });
 };
 
-/** Deliberately empty until a live caller-owned spike establishes the exact production endpoint. */
-export const CONTRACT_OUTREACH_ENDPOINTS: readonly string[] = [];
+/** Exact production endpoint observed during the approved caller-owned Chrome spike on 2026-08-20. */
+export const CONTRACT_OUTREACH_ENDPOINTS: readonly string[] = [
+  "https://www.linkedin.com/voyager/api/voyagerRelationshipsDashMemberRelationships?action=verifyQuotaAndCreateV2&decorationId=com.linkedin.voyager.dash.deco.relationships.InvitationCreationResultWithInvitee-2",
+];
 export type ContractOutreachContracts = {
   readonly urls: readonly string[];
   readonly requireRecipientUrn: boolean;
@@ -65,6 +67,10 @@ function current(database: Database, id: string | undefined) {
   const recipient = recipientProfileUrl(job);
   if (!recipient || job.message === null)
     throw new CliError("JOBS_NO_DRAFT", `job ${job.id} has no usable recipient or draft`, {
+      exitCode: 2,
+    });
+  if (job.connectionNote === "")
+    throw new CliError("JOBS_NO_CONNECTION_NOTE", `job ${job.id} has no reviewed connection note`, {
       exitCode: 2,
     });
   return { job, recipient, fingerprint: fingerprint(job, recipient) };
@@ -107,12 +113,10 @@ export function prepareContractOutreach(database: Database, id: string | undefin
     route: outreachKindFor(job),
     recipientUrl: recipient,
     recipientName: job.hiringTeam[0]?.name ?? "",
-    ...(job.message !== null && job.message.length <= 300
-      ? { note: job.message }
-      : { note: null, noteNeeded: true, noteMaxLength: 300 }),
+    note: job.connectionNote,
     draftFingerprint,
     action: "visible LinkedIn Connect/Send invitation",
-    evidenceContract: "connection-request-exact-endpoint-plus-pending-v1",
+    evidenceContract: "connection-request-recipient-bound-plus-dialog-closed-v2",
   };
 }
 
@@ -163,7 +167,7 @@ function evidence(
     throw new CliError("INVALID_ARGUMENT", "evidence.request is missing a required field", {
       exitCode: 2,
     });
-  exact(invitation, ["pending", "profileUrl"], "evidence.invitation");
+  exact(invitation, ["dialogClosed"], "evidence.invitation");
   if (
     request.method !== "POST" ||
     typeof request.url !== "string" ||
@@ -188,8 +192,8 @@ function evidence(
       "connection evidence lacks a bound recipient URN",
       { exitCode: 2 },
     );
-  if (invitation.pending !== true || typeof invitation.profileUrl !== "string")
-    throw new CliError("INVALID_ARGUMENT", "visible pending invitation confirmation is required", {
+  if (invitation.dialogClosed !== true)
+    throw new CliError("INVALID_ARGUMENT", "the invitation dialog must close after the request", {
       exitCode: 2,
     });
   return e;
