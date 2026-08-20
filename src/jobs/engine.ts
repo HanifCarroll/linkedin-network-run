@@ -767,7 +767,8 @@ export class JobsEngine {
         job.status !== "sent" &&
         job.message === null,
     );
-    const job = id === undefined ? candidates[0] : candidates.find((candidate) => candidate.id === id);
+    const job =
+      id === undefined ? candidates[0] : candidates.find((candidate) => candidate.id === id);
     if (job === undefined) {
       if (id !== undefined)
         throw new CliError("JOB_NOT_ELIGIBLE", `job ${id} is not an eligible application handoff`, {
@@ -802,7 +803,8 @@ export class JobsEngine {
         checkpoint: {
           required: true,
           command: "jobs applied",
-          action: "After the operator submits successfully on the external ATS, record the durable application checkpoint with jobs applied --id JOB_ID --application-url APPLICATION_URL.",
+          action:
+            "After the operator submits successfully on the external ATS, record the durable application checkpoint with jobs applied --id JOB_ID --application-url APPLICATION_URL.",
         },
         stopPoints: [
           "STOP on any unknown application question; do not guess.",
