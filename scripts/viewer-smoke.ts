@@ -52,6 +52,16 @@ try {
   if (response === undefined || !response.ok) throw new Error("viewer did not start");
   const html = await response.text();
   if (!html.includes("Outreach Review Queue")) throw new Error("viewer shell missing");
+  const directApplication = await fetch(
+    `http://127.0.0.1:${port}/api/jobs/viewer-smoke-job/application`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appliedAt: "2026-08-20", applicationUrl: "" }),
+    },
+  );
+  if (directApplication.status !== 400)
+    throw new Error(`direct job exposed application checkpoint: ${directApplication.status}`);
   const jobs = await fetch(`http://127.0.0.1:${port}/api/jobs`);
   if ((await jobs.json()).ok !== true) throw new Error("jobs endpoint envelope missing");
   const draft = await fetch(`http://127.0.0.1:${port}/api/jobs/viewer-smoke-job/draft`, {

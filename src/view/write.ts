@@ -4,6 +4,7 @@ import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsEngine } from "../jobs/engine.ts";
 import { REVIEW_DECISIONS, type ReviewDecision } from "../jobs/types.ts";
+import { outreachKindFor } from "./grouping.ts";
 import { viewerStateDir } from "./state.ts";
 
 const headers = { "content-type": "application/json; charset=utf-8" };
@@ -98,6 +99,24 @@ export const writeReview = (r: Request, id: string) =>
       new Date().toISOString(),
       replaceId as string | undefined,
     );
+  });
+export const writeApplication = (r: Request, id: string) =>
+  write(r, (e, v) => {
+    const job = e.requireJob(id);
+    if (outreachKindFor(job) !== "application_followup")
+      throw new CliError(
+        "INVALID_ARGUMENT",
+        "application checkpoint is only available for application-follow-up jobs",
+      );
+    if (typeof v.appliedAt !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v.appliedAt))
+      throw new CliError("INVALID_ARGUMENT", "appliedAt must be a YYYY-MM-DD date");
+    if (v.applicationUrl !== undefined && typeof v.applicationUrl !== "string")
+      throw new CliError("INVALID_ARGUMENT", "applicationUrl must be a string");
+    return (
+      e as JobsEngine & {
+        recordApplied(id: string, applicationUrl: string, appliedAt: string, now: string): unknown;
+      }
+    ).recordApplied(id, v.applicationUrl ?? "", v.appliedAt, new Date().toISOString());
   });
 export const writeGroupReview = (r: Request, id: string) =>
   write(r, (e, v) => {

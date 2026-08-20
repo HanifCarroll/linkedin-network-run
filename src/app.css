@@ -239,6 +239,42 @@ input[type="search"]:focus {
   display: block;
   font-weight: 650;
 }
+.reminder span {
+  display: block;
+}
+.application-checkpoint {
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--s2);
+  background: var(--surface-inset);
+}
+.application-checkpoint h3 {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.application-checkpoint label {
+  display: block;
+  margin-top: var(--s2);
+  font-size: 13px;
+}
+.application-checkpoint input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font: inherit;
+}
+.application-checkpoint .optional {
+  color: var(--ink-3);
+}
+.application-recorded {
+  color: var(--ink-2);
+  font-size: 14px;
+}
 
 .role-url {
   color: var(--ink);

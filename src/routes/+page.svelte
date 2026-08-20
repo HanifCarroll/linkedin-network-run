@@ -8,9 +8,9 @@ import {
   messageOwnerId,
   draftActionFor,
   groupOutreachKind,
+  outreachKindFor,
   outreachKindLabel,
   sectionCounts,
-  showsApplicationReminder,
   visibleGroups,
 } from "$view/grouping";
 onMount(() => {
@@ -338,9 +338,25 @@ onMount(() => {
       skipped: "rejected",
       sent: "sent",
     }[bucket];
-    const reminderHtml = showsApplicationReminder(group.jobs)
-      ? `<div class="reminder"><strong>Apply first, then send this application note the same day or next day.</strong> Keep it brief: name the role and company, include one specific relevant proof, and don't ask for a call. No message is sent from this page.</div>`
-      : "";
+    const kind = outreachKindFor(primary);
+    const routeHtml =
+      kind === "application_followup"
+        ? `<div class="reminder"><strong>Route: Apply first</strong><span>After your application is recorded, review and send an application follow-up.</span></div>`
+        : `<div class="reminder"><strong>Route: Direct/full-time</strong><span>Do not apply. Offer a short contract bridge while they hire.</span></div>`;
+    const appliedAt = primary.appliedAt ?? "";
+    const applicationUrl = primary.applicationUrl ?? "";
+    const applicationHtml =
+      kind === "application_followup"
+        ? `<div class="application-checkpoint">
+            <h3>Application checkpoint</h3>
+            ${appliedAt ? `<div class="application-recorded">Applied ${esc(appliedAt)}${applicationUrl ? ` · <a class="role-url" href="${esc(applicationUrl)}" target="_blank" rel="noopener">Application ↗</a>` : ""}</div>` : ""}
+            <label for="application-date">Application date</label>
+            <input type="date" id="application-date" value="${esc(appliedAt)}">
+            <label for="application-url">Application link <span class="optional">(optional)</span></label>
+            <input type="url" id="application-url" placeholder="https://…" value="${esc(applicationUrl)}">
+            <div class="draft-actions"><button data-action="record-applied" class="primary">${appliedAt ? "Update application" : "Mark applied"}</button></div>
+          </div>`
+        : "";
     const draftHtml = action.editable
       ? `<div class="draft">
           <h3>Draft message</h3>
@@ -382,7 +398,8 @@ onMount(() => {
       </div>
       ${rolesHtml}
       ${fitBrief}
-      ${reminderHtml}
+      ${routeHtml}
+      ${applicationHtml}
       ${draftHtml}
       ${summaryHtml}
       ${descHtml}
@@ -511,6 +528,23 @@ onMount(() => {
   }
   function bodyVal() {
     return el("draft-body").value;
+  }
+  async function recordApplied() {
+    const group = selectedGroup();
+    const primary = group ? primaryOf(group) : null;
+    if (!primary || outreachKindFor(primary) !== "application_followup") return;
+    try {
+      const data = await post(`/api/jobs/${encodeURIComponent(primary.id)}/application`, {
+        appliedAt: el("application-date").value,
+        applicationUrl: el("application-url").value,
+      });
+      state.jobs = state.jobs.map((job) => (job.id === primary.id ? data : job));
+      refreshGroups();
+      renderAll();
+      flash("Application recorded");
+    } catch (e) {
+      flashError(e.message);
+    }
   }
   function currentPrimaryId() {
     const g = selectedGroup();
@@ -703,6 +737,7 @@ onMount(() => {
     if (action === "approve") return approve();
     if (action === "skip") return skipPerson();
     if (action === "return") return returnPerson();
+    if (action === "record-applied") return recordApplied();
   });
   el("detail").addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
