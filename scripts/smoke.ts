@@ -1310,6 +1310,32 @@ try {
         "2026-08-03T10:10:00Z",
       );
       if (receipt.completedAt === null) throw new Error("Instantly receipt did not complete");
+      const replay = engine.record(
+        {
+          prospectId,
+          email: "one@example.com",
+          leadId: "lead-1",
+          campaignStopOnReply: true,
+        },
+        "2026-08-03T10:10:30Z",
+      );
+      if (replay.updatedAt !== receipt.updatedAt)
+        throw new Error("Instantly identical completed receipt replay was not a no-op");
+      let receiptConflict = false;
+      try {
+        engine.record(
+          {
+            prospectId,
+            email: "different@example.com",
+            leadId: "lead-1",
+            campaignStopOnReply: true,
+          },
+          "2026-08-03T10:11:00Z",
+        );
+      } catch (error) {
+        receiptConflict = error instanceof CliError && error.code === "INSTANTLY_HANDOFF_COMPLETE";
+      }
+      if (!receiptConflict) throw new Error("Instantly conflicting completed replay was accepted");
     } finally {
       opened.database.close();
     }

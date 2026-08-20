@@ -790,12 +790,30 @@ export async function jobsInstantlyRecord(
       exitCode: 2,
     });
   const p = payload as Record<string, unknown>;
+  const allowed = new Set([
+    "email",
+    "emails",
+    "noEmail",
+    "campaignId",
+    "leadId",
+    "enrichmentId",
+    "campaignStopOnReply",
+    "error",
+  ]);
+  if (Object.keys(p).some((key) => !allowed.has(key)))
+    throw new CliError("INVALID_ARGUMENT", "Instantly receipt contains an unknown field", {
+      exitCode: 2,
+    });
   const emails = p.emails;
   if (
     emails !== undefined &&
     (!Array.isArray(emails) || emails.length !== 1 || typeof emails[0] !== "string")
   )
     throw new CliError("INSTANTLY_AMBIGUOUS_EMAIL", "receipt must contain zero or one work email", {
+      exitCode: 2,
+    });
+  if (typeof p.email === "string" && emails !== undefined)
+    throw new CliError("INSTANTLY_AMBIGUOUS_EMAIL", "use email or emails, not both", {
       exitCode: 2,
     });
   const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));

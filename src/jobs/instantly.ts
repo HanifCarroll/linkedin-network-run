@@ -93,12 +93,34 @@ export class InstantlyHandoffEngine {
       throw new CliError("INSTANTLY_CAMPAIGN_CONFLICT", "campaign ID conflicts with the handoff", {
         exitCode: 2,
       });
-    if (current.completed_at !== null)
+    if (current.completed_at !== null) {
+      const sameNoEmail = input.noEmail === true && current.no_email === 1;
+      const sameEnrollment =
+        input.email === current.email &&
+        input.leadId === current.lead_id &&
+        input.campaignStopOnReply === true &&
+        current.campaign_stop_on_reply === 1 &&
+        (input.enrichmentId === undefined || input.enrichmentId === current.enrichment_id);
+      if (sameNoEmail || sameEnrollment) return rowToReceipt(current);
       throw new CliError(
         "INSTANTLY_HANDOFF_COMPLETE",
         `Instantly handoff ${input.prospectId} is already complete`,
         { exitCode: 2 },
       );
+    }
+    const conflicts = [
+      ["email", input.email, current.email],
+      ["lead ID", input.leadId, current.lead_id],
+      ["enrichment ID", input.enrichmentId, current.enrichment_id],
+    ] as const;
+    for (const [label, supplied, stored] of conflicts) {
+      if (supplied !== undefined && stored !== null && supplied !== stored)
+        throw new CliError(
+          "INSTANTLY_RECEIPT_CONFLICT",
+          `${label} conflicts with the stored handoff receipt`,
+          { exitCode: 2 },
+        );
+    }
     if (input.email !== undefined && input.noEmail === true)
       throw new CliError("INSTANTLY_AMBIGUOUS_EMAIL", "email and no-email conflict", {
         exitCode: 2,
