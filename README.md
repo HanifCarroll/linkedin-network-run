@@ -308,7 +308,7 @@ remain Instantly-owned. See `docs/jobs-instantly.md`.
 
 ### Jobs follow-up handoff
 
-After the HubSpot Day 1 action and a completed Instantly receipt, `jobs followup-next` emits a read-only task packet. An email/lead result creates only a HubSpot monitoring task because Instantly owns cadence and stop-on-reply. A no-email result creates associated LinkedIn checks for days 5–7, 8–10, and 12–14; each checks reply and connection state before DM or InMail. Any reply stops the sequence. `jobs followup-record` stores task IDs and explicit company/contact/deal associations locally. It never calls HubSpot, writes CRM, or runs a scheduler. See `docs/jobs-followup.md`.
+After the HubSpot Day 1 action and a completed Instantly receipt, `jobs followup-next` emits a read-only task packet. Automatic selection skips completed follow-up receipts; `--id` may inspect one. An email/lead result creates only a HubSpot monitoring task because Instantly owns cadence and stop-on-reply. A no-email result creates associated LinkedIn checks for days 5–7, 8–10, and 12–14; each checks reply and connection state before DM or InMail and stops/completes the remaining tasks on reply. Tasks include exact HubSpot properties, stable markers, owner `96636780`, and due timestamps anchored to the later Day 1 receipt. `jobs followup-record` stores task IDs and explicit company/contact/deal associations locally. It never calls HubSpot, writes CRM, or runs a scheduler. See `docs/jobs-followup.md`.
 
 `jobs applied --id JOB_ID [--application-url URL] [--applied-at ISO]` records the application
 checkpoint for application-followup jobs (the timestamp defaults to now).

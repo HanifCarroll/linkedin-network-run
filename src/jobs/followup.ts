@@ -49,7 +49,7 @@ export class JobsFollowupEngine {
       jobId === undefined
         ? this.database
             .query<HubSpotRow, []>(
-              "SELECT h.* FROM hubspot_imports h JOIN instantly_handoffs i ON i.job_id = h.job_id WHERE h.completed_at IS NOT NULL AND i.completed_at IS NOT NULL ORDER BY h.created_at, h.prospect_id LIMIT 1",
+              "SELECT h.* FROM hubspot_imports h JOIN instantly_handoffs i ON i.job_id = h.job_id WHERE h.completed_at IS NOT NULL AND i.completed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM jobs_followup_receipts f WHERE f.prospect_id = h.prospect_id AND f.completed_at IS NOT NULL) ORDER BY h.created_at, h.prospect_id LIMIT 1",
             )
             .get()
         : (this.database
@@ -190,31 +190,82 @@ function packet(
       exitCode: 2,
     });
   const associations = { companyId: hs.company_id, contactId: hs.contact_id, dealId: hs.deal_id };
+  const anchor = new Date(
+    Math.max(Date.parse(hs.completed_at ?? ""), Date.parse(inst.completed_at ?? "")),
+  );
+  if (Number.isNaN(anchor.getTime()))
+    throw new CliError(
+      "FOLLOWUP_ANCHOR_INVALID",
+      "Day 1 receipts need valid completion timestamps",
+      { exitCode: 2 },
+    );
+  const task = (
+    stage: string,
+    timing: string,
+    offset: number,
+    type: "TODO" | "LINKED_IN_MESSAGE",
+    action: string,
+  ) => {
+    const marker = `${hs.prospect_id}:followup:${stage}`;
+    const subject = email
+      ? `Monitor reply: ${person.name} at ${job.company.trim()}`
+      : `LinkedIn follow-up (${timing}): ${person.name} at ${job.company.trim()}`;
+    return {
+      stage,
+      timing,
+      marker,
+      subject,
+      type,
+      associations,
+      properties: {
+        hs_task_body: [
+          `Follow-up marker: ${marker}`,
+          `LinkedIn: ${person.profileUrl}`,
+          `Job: ${job.postingUrl}`,
+          action,
+        ].join("\n"),
+        hs_task_subject: subject,
+        hs_task_status: "NOT_STARTED",
+        hs_task_type: type,
+        hubspot_owner_id: "96636780",
+        hs_timestamp: new Date(anchor.getTime() + offset * 86_400_000).toISOString(),
+      },
+      action,
+    };
+  };
   const tasks = email
     ? [
-        {
-          stage: "monitor",
-          timing: "After Day 1",
-          subject: `Monitor reply: ${person.name} at ${job.company.trim()}`,
-          type: "TODO",
-          associations,
-          action:
-            "Check Instantly reply/stop_on_reply status; do not create or send a duplicate email.",
-        },
+        task(
+          "monitor",
+          "Day 5",
+          5,
+          "TODO",
+          "Check Instantly reply/stop_on_reply status; do not create or send a duplicate email.",
+        ),
       ]
     : [
-        ["day-5-7", "Days 5-7"],
-        ["day-8-10", "Days 8-10"],
-        ["day-12-14", "Days 12-14"],
-      ].map(([stage, timing]) => ({
-        stage,
-        timing,
-        subject: `LinkedIn follow-up (${timing}): ${person.name} at ${job.company.trim()}`,
-        type: "TODO",
-        associations,
-        action:
-          "Check for any reply first; if connected, send a DM, otherwise send InMail. Stop the sequence on any reply.",
-      }));
+        task(
+          "day-5-7",
+          "Days 5-7",
+          5,
+          "LINKED_IN_MESSAGE",
+          "Check for any reply; if there is one, stop and complete all remaining follow-up tasks. Check connection state before action: send a DM only when connected, otherwise send InMail.",
+        ),
+        task(
+          "day-8-10",
+          "Days 8-10",
+          8,
+          "LINKED_IN_MESSAGE",
+          "Check for any reply; if there is one, stop and complete all remaining follow-up tasks. Check connection state before action: send a DM only when connected, otherwise send InMail.",
+        ),
+        task(
+          "day-12-14",
+          "Days 12-14",
+          12,
+          "LINKED_IN_MESSAGE",
+          "Check for any reply; if there is one, stop and complete all remaining follow-up tasks. Check connection state before action: send a DM only when connected, otherwise send InMail.",
+        ),
+      ];
   return {
     command: "jobs followup-next",
     state: existing?.completed_at ? "complete" : "pending",

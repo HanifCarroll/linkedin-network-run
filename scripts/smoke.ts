@@ -3223,7 +3223,16 @@ try {
     jobsFollowupNext: async (input) => {
       if (input.id !== "111") throw new Error("followup-next did not parse --id");
       calls.push("jobs followup-next");
-      return { found: false };
+      return {
+        found: true,
+        packet: {
+          hubspot: {
+            tasks: [
+              { properties: { hs_task_status: "NOT_STARTED", hubspot_owner_id: "96636780" } },
+            ],
+          },
+        },
+      };
     },
     jobsFollowupRecord: async (input) => {
       if (input.prospectId !== `co:need-led:v1:${"x".repeat(64)}`)
