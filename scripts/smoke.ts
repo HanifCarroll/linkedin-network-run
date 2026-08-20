@@ -3210,7 +3210,8 @@ try {
       return { complete: false };
     },
     jobsInstantlyNext: async (input) => {
-      if (input.id !== "111") throw new Error("instantly-next did not parse --id");
+      if (input.id !== "111" || input.campaignId !== "campaign-1")
+        throw new Error("instantly-next did not parse --id and --campaign-id");
       calls.push("jobs instantly-next");
       return { found: false };
     },
@@ -3250,6 +3251,7 @@ try {
     },
   };
   await writeFile(join(root, "capture-payload.json"), JSON.stringify({ elements: [] }));
+  await writeFile(join(root, "instantly-receipt.json"), JSON.stringify({ noEmail: true }));
   await writeFile(join(root, "followup-receipt.json"), JSON.stringify({ tasks: [] }));
   const commands: readonly (readonly string[])[] = [
     ["--json", "network", "status"],
@@ -3369,6 +3371,16 @@ try {
     ["--json", "jobs", "contract-outreach-prepare", "--allow-send", "--id", "111"],
     ["--json", "jobs", "contract-outreach-record", "--payload", "-"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],
+    ["--json", "jobs", "instantly-next", "--id", "111", "--campaign-id", "campaign-1"],
+    [
+      "--json",
+      "jobs",
+      "instantly-record",
+      "--prospect-id",
+      "co:instantly:v1:x",
+      "--payload",
+      join(root, "instantly-receipt.json"),
+    ],
     ["--json", "jobs", "followup-next", "--id", "111"],
     [
       "--json",
