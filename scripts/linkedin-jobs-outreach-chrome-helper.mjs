@@ -150,7 +150,7 @@ export async function sendAndRecordJobMessage(tab, config) {
 
 /** Caller-owned connection-request handoff. It observes a request caused by visible UI only. */
 export async function sendContractOutreachInvitation(tab, config) {
-  if (!config || config.route !== "application_followup")
+  if (!config || !["direct", "application_followup"].includes(config.route))
     return { ok: false, reason: "contract-route-required" };
   if (
     typeof config.endpointUrl !== "string" ||

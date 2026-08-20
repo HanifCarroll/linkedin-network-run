@@ -43,21 +43,23 @@ function current(database: Database, id: string | undefined) {
           .approvedDrafts()
           .find(
             (candidate) =>
-              outreachKindFor(candidate) === "application_followup" && candidate.appliedAt !== null,
+              outreachKindFor(candidate) === "direct" ||
+              (outreachKindFor(candidate) === "application_followup" &&
+                candidate.appliedAt !== null),
           )
       : new JobsEngine(database).requireJob(id);
   if (!job)
-    throw new CliError("JOBS_NOTHING_TO_SEND", "no approved contract prospects to send", {
+    throw new CliError("JOBS_NOTHING_TO_SEND", "no approved prospects to send", {
       exitCode: 2,
     });
   if (job.status !== "drafted" || job.review !== "approved")
     throw new CliError("JOBS_NOT_APPROVED", `job ${job.id} is not an approved draft`, {
       exitCode: 2,
     });
-  if (outreachKindFor(job) !== "application_followup" || job.appliedAt === null)
+  if (outreachKindFor(job) === "application_followup" && job.appliedAt === null)
     throw new CliError(
       "JOBS_CONTRACT_APPLICATION_REQUIRED",
-      `job ${job.id} is not an applied contract prospect`,
+      `job ${job.id} requires jobs applied before contract outreach`,
       { exitCode: 2 },
     );
   const recipient = recipientProfileUrl(job);
@@ -72,13 +74,24 @@ export function prepareContractOutreach(database: Database, id: string | undefin
   const { job, recipient, fingerprint: draftFingerprint } = current(database, id);
   const open = database
     .query<{ attempt_id: string }, [string]>(
-      "SELECT attempt_id FROM jobs_contract_outreach_receipts WHERE job_id = ? AND state IN ('prepared','possible')",
+      "SELECT attempt_id FROM jobs_contract_outreach_receipts WHERE recipient_url = ? AND state IN ('prepared','possible')",
     )
-    .get(job.id);
+    .get(recipient);
   if (open)
     throw new CliError(
       "JOBS_CONTRACT_OUTREACH_RECONCILIATION_REQUIRED",
       `job ${job.id} has unresolved invitation attempt ${open.attempt_id}`,
+      { exitCode: 2 },
+    );
+  const duplicate = database
+    .query<{ attempt_id: string }, [string]>(
+      "SELECT attempt_id FROM jobs_contract_outreach_receipts WHERE recipient_url = ? AND state = 'confirmed'",
+    )
+    .get(recipient);
+  if (duplicate)
+    throw new CliError(
+      "JOBS_CONTRACT_OUTREACH_RECIPIENT_DUPLICATE",
+      `recipient ${recipient} already has a confirmed invitation`,
       { exitCode: 2 },
     );
   const attemptId = `jobs-contract-outreach-v1:${randomUUID()}`;
@@ -91,10 +104,12 @@ export function prepareContractOutreach(database: Database, id: string | undefin
     attemptId,
     createdAt: now,
     jobId: job.id,
-    route: "application_followup",
+    route: outreachKindFor(job),
     recipientUrl: recipient,
     recipientName: job.hiringTeam[0]?.name ?? "",
-    note: job.message,
+    ...(job.message !== null && job.message.length <= 300
+      ? { note: job.message }
+      : { note: null, noteNeeded: true, noteMaxLength: 300 }),
     draftFingerprint,
     action: "visible LinkedIn Connect/Send invitation",
     evidenceContract: "connection-request-exact-endpoint-plus-pending-v1",
@@ -136,7 +151,18 @@ function evidence(
   exact(e, ["request", "invitation"], "evidence");
   const request = object(e.request, "evidence.request");
   const invitation = object(e.invitation, "evidence.invitation");
-  exact(request, ["method", "url", "status", "bodySha256"], "evidence.request");
+  if (
+    Object.keys(request).some(
+      (key) => !["method", "url", "status", "bodySha256", "recipientUrn"].includes(key),
+    )
+  )
+    throw new CliError("INVALID_ARGUMENT", "evidence.request contains an unknown field", {
+      exitCode: 2,
+    });
+  if (["method", "url", "status", "bodySha256"].some((key) => !Object.hasOwn(request, key)))
+    throw new CliError("INVALID_ARGUMENT", "evidence.request is missing a required field", {
+      exitCode: 2,
+    });
   exact(invitation, ["pending", "profileUrl"], "evidence.invitation");
   if (
     request.method !== "POST" ||
@@ -205,10 +231,10 @@ export function recordContractOutreach(
       "unknown contract outreach attempt",
       { exitCode: 2 },
     );
-  const { job, recipient, fingerprint: currentFingerprint } = current(database, jobId);
+  const { job, fingerprint: currentFingerprint } = current(database, jobId);
   if (
     row.job_id !== jobId ||
-    value.route !== "application_followup" ||
+    value.route !== outreachKindFor(job) ||
     value.draftFingerprint !== currentFingerprint ||
     row.draft_fingerprint !== currentFingerprint
   )
@@ -240,7 +266,5 @@ export function recordContractOutreach(
       "UPDATE jobs_contract_outreach_receipts SET state=?,evidence_json=?,updated_at=? WHERE attempt_id=?",
     )
     .run(String(state), serialized, now, attemptId);
-  if (complete) new JobsEngine(database).markSent(job.id, now);
-  void recipient;
   return { attemptId, jobId, state, idempotent: false };
 }

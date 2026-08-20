@@ -2285,6 +2285,29 @@ try {
       if (engine.approvedDrafts()[0]?.id !== "send-contract-job") {
         throw new Error("applied contract draft did not enter send eligibility");
       }
+      engine.upsertJobs(
+        [
+          {
+            id: "send-direct-job",
+            title: "Product Engineer",
+            company: "Direct Co",
+            location: "Remote",
+            postingUrl: "https://www.linkedin.com/jobs/view/send-direct-job/",
+            hiringTeam: [
+              {
+                name: "Direct Manager",
+                profileUrl: "https://www.linkedin.com/in/direct-manager/",
+                degree: "2nd",
+                headline: "Hiring manager",
+              },
+            ],
+            hasHiringTeam: true,
+          },
+        ],
+        "2026-08-03T12:04:30Z",
+      );
+      engine.storeDraft("send-direct-job", "Direct role", "Short note", "2026-08-03T12:04:31Z");
+      engine.setReview("send-direct-job", "approved", "2026-08-03T12:04:32Z");
     } finally {
       reopened.database.close();
     }
@@ -2365,6 +2388,38 @@ try {
         )
           throw error;
       }
+      const directPacket = prepareContractOutreach(
+        invitationDb.database,
+        "send-direct-job",
+        "2026-08-03T12:05:06Z",
+      );
+      if (directPacket.route !== "direct" || directPacket.note !== "Short note")
+        throw new Error("direct invitation packet contract failed");
+      recordContractOutreach(
+        invitationDb.database,
+        {
+          attemptId: directPacket.attemptId,
+          jobId: directPacket.jobId,
+          route: directPacket.route,
+          draftFingerprint: directPacket.draftFingerprint,
+          state: "confirmed",
+          evidence: {
+            request: {
+              method: "POST",
+              url: "https://www.linkedin.com/learned-later",
+              status: 201,
+              bodySha256: "x",
+              recipientUrn: "urn:li:fsd_profile:direct",
+            },
+            invitation: { pending: true, profileUrl: directPacket.recipientUrl },
+          },
+        },
+        "2026-08-03T12:05:07Z",
+        { urls: ["https://www.linkedin.com/learned-later"], requireRecipientUrn: true },
+      );
+      const directRow = new JobsEngine(invitationDb.database).requireJob("send-direct-job");
+      if (directRow.status === "sent")
+        throw new Error("connection confirmation incorrectly marked job sent");
     } finally {
       invitationDb.database.close();
     }

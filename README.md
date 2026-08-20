@@ -323,11 +323,14 @@ needed to populate the exact DM and InMail endpoint patterns and any observable 
 binding in the caller's LinkedIn account.
 
 `jobs contract-outreach-prepare --allow-send [--id JOB_ID]` is the separate connection-request
-path for an approved, applied contract prospect. It reserves before the caller acts; the companion
+path for an approved prospect. Direct jobs are eligible immediately; application-followup jobs
+still require `jobs applied`. It reserves before the caller acts; the companion
 `scripts/linkedin-jobs-outreach-chrome-helper.mjs` observes the exact POST caused by visible Connect
 UI and confirms the visible Pending state. It never replays that request. `contract-outreach-record`
 requires bounded request evidence plus the matching visible confirmation; unresolved possible
-attempts block retry and `proven_no_send` is the only release. The production endpoint allowlist is
+attempts block retry and `proven_no_send` is the only release. This invitation is not the final
+DM/InMail/email and does not mark the job sent. Stored outreach text is used as an invitation note
+only when it is at most 300 characters; otherwise the packet emits `noteNeeded` and no note. The production endpoint allowlist is
 empty until a live spike learns and reviews the exact account-specific contract, so production
 recording fails closed today.
 
