@@ -349,7 +349,9 @@ Use `--json` for the stable `{ "ok": true, "data": ... }` or
 
 Staffing intake now begins with the account search. The supported contract is United States,
 Staffing and Recruiting, 11–50 and 51–200 employees, with a non-empty, run-bound keyword query.
-The source URL records the exact query used for each run:
+Open Sales Navigator at `/sales/home`, then open the account search through its filters or saved
+searches. The helper is armed before the visible action that loads the results. The captured account
+request must match the run's exact filters and keywords before it can be stored:
 
 ```sh
 linkedin-tools salesnav staffing account-capture-start --run-id ID \
@@ -363,11 +365,25 @@ linkedin-tools salesnav staffing account-qualify-record --run-id ID \
   --organization-id ID --fit kept --evidence '{}' --unknowns '[]' \
   --reason 'Relevant staffing firm' --policy-version staffing-account-v1
 linkedin-tools salesnav staffing account-people-candidates --run-id ID
+linkedin-tools salesnav staffing account-people-capture-start --run-id PEOPLE_RUN \
+  --account-run-id ACCOUNT_RUN --organization-id ORG_ID \
+  --source-url 'https://www.linkedin.com/sales/search/people?query=(filters:List((type:CURRENT_COMPANY,values:List((id:ACCOUNT_ID,selectionType:INCLUDED)))))'
+linkedin-tools salesnav staffing account-people-capture-ingest --run-id PEOPLE_RUN --start 0 \
+  --payload - --source-url '<same-company-scoped-url>' --response-url '<scoped-lead-response-url>'
+linkedin-tools salesnav staffing account-people-capture-finish --run-id PEOPLE_RUN --state complete
+linkedin-tools salesnav staffing account-people-normalize --run-id PEOPLE_RUN
+linkedin-tools salesnav staffing account-people-next --run-id PEOPLE_RUN
+linkedin-tools salesnav staffing account-people-review --run-id PEOPLE_RUN --person-id PERSON_ID --review approved --evidence '{}'
 linkedin-tools salesnav staffing account-status --run-id ID
 ```
 
 Review the firm's account evidence, LinkedIn company page, and website before recording the
-qualification. The people-search commands above remain available for contact selection at kept firms.
+qualification. People capture is only allowed for a kept account and only accepts a company-scoped
+lead-search response. Selection uses fixed lane role order and stable tie-breaking, returning one
+primary and at most one backup. Local review is approve/reject only; it does not draft, send, or call
+HubSpot. A future dry CRM handoff must lookup-before-create the organization by LinkedIn company URL,
+the person by normalized LinkedIn profile URL, and record the company-contact association;
+no CRM identifiers or writes are implemented here.
 
 ### Sales Navigator studio lane
 
@@ -379,7 +395,8 @@ record manual evidence:
 
 ```sh
 linkedin-tools salesnav studio account-capture-start --run-id ID \
-  --source-url '<approved-studio-account-search-url>'
+  --source-url 'https://www.linkedin.com/sales/search/company?savedSearchId=2006497026' \
+  --keyword-query '<approved-studio-query>'
 linkedin-tools salesnav studio account-capture-ingest --run-id ID --start 0 \
   --payload - --source-url '<same-url>' --response-url '<captured-account-response-url>'
 linkedin-tools salesnav studio account-capture-finish --run-id ID --state complete

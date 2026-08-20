@@ -34,8 +34,12 @@ export async function pipeRawBodyToCli(body, args, executable = cliPath) {
   const child = spawn(executable, args, { stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk) => (stdout += chunk));
-  child.stderr.on("data", (chunk) => (stderr += chunk));
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
   child.stdin.end(body);
   const status = await new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -84,7 +88,9 @@ export async function captureAndIngestSalesNavPage(tab, action, config) {
   const actionPromise = Promise.resolve().then(action);
   const responses = new Map();
   let actionDone = false;
-  actionPromise.finally(() => (actionDone = true));
+  actionPromise.finally(() => {
+    actionDone = true;
+  });
 
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const batch = await cdp.readEvents({

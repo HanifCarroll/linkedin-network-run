@@ -27,13 +27,20 @@ export type SalesNavInput = {
     | "account-qualify-next"
     | "account-qualify-record"
     | "account-people-candidates"
-    | "firm-research-record";
+    | "firm-research-record"
+    | "account-people-capture-start"
+    | "account-people-capture-ingest"
+    | "account-people-capture-finish"
+    | "account-people-normalize"
+    | "account-people-next"
+    | "account-people-review";
   readonly lane?: SalesNavLane;
   readonly stateDir: string;
   readonly runId: string;
   readonly sourceUrl?: string;
   readonly checkpointJson?: string;
   readonly searchConfigJson?: string;
+  readonly keywordQuery?: string;
   readonly start?: number;
   readonly payloadPath?: string;
   readonly responseUrl?: string;
@@ -51,6 +58,9 @@ export type SalesNavInput = {
   readonly services?: string;
   readonly concreteFact?: string;
   readonly reviewedAt?: string;
+  readonly accountRunId?: string;
+  readonly personId?: string;
+  readonly review?: "needs_review" | "approved" | "rejected";
 };
 
 const fail = (code: string, message: string): never => {

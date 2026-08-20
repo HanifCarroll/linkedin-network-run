@@ -139,7 +139,9 @@ export function parseJobSnapshot(snapshot, expected = {}) {
   const company = titleParts.length > 1 ? titleParts.pop() : "";
   const title = titleParts.join(" | ");
   const metaIndex = lines.findIndex((line) =>
-    /·\s*(?:just now|\d+\s+(?:minute|hour|day|week|month)s?\s+ago|today|yesterday)/i.test(line),
+    /·\s*(?:reposted\s+)?(?:just now|\d+\s+(?:minute|hour|day|week|month)s?\s+ago|today|yesterday)/i.test(
+      line,
+    ),
   );
   const meta = metaIndex >= 0 ? lines[metaIndex] : "";
   const metaParts = meta
@@ -147,7 +149,8 @@ export function parseJobSnapshot(snapshot, expected = {}) {
     .map((part) => part.trim())
     .filter(Boolean);
   const location = metaParts[0] ?? "";
-  const postedAt = metaParts.find((part) => /ago|today|yesterday|just now/i.test(part)) ?? "";
+  const postedAt =
+    metaParts.find((part) => /(?:reposted\s+)?(?:ago|today|yesterday|just now)/i.test(part)) ?? "";
   const applicantCount =
     metaParts.find((part) => /applicant|people clicked apply|person clicked apply/i.test(part)) ??
     "";
@@ -433,10 +436,7 @@ function scopedDescription(strings) {
     content.shift();
     while (content.length && content[0].length < 80) content.shift();
   }
-  return content
-    .join("\n")
-    .trim()
-    .slice(0, 50_000);
+  return content.join("\n").trim().slice(0, 50_000);
 }
 function parseFlightContacts(strings) {
   const members = [];
@@ -551,7 +551,8 @@ export function parseScopedRsc(responses = []) {
           value,
         ),
     )
-    .slice(0, 20);
+    .slice(0, 20)
+    .map((value) => value.slice(0, 1000));
   return {
     description,
     companyEvidence,

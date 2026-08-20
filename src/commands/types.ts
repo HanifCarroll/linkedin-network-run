@@ -264,6 +264,12 @@ export type ParsedInvocation =
         | "salesnav staffing account-qualify-record"
         | "salesnav staffing account-people-candidates"
         | "salesnav staffing firm-research-record"
+        | "salesnav staffing account-people-capture-start"
+        | "salesnav staffing account-people-capture-ingest"
+        | "salesnav staffing account-people-capture-finish"
+        | "salesnav staffing account-people-normalize"
+        | "salesnav staffing account-people-next"
+        | "salesnav staffing account-people-review"
         | "salesnav studio capture-start"
         | "salesnav studio capture-ingest"
         | "salesnav studio capture-finish"
@@ -278,7 +284,13 @@ export type ParsedInvocation =
         | "salesnav studio account-qualify-next"
         | "salesnav studio account-qualify-record"
         | "salesnav studio account-people-candidates"
-        | "salesnav studio firm-research-record";
+        | "salesnav studio firm-research-record"
+        | "salesnav studio account-people-capture-start"
+        | "salesnav studio account-people-capture-ingest"
+        | "salesnav studio account-people-capture-finish"
+        | "salesnav studio account-people-normalize"
+        | "salesnav studio account-people-next"
+        | "salesnav studio account-people-review";
       readonly input: SalesNavInput;
     }
   | { readonly kind: "command"; readonly command: "doctor"; readonly input: DoctorInput }

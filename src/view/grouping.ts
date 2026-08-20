@@ -207,7 +207,7 @@ function updatedOf(job: JobRow): number {
 
 const KIND_LABEL: Record<OutreachKind, string> = {
   direct: "Direct",
-  application_followup: "Applied",
+  application_followup: "Apply + follow up",
 };
 
 /** Compact badge label for a section kind. */
@@ -217,7 +217,8 @@ export function outreachKindLabel(kind: OutreachKind): string {
 
 const KIND_SEARCH: Record<OutreachKind, string> = {
   direct: "direct outreach",
-  application_followup: "applied application follow-up application followup",
+  application_followup:
+    "apply follow up application route application follow-up application followup",
 };
 
 /** Lowercased searchable text for one recipient group. Covers the person,

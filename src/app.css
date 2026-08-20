@@ -252,6 +252,48 @@ input[type="search"]:focus {
   text-decoration-color: var(--accent);
 }
 
+.salesnav-review {
+  margin: 0 24px 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.sn-person {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.sn-person-main {
+  max-width: 760px;
+}
+.sn-person-kicker {
+  color: var(--ink-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sn-person-main p {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.sn-person-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sn-person-actions a {
+  color: var(--ink);
+  font-size: 13px;
+}
+.sn-person button {
+  margin-left: 0;
+}
+
 main {
   flex: 1;
   display: grid;
@@ -397,35 +439,102 @@ main {
 }
 
 .detail {
-  padding: var(--s5) var(--s6) var(--s6);
+  padding: 28px 40px var(--s6);
+}
+.detail-head {
+  max-width: 900px;
+}
+.detail-kicker {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.person-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
 }
 .detail-head h2 {
-  font-size: 32px;
+  font-size: clamp(30px, 3vw, 40px);
   font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: var(--s3) 0 var(--s1);
-  line-height: 1.25;
+  letter-spacing: -0.035em;
+  margin: 0;
+  line-height: 1.08;
 }
 .detail-head .company {
-  font-size: 18px;
-  font-weight: 500;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.35;
+  margin-top: var(--s2);
 }
-.detail-head .loc {
+.detail-head .company span {
   color: var(--ink-3);
-  font-size: 15px;
-  margin-top: 2px;
+  font-weight: 450;
+}
+.person-context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px var(--s3);
+  color: var(--ink-3);
+  font-size: 14px;
+  margin-top: var(--s2);
+}
+.person-context span + span::before {
+  content: "·";
+  margin-right: var(--s3);
+  color: var(--ink-4);
 }
 .detail-head .open {
   display: inline-flex;
-  margin-top: var(--s3);
+  align-items: center;
+  min-height: 36px;
+  padding: 5px 12px;
+  border: 1px solid var(--ink);
+  border-radius: var(--s2);
   color: var(--ink);
-  text-decoration: underline 2px color-mix(in srgb, var(--accent) 70%, transparent);
-  text-underline-offset: 3px;
-  font-weight: 500;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 650;
 }
 .detail-head .open:hover {
-  color: var(--ink);
-  text-decoration-color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-ink);
+}
+.detail-actions {
+  margin-top: var(--s3);
+}
+
+.work-brief {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--s2);
+  overflow: hidden;
+  background: var(--line);
+}
+.work-brief > div {
+  display: grid;
+  gap: 1px;
+  padding: 10px 12px;
+  background: var(--surface-inset);
+}
+.work-brief span {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.work-brief strong {
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
 }
 
 .status {
@@ -455,15 +564,15 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s2);
-  margin-top: var(--s3);
+  margin-top: 10px;
   align-items: center;
 }
 .fact {
   display: inline-flex;
   align-items: center;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 2px 10px;
+  padding: 3px 9px;
   border-radius: 4px;
   color: var(--ink-2);
   background: #fff;
@@ -480,6 +589,11 @@ main {
   box-shadow: none;
   padding: 0 2px;
   font-weight: 500;
+}
+.activity {
+  color: var(--ink-3);
+  font-size: 13px;
+  margin-top: var(--s2);
 }
 
 .description {
@@ -640,15 +754,31 @@ main {
 }
 .team .roles li {
   display: block;
-  padding: var(--s3) var(--s2);
+  padding: var(--s3) var(--s4);
   cursor: pointer;
   border-radius: var(--s2);
+  border: 1px solid var(--line-soft);
+  background: #fff;
 }
 .team .roles li:hover {
   background: rgba(0, 0, 0, 0.03);
 }
 .team .roles li.current {
   background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+.team .role-top {
+  display: flex;
+  gap: var(--s3);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.team .role-badges,
+.team .role-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
 }
 .team .roles li:focus-visible {
   outline: 2px solid var(--accent);
@@ -675,6 +805,11 @@ main {
   align-items: center;
   flex-wrap: wrap;
   margin-top: 3px;
+}
+.team .role-footer {
+  justify-content: space-between;
+  margin-top: var(--s2);
+  min-height: 22px;
 }
 .team .role-owner {
   color: var(--ink-3);
@@ -849,6 +984,15 @@ main {
   }
   .detail {
     padding: var(--s4);
+  }
+  .work-brief {
+    grid-template-columns: 1fr;
+  }
+  .team .role-top {
+    display: block;
+  }
+  .team .role-badges {
+    margin-top: var(--s1);
   }
   .row-side {
     flex-wrap: wrap;

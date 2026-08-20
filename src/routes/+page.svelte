@@ -25,24 +25,33 @@ onMount(() => {
       /[&<>"']/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
     );
+  const jsonArray = (value) => {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  };
 
   const SECTION_LABELS = {
     all: "All outreach",
     direct: "Direct outreach",
-    application_followup: "Application follow-up",
+    application_followup: "Apply + follow up",
   };
   const SECTIONS = ["all", "direct", "application_followup"];
   const FILTERS = [
+    { key: "all", label: "All" },
     { key: "needs_review", label: "Pending" },
     { key: "approved", label: "Approved" },
     { key: "skipped", label: "Rejected" },
     { key: "sent", label: "Sent" },
-    { key: "all", label: "All" },
   ];
   const state = {
     jobs: [],
+    people: [],
     groups: [],
-    section: "direct",
+    section: "all",
     filter: "needs_review",
     query: "",
     selectedKey: null,
@@ -90,7 +99,28 @@ onMount(() => {
   }
 
   function defaultsActive() {
-    return state.query === "" && state.filter === "needs_review" && state.section === "direct";
+    return state.query === "" && state.filter === "needs_review" && state.section === "all";
+  }
+
+  function restoreFilterState() {
+    const params = new URLSearchParams(window.location.search);
+    const section = params.get("section");
+    const filter = params.get("status");
+    state.section = SECTIONS.includes(section) ? section : "all";
+    state.filter = FILTERS.some((item) => item.key === filter) ? filter : "needs_review";
+    state.query = (params.get("q") ?? "").trim();
+    el("search").value = state.query;
+  }
+
+  function persistFilterState(mode = "replace") {
+    const url = new URL(window.location.href);
+    if (state.section === "all") url.searchParams.delete("section");
+    else url.searchParams.set("section", state.section);
+    if (state.filter === "needs_review") url.searchParams.delete("status");
+    else url.searchParams.set("status", state.filter);
+    if (state.query === "") url.searchParams.delete("q");
+    else url.searchParams.set("q", state.query);
+    window.history[`${mode}State`]({}, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
   function badge(deg) {
@@ -231,10 +261,12 @@ onMount(() => {
     const st = roleStateLabel(role);
     const current = role.id === primaryId;
     return `<li data-select-job="${esc(role.id)}" role="button" tabindex="0"${current ? ' class="current"' : ""}>
-      <div class="role-title">${esc(role.title || "—")}${current ? ' <span class="badge rev">Primary</span>' : ""}</div>
+      <div class="role-top">
+        <div class="role-title">${esc(role.title || "—")}</div>
+        <div class="role-badges">${current ? '<span class="badge rev">Primary</span>' : ""}<span class="badge rev ${st.bucket}">${st.label}</span></div>
+      </div>
       <div class="role-company">${esc(role.company || "—")}${role.location ? `<span class="loc"> · ${esc(role.location)}</span>` : ""}</div>
-      <div class="role-state"><span class="badge rev ${st.bucket}">${st.label}</span>${role.id === ownerId ? ` <span class="role-owner">${esc(st.note)}</span>` : ""}</div>
-      <a class="role-url" href="${esc(role.postingUrl)}" target="_blank" rel="noopener">View posting ↗</a>
+      <div class="role-footer">${role.id === ownerId ? `<span class="role-owner">${esc(st.note)}</span>` : ""}<a class="role-url" href="${esc(role.postingUrl)}" target="_blank" rel="noopener">View posting ↗</a></div>
     </li>`;
   }
 
@@ -253,27 +285,29 @@ onMount(() => {
     const ownerId = messageOwnerId(group.jobs);
     const action = draftActionFor(group.jobs, primary.id);
     const rolesHtml = `<div class="team"><h3>Roles for this person <span class="count">${group.jobs.length}</span></h3><ul class="roles">${group.jobs.map((role) => roleChip(role, primary.id, ownerId)).join("")}</ul></div>`;
+    const workBrief =
+      primary.workFocus || primary.productSystem
+        ? `<div class="work-brief">
+            ${primary.workFocus ? `<div><span>Doing</span><strong>${esc(primary.workFocus)}</strong></div>` : ""}
+            ${primary.productSystem ? `<div><span>Building</span><strong>${esc(primary.productSystem)}</strong></div>` : ""}
+          </div>`
+        : "";
     const facts = [
-      primary.workFocus ? `<span class="fact">Doing: ${esc(primary.workFocus)}</span>` : "",
-      primary.productSystem
-        ? `<span class="fact">Building: ${esc(primary.productSystem)}</span>`
-        : "",
       primary.workplaceType ? `<span class="fact">${esc(primary.workplaceType)}</span>` : "",
       primary.employmentType ? `<span class="fact">${esc(primary.employmentType)}</span>` : "",
       primary.matchedTerm
         ? `<span class="fact flag">Matched: ${esc(primary.matchedTerm)}</span>`
         : "",
-      primary.filterReason ? `<span class="fact muted">${esc(primary.filterReason)}</span>` : "",
       primary.applyMethod ? `<span class="fact">${esc(primary.applyMethod)}</span>` : "",
       primary.promoted ? `<span class="fact flag">Promoted</span>` : "",
       primary.activelyReviewing ? `<span class="fact flag">Actively reviewing</span>` : "",
-      primary.postedAt ? `<span class="fact muted">${esc(primary.postedAt)}</span>` : "",
-      primary.applicantCount
-        ? `<span class="fact muted">${esc(primary.applicantCount)}</span>`
-        : "",
     ]
       .filter(Boolean)
       .join("");
+    const activity = [primary.filterReason, primary.postedAt, primary.applicantCount]
+      .filter(Boolean)
+      .map(esc)
+      .join(" · ");
     const benefits = primary.benefits || [];
     const descHtml = primary.description
       ? `<div class="description"><h3>About the job</h3><div class="body">${renderDescription(primary.description)}</div></div>`
@@ -333,14 +367,18 @@ onMount(() => {
         </div>`;
     d.innerHTML = `
       <div class="detail-head">
-        <span class="status ${bucket}">${statusLabel}</span> ${triageBadge(primary)}
-        <h2>${esc(displayName)} ${badge(first?.degree)}</h2>
-        <div class="company">${esc(primary.title || "—")}${primary.company ? ` · ${esc(primary.company)}` : ""}</div>
-        ${primary.location ? `<div class="loc">${esc(primary.location)}</div>` : ""}
-        ${first?.profileUrl ? `<div class="loc"><a class="role-url" href="${esc(first.profileUrl)}" target="_blank" rel="noopener">Hiring profile ↗</a></div>` : ""}
-        ${first?.headline ? `<div class="loc">${esc(first.headline)}</div>` : ""}
+        <div class="detail-kicker"><span class="status ${bucket}">${statusLabel}</span>${triageBadge(primary)}</div>
+        <div class="person-line"><h2>${esc(displayName)}</h2>${badge(first?.degree)}</div>
+        <div class="company">${esc(primary.title || "—")}${primary.company ? ` <span>at</span> ${esc(primary.company)}` : ""}</div>
+        <div class="person-context">
+          ${primary.location ? `<span>${esc(primary.location)}</span>` : ""}
+          ${first?.headline ? `<span>${esc(first.headline)}</span>` : ""}
+          ${first?.profileUrl ? `<a class="role-url" href="${esc(first.profileUrl)}" target="_blank" rel="noopener">Hiring profile ↗</a>` : ""}
+        </div>
+        ${workBrief}
         ${facts ? `<div class="facts">${facts}</div>` : ""}
-        <div><a class="open" href="${esc(primary.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
+        ${activity ? `<div class="activity">${activity}</div>` : ""}
+        <div class="detail-actions"><a class="open" href="${esc(primary.postingUrl)}" target="_blank" rel="noopener">Open posting ↗</a></div>
       </div>
       ${rolesHtml}
       ${fitBrief}
@@ -400,6 +438,61 @@ onMount(() => {
       throw error;
     }
     return payload.data;
+  }
+
+  async function loadPeople() {
+    const res = await fetch("/api/salesnav/people");
+    if (!res.ok) return;
+    const payload = await res.json();
+    state.people = payload?.data ?? [];
+  }
+
+  function renderPeople() {
+    const elPeople = el("salesnav-people");
+    if (!elPeople) return;
+    elPeople.innerHTML = state.people.length
+      ? state.people
+          .map((p) => {
+            const firmBrief = [p.services, p.concreteFact, p.firmReason].filter(Boolean),
+              sourceUrls = jsonArray(p.firmSourceUrls),
+              researchedWebsite = sourceUrls.find((value) => !value.includes("linkedin.com")),
+              unknowns = jsonArray(p.firmUnknowns);
+            return `<article class="sn-person">
+                <div class="sn-person-main">
+                  <div class="sn-person-kicker">${esc(p.lane)} · ${esc(p.slot)}</div>
+                  <strong>${esc(p.name)}</strong>
+                  <div>${esc(p.title)} at ${esc(p.organizationName || p.company)}</div>
+                  ${p.location ? `<small>${esc(p.location)}</small>` : ""}
+                  <p><b>Why this person:</b> ${esc(p.selectionReason || `Matched ${p.matchedRole}`)}</p>
+                  ${firmBrief.length ? `<p><b>Why this firm:</b> ${firmBrief.map(esc).join(" · ")}</p>` : ""}
+                  ${unknowns.length ? `<p><b>Unknowns:</b> ${unknowns.map(esc).join(" · ")}</p>` : ""}
+                </div>
+                <div class="sn-person-actions">
+                  <a href="${esc(p.profileUrl)}" target="_blank" rel="noopener">Profile ↗</a>
+                  ${p.companyUrl ? `<a href="${esc(p.companyUrl)}" target="_blank" rel="noopener">LinkedIn company ↗</a>` : ""}
+                  ${p.websiteUrl || researchedWebsite ? `<a href="${esc(p.websiteUrl || researchedWebsite)}" target="_blank" rel="noopener">Website ↗</a>` : ""}
+                  <button data-sn-review="approved" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">Approve</button>
+                  <button data-sn-review="rejected" data-run="${esc(p.runId)}" data-person="${esc(p.personId)}">Reject</button>
+                </div>
+              </article>`;
+          })
+          .join("")
+      : '<div class="empty">No Sales Navigator people pending.</div>';
+  }
+
+  async function reviewPerson(button) {
+    const res = await fetch(
+      `/api/salesnav/people/${encodeURIComponent(button.dataset.run)}/${encodeURIComponent(button.dataset.person)}/review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ review: button.dataset.snReview }),
+      },
+    );
+    if (!res.ok) return;
+    await loadPeople();
+    renderPeople();
+    flash(button.dataset.snReview === "approved" ? "Approved" : "Rejected");
   }
 
   async function loadJobs() {
@@ -534,6 +627,7 @@ onMount(() => {
 
   el("search").addEventListener("input", (e) => {
     state.query = e.target.value.trim();
+    persistFilterState();
     if (state.selectedKey !== null && !visible().some((g) => g.key === state.selectedKey)) {
       state.selectedKey = visible()[0]?.key ?? null;
     }
@@ -548,6 +642,7 @@ onMount(() => {
     const btn = e.target.closest("[data-section]");
     if (!btn) return;
     state.section = btn.dataset.section;
+    persistFilterState("push");
     state.selectedKey = visible()[0]?.key ?? null;
     renderAll();
   });
@@ -555,6 +650,7 @@ onMount(() => {
     const btn = e.target.closest("[data-filter]");
     if (!btn) return;
     state.filter = btn.dataset.filter;
+    persistFilterState("push");
     state.selectedKey = visible()[0]?.key ?? null;
     renderAll();
   });
@@ -562,8 +658,9 @@ onMount(() => {
     if (!e.target.closest("[data-clear]")) return;
     state.query = "";
     state.filter = "needs_review";
-    state.section = "direct";
+    state.section = "all";
     el("search").value = "";
+    persistFilterState("push");
     state.selectedKey = visible()[0]?.key ?? null;
     renderAll();
   });
@@ -582,6 +679,10 @@ onMount(() => {
     state.selectedKey = row.dataset.key;
     renderList();
     renderDetail();
+  });
+  el("salesnav-people").addEventListener("click", (e) => {
+    const button = e.target.closest("[data-sn-review]");
+    if (button) reviewPerson(button);
   });
   el("detail").addEventListener("click", (e) => {
     if (e.target.closest("a[href]")) return;
@@ -616,8 +717,16 @@ onMount(() => {
     }
   });
 
-  loadJobs()
+  window.addEventListener("popstate", () => {
+    restoreFilterState();
+    state.selectedKey = visible()[0]?.key ?? null;
+    renderAll();
+  });
+
+  restoreFilterState();
+  Promise.all([loadJobs(), loadPeople()])
     .then(() => {
+      renderPeople();
       state.selectedKey =
         sectionGroups().find((g) => bucketFor(g.jobs) === "needs_review")?.key ??
         sectionGroups()[0]?.key ??
@@ -644,6 +753,7 @@ onMount(() => {
 </header>
 <div class="sections" id="sections"></div>
 <div class="filters" id="filters"></div>
+<section class="salesnav-review"><h2>Sales Navigator people</h2><div id="salesnav-people"></div></section>
 <main>
   <section class="list" id="list"></section>
   <section class="detail" id="detail"><div class="empty">Select an opportunity to review</div></section>

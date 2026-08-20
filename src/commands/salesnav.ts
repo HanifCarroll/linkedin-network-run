@@ -3,18 +3,39 @@ import { join } from "node:path";
 import { openDatabase } from "../db/database.ts";
 import { type SalesNavInput, SalesNavStore } from "../salesnav.ts";
 import { SalesNavAccountStore } from "../salesnav-account.ts";
+import { SalesNavPeopleStore } from "../salesnav-people.ts";
 
 export async function salesnav(input: SalesNavInput): Promise<unknown> {
   const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
   try {
     const store = new SalesNavStore(opened.database),
-      account = new SalesNavAccountStore(opened.database);
+      account = new SalesNavAccountStore(opened.database),
+      people = new SalesNavPeopleStore(opened.database);
     const now = new Date().toISOString(),
       prefix = `salesnav ${input.lane ?? "staffing"}`;
     const readBody = () =>
       input.payloadPath === "-"
         ? readFileSync(0, "utf8")
         : readFileSync(input.payloadPath ?? "", "utf8");
+    if (input.command.startsWith("account-people-")) {
+      switch (input.command) {
+        case "account-people-capture-start":
+          return { command: `${prefix} ${input.command}`, run: people.start(input, now) };
+        case "account-people-capture-ingest":
+          return {
+            command: `${prefix} ${input.command}`,
+            ...people.ingest(input, readBody(), now),
+          };
+        case "account-people-capture-finish":
+          return { command: `${prefix} ${input.command}`, run: people.finish(input, now) };
+        case "account-people-normalize":
+          return { command: `${prefix} ${input.command}`, ...people.normalize(input, now) };
+        case "account-people-next":
+          return { command: `${prefix} ${input.command}`, ...people.next(input.runId) };
+        case "account-people-review":
+          return { command: `${prefix} ${input.command}`, ...people.review(input, now) };
+      }
+    }
     if (input.command.startsWith("account-") || input.command === "firm-research-record") {
       switch (input.command) {
         case "account-capture-start":

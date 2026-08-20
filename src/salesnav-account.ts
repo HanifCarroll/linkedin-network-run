@@ -5,6 +5,7 @@ import { inTransaction } from "./db/database.ts";
 import type { SalesNavInput } from "./salesnav.ts";
 
 export const ACCOUNT_PARSER_VERSION = "salesnav-account-v1";
+export const STUDIO_SAVED_SEARCH_ID = "2006497026";
 export const STUDIO_SEARCH_QUERIES = [
   '("product development" OR "software development" OR "web development" OR "application development") NOT (staffing OR recruiting OR "digital marketing")',
   '("product studio" OR "digital product" OR "custom software" OR "web application") NOT (staffing OR recruiting OR "digital marketing")',
@@ -112,49 +113,73 @@ const accountSearchKeywords = (query: string): string => {
   return keywords.length <= 500 && !hasControlCharacter ? keywords : "";
 };
 
-export function accountSearchDetails(
-  value: string,
-): {
+type AccountSearchDetails = {
   lane: "staffing" | "studio";
   keywordQuery: string;
   searchConfig: Record<string, unknown>;
-} | null {
+};
+
+const detailsFromQuery = (query: string): AccountSearchDetails | null => {
+  const keywords = accountSearchKeywords(query);
+  if (!query.includes("keywords:") || keywords.length === 0) return null;
+  if (
+    exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C", "D"]) &&
+    exactSet(filterIds(query, "INDUSTRY"), ["104"]) &&
+    exactSet(filterIds(query, "REGION"), ["103644278"])
+  )
+    return {
+      lane: "staffing",
+      keywordQuery: keywords,
+      searchConfig: { region: "US", headcount: ["C", "D"], industryIds: ["104"] },
+    };
+  if (
+    STUDIO_SEARCH_QUERIES.includes(keywords as (typeof STUDIO_SEARCH_QUERIES)[number]) &&
+    exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C"]) &&
+    exactSet(filterIds(query, "INDUSTRY"), ["96", "99"]) &&
+    exactSet(filterIds(query, "REGION"), ["103644278"])
+  )
+    return {
+      lane: "studio",
+      keywordQuery: keywords,
+      searchConfig: STUDIO_SEARCH_CONFIG as unknown as Record<string, unknown>,
+    };
+  return null;
+};
+
+export function accountSearchDetails(
+  value: string,
+  expectedLane?: "staffing" | "studio",
+  expectedKeywordQuery?: string,
+): AccountSearchDetails | null {
   try {
     const u = new URL(value),
       query = decodeQuery(u.searchParams.get("query") ?? "");
-    const keywords = accountSearchKeywords(query);
     if (
-      !(
-        u.protocol === "https:" &&
-        u.hostname === "www.linkedin.com" &&
-        u.pathname === "/sales/search/company" &&
-        query.includes("keywords:")
-      )
+      u.protocol !== "https:" ||
+      u.hostname !== "www.linkedin.com" ||
+      u.pathname !== "/sales/search/company"
     )
       return null;
+    const details = query
+      ? detailsFromQuery(query)
+      : u.searchParams.get("savedSearchId") === STUDIO_SAVED_SEARCH_ID &&
+          expectedLane === "studio" &&
+          STUDIO_SEARCH_QUERIES.includes(
+            expectedKeywordQuery as (typeof STUDIO_SEARCH_QUERIES)[number],
+          )
+        ? {
+            lane: "studio" as const,
+            keywordQuery: expectedKeywordQuery ?? "",
+            searchConfig: STUDIO_SEARCH_CONFIG as unknown as Record<string, unknown>,
+          }
+        : null;
     if (
-      exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C", "D"]) &&
-      exactSet(filterIds(query, "INDUSTRY"), ["104"]) &&
-      exactSet(filterIds(query, "REGION"), ["103644278"]) &&
-      keywords.length > 0
+      !details ||
+      (expectedLane !== undefined && details.lane !== expectedLane) ||
+      (expectedKeywordQuery !== undefined && details.keywordQuery !== expectedKeywordQuery)
     )
-      return {
-        lane: "staffing",
-        keywordQuery: keywords,
-        searchConfig: { region: "US", headcount: ["C", "D"], industryIds: ["104"] },
-      };
-    if (
-      STUDIO_SEARCH_QUERIES.includes(keywords as (typeof STUDIO_SEARCH_QUERIES)[number]) &&
-      exactSet(filterIds(query, "COMPANY_HEADCOUNT"), ["C"]) &&
-      exactSet(filterIds(query, "INDUSTRY"), ["96", "7"]) &&
-      exactSet(filterIds(query, "REGION"), ["103644278"])
-    )
-      return {
-        lane: "studio",
-        keywordQuery: keywords,
-        searchConfig: STUDIO_SEARCH_CONFIG as unknown as Record<string, unknown>,
-      };
-    return null;
+      return null;
+    return details;
   } catch {
     return null;
   }
@@ -179,6 +204,18 @@ export function isAccountResponseUrl(value: string, start: number): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+export function accountResponseSearchDetails(
+  value: string,
+  start: number,
+): AccountSearchDetails | null {
+  if (!isAccountResponseUrl(value, start)) return null;
+  try {
+    return detailsFromQuery(decodeQuery(new URL(value).searchParams.get("query") ?? ""));
+  } catch {
+    return null;
   }
 }
 
@@ -212,7 +249,7 @@ export class SalesNavAccountStore {
     return row;
   }
   start(input: SalesNavInput, now: string): Row {
-    const details = accountSearchDetails(input.sourceUrl ?? "");
+    const details = accountSearchDetails(input.sourceUrl ?? "", input.lane, input.keywordQuery);
     if (!details || (input.lane && input.lane !== details.lane))
       return fail("SALESNAV_WRONG_SEARCH", "source URL must match the account search contract");
     const checkpoint = input.checkpointJson
@@ -254,7 +291,14 @@ export class SalesNavAccountStore {
     const start = input.start ?? -1;
     if (input.sourceUrl !== run.source_url)
       fail("SALESNAV_SOURCE_CONFLICT", "ingest source URL differs from run");
-    if (!isAccountResponseUrl(input.responseUrl ?? "", start))
+    const responseDetails = accountResponseSearchDetails(input.responseUrl ?? "", start);
+    if (
+      !responseDetails ||
+      responseDetails.lane !== String(run.lane) ||
+      responseDetails.keywordQuery !== String(run.keyword_query) ||
+      canonical(responseDetails.searchConfig) !==
+        canonical(JSON.parse(String(run.search_config_json)))
+    )
       fail("SALESNAV_WRONG_RESPONSE", "response URL must match the account-search contract");
     const { paging } = parseBody(body);
     if (paging.start !== start || paging.count !== 25)

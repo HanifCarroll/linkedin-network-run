@@ -24,7 +24,13 @@ import {
   isAccountResponseUrl,
   isAccountSearchUrl,
   SalesNavAccountStore,
+  STUDIO_SAVED_SEARCH_ID,
 } from "../src/salesnav-account.ts";
+import {
+  isAccountPeopleResponseUrl,
+  isAccountPeopleSearchUrl,
+  SalesNavPeopleStore,
+} from "../src/salesnav-people.ts";
 import {
   bucketFor,
   draftActionFor,
@@ -267,8 +273,7 @@ try {
     const accountQuery =
       "(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C),(id:D))),(type:INDUSTRY,values:List((id:104))),(type:REGION,values:List((id:103644278)))),keywords:software OR engineering OR product)";
     const sourceUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(accountQuery))}`;
-    const responseUrl =
-      "https://www.linkedin.com/sales-api/salesApiAccountSearch?q=searchQuery&start=0&count=25&decorationId=com.linkedin.sales.deco.desktop.searchv2.AccountSearchResult-4";
+    const responseUrl = `https://www.linkedin.com/sales-api/salesApiAccountSearch?q=searchQuery&query=${encodeURIComponent(accountQuery)}&start=0&count=25&decorationId=com.linkedin.sales.deco.desktop.searchv2.AccountSearchResult-4`;
     if (!isAccountSearchUrl(sourceUrl) || !isAccountResponseUrl(responseUrl, 0)) {
       throw new Error("Sales Nav account URL contract rejected the supported search");
     }
@@ -401,8 +406,14 @@ try {
 
       const studioKeyword =
         '("product studio" OR "digital product" OR "custom software" OR "web application") NOT (staffing OR recruiting OR "digital marketing")';
-      const studioQuery = `(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C))),(type:INDUSTRY,values:List((id:96),(id:7))),(type:REGION,values:List((id:103644278))),keywords:${studioKeyword})`;
-      const studioUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(studioQuery))}`;
+      const studioQuery = `(filters:List((type:COMPANY_HEADCOUNT,values:List((id:C))),(type:INDUSTRY,values:List((id:96),(id:99))),(type:REGION,values:List((id:103644278)))),keywords:${studioKeyword})`;
+      const studioUrl = `https://www.linkedin.com/sales/search/company?savedSearchId=${STUDIO_SAVED_SEARCH_ID}`;
+      const studioResponseUrl = `https://www.linkedin.com/sales-api/salesApiAccountSearch?q=searchQuery&query=${encodeURIComponent(studioQuery)}&start=0&count=25&decorationId=com.linkedin.sales.deco.desktop.searchv2.AccountSearchResult-4`;
+      const staleStudioQuery = studioQuery.replace("(id:99)", "(id:7)");
+      const staleStudioUrl = `https://www.linkedin.com/sales/search/company?query=${encodeURIComponent(encodeURIComponent(staleStudioQuery))}`;
+      if (isAccountSearchUrl(staleStudioUrl)) {
+        throw new Error("Sales Nav studio search accepted the retired Design Services ID");
+      }
       const studioCliState = join(root, "studio-cli-state");
       const studioCliStart = await invoke(
         [
@@ -414,6 +425,8 @@ try {
           "studio-cli-run",
           "--source-url",
           studioUrl,
+          "--keyword-query",
+          studioKeyword,
           "--state-dir",
           studioCliState,
         ],
@@ -426,6 +439,65 @@ try {
         studioCliStartData?.command !== "salesnav studio account-capture-start"
       ) {
         throw new Error("studio account start did not reach the CLI operation");
+      }
+      const { captureAndIngestSalesNavAccountPage } = await import(
+        // @ts-expect-error smoke imports the caller-owned JS handoff helper directly.
+        "./linkedin-salesnav-account-chrome-helper.mjs"
+      );
+      let accountReads = 0;
+      let accountTabUrl = "https://www.linkedin.com/sales/home";
+      const accountBody = JSON.stringify({
+        metadata: {},
+        elements: [],
+        paging: { start: 0, count: 25, total: 0 },
+      });
+      let cursorReadMethods: string[] | undefined;
+      const accountCdp = {
+        send: async (method: string) =>
+          method === "Fetch.getResponseBody"
+            ? { body: accountBody, base64Encoded: false }
+            : undefined,
+        readEvents: async (options?: { methods?: string[] }) => {
+          if (accountReads === 0) cursorReadMethods = options?.methods;
+          return accountReads++ === 0
+            ? { cursor: 1, events: [] }
+            : {
+                cursor: 2,
+                events: [
+                  {
+                    method: "Fetch.requestPaused",
+                    params: {
+                      requestId: "account-r1",
+                      request: { url: studioResponseUrl },
+                      responseStatusCode: 200,
+                    },
+                  },
+                ],
+              };
+        },
+      };
+      const accountHelperResult = await captureAndIngestSalesNavAccountPage(
+        {
+          url: async () => accountTabUrl,
+          capabilities: { get: async () => accountCdp },
+        },
+        async () => {
+          accountTabUrl = studioUrl;
+        },
+        {
+          runId: "studio-cli-run",
+          start: 0,
+          sourceUrl: studioUrl,
+          stateDir: studioCliState,
+          lane: "studio",
+          keywordQuery: studioKeyword,
+        },
+      );
+      if (!accountHelperResult?.ok) {
+        throw new Error("Sales Nav account helper rejected the home-to-saved-search handoff");
+      }
+      if (cursorReadMethods?.join(",") !== "Fetch.requestPaused") {
+        throw new Error("Sales Nav account helper cursor included unrelated network events");
       }
       const emptyPeopleBoundary = await invoke(
         [
@@ -455,6 +527,7 @@ try {
         stateDir: root,
         runId: "studio-run",
         sourceUrl: studioUrl,
+        keywordQuery: studioKeyword,
       };
       store.start(studioStart, "s0");
       const studioBody = JSON.stringify({
@@ -490,6 +563,29 @@ try {
         conflict = error instanceof CliError && error.code === "SALESNAV_WRONG_SEARCH";
       }
       if (!conflict) throw new Error("studio/staffing lane conflict was accepted");
+      let wrongResponseRejected = false;
+      try {
+        store.ingest(
+          {
+            command: "account-capture-ingest",
+            lane: "studio",
+            stateDir: root,
+            runId: "studio-run",
+            start: 0,
+            payloadPath: "-",
+            sourceUrl: studioUrl,
+            responseUrl,
+          },
+          studioBody,
+          "s1",
+        );
+      } catch (error) {
+        wrongResponseRejected =
+          error instanceof CliError && error.code === "SALESNAV_WRONG_RESPONSE";
+      }
+      if (!wrongResponseRejected) {
+        throw new Error("studio ingest accepted a staffing account-search response");
+      }
       store.ingest(
         {
           command: "account-capture-ingest",
@@ -499,7 +595,7 @@ try {
           start: 0,
           payloadPath: "-",
           sourceUrl: studioUrl,
-          responseUrl,
+          responseUrl: studioResponseUrl,
         },
         studioBody,
         "s1",
@@ -613,6 +709,204 @@ try {
         throw new Error("studio qualification was not lane-scoped");
     } finally {
       db.database.close();
+    }
+  }
+
+  // Company-scoped people capture: exact URL boundary, employer verification,
+  // idempotent normalization, stable ranking, and one approval per firm.
+  {
+    const opened = openDatabase(join(root, "salesnav-people.db"));
+    try {
+      const database = opened.database,
+        accountId = "3544281",
+        organizationId = "org-people",
+        accountRunId = "account-run-people",
+        peopleRunId = "people-run",
+        query = `(filters:List((type:CURRENT_COMPANY,values:List((id:${accountId},selectionType:INCLUDED)))))`,
+        sourceUrl = `https://www.linkedin.com/sales/search/people?query=${encodeURIComponent(query)}`,
+        responseUrl = `https://www.linkedin.com/sales-api/salesApiLeadSearch?q=searchQuery&query=${encodeURIComponent(query)}&start=0&count=25`,
+        wrongQuery = `(filters:List((type:CURRENT_COMPANY,values:List((id:999,selectionType:INCLUDED)))),keywords:${accountId})`,
+        wrongUrl = `https://www.linkedin.com/sales/search/people?query=${encodeURIComponent(wrongQuery)}`,
+        urnQuery = `(filters:List((type:CURRENT_COMPANY,values:List((id:urn%3Ali%3Aorganization%3A${accountId},selectionType:INCLUDED)))))`,
+        urnUrl = `https://www.linkedin.com/sales/search/people?query=${encodeURIComponent(urnQuery)}`;
+      if (
+        !isAccountPeopleSearchUrl(sourceUrl, accountId) ||
+        !isAccountPeopleResponseUrl(responseUrl, 0, accountId)
+      )
+        throw new Error("company-scoped people URL was rejected");
+      if (isAccountPeopleSearchUrl(wrongUrl, accountId))
+        throw new Error("people source accepted an account ID outside CURRENT_COMPANY");
+      if (!isAccountPeopleSearchUrl(urnUrl, accountId))
+        throw new Error("people source rejected Sales Navigator's organization URN filter");
+      database
+        .prepare(
+          "INSERT INTO organizations(id,dedupe_key,normalized_name,name,linkedin_company_url,evidence_json,created_at,updated_at) VALUES(?,?,?,?,?,'{}',?,?)",
+        )
+        .run(
+          organizationId,
+          "people-co",
+          "people co",
+          "People Co",
+          `https://www.linkedin.com/sales/company/${accountId}`,
+          "t0",
+          "t0",
+        );
+      database
+        .prepare(
+          "INSERT INTO salesnav_account_runs(id,source_url,state,checkpoint_json,started_at,updated_at,lane,search_config_json,keyword_query) VALUES(?,?,'complete','{}','t0','t0','staffing','{}','software')",
+        )
+        .run(accountRunId, "https://www.linkedin.com/sales/search/company");
+      database
+        .prepare(
+          "INSERT INTO salesnav_account_observations(run_id,start,account_id,organization_id,observed_at,source_evidence_json) VALUES(?,0,?,?,?,'{}')",
+        )
+        .run(accountRunId, accountId, organizationId, "t0");
+      database
+        .prepare(
+          "INSERT INTO salesnav_account_lane_qualifications(lane,organization_id,source_run_id,account_id,fit,evidence_json,unknowns_json,reason,policy_version,filtered_at) VALUES('staffing',?,?,?,'kept','{}','[]','relevant firm','v1','t0')",
+        )
+        .run(organizationId, accountRunId, accountId);
+      const store = new SalesNavPeopleStore(database);
+      store.start(
+        {
+          command: "account-people-capture-start",
+          lane: "staffing",
+          stateDir: root,
+          runId: peopleRunId,
+          accountRunId,
+          organizationId,
+          sourceUrl,
+        },
+        "t1",
+      );
+      const body = JSON.stringify({
+        paging: { start: 0, count: 25, total: 2 },
+        elements: [
+          {
+            entityUrn: "urn:li:fs_salesProfile:(right,NAME_SEARCH,x)",
+            fullName: "Right Recruiter",
+            geoRegion: "United States",
+            currentPositions: [
+              {
+                title: "Technical Recruiter",
+                companyName: "People Co",
+                companyUrn: `urn:li:fs_salesCompany:${accountId}`,
+                description: "Software and engineering recruiting",
+              },
+            ],
+          },
+          {
+            entityUrn: "urn:li:fs_salesProfile:(wrong,NAME_SEARCH,x)",
+            fullName: "Wrong Recruiter",
+            currentPositions: [
+              {
+                title: "Technical Recruiter",
+                companyName: "Other Co",
+                companyUrn: "urn:li:fs_salesCompany:999",
+                description: "Software recruiting",
+              },
+            ],
+          },
+          {
+            entityUrn: "urn:li:fs_salesProfile:(backup,NAME_SEARCH,x)",
+            fullName: "Backup Recruiter",
+            currentPositions: [
+              {
+                title: "Recruiter",
+                companyName: "People Co",
+                companyUrn: `urn:li:fs_salesCompany:${accountId}`,
+                description: "Technical product recruiting",
+              },
+            ],
+          },
+        ],
+      });
+      store.ingest(
+        {
+          command: "account-people-capture-ingest",
+          lane: "staffing",
+          stateDir: root,
+          runId: peopleRunId,
+          start: 0,
+          sourceUrl,
+          responseUrl,
+        },
+        body,
+        "t2",
+      );
+      store.finish(
+        {
+          command: "account-people-capture-finish",
+          lane: "staffing",
+          stateDir: root,
+          runId: peopleRunId,
+          state: "complete",
+        },
+        "t3",
+      );
+      const first = store.normalize(
+          {
+            command: "account-people-normalize",
+            lane: "staffing",
+            stateDir: root,
+            runId: peopleRunId,
+          },
+          "t4",
+        ),
+        second = store.normalize(
+          {
+            command: "account-people-normalize",
+            lane: "staffing",
+            stateDir: root,
+            runId: peopleRunId,
+          },
+          "t5",
+        );
+      if (
+        first.normalizedPages !== 1 ||
+        first.selected.length !== 2 ||
+        second.normalizedPages !== 0
+      )
+        throw new Error("people normalization was not bounded and idempotent");
+      if (database.query("SELECT 1 FROM salesnav_account_people WHERE sales_nav_id='wrong'").get())
+        throw new Error("person at another company crossed the account boundary");
+      const [primary, backup] = first.selected;
+      if (!primary || !backup)
+        throw new Error("people selection did not return primary and backup");
+      const primaryId = String((primary as Record<string, unknown>).person_id),
+        backupId = String((backup as Record<string, unknown>).person_id);
+      store.review(
+        {
+          command: "account-people-review",
+          lane: "staffing",
+          stateDir: root,
+          runId: peopleRunId,
+          personId: primaryId,
+          review: "approved",
+          evidenceJson: "{}",
+        },
+        "t6",
+      );
+      let conflict = false;
+      try {
+        store.review(
+          {
+            command: "account-people-review",
+            lane: "staffing",
+            stateDir: root,
+            runId: peopleRunId,
+            personId: backupId,
+            review: "approved",
+            evidenceJson: "{}",
+          },
+          "t7",
+        );
+      } catch (error) {
+        conflict = error instanceof CliError && error.code === "SALESNAV_APPROVAL_CONFLICT";
+      }
+      if (!conflict) throw new Error("two people were approved for one firm");
+    } finally {
+      opened.database.close();
     }
   }
 
@@ -2704,6 +2998,7 @@ try {
     ) => {
       outcome: string;
       title: string;
+      postedAt: string;
       description: string;
       hiringTeam: readonly { profileUrl: string }[];
       applicantCount: string;
@@ -2830,7 +3125,11 @@ try {
     },
     {
       component: "aboutTheCompanyForJobDetails",
-      body: '{"companyName":"Acme","industry":"Software"}',
+      body: JSON.stringify({
+        companyName: "Acme",
+        industry: "Software",
+        description: "x".repeat(2_000),
+      }),
     },
     {
       component: "peopleWhoCanHelp",
@@ -2842,7 +3141,8 @@ try {
     rscFixture.externalApplicationUrl !== "https://jobs.example/apply/1" ||
     rscFixture.applicantTrackingSystem !== "Greenhouse" ||
     rscFixture.geoId !== "123" ||
-    rscFixture.hiringTeam[0]?.profileUrl !== "https://linkedin.com/in/jane-doe"
+    rscFixture.hiringTeam[0]?.profileUrl !== "https://linkedin.com/in/jane-doe" ||
+    rscFixture.companyEvidence.some((value: string) => value.length > 1_000)
   )
     throw new Error("RSC enrichment parser failed");
   const flightFixture = parseScopedRsc([
@@ -2942,7 +3242,7 @@ try {
       url: "https://www.linkedin.com/jobs/view/4452992816/",
       text: [
         "Product Engineer",
-        "United States · 1 day ago · 10 people clicked apply",
+        "United States · Reposted 1 day ago · 10 people clicked apply",
         "Remote",
         "Full-time",
         "About the job",
@@ -2958,6 +3258,7 @@ try {
     { id: "4452992816", sourceUrl: "https://www.linkedin.com/jobs/view/4452992816/" },
   );
   if (
+    boundedFixture.postedAt !== "Reposted 1 day ago" ||
     boundedFixture.applicantCount !== "10 people clicked apply" ||
     !boundedFixture.sourceEvidence.includes("Remote") ||
     !boundedFixture.sourceEvidence.includes("Full-time") ||

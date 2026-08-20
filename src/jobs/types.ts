@@ -82,7 +82,11 @@ export type JobEnrichment = {
 };
 
 export type JobEnrichmentResponse = {
-  readonly component: "document" | "aboutTheJob" | "aboutTheCompanyForJobDetails" | "peopleWhoCanHelp";
+  readonly component:
+    | "document"
+    | "aboutTheJob"
+    | "aboutTheCompanyForJobDetails"
+    | "peopleWhoCanHelp";
   readonly sourceUrl: string;
   readonly responseUrl: string;
   readonly status: number;

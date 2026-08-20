@@ -755,6 +755,71 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 21,
+    name: "salesnav_account_people",
+    sql: `
+      CREATE TABLE salesnav_account_people_runs (
+        id TEXT PRIMARY KEY,
+        account_run_id TEXT NOT NULL REFERENCES salesnav_account_runs(id),
+        lane TEXT NOT NULL CHECK(lane IN ('staffing','studio')),
+        organization_id TEXT NOT NULL REFERENCES organizations(id),
+        account_id TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','complete','failed')),
+        started_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT, error TEXT,
+        UNIQUE(account_run_id, organization_id)
+      );
+      CREATE TABLE salesnav_account_people_pages (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_people_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL CHECK(start >= 0), source_url TEXT NOT NULL, response_url TEXT NOT NULL,
+        status INTEGER NOT NULL CHECK(status BETWEEN 200 AND 299), paging_count INTEGER NOT NULL,
+        paging_total INTEGER NOT NULL, parser_version TEXT NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        captured_at TEXT NOT NULL, PRIMARY KEY(run_id,start)
+      );
+      CREATE TABLE salesnav_account_people (
+        sales_nav_id TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES people(id),
+        organization_id TEXT NOT NULL REFERENCES organizations(id), lead_url TEXT NOT NULL UNIQUE,
+        full_name TEXT NOT NULL DEFAULT '', current_title TEXT NOT NULL DEFAULT '',
+        current_company TEXT NOT NULL DEFAULT '', current_description TEXT NOT NULL DEFAULT '',
+        geo_region TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+        source_evidence_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(source_evidence_json)),
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE salesnav_account_people_observations (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_people_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL, sales_nav_id TEXT NOT NULL REFERENCES salesnav_account_people(sales_nav_id),
+        observed_at TEXT NOT NULL, source_evidence_json TEXT NOT NULL CHECK(json_valid(source_evidence_json)),
+        UNIQUE(run_id,start,sales_nav_id)
+      );
+      CREATE TABLE salesnav_account_people_selections (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_people_runs(id) ON DELETE CASCADE,
+        person_id TEXT NOT NULL REFERENCES people(id), slot TEXT NOT NULL CHECK(slot IN ('primary','backup')),
+        rank INTEGER NOT NULL, matched_role TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL,
+        PRIMARY KEY(run_id,slot), UNIQUE(run_id,person_id)
+      );
+      CREATE TABLE salesnav_account_people_reviews (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_people_runs(id) ON DELETE CASCADE,
+        person_id TEXT NOT NULL REFERENCES people(id), review TEXT NOT NULL CHECK(review IN ('needs_review','approved','rejected')),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)), reviewed_at TEXT NOT NULL,
+        PRIMARY KEY(run_id,person_id)
+      );
+      CREATE INDEX salesnav_account_people_pages_run_idx ON salesnav_account_people_pages(run_id,start);
+    `,
+  },
+  {
+    id: 22,
+    name: "salesnav_account_people_normalizations",
+    sql: `
+      CREATE TABLE salesnav_account_people_page_normalizations (
+        run_id TEXT NOT NULL REFERENCES salesnav_account_people_runs(id) ON DELETE CASCADE,
+        start INTEGER NOT NULL,
+        normalized_at TEXT NOT NULL,
+        observed_count INTEGER NOT NULL CHECK(observed_count >= 0),
+        PRIMARY KEY(run_id,start)
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {

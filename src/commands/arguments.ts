@@ -149,12 +149,12 @@ const SALESNAV_HELP = `Usage:
   linkedin-tools [--json] salesnav staffing qualify --run-id ID --policy-version ID
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] salesnav staffing status --run-id ID [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] salesnav staffing account-capture-start --run-id ID --source-url URL
+  linkedin-tools [--json] salesnav staffing account-capture-start --run-id ID --source-url URL [--keyword-query QUERY]
   linkedin-tools [--json] salesnav staffing account-capture-ingest --run-id ID --start N --payload - --source-url URL --response-url URL
   linkedin-tools [--json] salesnav staffing account-capture-finish --run-id ID --state complete|failed
   linkedin-tools [--json] salesnav staffing account-normalize --run-id ID
   linkedin-tools [--json] salesnav staffing account-status --run-id ID
-  linkedin-tools [--json] salesnav studio account-capture-start --run-id ID --source-url URL
+  linkedin-tools [--json] salesnav studio account-capture-start --run-id ID --source-url URL [--keyword-query QUERY]
   linkedin-tools [--json] salesnav studio account-capture-ingest --run-id ID --start N --payload - --source-url URL --response-url URL
   linkedin-tools [--json] salesnav studio account-capture-finish --run-id ID --state complete|failed
   linkedin-tools [--json] salesnav studio account-normalize --run-id ID
@@ -166,6 +166,12 @@ const SALESNAV_HELP = `Usage:
   linkedin-tools [--json] salesnav staffing account-qualify-record --run-id ID --organization-id ID --fit kept|dropped --evidence JSON_OBJECT --unknowns JSON_ARRAY --reason TEXT --policy-version ID
   linkedin-tools [--json] salesnav staffing account-people-candidates --run-id ID
   linkedin-tools [--json] salesnav studio firm-research-record --run-id ID --organization-id ID --source-urls JSON_ARRAY --services TEXT --fact TEXT --unknowns JSON_ARRAY [--reviewed-at ISO]
+  linkedin-tools [--json] salesnav staffing|studio account-people-capture-start --run-id ID --account-run-id ID --organization-id ID --source-url URL
+  linkedin-tools [--json] salesnav staffing|studio account-people-capture-ingest --run-id ID --start N --payload - --source-url URL --response-url URL
+  linkedin-tools [--json] salesnav staffing|studio account-people-capture-finish --run-id ID --state complete|failed
+  linkedin-tools [--json] salesnav staffing|studio account-people-normalize --run-id ID
+  linkedin-tools [--json] salesnav staffing|studio account-people-next --run-id ID
+  linkedin-tools [--json] salesnav staffing|studio account-people-review --run-id ID --person-id ID --review needs_review|approved|rejected [--evidence JSON_OBJECT]
 
 Staffing keeps savedSearchId 2006360906. Studio has exactly two approved US 11-50 IT/design Boolean searches. Account capture requires the lane contract. Capture is caller-owned Chrome handoff;
 the CLI ingests JSON and emits stable JSON envelopes.
@@ -534,6 +540,12 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       "account-qualify-next",
       "account-qualify-record",
       "account-people-candidates",
+      "account-people-capture-start",
+      "account-people-capture-ingest",
+      "account-people-capture-finish",
+      "account-people-normalize",
+      "account-people-next",
+      "account-people-review",
       "firm-research-record",
     ] as const;
     const isSalesNavVerb = (value: string): value is SalesNavInput["command"] =>
@@ -551,58 +563,99 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       ].includes(verb)
     )
       invalid(`unknown salesnav studio command: ${verb}`);
-    const specs: Readonly<Record<string, OptionKind>> = verb.endsWith("capture-start")
-      ? {
-          "--run-id": "value",
-          "--source-url": "value",
-          "--checkpoint": "value",
-          "--state-dir": "value",
-        }
-      : verb.endsWith("capture-ingest")
+    const specs: Readonly<Record<string, OptionKind>> =
+      verb === "account-people-capture-start"
         ? {
             "--run-id": "value",
-            "--start": "value",
-            "--payload": "value",
+            "--account-run-id": "value",
+            "--organization-id": "value",
             "--source-url": "value",
-            "--response-url": "value",
-            "--captured-at": "value",
             "--state-dir": "value",
           }
-        : verb.endsWith("capture-finish")
+        : verb === "account-people-capture-ingest"
           ? {
               "--run-id": "value",
-              "--state": "value",
-              "--checkpoint": "value",
-              "--error": "value",
+              "--start": "value",
+              "--payload": "value",
+              "--source-url": "value",
+              "--response-url": "value",
+              "--captured-at": "value",
               "--state-dir": "value",
             }
-          : verb.endsWith("normalize")
-            ? { "--run-id": "value", "--limit": "value", "--state-dir": "value" }
-            : verb.endsWith("qualify-record")
+          : verb === "account-people-capture-finish"
+            ? {
+                "--run-id": "value",
+                "--state": "value",
+                "--error": "value",
+                "--state-dir": "value",
+              }
+            : verb === "account-people-review"
               ? {
                   "--run-id": "value",
-                  "--organization-id": "value",
-                  "--fit": "value",
+                  "--person-id": "value",
+                  "--review": "value",
                   "--evidence": "value",
-                  "--unknowns": "value",
-                  "--reason": "value",
-                  "--policy-version": "value",
                   "--state-dir": "value",
                 }
-              : verb === "firm-research-record"
+              : verb.endsWith("capture-start")
                 ? {
                     "--run-id": "value",
-                    "--organization-id": "value",
-                    "--source-urls": "value",
-                    "--services": "value",
-                    "--fact": "value",
-                    "--unknowns": "value",
-                    "--reviewed-at": "value",
+                    "--source-url": "value",
+                    "--checkpoint": "value",
+                    ...(verb === "account-capture-start"
+                      ? { "--keyword-query": "value" as const }
+                      : {}),
                     "--state-dir": "value",
                   }
-                : verb === "qualify"
-                  ? { "--run-id": "value", "--policy-version": "value", "--state-dir": "value" }
-                  : { "--run-id": "value", "--state-dir": "value" };
+                : verb.endsWith("capture-ingest")
+                  ? {
+                      "--run-id": "value",
+                      "--start": "value",
+                      "--payload": "value",
+                      "--source-url": "value",
+                      "--response-url": "value",
+                      "--captured-at": "value",
+                      "--state-dir": "value",
+                    }
+                  : verb.endsWith("capture-finish")
+                    ? {
+                        "--run-id": "value",
+                        "--state": "value",
+                        "--checkpoint": "value",
+                        "--error": "value",
+                        "--state-dir": "value",
+                      }
+                    : verb.endsWith("normalize")
+                      ? { "--run-id": "value", "--limit": "value", "--state-dir": "value" }
+                      : verb.endsWith("qualify-record")
+                        ? {
+                            "--run-id": "value",
+                            "--organization-id": "value",
+                            "--fit": "value",
+                            "--evidence": "value",
+                            "--unknowns": "value",
+                            "--reason": "value",
+                            "--policy-version": "value",
+                            "--state-dir": "value",
+                          }
+                        : verb === "firm-research-record"
+                          ? {
+                              "--run-id": "value",
+                              "--organization-id": "value",
+                              "--source-urls": "value",
+                              "--services": "value",
+                              "--fact": "value",
+                              "--unknowns": "value",
+                              "--reviewed-at": "value",
+                              "--state-dir": "value",
+                            }
+                          : verb === "qualify"
+                            ? {
+                                "--run-id": "value",
+                                "--policy-version": "value",
+                                "--state-dir": "value",
+                              }
+                            : { "--run-id": "value", "--state-dir": "value" };
     const options = parseOptions(argv.slice(3), specs);
     const input: Record<string, unknown> = {
       command: verb,
@@ -610,9 +663,37 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       runId: boundedText(required(options, "--run-id"), "--run-id", 200),
       lane,
     };
-    if (verb.endsWith("capture-start")) {
+    if (verb === "account-people-capture-start") {
+      input.sourceUrl = required(options, "--source-url");
+      input.accountRunId = boundedText(
+        required(options, "--account-run-id"),
+        "--account-run-id",
+        200,
+      );
+      input.organizationId = boundedText(
+        required(options, "--organization-id"),
+        "--organization-id",
+        200,
+      );
+    } else if (verb === "account-people-review") {
+      const review = required(options, "--review");
+      if (!["needs_review", "approved", "rejected"].includes(review))
+        invalid("--review must be needs_review, approved, or rejected");
+      input.personId = boundedText(required(options, "--person-id"), "--person-id", 200);
+      input.review = review;
+      input.evidenceJson = options.values.get("--evidence") ?? "{}";
+    } else if (verb === "account-people-next") {
+      // no additional options
+    } else if (verb.endsWith("capture-start")) {
       input.sourceUrl = required(options, "--source-url");
       input.checkpointJson = options.values.get("--checkpoint");
+      if (verb === "account-capture-start") {
+        const keywordQuery = options.values.get("--keyword-query");
+        input.keywordQuery =
+          keywordQuery === undefined
+            ? undefined
+            : boundedText(keywordQuery, "--keyword-query", 500);
+      }
     } else if (verb.endsWith("capture-ingest")) {
       const start = required(options, "--start");
       input.start = start === "0" ? 0 : boundedInteger(start, "--start", 1, 1000000);
