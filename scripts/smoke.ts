@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
 import { parseInvocation } from "../src/commands/arguments.ts";
-import { jobsEnrichNext, jobsEnrichRecord, jobsSend } from "../src/commands/jobs.ts";
+import { jobsDraftNext, jobsEnrichNext, jobsEnrichRecord, jobsSend } from "../src/commands/jobs.ts";
 import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
@@ -2563,6 +2563,97 @@ try {
     }
   }
 
+  // draft-next is a read-only, deterministic companion handoff.
+  {
+    const stateDir = join(root, "draft-next");
+    const db = openDatabase(join(stateDir, "linkedin-tools.db"));
+    const engine = new JobsEngine(db.database);
+    const member = (name: string, id: string) => ({
+      name,
+      profileUrl: `https://www.linkedin.com/in/${id}`,
+      degree: "2nd",
+      headline: "Hiring",
+    });
+    engine.upsertJobs(
+      [
+        {
+          id: "direct",
+          title: "Product Engineer",
+          company: "Acme",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/direct/",
+          hiringTeam: [member("D Person", "d-person")],
+          hasHiringTeam: true,
+        },
+        {
+          id: "applied",
+          title: "Contract Engineer",
+          company: "Beta",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/applied/",
+          hiringTeam: [member("A Person", "a-person")],
+          hasHiringTeam: true,
+        },
+        {
+          id: "blocked",
+          title: "Contract Designer",
+          company: "Gamma",
+          location: "Remote",
+          postingUrl: "https://www.linkedin.com/jobs/view/blocked/",
+          hiringTeam: [member("B Person", "b-person")],
+          hasHiringTeam: true,
+        },
+      ],
+      "2026-08-03T00:00:00Z",
+    );
+    db.database
+      .prepare(
+        "UPDATE jobs SET fit='kept', review='approved', triage_bucket='strong', description='Build a billing dashboard', employment_type=CASE WHEN id IN ('applied','blocked') THEN 'Contract' ELSE employment_type END, skill_matches_json=? WHERE id IN ('direct','applied','blocked')",
+      )
+      .run(JSON.stringify(["billing dashboards"]));
+    engine.recordApplied(
+      "applied",
+      "https://example.test/apply",
+      "2026-08-03",
+      "2026-08-03T00:01:00Z",
+    );
+    db.database.close();
+    const direct = await jobsDraftNext({ stateDir, id: "direct" });
+    if (
+      !(direct as { found: boolean }).found ||
+      (direct as { packet: { job: JobRow } }).packet.job.id !== "direct"
+    )
+      throw new Error("draft-next direct packet failed");
+    const applied = await jobsDraftNext({ stateDir, id: "applied" });
+    if ((applied as { packet: { route: string } }).packet.route !== "application_followup")
+      throw new Error("draft-next applied route failed");
+    const blockedDb = openDatabase(join(stateDir, "linkedin-tools.db"));
+    blockedDb.database
+      .prepare("UPDATE jobs SET message='existing' WHERE id IN ('direct','applied')")
+      .run();
+    blockedDb.database.close();
+    const blockedAuto = await jobsDraftNext({ stateDir });
+    if (
+      (blockedAuto as { found: boolean }).found ||
+      (blockedAuto as { blockedApplications: number }).blockedApplications !== 1
+    )
+      throw new Error("draft-next blocked application count failed");
+    let blocked = false;
+    try {
+      await jobsDraftNext({ stateDir, id: "blocked" });
+    } catch (error) {
+      blocked = error instanceof CliError && error.code === "JOB_NOT_ELIGIBLE";
+    }
+    if (!blocked) throw new Error("draft-next accepted blocked application");
+    let invalidId = false;
+    try {
+      parseInvocation(["jobs", "draft-next", "--id", ""], { now: new Date(), env: {} });
+    } catch (error) {
+      invalidId = error instanceof CliError;
+    }
+    if (!invalidId) throw new Error("draft-next accepted an empty id");
+  }
+
   const calls: string[] = [];
   const fakeOperations: CliOperations = {
     salesnav: async () => ({ ok: true }),
@@ -2680,6 +2771,7 @@ try {
       calls.push("jobs draft");
       return { job: { id: input.id } };
     },
+    jobsDraftNext: async () => ({ found: false, blockedApplications: 0 }),
     jobsApplied: async (input) => {
       if (input.id !== "111" || input.applicationUrl !== "https://example.com/apply") {
         throw new Error("jobs applied did not parse checkpoint");

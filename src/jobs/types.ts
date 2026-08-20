@@ -119,6 +119,8 @@ export type JobsDraftInput = {
   readonly message: string;
 };
 
+export type JobsDraftNextInput = { readonly stateDir: string; readonly id?: string };
+
 export type JobsAppliedInput = {
   readonly stateDir: string;
   readonly id: string;

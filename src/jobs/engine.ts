@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
-import { outreachKindFor } from "../view/grouping.ts";
+import { groupJobs, outreachKindFor, primaryRoleFor } from "../view/grouping.ts";
 import { recipientProfileUrl } from "./recipient.ts";
 import type {
   CapturedJob,
@@ -635,6 +635,95 @@ export class JobsEngine {
       .prepare(`UPDATE jobs SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?`)
       .run(now, now, id);
     return this.requireJob(id);
+  }
+
+  draftNext(id?: string): {
+    readonly packet: {
+      readonly job: JobRow;
+      readonly route: "direct" | "application_followup";
+      readonly person: HiringTeamMember;
+      readonly company: {
+        readonly name: string;
+        readonly profileUrl: string;
+        readonly evidence: readonly string[];
+      };
+      readonly jobEvidence: Record<string, unknown>;
+      readonly writingInstructions: readonly string[];
+    } | null;
+    readonly blockedApplications: number;
+  } {
+    const jobs = this.listJobs({ withHiringTeam: true, fit: "kept" });
+    const groups = groupJobs(jobs).filter((group) => {
+      const primary = primaryRoleFor(group.jobs);
+      return (
+        recipientProfileUrl(primary) !== null &&
+        group.jobs.every((job) => job.status !== "sent" && job.message === null) &&
+        primary.review === "approved" &&
+        primary.triageBucket !== "pending"
+      );
+    });
+    let blockedApplications = 0;
+    for (const group of groups) {
+      const selected =
+        id === undefined ? primaryRoleFor(group.jobs) : group.jobs.find((job) => job.id === id);
+      if (selected === undefined || selected.review !== "approved") continue;
+      const route = outreachKindFor(selected);
+      if (route === "application_followup" && selected.appliedAt === null) {
+        blockedApplications += 1;
+        if (id !== undefined)
+          throw new CliError(
+            "JOB_NOT_ELIGIBLE",
+            `job ${id} requires jobs applied before drafting`,
+            { exitCode: 2 },
+          );
+        continue;
+      }
+      const person = selected.hiringTeam[0];
+      if (person === undefined) continue;
+      const proof =
+        selected.skillMatches[0] ?? selected.responsibilities[0] ?? selected.workSummary;
+      return {
+        blockedApplications,
+        packet: {
+          job: selected,
+          route,
+          person,
+          company: {
+            name: selected.company,
+            profileUrl: selected.companyProfileUrl,
+            evidence: selected.companyEvidence,
+          },
+          jobEvidence: {
+            title: selected.title,
+            company: selected.company,
+            location: selected.location,
+            postingUrl: selected.postingUrl,
+            employmentType: selected.employmentType,
+            description: selected.description,
+            responsibilities: selected.responsibilities,
+            skillMatches: selected.skillMatches,
+            companyEvidence: selected.companyEvidence,
+          },
+          writingInstructions:
+            route === "application_followup"
+              ? [
+                  "Name the role and company.",
+                  `Use one specific stored proof: ${proof || "choose one concrete stored fit detail"}.`,
+                  "Put a name to the application; do not ask about contract help or request a call.",
+                ]
+              : [
+                  "Offer short-term contract help while the full-time role is being filled.",
+                  "Use one concrete stored job or company detail and connect it to one stored proof.",
+                  "Keep it concise and do not invent evidence.",
+                ],
+        },
+      };
+    }
+    if (id !== undefined)
+      throw new CliError("JOB_NOT_ELIGIBLE", `job ${id} is not an eligible draft opportunity`, {
+        exitCode: 2,
+      });
+    return { packet: null, blockedApplications };
   }
 
   triageNext(runId?: string): JobRow | null {

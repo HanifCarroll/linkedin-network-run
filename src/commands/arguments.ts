@@ -16,6 +16,7 @@ import type {
   JobsCheckInput,
   JobsClassifyInput,
   JobsDraftInput,
+  JobsDraftNextInput,
   JobsEnrichNextInput,
   JobsEnrichRecordInput,
   JobsFavoriteInput,
@@ -72,6 +73,7 @@ Commands:
   jobs check             Verify stored postings are still live and drop removed ones
   jobs favorite          Mark collected jobs for review
   jobs draft             Store a drafted subject + message for a job
+  jobs draft-next        Hand one eligible person/role to the companion agent
   jobs send              Send approved drafted messages to hiring team members (--allow-send)
   jobs classify          Set work-focus and product-system phrases for a job
   jobs triage-next       Hand one eligible kept job to agent triage
@@ -208,6 +210,7 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs remove --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--subject "..."]
     [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs draft-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs applied --id JOB_ID [--application-url URL]
     [--applied-at ISO] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
@@ -773,6 +776,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "enrich-next",
         "enrich-record",
         "list",
+        "draft-next",
         "check",
         "favorite",
         "draft",
@@ -1162,6 +1166,15 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       if (ids.length === 0) invalid("jobs remove requires at least one --id");
       const input: JobsRemoveInput = { stateDir: stateDir(options, context), ids };
       return { kind: "command", command: "jobs remove", input };
+    }
+    if (verb === "draft-next") {
+      const options = parseOptions(argv.slice(2), { "--id": "value", "--state-dir": "value" });
+      const id = options.values.get("--id");
+      const input: JobsDraftNextInput = {
+        stateDir: stateDir(options, context),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs draft-next", input };
     }
     if (verb === "draft") {
       const options = parseOptions(argv.slice(2), {

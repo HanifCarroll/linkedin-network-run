@@ -157,6 +157,7 @@ export type JobsDraftInput = {
   readonly subject: string;
   readonly message: string;
 };
+export type JobsDraftNextInput = { readonly stateDir: string; readonly id?: string };
 
 export type JobsAppliedInput = {
   readonly stateDir: string;
@@ -242,6 +243,7 @@ export interface CliOperations {
   jobsFavorite(input: JobsFavoriteInput): Promise<unknown>;
   jobsRemove(input: JobsRemoveInput): Promise<unknown>;
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
+  jobsDraftNext(input: JobsDraftNextInput): Promise<unknown>;
   jobsApplied(input: JobsAppliedInput): Promise<unknown>;
   jobsSend(input: JobsSendInput): Promise<unknown>;
   jobsClassify(input: JobsClassifyInput): Promise<unknown>;
@@ -388,6 +390,11 @@ export type ParsedInvocation =
     }
   | { readonly kind: "command"; readonly command: "jobs remove"; readonly input: JobsRemoveInput }
   | { readonly kind: "command"; readonly command: "jobs draft"; readonly input: JobsDraftInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs draft-next";
+      readonly input: JobsDraftNextInput;
+    }
   | { readonly kind: "command"; readonly command: "jobs applied"; readonly input: JobsAppliedInput }
   | { readonly kind: "command"; readonly command: "jobs send"; readonly input: JobsSendInput }
   | {

@@ -195,9 +195,13 @@ approved + `--allow-send`, and rejection persists across sibling jobs.
 Every hiring-team job gets a draft — there is no pre-draft qualification. Draft once per
 recipient: when several postings list the same person, draft the best-fitting role; the other
 roles are context, not separate messages, and at most one approved/sent message holds per
-person. A draft stores an editable subject line and a body; interior blank lines in the body
-round-trip unchanged, and storing or redrafting returns the job to needs-review. The draft
-template depends on the role's queue section.
+person. `jobs draft-next` is a deterministic, read-only companion handoff for one person and
+one primary role from an approved kept opportunity. It emits stored person/job/company evidence, route-specific writing instructions,
+and `blockedApplications` for unapplied contract follow-ups. It never calls an LLM, stores a draft,
+approves, sends, opens a browser, or touches HubSpot. The companion writes the message, then calls
+`jobs draft`, which stores the draft and returns review to needs-review. A draft stores an editable
+subject line and a body; interior blank lines in the body round-trip unchanged. The draft template
+depends on the role's queue section.
 
 **Direct outreach** uses the existing conversational contract-help pitch (three paragraphs
 separated by one blank line, `\n\n`):

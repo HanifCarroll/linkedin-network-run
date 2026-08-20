@@ -29,6 +29,7 @@ import type {
   JobsCheckInput,
   JobsClassifyInput,
   JobsDraftInput,
+  JobsDraftNextInput,
   JobsEnrichNextInput,
   JobsEnrichRecordInput,
   JobsFavoriteInput,
@@ -607,6 +608,21 @@ export async function jobsApplied(
       (dependencies.now ?? nowDefault)(),
     );
     return { command: "jobs applied", job };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsDraftNext(input: JobsDraftNextInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const result = new JobsEngine(opened.database).draftNext(input.id);
+    return {
+      command: "jobs draft-next",
+      found: result.packet !== null,
+      blockedApplications: result.blockedApplications,
+      ...(result.packet === null ? {} : { packet: result.packet }),
+    };
   } finally {
     opened.database.close();
   }
