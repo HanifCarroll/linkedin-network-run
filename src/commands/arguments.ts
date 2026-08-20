@@ -84,9 +84,9 @@ Commands:
   jobs hubspot-record    Record HubSpot object and association receipts locally
 
 Browser boundary:
-  LinkedIn Jobs CAPTURE ONLY uses the caller-owned Codex Chrome handoff helper; the CLI only
-  ingests captured JSON. Capture commands require no Playwriter or browser session. Enrichment,
-  live-job checks, networking, analytics, and sending stay on their existing paths.
+  LinkedIn Jobs capture, enrichment, and outreach use caller-owned Codex Chrome handoff helpers;
+  the CLI owns durable state and evidence validation. Live-job checks, networking, and analytics
+  remain on their existing Playwriter paths.
 
 Global options:
   --json                  Emit one stable JSON envelope to stdout

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { CliError } from "../core/errors.ts";
 import { outreachKindFor } from "../view/grouping.ts";
 import { JobsEngine, recipientProfileUrl } from "./engine.ts";
+import { normalizeProfileUrl } from "./recipient.ts";
 import type { JobRow } from "./types.ts";
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -23,8 +24,24 @@ const text = (value: unknown, name: string, max: number) => {
   return value.trim();
 };
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[], name: string) => {
-  if (Object.keys(value).some((key) => !keys.includes(key)))
+  if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key)))
     throw new CliError("INVALID_ARGUMENT", `${name} contains an unknown field`, { exitCode: 2 });
+};
+
+const exactKeysWithOptional = (
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  name: string,
+) => {
+  const allowed = [...required, ...optional];
+  if (
+    required.some((key) => !Object.hasOwn(value, key)) ||
+    Object.keys(value).some((key) => !allowed.includes(key))
+  )
+    throw new CliError("INVALID_ARGUMENT", `${name} has missing or unknown fields`, {
+      exitCode: 2,
+    });
 };
 
 function currentJob(database: Database, jobId: string) {
@@ -76,22 +93,37 @@ function validateEvidence(
       );
     return evidence;
   }
+  if (!complete) {
+    exactKeys(evidence, ["commitStarted"], "evidence");
+    if (evidence.commitStarted !== true)
+      throw new CliError("INVALID_ARGUMENT", "possible evidence must mark commitStarted", {
+        exitCode: 2,
+      });
+    return evidence;
+  }
   exactKeys(evidence, ["request", "thread"], "evidence");
   const request = object(evidence.request, "evidence.request");
   const thread = object(evidence.thread, "evidence.thread");
-  const requestKeys =
-    transport === "dm"
-      ? ["method", "url", "status", "bodySha256", "recipientUrn"]
-      : ["method", "url", "status", "bodySha256", "recipientUrn", "subjectSha256"];
-  exactKeys(request, requestKeys, "evidence.request");
+  exactKeysWithOptional(
+    request,
+    ["method", "url", "status", "bodySha256"],
+    ["recipientUrn"],
+    "evidence.request",
+  );
   exactKeys(
     thread,
     transport === "dm"
-      ? ["composerGone", "messageVisible"]
-      : ["composerGone", "messageVisible", "threadVisible"],
+      ? ["composerGone", "messageVisible", "profileUrl", "messageSha256"]
+      : [
+          "composerGone",
+          "messageVisible",
+          "threadVisible",
+          "profileUrl",
+          "messageSha256",
+          "subjectSha256",
+        ],
     "evidence.thread",
   );
-  if (!complete) return evidence;
   if (
     request.method !== "POST" ||
     typeof request.url !== "string" ||
@@ -103,7 +135,7 @@ function validateEvidence(
     typeof request.bodySha256 !== "string"
   )
     throw new CliError("INVALID_ARGUMENT", "request evidence is incomplete", { exitCode: 2 });
-  if (transport === "inmail" && typeof request.subjectSha256 !== "string")
+  if (transport === "inmail" && typeof thread.subjectSha256 !== "string")
     throw new CliError("INVALID_ARGUMENT", "InMail evidence requires subjectSha256", {
       exitCode: 2,
     });
@@ -187,18 +219,10 @@ export function recordChromeSend(
   contracts: ChromeSendContracts = {},
 ) {
   const value = object(payload, "send record");
-  exactKeys(
+  exactKeysWithOptional(
     value,
-    [
-      "attemptId",
-      "jobId",
-      "route",
-      "transport",
-      "recipientUrn",
-      "draftFingerprint",
-      "state",
-      "evidence",
-    ],
+    ["attemptId", "jobId", "route", "transport", "draftFingerprint", "state", "evidence"],
+    ["recipientUrn"],
     "send record",
   );
   const attemptId = text(value.attemptId, "attemptId", 200);
@@ -235,8 +259,10 @@ export function recordChromeSend(
       existing.route === value.route &&
       existing.draft_fingerprint === value.draftFingerprint &&
       existing.evidence_json === JSON.stringify(value.evidence)
-    )
+    ) {
+      if (state === "confirmed") new JobsEngine(database).markSent(jobId, now);
       return { attemptId, jobId, state, idempotent: true };
+    }
     if (
       !(
         existing.state === "prepared" &&
@@ -274,13 +300,28 @@ export function recordChromeSend(
       : object(evidenceRecord.request, "evidence.request").recipientUrn;
   if (
     observedUrn !== undefined &&
-    (typeof observedUrn !== "string" || observedUrn !== value.recipientUrn)
+    (typeof observedUrn !== "string" ||
+      typeof value.recipientUrn !== "string" ||
+      observedUrn !== value.recipientUrn)
   )
     throw new CliError(
       "JOBS_SEND_RECIPIENT_UNBOUND",
       "observed recipient URN does not match the prepared recipient binding",
       { exitCode: 2 },
     );
+  if (state === "confirmed") {
+    const thread = object(evidenceRecord.thread, "evidence.thread");
+    if (
+      normalizeProfileUrl(String(thread.profileUrl ?? "")) !== recipientProfileUrl(job) ||
+      thread.messageSha256 !== sha(job.message ?? "") ||
+      (transport === "inmail" && thread.subjectSha256 !== sha(job.subject))
+    )
+      throw new CliError(
+        "JOBS_SEND_RECIPIENT_UNBOUND",
+        "thread evidence does not match the prepared recipient and draft",
+        { exitCode: 2 },
+      );
+  }
   if (state === "possible") {
     database
       .prepare(
@@ -288,12 +329,14 @@ export function recordChromeSend(
       )
       .run(transport, JSON.stringify(evidence), now, attemptId);
   } else if (state === "confirmed") {
-    database
-      .prepare(
-        "UPDATE jobs_chrome_send_receipts SET transport = ?, state = 'confirmed', evidence_json = ?, updated_at = ? WHERE attempt_id = ? AND state IN ('prepared', 'possible')",
-      )
-      .run(transport, JSON.stringify(evidence), now, attemptId);
-    new JobsEngine(database).markSent(job.id, now);
+    database.transaction(() => {
+      database
+        .prepare(
+          "UPDATE jobs_chrome_send_receipts SET transport = ?, state = 'confirmed', evidence_json = ?, updated_at = ? WHERE attempt_id = ? AND state IN ('prepared', 'possible')",
+        )
+        .run(transport, JSON.stringify(evidence), now, attemptId);
+      new JobsEngine(database).markSent(job.id, now);
+    })();
   } else {
     database
       .prepare(

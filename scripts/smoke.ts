@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2297,10 +2298,7 @@ try {
         draftFingerprint: packet.draftFingerprint,
         transport: "dm",
       };
-      const possible = {
-        request: { method: "POST", url: "", status: 0, bodySha256: "" },
-        thread: { composerGone: false, messageVisible: false },
-      };
+      const possible = { commitStarted: true };
       const recorded = recordChromeSend(
         opened.database,
         { ...base, state: "possible", evidence: possible },
@@ -2320,7 +2318,7 @@ try {
           {
             ...base,
             state: "possible",
-            evidence: { ...possible, thread: { composerGone: true, messageVisible: false } },
+            evidence: { commitStarted: false },
           },
           "2026-08-03T12:03:00Z",
         );
@@ -2341,7 +2339,12 @@ try {
               status: 200,
               bodySha256: "x",
             },
-            thread: { composerGone: true, messageVisible: true },
+            thread: {
+              composerGone: true,
+              messageVisible: true,
+              profileUrl: "https://www.linkedin.com/in/receipt-one/",
+              messageSha256: createHash("sha256").update("Hello").digest("hex"),
+            },
           },
         },
         "2026-08-03T12:04:00Z",
@@ -2385,6 +2388,70 @@ try {
     } finally {
       opened.database.close();
     }
+  }
+
+  // Caller-owned Chrome helper arms observation and persists uncertainty
+  // before the visible mutation. It confirms only the exact configured POST
+  // plus recipient-bound thread evidence.
+  {
+    // @ts-expect-error smoke imports the caller-owned JS handoff helper directly.
+    const { sendJobMessage } = await import("./linkedin-jobs-outreach-chrome-helper.mjs");
+    const events: string[] = [];
+    let reads = 0;
+    const tab = {
+      capabilities: {
+        get: async () => ({
+          send: async () => ({}),
+          readEvents: async () => {
+            reads += 1;
+            if (reads === 1) return { cursor: 1, events: [], truncated: false };
+            return {
+              cursor: 2,
+              truncated: false,
+              events: [
+                {
+                  method: "Network.requestWillBeSent",
+                  params: {
+                    requestId: "request-1",
+                    request: {
+                      method: "POST",
+                      url: "https://www.linkedin.com/voyager/api/fixture-send",
+                      postData: '{"recipient":"urn:li:fsd_profile:123"}',
+                    },
+                  },
+                },
+                {
+                  method: "Network.responseReceived",
+                  params: {
+                    requestId: "request-1",
+                    response: { status: 200 },
+                  },
+                },
+              ],
+            };
+          },
+        }),
+      },
+    };
+    const result = await sendJobMessage(tab, {
+      packet: {
+        recipientUrl: "https://www.linkedin.com/in/fixture",
+        message: "Hello",
+        subject: "",
+      },
+      route: "direct",
+      transport: "dm",
+      endpointUrl: "https://www.linkedin.com/voyager/api/fixture-send",
+      beforeAction: async () => events.push("reserved"),
+      action: async () => events.push("clicked"),
+      threadCheck: async () => ({
+        composerGone: true,
+        messageVisible: true,
+        profileUrl: "https://www.linkedin.com/in/fixture",
+      }),
+    });
+    if (events.join(",") !== "reserved,clicked" || result.state !== "confirmed")
+      throw new Error("Chrome send helper did not reserve before the visible action");
   }
 
   // Capture handoff checks: SQLite owns durable state, repeated pages are a
@@ -3021,6 +3088,8 @@ try {
     ["--json", "jobs", "draft-next", "--id", "111"],
     ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
     ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
+    ["--json", "jobs", "send-prepare", "--allow-send", "--id", "111"],
+    ["--json", "jobs", "send-record", "--payload", "-"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],
     [
       "--json",

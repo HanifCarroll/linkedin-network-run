@@ -159,7 +159,8 @@ flagship-web components, parses their bodies locally, then verifies with two sta
 fills missing or empty component fields; only `fit=kept` jobs are eligible. Raw scoped bodies and provenance
 are stored in SQLite, with bounded size/count validation. A no-team result requires stable DOM plus an
 observed (possibly empty) `peopleWhoCanHelp` response; otherwise the job remains `retry_required`.
-Live-job checks, networking, analytics, and sending remain unchanged;
+Live-job checks, networking, and analytics remain on their existing paths. Jobs sending uses the
+caller-owned Chrome handoff described below;
 triage prioritizes opportunities but never automatically pursues or rejects them.
 Before human review, `jobs triage-next` hands one eligible kept job to an agent. `jobs triage-record`
 stores an evidence-backed `strong`, `possible`, or `weak` fit brief under policy
@@ -297,9 +298,10 @@ It persists a prepared reservation (never job state), returns a unique attempt i
 accepts an explicit exact endpoint URL contract from a live spike; it fails closed without one.
 It never reads cookies or headers, replays private write XHR, creates/closes tabs, or persists state.
 
-Pipe one bounded result to `jobs send-record --payload -`. DM and InMail have separate exact
+The helper records `possible` immediately before the visible Send action, then pipes confirmed
+evidence to `jobs send-record --payload -`. DM and InMail have separate exact
 allowlists; HTTP success alone is never enough. The composer must be gone and the message visible
-in the thread. A prepared or unresolved `possible` receipt keeps the draft unsent but blocks blind retry;
+in the matching recipient's thread. A prepared or unresolved `possible` receipt keeps the draft unsent but blocks blind retry;
 `proven_no_send` safely releases the reservation, and only `confirmed` marks it sent. Replaying the same attempt is a no-op. A live spike is still
 needed to populate the exact DM and InMail endpoint patterns and any observable recipient URN
 binding in the caller's LinkedIn account.

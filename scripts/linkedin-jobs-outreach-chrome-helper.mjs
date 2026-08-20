@@ -16,13 +16,20 @@ const bounded = (value, max = 500) =>
 export async function sendJobMessage(tab, config) {
   if (!config || !["direct", "application_followup"].includes(config.route))
     return { ok: false, reason: "route-required" };
+  if (!config || !["dm", "inmail"].includes(config.transport))
+    return { ok: false, reason: "transport-required" };
   if (typeof config.endpointUrl !== "string" || config.endpointUrl.length < 1)
     return { ok: false, reason: "exact-endpoint-contract-required" };
-  if (typeof config.action !== "function" || typeof config.threadCheck !== "function")
-    return { ok: false, reason: "visible-action-and-thread-check-required" };
+  if (
+    typeof config.beforeAction !== "function" ||
+    typeof config.action !== "function" ||
+    typeof config.threadCheck !== "function"
+  )
+    return { ok: false, reason: "reservation-action-and-thread-check-required" };
   const cdp = await tab.capabilities.get("cdp");
   await cdp.send("Network.enable");
   const armed = await cdp.readEvents({ limit: 1, timeoutMs: 0 });
+  await config.beforeAction();
   await config.action();
   let cursor = armed.cursor;
   let request = null;
@@ -75,7 +82,8 @@ export async function sendJobMessage(tab, config) {
       response.status <= 299 &&
       thread?.composerGone === true &&
       thread?.messageVisible === true &&
-      (config.route === "direct" || thread?.threadVisible === true),
+      bounded(thread?.profileUrl, 1000) === bounded(config.packet.recipientUrl, 1000) &&
+      (config.transport === "dm" || thread?.threadVisible === true),
   );
   return {
     ok: true,
@@ -93,36 +101,49 @@ export async function sendJobMessage(tab, config) {
       thread: {
         composerGone: thread?.composerGone === true,
         messageVisible: thread?.messageVisible === true,
-        ...(config.route === "direct" ? {} : { threadVisible: thread?.threadVisible === true }),
-        ...(config.route === "direct" ? {} : { subjectSha256: sha(config.subject ?? "") }),
+        profileUrl: bounded(thread?.profileUrl, 1000),
+        messageSha256: sha(config.packet.message ?? ""),
+        ...(config.transport === "dm"
+          ? {}
+          : {
+              threadVisible: thread?.threadVisible === true,
+              subjectSha256: sha(config.packet.subject ?? ""),
+            }),
       },
     },
   };
 }
 
 export async function sendAndRecordJobMessage(tab, config) {
-  const result = await sendJobMessage(tab, config);
-  if (!result.ok) return result;
   const packet = config.packet;
-  return pipeRawBodyToCli(
-    JSON.stringify({
-      attemptId: packet.attemptId,
-      jobId: packet.jobId,
-      route: packet.route,
-      transport: config.transport,
-      ...(config.recipientUrn ? { recipientUrn: config.recipientUrn } : {}),
-      draftFingerprint: packet.draftFingerprint,
-      state: result.state,
-      evidence: result.evidence,
-    }),
-    [
-      "--json",
-      "jobs",
-      "send-record",
-      "--payload",
-      "-",
-      ...(config.stateDir ? ["--state-dir", config.stateDir] : []),
-    ],
-    config.executable,
-  );
+  const record = (state, evidence, recipientUrn = config.recipientUrn) =>
+    pipeRawBodyToCli(
+      JSON.stringify({
+        attemptId: packet.attemptId,
+        jobId: packet.jobId,
+        route: packet.route,
+        transport: config.transport,
+        ...(recipientUrn ? { recipientUrn } : {}),
+        draftFingerprint: packet.draftFingerprint,
+        state,
+        evidence,
+      }),
+      [
+        "--json",
+        "jobs",
+        "send-record",
+        "--payload",
+        "-",
+        ...(config.stateDir ? ["--state-dir", config.stateDir] : []),
+      ],
+      config.executable,
+    );
+  const result = await sendJobMessage(tab, {
+    ...config,
+    beforeAction: () => record("possible", { commitStarted: true }),
+  });
+  if (!result.ok) return result;
+  if (result.state === "possible") return result;
+  const observedUrn = result.evidence.request.recipientUrn;
+  return record("confirmed", result.evidence, observedUrn);
 }
