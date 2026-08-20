@@ -18,10 +18,10 @@ hiring-team outreach with the explicit `--allow-send` flag.
 - Use Bun, strict TypeScript, one package, `bun:sqlite`, and one `linkedin-tools` binary.
 - Emit stable `{ "ok": true, "data": ... }` or `{ "ok": false, "error": ... }` JSON envelopes.
 - Reject unknown, duplicate, conflicting, malformed, and out-of-range arguments before dispatch.
-- LinkedIn Jobs capture and direct-page enrichment use caller-owned Codex Chrome handoffs plus CLI SQLite ingest. Direct enrichment is request-first: arm CDP before navigation, retain only the target Document and aboutTheJob/aboutTheCompanyForJobDetails/peopleWhoCanHelp response bodies, parse locally, then verify with stable DOM reads. Never add CLI browser control, browser leases, or cross-automation locks. Jobs liveness checking, networking, analytics, and sending remain on Playwriter.
+- LinkedIn Jobs capture, direct-page enrichment, and outreach use caller-owned Codex Chrome handoffs plus CLI SQLite ingest. Direct enrichment is request-first: arm CDP before navigation, retain only the target Document and aboutTheJob/aboutTheCompanyForJobDetails/peopleWhoCanHelp response bodies, parse locally, then verify with stable DOM reads. Jobs outreach uses jobs send-prepare/send-record; arm before visible UI, retain only bounded request metadata and thread confirmation, never cookies/headers/private write-XHR replay. Never add CLI browser control, browser leases, or cross-automation locks. Jobs liveness checking, networking, and analytics remain on Playwriter.
 - Scheduled browser commands use `--session auto`. Command-owned exact bindings keep network and
   analytics sessions distinct.
-- Real network ticks require the exact `--allow-send` flag.
+- Real network ticks require the exact `--allow-send` flag. Jobs send preparation also requires the exact `--allow-send` flag; send-record is evidence-only.
 - One scheduled tick must continue serially until Done or a typed checkpoint/terminal blocker.
   It walks each source list (open, scroll to load all rows, send to every connectable person with
   5s pacing, paginate), waits 60s for invitations to settle, audits the sent page, resolves
@@ -33,7 +33,7 @@ hiring-team outreach with the explicit `--allow-send` flag.
 - When a new local day starts, park older active runs as missed only when they have zero planned and
   possible sends. If an older run has either, return `NETWORK_PRIOR_DAY_NEEDS_AUDIT` before creating
   a browser session; reconcile that exact earlier date before starting the new day.
-- Never replace a possible send or infer failure from absence.
+- Never replace a possible send or infer failure from absence. Jobs send-prepare reserves one prepared attempt before the caller acts; a handoff without exact transport evidence and thread-visible confirmation remains possible and blocks retry until reconciled. `proven_no_send` is the only safe release; there is no failed terminal state.
 - Migration never applies or writes legacy state.
 - `jobs normalize` processes captured pages one SQLite transaction at a time, deduplicates only by LinkedIn job ID, records page/job provenance, and resumes from completed pages. It never filters by location or fit and never enriches.
 - `jobs filter` requires explicit `--terms` JSON; it never imports or activates `JOB_SEARCH_TERMS`, never uses location, and scopes filtering to jobs observed in the requested run. Unknown freshness is kept and reported. Enrichment/detail may optionally use `--run-id` to process only that run's kept jobs.

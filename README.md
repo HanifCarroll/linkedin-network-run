@@ -27,10 +27,7 @@ The daily target is exactly 30 durable requests, shared across the two configure
 or planned attempts, and a complete final sent-list reconciliation. A possible send is reserved
 until reconciliation proves its outcome.
 
-LinkedIn Jobs result capture and direct-page enrichment use the caller-owned Codex Chrome tab and store durable evidence through
-the CLI. Networking, analytics, Jobs liveness checking, and sending remain on distinct,
-command-bound Playwriter sessions for now. The repository does not implement browser leases or
-cross-automation locks.
+LinkedIn Jobs capture, direct-page enrichment, and outreach use the caller-owned Codex Chrome tab and store bounded evidence through the CLI. Networking, analytics, and Jobs liveness checking remain on distinct, command-bound Playwriter sessions. The repository does not implement browser leases or cross-automation locks.
 
 ## Install and verify
 
@@ -291,17 +288,21 @@ no-ops, conflicting IDs stop the import, and completion requires company, contac
 association receipts. This stage creates a task only; it never sends outreach.
 
 `jobs applied --id JOB_ID [--application-url URL] [--applied-at ISO]` records the application
-checkpoint for application-followup jobs (the timestamp defaults to now). `jobs send` selects approved drafted jobs only (review = approved) and still requires the exact
-`--allow-send` flag. Recipient uniqueness holds across time: approving conflicts with another
-approved draft or an already-sent job for the same hiring-team profile URL (normalized: trim,
-query/hash/trailing slash stripped, case-folded), reported as `DUPLICATE_APPROVED_PROFILE`.
-A defensive duplicate-recipient guard in `jobs send` seeds from already-sent jobs and skips a
-repeat profile without changing state. When a profile has no direct Message button, the send
-script reads the member's id from the profile's static compose anchor, navigates the same page
-to the Sales Navigator lead URL, and sends from the lead page's in-place InMail composer
-(subject + message + Send). It never opens a new tab, because LinkedIn-opened tabs are invisible
-to the playwriter bridge, and it reports a job as sent only when the message is visible in the
-thread after Send.
+checkpoint for application-followup jobs (the timestamp defaults to now).
+
+`jobs send-prepare --allow-send [--id JOB_ID]` reserves exactly one approved
+ drafted job while preserving review, application, hiring-team, and duplicate-recipient guards.
+It persists a prepared reservation (never job state), returns a unique attempt identity, and emits a route copy plus transport evidence contract. The caller-owned
+`scripts/linkedin-jobs-outreach-chrome-helper.mjs` arms CDP before visible UI interaction and
+accepts an explicit exact endpoint URL contract from a live spike; it fails closed without one.
+It never reads cookies or headers, replays private write XHR, creates/closes tabs, or persists state.
+
+Pipe one bounded result to `jobs send-record --payload -`. DM and InMail have separate exact
+allowlists; HTTP success alone is never enough. The composer must be gone and the message visible
+in the thread. A prepared or unresolved `possible` receipt keeps the draft unsent but blocks blind retry;
+`proven_no_send` safely releases the reservation, and only `confirmed` marks it sent. Replaying the same attempt is a no-op. A live spike is still
+needed to populate the exact DM and InMail endpoint patterns and any observable recipient URN
+binding in the caller's LinkedIn account.
 
 ## JSON contract
 

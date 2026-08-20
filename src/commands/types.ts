@@ -173,6 +173,12 @@ export type JobsSendInput = {
   readonly id?: string;
   readonly allowSend: true;
 };
+export type JobsSendPrepareInput = {
+  readonly stateDir: string;
+  readonly id?: string;
+  readonly allowSend: true;
+};
+export type JobsSendRecordInput = { readonly stateDir: string; readonly payloadPath: string };
 
 export type JobsClassifyInput = {
   readonly stateDir: string;
@@ -245,7 +251,8 @@ export interface CliOperations {
   jobsDraft(input: JobsDraftInput): Promise<unknown>;
   jobsDraftNext(input: JobsDraftNextInput): Promise<unknown>;
   jobsApplied(input: JobsAppliedInput): Promise<unknown>;
-  jobsSend(input: JobsSendInput): Promise<unknown>;
+  jobsSendPrepare(input: JobsSendPrepareInput): Promise<unknown>;
+  jobsSendRecord(input: JobsSendRecordInput): Promise<unknown>;
   jobsClassify(input: JobsClassifyInput): Promise<unknown>;
   jobsHubSpotNext(input: JobsHubSpotNextInput): Promise<unknown>;
   jobsTriageNext(input: JobsTriageNextInput): Promise<unknown>;
@@ -396,7 +403,16 @@ export type ParsedInvocation =
       readonly input: JobsDraftNextInput;
     }
   | { readonly kind: "command"; readonly command: "jobs applied"; readonly input: JobsAppliedInput }
-  | { readonly kind: "command"; readonly command: "jobs send"; readonly input: JobsSendInput }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs send-prepare";
+      readonly input: JobsSendPrepareInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs send-record";
+      readonly input: JobsSendRecordInput;
+    }
   | {
       readonly kind: "command";
       readonly command: "jobs classify";

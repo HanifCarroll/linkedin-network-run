@@ -12,10 +12,11 @@ export {
 export type { HubSpotImportReceipt, HubSpotRecordInput } from "./hubspot.ts";
 export type { JobsScriptOutcome } from "./playwriter.ts";
 export { runJobsScript } from "./playwriter.ts";
+export { prepareChromeSend, recordChromeSend } from "./chrome-send.ts";
+export type { ChromeSendContracts } from "./chrome-send.ts";
 export {
   buildCheckLivenessScript,
   buildCleanupTabsScript,
-  buildSendScript,
 } from "./scripts.ts";
 export { JOB_SEARCH_LOCATION, JOB_SEARCH_TERMS } from "./terms.ts";
 export type {

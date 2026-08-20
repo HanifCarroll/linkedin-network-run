@@ -160,8 +160,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsDraftNext(invocation.input);
     case "jobs applied":
       return operations.jobsApplied(invocation.input);
-    case "jobs send":
-      return operations.jobsSend(invocation.input);
+    case "jobs send-prepare":
+      return operations.jobsSendPrepare(invocation.input);
+    case "jobs send-record":
+      return operations.jobsSendRecord(invocation.input);
     case "jobs classify":
       return operations.jobsClassify(invocation.input);
     case "jobs triage-next":

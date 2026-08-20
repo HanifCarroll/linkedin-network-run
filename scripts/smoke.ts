@@ -5,13 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
 import { parseInvocation } from "../src/commands/arguments.ts";
-import { jobsDraftNext, jobsEnrichNext, jobsEnrichRecord, jobsSend } from "../src/commands/jobs.ts";
+import {
+  jobsDraftNext,
+  jobsEnrichNext,
+  jobsEnrichRecord,
+  jobsSendPrepare,
+} from "../src/commands/jobs.ts";
 import type { CliOperations } from "../src/commands/types.ts";
 import { CliError } from "../src/core/errors.ts";
 import { openDatabase } from "../src/db/database.ts";
+import { recordChromeSend } from "../src/jobs/chrome-send.ts";
 import type { JobRow } from "../src/jobs/index.ts";
 import {
-  buildSendScript,
   filterRun,
   HubSpotImportEngine,
   JobsEngine,
@@ -2170,35 +2175,14 @@ try {
       throw new Error("all-section: Direct groups must not show the reminder");
     }
   }
-
-  // Bounded check: jobs send with no approved targets fails before resolving a
-  // browser session (no live browser).
-  {
-    let sessionResolved = false;
-    try {
-      await jobsSend(
-        {
-          stateDir: join(root, "send"),
-          playwriterBin: fakePlaywriter,
-          sessionId: "auto",
-          allowSend: true,
-        },
-        {
-          resolveSession: async () => {
-            sessionResolved = true;
-            return 1;
-          },
-          runScript: async () => {
-            throw new Error("jobs send should not reach the browser");
-          },
-          now: () => "2026-08-03T12:00:00Z",
-        },
-      );
-      throw new Error("jobs send should have thrown for no approved drafts");
-    } catch (error) {
-      if (!(error instanceof CliError) || error.code !== "JOBS_NOTHING_TO_SEND") throw error;
-    }
-    if (sessionResolved) throw new Error("jobs send resolved a session before target validation");
+  try {
+    await jobsSendPrepare(
+      { stateDir: join(root, "send"), allowSend: true },
+      { now: () => "2026-08-03T12:00:00Z" },
+    );
+    throw new Error("jobs send should have thrown for no approved drafts");
+  } catch (error) {
+    if (!(error instanceof CliError) || error.code !== "JOBS_NOTHING_TO_SEND") throw error;
   }
 
   // Bounded temp-state check: a contract follow-up cannot reach browser
@@ -2245,33 +2229,14 @@ try {
     } finally {
       opened.database.close();
     }
-    let sessionResolved = false;
     try {
-      await jobsSend(
-        {
-          stateDir,
-          playwriterBin: fakePlaywriter,
-          sessionId: "auto",
-          allowSend: true,
-          id: "send-contract-job",
-        },
-        {
-          resolveSession: async () => {
-            sessionResolved = true;
-            return 1;
-          },
-          runScript: async () => {
-            throw new Error("contract send should not reach the browser before application");
-          },
-          now: () => "2026-08-03T12:03:00Z",
-        },
+      await jobsSendPrepare(
+        { stateDir, allowSend: true, id: "send-contract-job" },
+        { now: () => "2026-08-03T12:03:00Z" },
       );
       throw new Error("contract send should require an application checkpoint");
     } catch (error) {
       if (!(error instanceof CliError) || error.code !== "JOBS_APPLICATION_REQUIRED") throw error;
-    }
-    if (sessionResolved) {
-      throw new Error("contract send resolved a session before application validation");
     }
     const reopened = openDatabase(join(stateDir, "linkedin-tools.db"));
     try {
@@ -2285,37 +2250,140 @@ try {
     }
   }
 
-  // Bounded static check: the send script binds the executor page (never the
-  // stale carried state.jobsPage), never creates tabs, drives the Sales Nav
-  // lead page, clicks only via bound elementHandles, and reports sent only when
-  // the message needle is visible. No live browser.
+  // Chrome outreach receipt checks: reserve before the handoff, persist
+  // incomplete possible evidence, reject conflicting replays, reconcile, and
+  // release a proven-no-send reservation for a fresh attempt.
   {
-    const { script } = buildSendScript({
-      jobId: "4454027506",
-      memberName: "John Doe",
-      profileUrl: "https://www.linkedin.com/in/john-doe",
-      subject: "Hi",
-      message: "Hello there, this is the proof sentence.",
-    });
-    if (!script.includes("let p=page")) throw new Error("send script must bind the executor page");
-    if (script.includes("state.jobsPage"))
-      throw new Error("send script must not use the stale carried page");
-    if (script.includes("context.newPage")) throw new Error("send script must never create tabs");
-    if (!script.includes("/sales/lead/"))
-      throw new Error("send script must navigate to the Sales Nav lead page");
-    if (!script.includes("Sales Navigator Lead Page"))
-      throw new Error("send script must verify the Sales Nav lead document");
-    if (!script.includes("input[aria-label='Subject (required)']"))
-      throw new Error("send script must use the InMail subject field");
-    if (!script.includes("textarea[aria-label='Type your message here or create draft']"))
-      throw new Error("send script must use the InMail message field");
-    if (!script.includes("elementHandle()") || !script.includes(".click({timeout:")) {
-      throw new Error("send script must click via a bound elementHandle");
-    }
-    if (script.includes("node.click()"))
-      throw new Error("send script must not use an untrusted DOM click");
-    if (!script.includes('out.status=out.confirmed?"sent":"failed"')) {
-      throw new Error("send script must report sent only when the message needle is visible");
+    const stateDir = join(root, "send-receipts");
+    const opened = openDatabase(join(stateDir, "linkedin-tools.db"));
+    try {
+      const engine = new JobsEngine(opened.database);
+      const makeJob = (id: string) => {
+        engine.upsertJobs(
+          [
+            {
+              id,
+              title: "Role",
+              company: "Co",
+              location: "Remote",
+              postingUrl: `https://www.linkedin.com/jobs/view/${id}`,
+              hiringTeam: [
+                {
+                  name: "Pat",
+                  profileUrl: `https://www.linkedin.com/in/${id}/`,
+                  degree: "2nd",
+                  headline: "Hiring",
+                },
+              ],
+              hasHiringTeam: true,
+            },
+          ],
+          "2026-08-03T12:00:00Z",
+        );
+        engine.storeDraft(id, "Hi", "Hello", "2026-08-03T12:00:00Z");
+        engine.setReview(id, "approved", "2026-08-03T12:00:00Z");
+      };
+      makeJob("receipt-one");
+      const packet = (
+        (await jobsSendPrepare(
+          { stateDir, id: "receipt-one", allowSend: true },
+          { now: () => "2026-08-03T12:01:00Z" },
+        )) as { packet: Record<string, unknown> }
+      ).packet;
+      const base = {
+        attemptId: packet.attemptId,
+        jobId: packet.jobId,
+        route: packet.route,
+        draftFingerprint: packet.draftFingerprint,
+        transport: "dm",
+      };
+      const possible = {
+        request: { method: "POST", url: "", status: 0, bodySha256: "" },
+        thread: { composerGone: false, messageVisible: false },
+      };
+      const recorded = recordChromeSend(
+        opened.database,
+        { ...base, state: "possible", evidence: possible },
+        "2026-08-03T12:02:00Z",
+      );
+      if (recorded.state !== "possible") throw new Error("possible receipt was not persisted");
+      try {
+        await jobsSendPrepare({ stateDir, id: "receipt-one", allowSend: true });
+        throw new Error("possible receipt did not block prepare");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "JOBS_SEND_RECONCILIATION_REQUIRED")
+          throw error;
+      }
+      try {
+        recordChromeSend(
+          opened.database,
+          {
+            ...base,
+            state: "possible",
+            evidence: { ...possible, thread: { composerGone: true, messageVisible: false } },
+          },
+          "2026-08-03T12:03:00Z",
+        );
+        throw new Error("conflicting replay was accepted");
+      } catch (error) {
+        if (!(error instanceof CliError) || error.code !== "JOBS_SEND_CONFLICTING_REPLAY")
+          throw error;
+      }
+      recordChromeSend(
+        opened.database,
+        {
+          ...base,
+          state: "confirmed",
+          evidence: {
+            request: {
+              method: "POST",
+              url: "https://example.test/dm",
+              status: 200,
+              bodySha256: "x",
+            },
+            thread: { composerGone: true, messageVisible: true },
+          },
+        },
+        "2026-08-03T12:04:00Z",
+        { dm: { urls: ["https://example.test/dm"], requireRecipientUrn: false } },
+      );
+      makeJob("receipt-two");
+      const second = (
+        (await jobsSendPrepare(
+          { stateDir, id: "receipt-two", allowSend: true },
+          { now: () => "2026-08-03T12:05:00Z" },
+        )) as { packet: Record<string, unknown> }
+      ).packet;
+      const secondBase = {
+        attemptId: second.attemptId,
+        jobId: second.jobId,
+        route: second.route,
+        draftFingerprint: second.draftFingerprint,
+        transport: "dm",
+      };
+      recordChromeSend(
+        opened.database,
+        {
+          ...secondBase,
+          state: "proven_no_send",
+          evidence: {
+            reconciliation: {
+              reason: "no request observed",
+              noRequestObserved: true,
+              operatorConfirmed: true,
+            },
+          },
+        },
+        "2026-08-03T12:06:00Z",
+      );
+      const replacement = (await jobsSendPrepare(
+        { stateDir, id: "receipt-two", allowSend: true },
+        { now: () => "2026-08-03T12:07:00Z" },
+      )) as { packet: Record<string, unknown> };
+      if (replacement.packet.attemptId === second.attemptId)
+        throw new Error("proven-no-send did not release the attempt");
+    } finally {
+      opened.database.close();
     }
   }
 
@@ -2798,10 +2866,14 @@ try {
       calls.push("jobs applied");
       return { job: { id: input.id } };
     },
-    jobsSend: async (input) => {
-      if (input.sessionId !== "auto") throw new Error("jobs send did not parse auto");
-      calls.push("jobs send");
-      return { sent: 0, skipped: 0, results: [] };
+    jobsSendPrepare: async (input) => {
+      if (!input.allowSend) throw new Error("jobs send-prepare did not require allow-send");
+      calls.push("jobs send-prepare");
+      return { packet: null };
+    },
+    jobsSendRecord: async () => {
+      calls.push("jobs send-record");
+      return { receipt: null };
     },
     jobsClassify: async () => {
       calls.push("jobs classify");
@@ -2971,7 +3043,7 @@ try {
   if (denied.exitCode !== 3 || denied.value?.error?.code !== "SEND_NOT_AUTHORIZED") {
     throw new Error("send authorization smoke failed");
   }
-  const jobsSendDenied = await invoke(["--json", "jobs", "send"], common);
+  const jobsSendDenied = await invoke(["--json", "jobs", "send-prepare"], common);
   if (
     jobsSendDenied.exitCode !== 3 ||
     jobsSendDenied.value?.error?.code !== "SEND_NOT_AUTHORIZED"

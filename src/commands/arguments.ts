@@ -25,7 +25,8 @@ import type {
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
-  JobsSendInput,
+  JobsSendPrepareInput,
+  JobsSendRecordInput,
   JobsTriageNextInput,
   JobsTriageRecordInput,
   MigrationDryRunInput,
@@ -74,7 +75,8 @@ Commands:
   jobs favorite          Mark collected jobs for review
   jobs draft             Store a drafted subject + message for a job
   jobs draft-next        Hand one eligible person/role to the companion agent
-  jobs send              Send approved drafted messages to hiring team members (--allow-send)
+  jobs send-prepare      Prepare one approved draft for caller-owned Chrome (--allow-send)
+  jobs send-record       Record bounded visible UI evidence from one handoff
   jobs classify          Set work-focus and product-system phrases for a job
   jobs triage-next       Hand one eligible kept job to agent triage
   jobs triage-record     Store an agent triage result before human review
@@ -213,8 +215,10 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs draft-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs applied --id JOB_ID [--application-url URL]
     [--applied-at ISO] [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs send-prepare --allow-send [--id JOB_ID]
+    [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs send-record [--payload -|ABSOLUTE_PATH]
+    [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs classify --id JOB_ID --work-focus "..." --product-system "..."
     --work-summary "..." --product-summary "..."
     [--state-dir ABSOLUTE_PATH]
@@ -239,12 +243,14 @@ jobs check verifies stored postings are still live by loading each direct
 view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
 {checked, live, dead, unclear}.
-jobs send opens the first listed hiring team member's profile,
-composes the approved drafted message, and sends it — it requires the explicit
---allow-send flag. Only approved drafted jobs (review = approved) are selected;
-if --id is given that single job must itself be an approved draft.
---subject fills the composer's subject field only when the composer exposes
-one; normal no-subject DM composers are unaffected.
+jobs send-prepare reserves exactly one approved draft plus a unique attempt
+identity. It requires --allow-send and mutates only the attempt ledger. The
+caller-owned Chrome helper performs visible UI only, then jobs send-record
+accepts one strict JSON receipt. Prepared and possible receipts block retry;
+proven_no_send releases one, and only confirmed evidence marks the job sent.
+DM and InMail use separate transport evidence contracts. The helper requires
+an explicit exact endpoint URL from live observation and fails closed; no
+endpoint names are invented here.
 jobs draft stores a draft for review: --message is the body (interior blank
 lines are preserved) and --subject is an optional subject line. Storing or
 redrafting returns the job to needs-review. Draft once per recipient — when
@@ -781,7 +787,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "favorite",
         "draft",
         "applied",
-        "send",
+        "send-prepare",
+        "send-record",
         "remove",
         "classify",
         "triage-next",
@@ -1235,34 +1242,35 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       };
       return { kind: "command", command: "jobs classify", input };
     }
-    const options = parseOptions(argv.slice(2), {
-      "--allow-send": "boolean",
-      "--id": "value",
-      "--state-dir": "value",
-      "--session": "value",
-      "--playwriter-bin": "value",
-    });
-    if (!options.booleans.has("--allow-send")) {
-      throw new CliError(
-        "SEND_NOT_AUTHORIZED",
-        "jobs send requires the explicit --allow-send flag",
-        { exitCode: 3 },
-      );
+    if (verb === "send-prepare") {
+      const options = parseOptions(argv.slice(2), {
+        "--allow-send": "boolean",
+        "--id": "value",
+        "--state-dir": "value",
+      });
+      if (!options.booleans.has("--allow-send"))
+        throw new CliError(
+          "SEND_NOT_AUTHORIZED",
+          "jobs send-prepare requires the explicit --allow-send flag",
+          { exitCode: 3 },
+        );
+      const id = options.values.get("--id");
+      const input: JobsSendPrepareInput = {
+        stateDir: stateDir(options, context),
+        allowSend: true,
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs send-prepare", input };
     }
-    const input: JobsSendInput = {
-      stateDir: stateDir(options, context),
-      playwriterBin: playwriterBin(options, context),
-      sessionId: requiredWorkflowSession(
-        options.values.get("--session"),
-        context.env.LINKEDIN_TOOLS_JOBS_SESSION,
-        "--session",
-      ),
-      allowSend: true,
-      ...(options.values.get("--id") === undefined
-        ? {}
-        : { id: options.values.get("--id") as string }),
-    };
-    return { kind: "command", command: "jobs send", input };
+    if (verb === "send-record") {
+      const options = parseOptions(argv.slice(2), { "--payload": "value", "--state-dir": "value" });
+      const input: JobsSendRecordInput = {
+        stateDir: stateDir(options, context),
+        payloadPath: options.values.get("--payload") ?? "-",
+      };
+      return { kind: "command", command: "jobs send-record", input };
+    }
+    invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
   }
 
   invalid(`unknown command: ${argv[0]}`);

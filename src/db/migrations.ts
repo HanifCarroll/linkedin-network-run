@@ -828,6 +828,26 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN application_url TEXT;
     `,
   },
+  {
+    id: 24,
+    name: "jobs_chrome_send_receipts",
+    sql: `
+      CREATE TABLE jobs_chrome_send_receipts (
+        attempt_id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        recipient_url TEXT NOT NULL,
+        route TEXT NOT NULL CHECK(route IN ('direct', 'application_followup')),
+        transport TEXT CHECK(transport IN ('dm', 'inmail')),
+        draft_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared', 'possible', 'confirmed', 'proven_no_send')),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX jobs_chrome_send_open_job_idx
+        ON jobs_chrome_send_receipts(job_id) WHERE state IN ('prepared', 'possible');
+    `,
+  },
 ];
 
 export type MigrationResult = {

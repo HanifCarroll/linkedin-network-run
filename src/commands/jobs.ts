@@ -3,23 +3,21 @@ import { join } from "node:path";
 import { CliError } from "../core/errors.ts";
 import { openDatabase } from "../db/database.ts";
 import { JobsCaptureStore } from "../jobs/capture.ts";
+import { prepareChromeSend, recordChromeSend } from "../jobs/chrome-send.ts";
 import { evidenceGaps } from "../jobs/filter.ts";
 import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
   buildCheckLivenessScript,
   buildCleanupTabsScript,
-  buildSendScript,
   filterRun,
   JobsEngine,
   JobsNormalizer,
-  recipientProfileUrl,
   runJobsScript,
 } from "../jobs/index.ts";
 import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
 import type { JobEnrichment, JobEnrichmentResponse, JobRow } from "../jobs/types.ts";
 import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
-import { outreachKindFor } from "../view/grouping.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
   JobsAppliedInput,
@@ -39,7 +37,8 @@ import type {
   JobsListInput,
   JobsNormalizeInput,
   JobsRemoveInput,
-  JobsSendInput,
+  JobsSendPrepareInput,
+  JobsSendRecordInput,
   JobsTriageNextInput,
   JobsTriageRecordInput,
 } from "./types.ts";
@@ -752,122 +751,42 @@ export async function jobsHubSpotRecord(
   }
 }
 
-export async function jobsSend(
-  input: JobsSendInput,
+export async function jobsSendPrepare(
+  input: JobsSendPrepareInput,
   dependencies: JobsDependencies = defaultDependencies,
 ): Promise<unknown> {
-  const resolveSession = dependencies.resolveSession ?? resolvePlaywriterSession;
-  const runScript = dependencies.runScript ?? runJobsScript;
-  const now = dependencies.now ?? nowDefault;
-
-  // Validate targets and seed the defensive recipient set from already-sent
-  // jobs before any browser session is created, so a no-op send fails without
-  // opening a session.
   const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
-  let targets: JobRow[];
-  const sentRecipients = new Set<string>();
   try {
-    const engine = new JobsEngine(opened.database);
-    for (const sent of engine.sentJobs()) {
-      const profile = recipientProfileUrl(sent);
-      if (profile !== null) sentRecipients.add(profile);
-    }
-    if (input.id === undefined) {
-      targets = engine.approvedDrafts();
-    } else {
-      const job = engine.requireJob(input.id);
-      if (job.review !== "approved")
-        throw new CliError("JOBS_NOT_APPROVED", `job ${job.id} is not an approved draft`, {
-          exitCode: 2,
-        });
-      if (job.status !== "drafted")
-        throw new CliError("JOBS_NOT_DRAFTED", `job ${job.id} is not a pending draft`, {
-          exitCode: 2,
-        });
-      if (outreachKindFor(job) === "application_followup" && job.appliedAt === null)
-        throw new CliError(
-          "JOBS_APPLICATION_REQUIRED",
-          `job ${job.id} requires jobs applied before sending`,
-          { exitCode: 2 },
-        );
-      targets = [job];
-    }
+    return {
+      command: "jobs send-prepare",
+      packet: prepareChromeSend(opened.database, input.id, (dependencies.now ?? nowDefault)()),
+    };
   } finally {
     opened.database.close();
   }
-  if (targets.length === 0)
-    throw new CliError("JOBS_NOTHING_TO_SEND", "no approved drafts to send", { exitCode: 2 });
+}
 
-  const sessionId = await resolveSession({
-    workflow: "jobs",
-    selection: input.sessionId,
-    stateDir: input.stateDir,
-    playwriterBin: input.playwriterBin,
-  });
-
-  const results: unknown[] = [];
-  const seenRecipients = new Set(sentRecipients);
-  for (const job of targets) {
-    const member = job.hiringTeam[0];
-    if (member === undefined)
-      throw new CliError(
-        "JOBS_NO_HIRING_TEAM",
-        `job ${job.id} has no hiring team member to message`,
-        {
-          exitCode: 2,
-        },
-      );
-    if (job.message === null || job.message.trim().length === 0)
-      throw new CliError("JOBS_NO_DRAFT", `job ${job.id} has no drafted message`, { exitCode: 2 });
-    const profile = recipientProfileUrl(job);
-    if (profile === null)
-      throw new CliError(
-        "JOBS_NO_HIRING_TEAM",
-        `job ${job.id} has no usable hiring-team profile URL`,
-        { exitCode: 2 },
-      );
-    // Defensive duplicate-recipient guard: never message one profile twice,
-    // across runs or within one run. Already-sent/approved recipients are
-    // skipped without changing state.
-    if (seenRecipients.has(profile)) {
-      results.push({
-        jobId: job.id,
-        title: job.title,
-        member: member.name,
-        status: "skipped",
-        detail: "duplicate recipient (already sent or approved)",
-      });
-      continue;
-    }
-    seenRecipients.add(profile);
-    const { script, timeoutMs } = buildSendScript({
-      jobId: job.id,
-      memberName: member.name,
-      profileUrl: member.profileUrl,
-      subject: job.subject,
-      message: job.message,
+export async function jobsSendRecord(
+  input: JobsSendRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8"),
+    );
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", "send record payload must be valid JSON", {
+      exitCode: 2,
     });
-    const outcome = await runScript({
-      playwriterBin: input.playwriterBin,
-      sessionId,
-      script,
-      timeoutMs,
-      stateDir: input.stateDir,
-    });
-    const data = outcome.data as Record<string, unknown>;
-    const status = data.status;
-    const openedAgain = openDatabase(join(input.stateDir, "linkedin-tools.db"));
-    try {
-      if (status === "sent") new JobsEngine(openedAgain.database).markSent(job.id, now());
-    } finally {
-      openedAgain.database.close();
-    }
-    results.push({ jobId: job.id, title: job.title, member: member.name, ...data });
   }
-  return {
-    command: "jobs send",
-    sent: results.filter((r) => (r as Record<string, unknown>).status === "sent").length,
-    skipped: results.filter((r) => (r as Record<string, unknown>).status !== "sent").length,
-    results,
-  };
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    return {
+      command: "jobs send-record",
+      receipt: recordChromeSend(opened.database, payload, (dependencies.now ?? nowDefault)()),
+    };
+  } finally {
+    opened.database.close();
+  }
 }
