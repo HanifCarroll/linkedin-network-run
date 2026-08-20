@@ -248,8 +248,12 @@ redrafting returns the job to needs-review. Draft once per recipient — when
 several postings list the same person, draft the best-fitting role; sibling
 roles are context and at most one approved/sent message per person holds. The
 local review queue (bun run
-view) is where drafts are reviewed and approved or skipped. The body is three
-paragraphs separated by one blank line (\\n\\n):
+view) is where drafts are reviewed and approved or skipped.
+jobs applied records the application date and optional application URL for a
+contract/application-follow-up role. These roles cannot enter send eligibility
+until that checkpoint exists. Full-time/direct roles reject jobs applied and
+use the short-contract bridge pitch below. Its body is three paragraphs
+separated by one blank line (\\n\\n):
 
   Hi [first name] — I saw the [role] opening at [company]. One plain, specific
   detail about the product, users, or problem that caught my attention.
@@ -261,6 +265,9 @@ paragraphs separated by one blank line (\\n\\n):
 
 The proof must connect to the detail in the first paragraph, not stand alone.
 The subject is normally "[Role] at [Company]" or "About the [Role] opening".
+For an application-follow-up draft, name the role and company, lead with one
+specific relevant proof, and close by putting a name to the application. Do not
+ask whether they are open to contract help or request a call.
 jobs classify stores the two brief review phrases for a posting: --work-focus
 (the functional area the role centers on) and --product-system (the tool or
 platform it is built around), plus two longer summaries: --work-summary (what
