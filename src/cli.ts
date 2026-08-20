@@ -184,6 +184,10 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsInstantlyNext(invocation.input);
     case "jobs instantly-record":
       return operations.jobsInstantlyRecord(invocation.input);
+    case "jobs followup-next":
+      return operations.jobsFollowupNext(invocation.input);
+    case "jobs followup-record":
+      return operations.jobsFollowupRecord(invocation.input);
   }
 }
 

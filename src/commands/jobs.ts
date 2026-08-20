@@ -6,6 +6,7 @@ import { JobsCaptureStore } from "../jobs/capture.ts";
 import { prepareChromeSend, recordChromeSend } from "../jobs/chrome-send.ts";
 import { prepareContractOutreach, recordContractOutreach } from "../jobs/contract-outreach.ts";
 import { evidenceGaps } from "../jobs/filter.ts";
+import { type FollowupRecordInput, JobsFollowupEngine } from "../jobs/followup.ts";
 import { HubSpotImportEngine } from "../jobs/hubspot.ts";
 import {
   buildCheckLivenessScript,
@@ -37,6 +38,8 @@ import type {
   JobsEnrichRecordInput,
   JobsFavoriteInput,
   JobsFilterInput,
+  JobsFollowupNextInput,
+  JobsFollowupRecordInput,
   JobsHubSpotNextInput,
   JobsHubSpotRecordInput,
   JobsInstantlyNextInput,
@@ -749,6 +752,90 @@ export async function jobsHubSpotNext(
   try {
     const packet = new HubSpotImportEngine(opened.database).next(input.id, now());
     return { command: "jobs hubspot-next", found: packet !== null, packet };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsFollowupNext(input: JobsFollowupNextInput): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const packet = new JobsFollowupEngine(opened.database).next(input.id);
+    return { command: "jobs followup-next", found: packet !== null, packet };
+  } finally {
+    opened.database.close();
+  }
+}
+
+export async function jobsFollowupRecord(
+  input: JobsFollowupRecordInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      input.payloadPath === "-" ? readFileSync(0, "utf8") : readFileSync(input.payloadPath, "utf8"),
+    );
+  } catch {
+    throw new CliError("INVALID_ARGUMENT", "follow-up receipt payload must be valid JSON", {
+      exitCode: 2,
+    });
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload))
+    throw new CliError("INVALID_ARGUMENT", "follow-up receipt payload must be an object", {
+      exitCode: 2,
+    });
+  const tasks = (payload as Record<string, unknown>).tasks;
+  if (
+    !Array.isArray(tasks) ||
+    tasks.some((task) => task === null || typeof task !== "object" || Array.isArray(task))
+  )
+    throw new CliError(
+      "FOLLOWUP_TASKS_INVALID",
+      "payload.tasks must be an array of task receipts",
+      { exitCode: 2 },
+    );
+  const parsed = tasks.map((task) => {
+    const value = task as Record<string, unknown>;
+    const associations = value.associations;
+    if (
+      typeof value.stage !== "string" ||
+      typeof value.taskId !== "string" ||
+      value.associationsComplete !== true ||
+      associations === null ||
+      typeof associations !== "object" ||
+      Array.isArray(associations)
+    )
+      throw new CliError(
+        "FOLLOWUP_TASKS_INVALID",
+        "each task needs stage, taskId, associations, and associationsComplete=true",
+        { exitCode: 2 },
+      );
+    const ids = associations as Record<string, unknown>;
+    if (
+      typeof ids.companyId !== "string" ||
+      typeof ids.contactId !== "string" ||
+      typeof ids.dealId !== "string"
+    )
+      throw new CliError(
+        "FOLLOWUP_TASKS_INVALID",
+        "each task needs companyId, contactId, and dealId associations",
+        { exitCode: 2 },
+      );
+    return {
+      stage: value.stage,
+      taskId: value.taskId,
+      associationsComplete: true as const,
+      associations: { companyId: ids.companyId, contactId: ids.contactId, dealId: ids.dealId },
+    };
+  });
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const receipt = new JobsFollowupEngine(opened.database).record(
+      { prospectId: input.prospectId, tasks: parsed } satisfies FollowupRecordInput,
+      (dependencies.now ?? nowDefault)(),
+    );
+    return { command: "jobs followup-record", receipt };
   } finally {
     opened.database.close();
   }

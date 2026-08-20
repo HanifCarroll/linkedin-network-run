@@ -306,6 +306,10 @@ Ambiguous email blocks. No Instantly call, credential, email send, local
 scheduler, or live-state mutation is performed by this CLI; campaign cadence and stop-on-reply
 remain Instantly-owned. See `docs/jobs-instantly.md`.
 
+### Jobs follow-up handoff
+
+After the HubSpot Day 1 action and a completed Instantly receipt, `jobs followup-next` emits a read-only task packet. An email/lead result creates only a HubSpot monitoring task because Instantly owns cadence and stop-on-reply. A no-email result creates associated LinkedIn checks for days 5–7, 8–10, and 12–14; each checks reply and connection state before DM or InMail. Any reply stops the sequence. `jobs followup-record` stores task IDs and explicit company/contact/deal associations locally. It never calls HubSpot, writes CRM, or runs a scheduler. See `docs/jobs-followup.md`.
+
 `jobs applied --id JOB_ID [--application-url URL] [--applied-at ISO]` records the application
 checkpoint for application-followup jobs (the timestamp defaults to now).
 

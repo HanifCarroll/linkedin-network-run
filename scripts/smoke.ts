@@ -3220,6 +3220,17 @@ try {
       calls.push("jobs instantly-record");
       return { complete: false };
     },
+    jobsFollowupNext: async (input) => {
+      if (input.id !== "111") throw new Error("followup-next did not parse --id");
+      calls.push("jobs followup-next");
+      return { found: false };
+    },
+    jobsFollowupRecord: async (input) => {
+      if (input.prospectId !== `co:need-led:v1:${"x".repeat(64)}`)
+        throw new Error("followup-record did not parse prospect");
+      calls.push("jobs followup-record");
+      return { complete: false };
+    },
   };
   const common = {
     operations: fakeOperations,
@@ -3230,6 +3241,7 @@ try {
     },
   };
   await writeFile(join(root, "capture-payload.json"), JSON.stringify({ elements: [] }));
+  await writeFile(join(root, "followup-receipt.json"), JSON.stringify({ tasks: [] }));
   const commands: readonly (readonly string[])[] = [
     ["--json", "network", "status"],
     ["--json", "network", "report"],
@@ -3348,6 +3360,16 @@ try {
     ["--json", "jobs", "contract-outreach-prepare", "--allow-send", "--id", "111"],
     ["--json", "jobs", "contract-outreach-record", "--payload", "-"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],
+    ["--json", "jobs", "followup-next", "--id", "111"],
+    [
+      "--json",
+      "jobs",
+      "followup-record",
+      "--prospect-id",
+      `co:need-led:v1:${"x".repeat(64)}`,
+      "--payload",
+      join(root, "followup-receipt.json"),
+    ],
     [
       "--json",
       "jobs",

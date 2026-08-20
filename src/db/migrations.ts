@@ -911,6 +911,21 @@ const migrations: readonly Migration[] = [
         ON jobs_contract_outreach_receipts(job_id) WHERE state IN ('prepared','possible');
     `,
   },
+  {
+    id: 28,
+    name: "jobs_followup_receipts",
+    sql: `
+      CREATE TABLE jobs_followup_receipts (
+        prospect_id TEXT PRIMARY KEY REFERENCES hubspot_imports(prospect_id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK(mode IN ('instantly_monitor', 'linkedin_sequence')),
+        tasks_json TEXT NOT NULL CHECK(json_valid(tasks_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+    `,
+  },
 ];
 
 export type MigrationResult = {

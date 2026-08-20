@@ -23,6 +23,8 @@ import type {
   JobsEnrichNextInput,
   JobsEnrichRecordInput,
   JobsFavoriteInput,
+  JobsFollowupNextInput,
+  JobsFollowupRecordInput,
   JobsHubSpotNextInput,
   JobsHubSpotRecordInput,
   JobsInstantlyNextInput,
@@ -91,6 +93,8 @@ Commands:
   jobs hubspot-record    Record HubSpot object and association receipts locally
   jobs instantly-next    Prepare an approved HubSpot-ready prospect for Instantly
   jobs instantly-record  Record an Instantly API receipt from JSON
+  jobs followup-next      Prepare deterministic HubSpot follow-up tasks
+  jobs followup-record    Record durable HubSpot follow-up task receipts
 
 Browser boundary:
   LinkedIn Jobs capture, enrichment, and outreach use caller-owned Codex Chrome handoff helpers;
@@ -244,6 +248,8 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs instantly-next --campaign-id CAMPAIGN_ID [--id JOB_ID]
     [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs instantly-record --prospect-id ID --payload -|ABSOLUTE_PATH
+  linkedin-tools [--json] jobs followup-next [--id JOB_ID] [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs followup-record --prospect-id ID --payload -|ABSOLUTE_PATH
 
 jobs capture-start records source/search metadata for a run. Use the
 importable scripts/linkedin-jobs-chrome-helper.mjs from the Codex Chrome
@@ -823,6 +829,8 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "hubspot-record",
         "instantly-next",
         "instantly-record",
+        "followup-next",
+        "followup-record",
       ].includes(verb ?? "")
     ) {
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
@@ -940,6 +948,28 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
       };
       return { kind: "command", command: "jobs hubspot-next", input };
+    }
+    if (verb === "followup-next") {
+      const options = parseOptions(argv.slice(2), { "--id": "value", "--state-dir": "value" });
+      const id = options.values.get("--id");
+      const input: JobsFollowupNextInput = {
+        stateDir: stateDir(options, context),
+        ...(id === undefined ? {} : { id: boundedText(id, "--id", 200) }),
+      };
+      return { kind: "command", command: "jobs followup-next", input };
+    }
+    if (verb === "followup-record") {
+      const options = parseOptions(argv.slice(2), {
+        "--prospect-id": "value",
+        "--payload": "value",
+        "--state-dir": "value",
+      });
+      const input: JobsFollowupRecordInput = {
+        stateDir: stateDir(options, context),
+        prospectId: boundedText(required(options, "--prospect-id"), "--prospect-id", 120),
+        payloadPath: required(options, "--payload"),
+      };
+      return { kind: "command", command: "jobs followup-record", input };
     }
     if (verb === "instantly-next") {
       const options = parseOptions(argv.slice(2), {

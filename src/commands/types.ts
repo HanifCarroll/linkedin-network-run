@@ -228,6 +228,12 @@ export type JobsInstantlyRecordInput = {
   readonly prospectId: string;
   readonly payloadPath: string;
 };
+export type JobsFollowupNextInput = { readonly stateDir: string; readonly id?: string };
+export type JobsFollowupRecordInput = {
+  readonly stateDir: string;
+  readonly prospectId: string;
+  readonly payloadPath: string;
+};
 
 export type JobsHubSpotRecordInput = {
   readonly stateDir: string;
@@ -284,6 +290,8 @@ export interface CliOperations {
   jobsHubSpotRecord(input: JobsHubSpotRecordInput): Promise<unknown>;
   jobsInstantlyNext(input: JobsInstantlyNextInput): Promise<unknown>;
   jobsInstantlyRecord(input: JobsInstantlyRecordInput): Promise<unknown>;
+  jobsFollowupNext(input: JobsFollowupNextInput): Promise<unknown>;
+  jobsFollowupRecord(input: JobsFollowupRecordInput): Promise<unknown>;
 }
 
 export type ParsedInvocation =
@@ -488,4 +496,14 @@ export type ParsedInvocation =
       readonly kind: "command";
       readonly command: "jobs instantly-record";
       readonly input: JobsInstantlyRecordInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs followup-next";
+      readonly input: JobsFollowupNextInput;
+    }
+  | {
+      readonly kind: "command";
+      readonly command: "jobs followup-record";
+      readonly input: JobsFollowupRecordInput;
     };
