@@ -156,6 +156,8 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.jobsRemove(invocation.input);
     case "jobs draft":
       return operations.jobsDraft(invocation.input);
+    case "jobs applied":
+      return operations.jobsApplied(invocation.input);
     case "jobs send":
       return operations.jobsSend(invocation.input);
     case "jobs classify":

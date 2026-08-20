@@ -278,12 +278,16 @@ linkedin-tools --json jobs hubspot-record --prospect-id PROSPECT_ID --task-id 10
 ```
 
 The handoff accepts only kept, approved jobs with a company and a usable hiring-team profile. The
-prospect ID is derived from that normalized profile, so sibling roles remain one prospect. On a
-retry, the agent searches HubSpot using the packet's stable keys before creating anything. Replayed
-IDs are no-ops, conflicting IDs stop the import, and completion requires company, contact, deal,
-task, and association receipts. This stage creates a task only; it never sends outreach.
+prospect ID is derived from that normalized profile, so sibling roles remain one prospect. The
+packet includes the computed route and application checkpoint evidence: contract-route tasks say
+to apply first when absent, or send the application follow-up after it is recorded; direct-route
+tasks offer short-term contract help while the company fills the full-time role. On a retry, the
+agent searches HubSpot using the packet's stable keys before creating anything. Replayed IDs are
+no-ops, conflicting IDs stop the import, and completion requires company, contact, deal, task, and
+association receipts. This stage creates a task only; it never sends outreach.
 
-`jobs send` selects approved drafted jobs only (review = approved) and still requires the exact
+`jobs applied --id JOB_ID [--application-url URL] [--applied-at ISO]` records the application
+checkpoint for application-followup jobs (the timestamp defaults to now). `jobs send` selects approved drafted jobs only (review = approved) and still requires the exact
 `--allow-send` flag. Recipient uniqueness holds across time: approving conflicts with another
 approved draft or an already-sent job for the same hiring-team profile URL (normalized: trim,
 query/hash/trailing slash stripped, case-folded), reported as `DUPLICATE_APPROVED_PROFILE`.

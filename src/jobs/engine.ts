@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { CliError } from "../core/errors.ts";
+import { outreachKindFor } from "../view/grouping.ts";
 import { recipientProfileUrl } from "./recipient.ts";
 import type {
   CapturedJob,
@@ -69,6 +70,8 @@ type JobRowRaw = {
   readonly triage_reason: string;
   readonly triage_policy_version: string;
   readonly triaged_at: string | null;
+  readonly applied_at: string | null;
+  readonly application_url: string | null;
 };
 
 export class JobsEngine {
@@ -464,7 +467,46 @@ export class JobsEngine {
         `SELECT * FROM jobs WHERE status = 'drafted' AND review = 'approved' ORDER BY updated_at ASC`,
       )
       .all();
-    return rows.map(rowToJob);
+    return rows
+      .map(rowToJob)
+      .filter((job) => outreachKindFor(job) === "direct" || job.appliedAt !== null);
+  }
+
+  recordApplied(
+    id: string,
+    applicationUrl: string | undefined,
+    appliedAt: string,
+    now: string,
+  ): JobRow {
+    const current = this.requireJob(id);
+    if (outreachKindFor(current) !== "application_followup")
+      throw new CliError(
+        "JOBS_APPLICATION_NOT_REQUIRED",
+        `job ${id} does not require an application checkpoint`,
+        { exitCode: 2 },
+      );
+    if (current.status === "sent")
+      throw new CliError("JOBS_ALREADY_SENT", `job ${id} was already sent`, { exitCode: 2 });
+    if (Number.isNaN(Date.parse(appliedAt)))
+      throw new CliError("INVALID_ARGUMENT", "appliedAt must be a valid ISO timestamp", {
+        exitCode: 2,
+      });
+    let normalizedUrl: string | null = current.applicationUrl;
+    if (applicationUrl !== undefined) {
+      try {
+        const url = new URL(applicationUrl);
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+        normalizedUrl = url.toString();
+      } catch {
+        throw new CliError("INVALID_ARGUMENT", "applicationUrl must be an HTTP(S) URL", {
+          exitCode: 2,
+        });
+      }
+    }
+    this.database
+      .prepare(`UPDATE jobs SET applied_at = ?, application_url = ?, updated_at = ? WHERE id = ?`)
+      .run(appliedAt, normalizedUrl, now, id);
+    return this.requireJob(id);
   }
 
   setReview(id: string, review: ReviewDecision, now: string, replaceId?: string): JobRow {
@@ -948,6 +990,8 @@ function rowToJob(row: JobRowRaw): JobRow {
     triageReason: row.triage_reason,
     triagePolicyVersion: row.triage_policy_version,
     triagedAt: row.triaged_at,
+    appliedAt: row.applied_at,
+    applicationUrl: row.application_url,
   };
 }
 

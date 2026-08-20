@@ -820,6 +820,14 @@ const migrations: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 23,
+    name: "jobs_application_checkpoint",
+    sql: `
+      ALTER TABLE jobs ADD COLUMN applied_at TEXT;
+      ALTER TABLE jobs ADD COLUMN application_url TEXT;
+    `,
+  },
 ];
 
 export type MigrationResult = {

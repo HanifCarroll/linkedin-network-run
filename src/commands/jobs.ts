@@ -19,8 +19,10 @@ import type { JobsScriptOutcome } from "../jobs/playwriter.ts";
 import type { JobEnrichment, JobEnrichmentResponse, JobRow } from "../jobs/types.ts";
 import { TRIAGE_POLICY_VERSION } from "../jobs/types.ts";
 import { PlaywriterClient } from "../playwriter/client.ts";
+import { outreachKindFor } from "../view/grouping.ts";
 import { resolvePlaywriterSession, type SessionResolutionRequest } from "./sessions.ts";
 import type {
+  JobsAppliedInput,
   JobsCaptureFinishInput,
   JobsCaptureIngestInput,
   JobsCaptureStartInput,
@@ -592,6 +594,24 @@ export async function jobsRemove(input: JobsRemoveInput): Promise<unknown> {
   }
 }
 
+export async function jobsApplied(
+  input: JobsAppliedInput,
+  dependencies: JobsDependencies = defaultDependencies,
+): Promise<unknown> {
+  const opened = openDatabase(join(input.stateDir, "linkedin-tools.db"));
+  try {
+    const job = new JobsEngine(opened.database).recordApplied(
+      input.id,
+      input.applicationUrl,
+      input.appliedAt,
+      (dependencies.now ?? nowDefault)(),
+    );
+    return { command: "jobs applied", job };
+  } finally {
+    opened.database.close();
+  }
+}
+
 export async function jobsDraft(
   input: JobsDraftInput,
   dependencies: JobsDependencies = defaultDependencies,
@@ -748,6 +768,12 @@ export async function jobsSend(
         throw new CliError("JOBS_NOT_DRAFTED", `job ${job.id} is not a pending draft`, {
           exitCode: 2,
         });
+      if (outreachKindFor(job) === "application_followup" && job.appliedAt === null)
+        throw new CliError(
+          "JOBS_APPLICATION_REQUIRED",
+          `job ${job.id} requires application-record before sending`,
+          { exitCode: 2 },
+        );
       targets = [job];
     }
   } finally {

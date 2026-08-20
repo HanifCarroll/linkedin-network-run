@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { CliError } from "../core/errors.ts";
+import { outreachKindFor } from "../view/grouping.ts";
 import { JobsEngine } from "./engine.ts";
 import { normalizeProfileUrl, recipientProfileUrl } from "./recipient.ts";
 import type { JobRow } from "./types.ts";
@@ -274,6 +275,7 @@ function buildPacket(job: JobRow, receipt: HubSpotImportReceipt): Record<string,
   if (member === undefined) throw new CliError("JOBS_NO_HIRING_TEAM", "hiring team missing");
   const name = splitName(member.name);
   const marker = `${receipt.prospectId}:day-1`;
+  const route = outreachKindFor(job);
   const hasReceipt =
     receipt.companyId !== null ||
     receipt.contactId !== null ||
@@ -311,6 +313,12 @@ function buildPacket(job: JobRow, receipt: HubSpotImportReceipt): Record<string,
         filterReason: job.filterReason,
         workSummary: job.workSummary,
         productSummary: job.productSummary,
+        outreachKind: route,
+        application: {
+          required: route === "application_followup",
+          appliedAt: job.appliedAt,
+          applicationUrl: job.applicationUrl,
+        },
       },
     },
     receipt,
@@ -372,15 +380,30 @@ function buildPacket(job: JobRow, receipt: HubSpotImportReceipt): Record<string,
         marker,
         match: "Search associated tasks for the exact marker before create; ambiguity blocks.",
         properties: {
-          hs_task_subject: `Day 1: LinkedIn connect + note — ${member.name} at ${job.company.trim()}`,
+          hs_task_subject:
+            route === "application_followup"
+              ? job.appliedAt === null
+                ? `Day 1: Submit application — ${member.name} at ${job.company.trim()}`
+                : `Day 1: Send application follow-up — ${member.name} at ${job.company.trim()}`
+              : `Day 1: Offer short-term contract help — ${member.name} at ${job.company.trim()}`,
           hs_task_body: [
             `Import marker: ${marker}`,
             `LinkedIn: ${requiredProfileUrl(job)}`,
             `Job: ${job.postingUrl}`,
             `Role: ${job.title}`,
+            `Route: ${route}`,
+            route === "application_followup"
+              ? job.appliedAt === null
+                ? "Action: apply first; after the application is recorded, send the application follow-up."
+                : `Action: send the application follow-up; applied at ${job.appliedAt}${job.applicationUrl === null ? "" : ` (${job.applicationUrl})`}.`
+              : "Action: offer short-term contract help while the company fills the full-time role.",
+            "After sending, HubSpot owns follow-up timing and stops on reply.",
           ].join("\n"),
           hs_task_status: "NOT_STARTED",
-          hs_task_type: "LINKED_IN_CONNECT",
+          hs_task_type:
+            route === "application_followup" && job.appliedAt === null
+              ? "TODO"
+              : "LINKED_IN_CONNECT",
           hs_timestamp: receipt.createdAt,
         },
       },

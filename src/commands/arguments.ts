@@ -9,6 +9,7 @@ import {
 import type {
   AnalyticsExportInput,
   DoctorInput,
+  JobsAppliedInput,
   JobsCaptureFinishInput,
   JobsCaptureIngestInput,
   JobsCaptureStartInput,
@@ -207,6 +208,8 @@ const JOBS_HELP = `Usage:
   linkedin-tools [--json] jobs remove --id JOB_ID [--id JOB_ID ...] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs draft --id JOB_ID --message "..." [--subject "..."]
     [--state-dir ABSOLUTE_PATH]
+  linkedin-tools [--json] jobs applied --id JOB_ID [--application-url URL]
+    [--applied-at ISO] [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] jobs send --allow-send [--id JOB_ID]
     [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
   linkedin-tools [--json] jobs classify --id JOB_ID --work-focus "..." --product-system "..."
@@ -766,6 +769,7 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
         "check",
         "favorite",
         "draft",
+        "applied",
         "send",
         "remove",
         "classify",
@@ -778,6 +782,35 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
       invalid(`unknown jobs command: ${verb ?? "(missing)"}`);
     }
     if (isHelp(argv[2])) return { kind: "help", text: JOBS_HELP };
+    if (verb === "applied") {
+      const options = parseOptions(argv.slice(2), {
+        "--id": "value",
+        "--application-url": "value",
+        "--applied-at": "value",
+        "--state-dir": "value",
+      });
+      const appliedAt = options.values.get("--applied-at") ?? context.now.toISOString();
+      if (Number.isNaN(Date.parse(appliedAt)) || appliedAt.trim() === "")
+        invalid("--applied-at must be a valid ISO timestamp");
+      const applicationUrl = options.values.get("--application-url");
+      if (applicationUrl !== undefined) {
+        try {
+          const parsed = new URL(applicationUrl);
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+        } catch {
+          invalid("--application-url must be an HTTP(S) URL");
+        }
+      }
+      const input: JobsAppliedInput = {
+        stateDir: stateDir(options, context),
+        id: boundedText(required(options, "--id"), "--id", 200),
+        appliedAt,
+        ...(applicationUrl === undefined
+          ? {}
+          : { applicationUrl: boundedText(applicationUrl, "--application-url", 2000) }),
+      };
+      return { kind: "command", command: "jobs applied", input };
+    }
     if (verb === "triage-next") {
       const options = parseOptions(argv.slice(2), { "--run-id": "value", "--state-dir": "value" });
       const runId = options.values.get("--run-id");

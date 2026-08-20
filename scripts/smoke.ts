@@ -1713,6 +1713,8 @@ try {
       triageReason: "",
       triagePolicyVersion: "",
       triagedAt: null,
+      appliedAt: null,
+      applicationUrl: null,
       ...overrides,
     });
     const role = (id: string, review: JobRow["review"], updatedAt: string, team = alice) =>
@@ -1902,6 +1904,8 @@ try {
       triageReason: "",
       triagePolicyVersion: "",
       triagedAt: null,
+      appliedAt: null,
+      applicationUrl: null,
       ...overrides,
     });
     const role = (
@@ -2023,6 +2027,8 @@ try {
       triageReason: "",
       triagePolicyVersion: "",
       triagedAt: null,
+      appliedAt: null,
+      applicationUrl: null,
       ...overrides,
     });
     const contract = row("s1", {
@@ -2538,6 +2544,13 @@ try {
       calls.push("jobs draft");
       return { job: { id: input.id } };
     },
+    jobsApplied: async (input) => {
+      if (input.id !== "111" || input.applicationUrl !== "https://example.com/apply") {
+        throw new Error("jobs applied did not parse checkpoint");
+      }
+      calls.push("jobs applied");
+      return { job: { id: input.id } };
+    },
     jobsSend: async (input) => {
       if (input.sessionId !== "auto") throw new Error("jobs send did not parse auto");
       calls.push("jobs send");
@@ -2687,6 +2700,7 @@ try {
       "Salesforce CPQ",
     ],
     ["--json", "jobs", "draft", "--id", "111", "--subject", "Hi", "--message", "Body"],
+    ["--json", "jobs", "applied", "--id", "111", "--application-url", "https://example.com/apply"],
     ["--json", "jobs", "hubspot-next", "--id", "111"],
     [
       "--json",

@@ -119,6 +119,13 @@ export type JobsDraftInput = {
   readonly message: string;
 };
 
+export type JobsAppliedInput = {
+  readonly stateDir: string;
+  readonly id: string;
+  readonly applicationUrl?: string;
+  readonly appliedAt: string;
+};
+
 export type JobsSendInput = {
   readonly stateDir: string;
   readonly playwriterBin: string;
@@ -186,4 +193,7 @@ export type JobRow = {
   readonly triageReason: string;
   readonly triagePolicyVersion: string;
   readonly triagedAt: string | null;
+  /** Application checkpoint for application-followup roles. */
+  readonly appliedAt: string | null;
+  readonly applicationUrl: string | null;
 };
