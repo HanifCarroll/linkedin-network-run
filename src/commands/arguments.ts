@@ -38,14 +38,6 @@ import type {
   JobsTriageNextInput,
   JobsTriageRecordInput,
   MigrationDryRunInput,
-  NetworkIncidentClearInput,
-  NetworkIncidentStatusInput,
-  NetworkOpenInput,
-  NetworkReadInput,
-  NetworkReconcileInput,
-  NetworkRunEndInput,
-  NetworkSessionResetInput,
-  NetworkTickInput,
   ParsedInvocation,
   SalesNavInput,
 } from "./types.ts";
@@ -59,14 +51,8 @@ Usage:
   linkedin-tools [--json] <command> [options]
 
 Commands:
-  doctor                 Check Bun, Playwriter, sessions, state paths, and SQLite
-  network status         Read the current local-day network state
-  network report         Read the deterministic current local-day report
-  network tick           Finish today's guarded 30-request run; requires --allow-send
-  network reconcile      Audit possible sends and finish only after complete reconciliation
-  network run-end        End an active day's run so the next day can start cleanly
+  doctor                 Check local runtime, caller-owned Chrome handoff, state paths, and SQLite
   network incident-status  Show the active LinkedIn browser incident, if any
-  network open            Navigate the bound network session to sent or search
   network incident-clear Clear the active incident after dual human confirmation
   analytics export       Export and validate one exact seven-day analytics workbook
   migration dry-run      Build a read-only, proposal-only legacy migration report
@@ -98,9 +84,8 @@ Commands:
   jobs followup-record    Record durable HubSpot follow-up task receipts
 
 Browser boundary:
-  LinkedIn Jobs capture, enrichment, and outreach use caller-owned Codex Chrome handoff helpers;
-  the CLI owns durable state and evidence validation. Live-job checks, networking, and analytics
-  remain on their existing Playwriter paths.
+  Jobs capture, enrichment, outreach and Sales Navigator use caller-owned Codex Chrome handoffs.
+  Analytics export and jobs check use Playwriter. The CLI stores and validates durable evidence.
 
 Global options:
   --json                  Emit one stable JSON envelope to stdout
@@ -108,32 +93,14 @@ Global options:
   -v, --version           Show version
 `;
 
-const NETWORK_HELP = `Usage:
-  linkedin-tools [--json] network status [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] network report [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] network tick --allow-send [--batch-size 1..5]
-    [--max-real-sends 1..30]
-    [--date YYYY-MM-DD] [--state-dir ABSOLUTE_PATH] [--session ID|auto]
-    [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] network reconcile [--date YYYY-MM-DD]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] network run-end --date YYYY-MM-DD --reason "..."
-    [--state-dir ABSOLUTE_PATH]
-  linkedin-tools [--json] network session-reset [--state-dir ABSOLUTE_PATH]
-    [--playwriter-bin ABSOLUTE_PATH]
-  linkedin-tools [--json] network open --page sent|search [--source SOURCE_ID]
-    [--state-dir ABSOLUTE_PATH] [--session ID|auto] [--playwriter-bin ABSOLUTE_PATH]
+const INCIDENT_HELP = `Usage:
   linkedin-tools [--json] network incident-status [--state-dir ABSOLUTE_PATH]
   linkedin-tools [--json] network incident-clear
     --account-access-confirmed --warning-cleared-confirmed --reason "..."
     [--state-dir ABSOLUTE_PATH]
 
-One tick continues serially through audited microbatches until Done or a typed
-checkpoint/terminal blocker. Audits cannot be disabled. The daily target is
-fixed at 30 and total durable commit starts can never exceed 30. At a new local
-day, older active runs without planned or possible sends are parked as missed;
-older runs with either require an exact-date reconciliation first. An active
-incident blocks all browser automation until cleared with dual confirmation.
+The shared incident gate pauses LinkedIn browser work until a human clears it
+with both confirmations and a reason.
 `;
 
 const ANALYTICS_HELP = `Usage:
@@ -267,7 +234,7 @@ jobs check verifies stored postings are still live by loading each direct
 view and reading only the title; removed postings are dropped from the store.
 It is much cheaper than enrich (no hiring-team extraction) and reports
 {checked, live, dead, unclear}.
-jobs contract-outreach-prepare reserves exactly one approved direct prospect, or one approved applied application-followup prospect, plus a unique invitation attempt. It never uses the generic network tick.
+jobs contract-outreach-prepare reserves exactly one approved direct prospect, or one approved applied application-followup prospect, plus a unique invitation attempt.
 jobs send-prepare reserves exactly one approved draft plus a unique attempt
 identity. It requires --allow-send and mutates only the attempt ledger. The
 caller-owned Chrome helper performs visible UI only, then jobs send-record
@@ -354,182 +321,47 @@ export function parseInvocation(argv: readonly string[], context: ParseContext):
     if (isHelp(argv[1])) return { kind: "help", text: doctorHelp() };
     const options = parseOptions(argv.slice(1), {
       "--state-dir": "value",
-      "--playwriter-bin": "value",
-      "--network-session": "value",
-      "--analytics-session": "value",
     });
     return { kind: "command", command: "doctor", input: doctorInput(options, context) };
   }
 
   if (argv[0] === "network") {
-    if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: NETWORK_HELP };
+    if (argv.length === 1 || isHelp(argv[1])) return { kind: "help", text: INCIDENT_HELP };
     const verb = argv[1];
-    if (
-      ![
-        "status",
-        "report",
-        "tick",
-        "reconcile",
-        "run-end",
-        "session-reset",
-        "open",
-        "incident-status",
-        "incident-clear",
-      ].includes(verb ?? "")
-    ) {
+    if (verb !== "incident-status" && verb !== "incident-clear") {
       invalid(`unknown network command: ${verb ?? "(missing)"}`);
     }
-    if (isHelp(argv[2])) return { kind: "help", text: NETWORK_HELP };
-    if (verb === "status" || verb === "report") {
-      const options = parseOptions(argv.slice(2), {
-        "--date": "value",
-        "--state-dir": "value",
-      });
+    if (isHelp(argv[2])) return { kind: "help", text: INCIDENT_HELP };
+    if (verb === "incident-status") {
+      const options = parseOptions(argv.slice(2), { "--state-dir": "value" });
       return {
         kind: "command",
-        command: `network ${verb}`,
-        input: networkReadInput(options, context),
+        command: "network incident-status",
+        input: { stateDir: stateDir(options, context) },
       };
     }
-    if (verb === "incident-status") {
-      const options = parseOptions(argv.slice(2), {
-        "--state-dir": "value",
-        "--prune-days": "value",
-      });
-      const pruneDaysValue = options.values.get("--prune-days");
-      const input: NetworkIncidentStatusInput = {
-        stateDir: stateDir(options, context),
-        ...(pruneDaysValue === undefined
-          ? {}
-          : { pruneDays: boundedInteger(pruneDaysValue, "--prune-days", 1, 365) }),
-      };
-      return { kind: "command", command: "network incident-status", input };
-    }
-    if (verb === "incident-clear") {
-      const options = parseOptions(argv.slice(2), {
-        "--state-dir": "value",
-        "--reason": "value",
-        "--account-access-confirmed": "boolean",
-        "--warning-cleared-confirmed": "boolean",
-      });
-      if (!options.booleans.has("--account-access-confirmed")) {
-        invalid("incident-clear requires --account-access-confirmed");
-      }
-      if (!options.booleans.has("--warning-cleared-confirmed")) {
-        invalid("incident-clear requires --warning-cleared-confirmed");
-      }
-      const reason = options.values.get("--reason");
-      if (reason === undefined || reason.trim().length === 0) {
-        invalid("incident-clear requires a non-empty --reason");
-      }
-      const input: NetworkIncidentClearInput = {
+    const options = parseOptions(argv.slice(2), {
+      "--state-dir": "value",
+      "--reason": "value",
+      "--account-access-confirmed": "boolean",
+      "--warning-cleared-confirmed": "boolean",
+    });
+    if (!options.booleans.has("--account-access-confirmed"))
+      invalid("incident-clear requires --account-access-confirmed");
+    if (!options.booleans.has("--warning-cleared-confirmed"))
+      invalid("incident-clear requires --warning-cleared-confirmed");
+    const reason = options.values.get("--reason");
+    if (reason === undefined || reason.trim().length === 0)
+      invalid("incident-clear requires a non-empty --reason");
+    return {
+      kind: "command",
+      command: "network incident-clear",
+      input: {
         stateDir: stateDir(options, context),
         reason: reason.trim(),
         accountAccessConfirmed: true,
         warningClearedConfirmed: true,
-      };
-      return { kind: "command", command: "network incident-clear", input };
-    }
-    if (verb === "tick") {
-      const options = parseOptions(argv.slice(2), {
-        "--allow-send": "boolean",
-        "--batch-size": "value",
-        "--max-real-sends": "value",
-        "--date": "value",
-        "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
-      });
-      if (!options.booleans.has("--allow-send")) {
-        throw new CliError(
-          "SEND_NOT_AUTHORIZED",
-          "network tick requires the explicit --allow-send flag",
-          { exitCode: 3 },
-        );
-      }
-      return {
-        kind: "command",
-        command: "network tick",
-        input: networkTickInput(options, context),
-      };
-    }
-    if (verb === "run-end") {
-      const options = parseOptions(argv.slice(2), {
-        "--date": "value",
-        "--state-dir": "value",
-        "--reason": "value",
-      });
-      const reason = options.values.get("--reason");
-      if (reason === undefined || reason.trim().length === 0) {
-        invalid("run-end requires a non-empty --reason");
-      }
-      const input: NetworkRunEndInput = {
-        stateDir: stateDir(options, context),
-        localDate: parseDate(required(options, "--date"), "--date"),
-        reason: reason.trim(),
-      };
-      return { kind: "command", command: "network run-end", input };
-    }
-    if (verb === "session-reset") {
-      const options = parseOptions(argv.slice(2), {
-        "--state-dir": "value",
-        "--playwriter-bin": "value",
-      });
-      const input: NetworkSessionResetInput = {
-        stateDir: stateDir(options, context),
-        playwriterBin: playwriterBin(options, context),
-      };
-      return { kind: "command", command: "network session-reset", input };
-    }
-    if (verb === "open") {
-      const options = parseOptions(argv.slice(2), {
-        "--page": "value",
-        "--source": "value",
-        "--state-dir": "value",
-        "--session": "value",
-        "--playwriter-bin": "value",
-      });
-      const pageRaw = required(options, "--page");
-      if (pageRaw !== "sent" && pageRaw !== "search") {
-        invalid("--page must be sent or search");
-      }
-      const sourceRaw = options.values.get("--source");
-      let sourceId: NetworkOpenInput["sourceId"];
-      if (sourceRaw !== undefined) {
-        if (
-          sourceRaw !== "b2b-saas-founders" &&
-          sourceRaw !== "b2b-saas-engineering-product-leaders"
-        ) {
-          invalid("--source must be b2b-saas-founders or b2b-saas-engineering-product-leaders");
-        }
-        sourceId = sourceRaw;
-      }
-      if (pageRaw === "sent" && sourceRaw !== undefined) {
-        invalid("--source is only valid with --page search");
-      }
-      const input: NetworkOpenInput = {
-        stateDir: stateDir(options, context),
-        playwriterBin: playwriterBin(options, context),
-        sessionId: requiredWorkflowSession(
-          options.values.get("--session"),
-          context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
-          "--session",
-        ),
-        page: pageRaw,
-        ...(sourceId === undefined ? {} : { sourceId }),
-      };
-      return { kind: "command", command: "network open", input };
-    }
-    const options = parseOptions(argv.slice(2), {
-      "--date": "value",
-      "--state-dir": "value",
-      "--session": "value",
-      "--playwriter-bin": "value",
-    });
-    return {
-      kind: "command",
-      command: "network reconcile",
-      input: networkReconcileInput(options, context),
+      },
     };
   }
 
@@ -1451,76 +1283,7 @@ function parseOptions(argv: readonly string[], spec: OptionSpec): ParsedOptions 
 }
 
 function doctorInput(options: ParsedOptions, context: ParseContext): DoctorInput {
-  const networkSession = optionalSession(
-    options.values.get("--network-session"),
-    context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
-    "--network-session",
-  );
-  const analyticsSession = optionalSession(
-    options.values.get("--analytics-session"),
-    context.env.LINKEDIN_TOOLS_ANALYTICS_SESSION,
-    "--analytics-session",
-  );
-  return {
-    stateDir: stateDir(options, context),
-    playwriterBin: playwriterBin(options, context),
-    ...(networkSession === undefined ? {} : { networkSessionId: networkSession }),
-    ...(analyticsSession === undefined ? {} : { analyticsSessionId: analyticsSession }),
-    ...(context.env.HOME === undefined
-      ? {}
-      : {
-          automationPromptPath: join(
-            context.env.HOME,
-            ".codex",
-            "automations",
-            "linkedin-network",
-            "automation.toml",
-          ),
-        }),
-  };
-}
-
-function networkReadInput(options: ParsedOptions, context: ParseContext): NetworkReadInput {
-  return {
-    stateDir: stateDir(options, context),
-    localDate: parseDate(options.values.get("--date") ?? localDate(context.now), "--date"),
-  };
-}
-
-function networkTickInput(options: ParsedOptions, context: ParseContext): NetworkTickInput {
-  const read = networkReadInput(options, context);
-  return {
-    ...read,
-    allowSend: true,
-    batchSize: boundedInteger(options.values.get("--batch-size") ?? "5", "--batch-size", 1, 5),
-    maxRealSends: boundedInteger(
-      options.values.get("--max-real-sends") ?? "30",
-      "--max-real-sends",
-      1,
-      30,
-    ),
-    playwriterBin: playwriterBin(options, context),
-    sessionId: requiredWorkflowSession(
-      options.values.get("--session"),
-      context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
-      "--session",
-    ),
-  };
-}
-
-function networkReconcileInput(
-  options: ParsedOptions,
-  context: ParseContext,
-): NetworkReconcileInput {
-  return {
-    ...networkReadInput(options, context),
-    playwriterBin: playwriterBin(options, context),
-    sessionId: requiredWorkflowSession(
-      options.values.get("--session"),
-      context.env.LINKEDIN_TOOLS_NETWORK_SESSION,
-      "--session",
-    ),
-  };
+  return { stateDir: stateDir(options, context) };
 }
 
 function analyticsInput(options: ParsedOptions, context: ParseContext): AnalyticsExportInput {
@@ -1633,15 +1396,6 @@ function requiredWorkflowSession(
   return boundedInteger(value, label, 1, Number.MAX_SAFE_INTEGER);
 }
 
-function optionalSession(
-  explicit: string | undefined,
-  configured: string | undefined,
-  label: string,
-): number | undefined {
-  const value = explicit ?? configured;
-  return value === undefined ? undefined : boundedInteger(value, label, 1, Number.MAX_SAFE_INTEGER);
-}
-
 function boundedInteger(value: string, label: string, minimum: number, maximum: number): number {
   if (!/^[1-9]\d*$/.test(value)) invalid(`${label} must be an integer`);
   const parsed = Number(value);
@@ -1729,14 +1483,6 @@ function previousSevenDays(now: Date): { readonly startDate: string; readonly en
   return { startDate: utcDate(start), endDate: utcDate(end) };
 }
 
-function localDate(now: Date): string {
-  return [now.getFullYear(), now.getMonth() + 1, now.getDate()]
-    .map((value, index) =>
-      index === 0 ? String(value).padStart(4, "0") : String(value).padStart(2, "0"),
-    )
-    .join("-");
-}
-
 function utcDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -1754,9 +1500,9 @@ function isHelp(value: string | undefined): boolean {
 function doctorHelp(): string {
   return `Usage:
   linkedin-tools [--json] doctor [--state-dir ABSOLUTE_PATH]
-    [--playwriter-bin ABSOLUTE_PATH] [--network-session ID] [--analytics-session ID]
 
-Doctor performs local prerequisite checks only. It does not navigate to or open LinkedIn.
+Doctor checks the Bun runtime, local state, and SQLite incident gate.
+The browser boundary is caller-owned Codex Chrome; doctor never opens LinkedIn.
 `;
 }
 

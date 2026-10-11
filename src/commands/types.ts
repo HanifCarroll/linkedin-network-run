@@ -1,20 +1,9 @@
 export type DoctorInput = {
   readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly networkSessionId?: number;
-  readonly analyticsSessionId?: number;
-  /** Optional path to the linkedin-network automation.toml for source-drift checks. */
-  readonly automationPromptPath?: string;
-};
-
-export type NetworkReadInput = {
-  readonly stateDir: string;
-  readonly localDate: string;
 };
 
 export type NetworkIncidentStatusInput = {
   readonly stateDir: string;
-  readonly pruneDays?: number;
 };
 
 export type NetworkIncidentClearInput = {
@@ -24,38 +13,6 @@ export type NetworkIncidentClearInput = {
   readonly warningClearedConfirmed: boolean;
 };
 export type PlaywriterSessionSelection = number | "auto";
-
-export type NetworkTickInput = NetworkReadInput & {
-  readonly allowSend: true;
-  readonly batchSize: number;
-  readonly maxRealSends: number;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-};
-
-export type NetworkReconcileInput = NetworkReadInput & {
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-};
-
-export type NetworkRunEndInput = {
-  readonly stateDir: string;
-  readonly localDate: string;
-  readonly reason: string;
-};
-
-export type NetworkSessionResetInput = {
-  readonly stateDir: string;
-  readonly playwriterBin: string;
-};
-
-export type NetworkOpenInput = {
-  readonly stateDir: string;
-  readonly playwriterBin: string;
-  readonly sessionId: PlaywriterSessionSelection;
-  readonly page: "sent" | "search";
-  readonly sourceId?: "b2b-saas-founders" | "b2b-saas-engineering-product-leaders";
-};
 
 export type AnalyticsExportInput = {
   readonly stateDir: string;
@@ -253,13 +210,6 @@ export type MigrationDryRunInput = {
 
 export interface CliOperations {
   doctor(input: DoctorInput): Promise<unknown>;
-  networkStatus(input: NetworkReadInput): Promise<unknown>;
-  networkReport(input: NetworkReadInput): Promise<unknown>;
-  networkTick(input: NetworkTickInput): Promise<unknown>;
-  networkReconcile(input: NetworkReconcileInput): Promise<unknown>;
-  networkRunEnd(input: NetworkRunEndInput): Promise<unknown>;
-  networkSessionReset(input: NetworkSessionResetInput): Promise<unknown>;
-  networkOpen(input: NetworkOpenInput): Promise<unknown>;
   networkIncidentStatus(input: NetworkIncidentStatusInput): Promise<unknown>;
   networkIncidentClear(input: NetworkIncidentClearInput): Promise<unknown>;
   analyticsExport(input: AnalyticsExportInput): Promise<unknown>;
@@ -346,32 +296,6 @@ export type ParsedInvocation =
       readonly input: SalesNavInput;
     }
   | { readonly kind: "command"; readonly command: "doctor"; readonly input: DoctorInput }
-  | {
-      readonly kind: "command";
-      readonly command: "network status" | "network report";
-      readonly input: NetworkReadInput;
-    }
-  | { readonly kind: "command"; readonly command: "network tick"; readonly input: NetworkTickInput }
-  | {
-      readonly kind: "command";
-      readonly command: "network reconcile";
-      readonly input: NetworkReconcileInput;
-    }
-  | {
-      readonly kind: "command";
-      readonly command: "network run-end";
-      readonly input: NetworkRunEndInput;
-    }
-  | {
-      readonly kind: "command";
-      readonly command: "network session-reset";
-      readonly input: NetworkSessionResetInput;
-    }
-  | {
-      readonly kind: "command";
-      readonly command: "network open";
-      readonly input: NetworkOpenInput;
-    }
   | {
       readonly kind: "command";
       readonly command: "analytics export";

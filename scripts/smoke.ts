@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CliIo, run } from "../src/cli.ts";
@@ -56,17 +56,6 @@ import {
 } from "../src/view/grouping.ts";
 
 const root = await mkdtemp(join(tmpdir(), "linkedin-tools-smoke-"));
-const fakePlaywriter = join(root, "playwriter");
-await writeFile(
-  fakePlaywriter,
-  `#!/usr/bin/env bun
-const args=process.argv.slice(2);
-if(args[0]==="--version"){console.log("playwriter/0.4.0");process.exit(0)}
-if(args[0]==="session"&&args[1]==="list"){console.log("7  network\\n8  analytics");process.exit(0)}
-console.error("unexpected fake Playwriter command");process.exit(2)
-`,
-);
-await chmod(fakePlaywriter, 0o755);
 
 try {
   // Focused Sales Navigator intake coverage: fresh migration 17 -> 18, strict parsing,
@@ -921,23 +910,79 @@ try {
   }
 
   const doctorOutput = await invoke(
-    [
-      "--json",
-      "doctor",
-      "--state-dir",
-      join(root, "state"),
-      "--playwriter-bin",
-      fakePlaywriter,
-      "--network-session",
-      "7",
-      "--analytics-session",
-      "8",
-    ],
+    ["--json", "doctor", "--state-dir", join(root, "state")],
     undefined,
   );
   if (doctorOutput.exitCode !== 0 || doctorOutput.value?.ok !== true) {
     throw new Error("doctor smoke failed");
   }
+  const doctorData = doctorOutput.value?.data as
+    | {
+        browser?: { boundary?: string; callerOwned?: boolean };
+        ready?: boolean;
+        playwriter?: unknown;
+      }
+    | undefined;
+  if (
+    doctorData?.ready !== true ||
+    doctorData.browser?.boundary !== "codex_chrome" ||
+    doctorData.browser?.callerOwned !== true ||
+    Object.hasOwn(doctorData ?? {}, "playwriter")
+  ) {
+    throw new Error("doctor did not report the local Codex Chrome boundary");
+  }
+  for (const verb of [
+    "status",
+    "report",
+    "tick",
+    "reconcile",
+    "run-end",
+    "session-reset",
+    "open",
+  ]) {
+    const unavailable = await invoke(["--json", "network", verb], undefined);
+    if (unavailable.exitCode !== 2 || unavailable.value?.ok !== false)
+      throw new Error(`unsupported network command was accepted: ${verb}`);
+  }
+
+  const retiredDoctorOption = await invoke(
+    ["--json", "doctor", "--state-dir", join(root, "state"), "--playwriter-bin", "/tmp/retired"],
+    undefined,
+  );
+  if (retiredDoctorOption.exitCode !== 2)
+    throw new Error("doctor still accepts the retired option");
+
+  const incidentStatusOutput = await invoke(
+    ["--json", "network", "incident-status", "--state-dir", join(root, "state")],
+    undefined,
+  );
+  const incidentStatusData = incidentStatusOutput.value?.data as
+    | { browser?: { boundary?: string; callerOwned?: boolean }; recentReceipt?: unknown }
+    | undefined;
+  if (
+    incidentStatusOutput.exitCode !== 0 ||
+    incidentStatusOutput.value?.ok !== true ||
+    incidentStatusData?.browser?.boundary !== "codex_chrome" ||
+    incidentStatusData?.browser?.callerOwned !== true ||
+    Object.hasOwn(incidentStatusData ?? {}, "recentReceipt") ||
+    Object.hasOwn(incidentStatusData ?? {}, "extension")
+  ) {
+    throw new Error("incident status did not report the Codex Chrome boundary");
+  }
+  const retiredPruneOption = await invoke(
+    [
+      "--json",
+      "network",
+      "incident-status",
+      "--state-dir",
+      join(root, "state"),
+      "--prune-days",
+      "1",
+    ],
+    undefined,
+  );
+  if (retiredPruneOption.exitCode !== 2)
+    throw new Error("incident status still accepts retired relay pruning");
 
   // Bounded temp-state check: migration 8 lands and a classify round-trips
   // through the engine into the row mapping (no browser, no live DB).
@@ -3090,38 +3135,6 @@ try {
   const fakeOperations: CliOperations = {
     salesnav: async () => ({ ok: true }),
     doctor: async () => ({ ready: true }),
-    networkStatus: async () => {
-      calls.push("network status");
-      return { state: "not_started" };
-    },
-    networkReport: async () => {
-      calls.push("network report");
-      return { attempts: [] };
-    },
-    networkTick: async (input) => {
-      if (input.batchSize !== 5 || input.maxRealSends !== 30 || input.sessionId !== "auto") {
-        throw new Error("network smoke did not receive the final completion contract");
-      }
-      calls.push("network tick");
-      return { state: "progress", sendsThisTick: 0 };
-    },
-    networkReconcile: async (input) => {
-      if (input.sessionId !== "auto") throw new Error("network reconcile did not parse auto");
-      calls.push("network reconcile");
-      return { state: "progress" };
-    },
-    networkRunEnd: async (input) => {
-      calls.push("network run-end");
-      return { command: "network run-end", localDate: input.localDate, run: { status: "blocked" } };
-    },
-    networkSessionReset: async () => {
-      calls.push("network session-reset");
-      return { command: "network session-reset", reset: { ok: true } };
-    },
-    networkOpen: async (input) => {
-      calls.push("network open");
-      return { command: "network open", page: input.page, outcome: "succeeded" };
-    },
     networkIncidentStatus: async () => {
       calls.push("network incident-status");
       return { active: false, incident: null };
@@ -3311,22 +3324,6 @@ try {
   await writeFile(join(root, "instantly-receipt.json"), JSON.stringify({ noEmail: true }));
   await writeFile(join(root, "followup-receipt.json"), JSON.stringify({ tasks: [] }));
   const commands: readonly (readonly string[])[] = [
-    ["--json", "network", "status"],
-    ["--json", "network", "report"],
-    [
-      "--json",
-      "network",
-      "tick",
-      "--allow-send",
-      "--batch-size",
-      "5",
-      "--max-real-sends",
-      "30",
-      "--session",
-      "auto",
-    ],
-    ["--json", "network", "reconcile", "--session", "auto"],
-    ["--json", "network", "session-reset"],
     [
       "--json",
       "analytics",
@@ -3476,10 +3473,6 @@ try {
     if (output.exitCode !== 0 || output.value?.ok !== true) {
       throw new Error(`smoke command failed: ${command.join(" ")}`);
     }
-  }
-  const denied = await invoke(["--json", "network", "tick"], common);
-  if (denied.exitCode !== 3 || denied.value?.error?.code !== "SEND_NOT_AUTHORIZED") {
-    throw new Error("send authorization smoke failed");
   }
   const jobsSendDenied = await invoke(["--json", "jobs", "send-prepare"], common);
   if (
@@ -4080,6 +4073,7 @@ async function invoke(
   readonly exitCode: number;
   readonly value: {
     readonly ok?: boolean;
+    readonly data?: unknown;
     readonly error?: { readonly code?: string };
   };
 }> {

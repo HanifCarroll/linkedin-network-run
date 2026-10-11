@@ -110,20 +110,6 @@ async function execute(invocation: ParsedInvocation, operations: CliOperations):
       return operations.salesnav(invocation.input);
     case "doctor":
       return operations.doctor(invocation.input);
-    case "network status":
-      return operations.networkStatus(invocation.input);
-    case "network report":
-      return operations.networkReport(invocation.input);
-    case "network tick":
-      return operations.networkTick(invocation.input);
-    case "network reconcile":
-      return operations.networkReconcile(invocation.input);
-    case "network run-end":
-      return operations.networkRunEnd(invocation.input);
-    case "network session-reset":
-      return operations.networkSessionReset(invocation.input);
-    case "network open":
-      return operations.networkOpen(invocation.input);
     case "network incident-status":
       return operations.networkIncidentStatus(invocation.input);
     case "network incident-clear":

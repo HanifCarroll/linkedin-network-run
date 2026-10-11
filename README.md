@@ -2,32 +2,16 @@
 
 A single-package Bun/TypeScript implementation for three workflows:
 
-- Daily LinkedIn network automation.
 - Weekly seven-day content analytics export.
 - Chrome-based LinkedIn Jobs result capture with guarded hiring-team outreach
   and a local draft-review queue.
-
-Promoted 2026-08-11 from `linkedin-tools-next` to the canonical repository
-path. The former Python implementation (acceptance tracking, Relationship
-Radar, welcome messages, pending cleanup, recruiter outreach, opportunity
-intel, review UI) was retired on the same date; its code remains in git
-history before the promotion commit.
+- Read-only Sales Navigator research and account capture.
 
 ## Operating contract
 
-Networking uses only these exact Sales Navigator saved searches:
-
-| Source | Saved search ID | Preferred allocation |
-| --- | --- | ---: |
-| B2B SaaS Founders & CTOs | 2006164114 | 15 |
-| B2B SaaS Engineering & Product Leaders | 2006164122 | 15 |
-
-The daily target is exactly 30 durable requests, shared across the two configured sources
-(15/15, with bidirectional carryover). Completion requires exactly 30 durable, zero provisional
-or planned attempts, and a complete final sent-list reconciliation. A possible send is reserved
-until reconciliation proves its outcome.
-
-LinkedIn Jobs capture, direct-page enrichment, and outreach use the caller-owned Codex Chrome tab and store bounded evidence through the CLI. Networking, analytics, and Jobs liveness checking remain on distinct, command-bound Playwriter sessions. The repository does not implement browser leases or cross-automation locks.
+Jobs capture, enrichment and outreach, plus Sales Navigator research, use caller-owned Codex Chrome tabs and store
+bounded evidence through the CLI. Analytics export and `jobs check` use Playwriter. Respect an explicit browser choice; if the required helper cannot run there, report the limitation without substituting a browser or control method. Generic invitation campaigns use `contract-outreach` and its policy. The
+repository does not implement browser leases or cross-automation locks.
 
 ## Install and verify
 
@@ -44,7 +28,7 @@ repository.
 
 ## Configuration
 
-Default fresh state:
+Default state:
 
 ```text
 ~/Library/Application Support/linkedin-tools-next/
@@ -58,33 +42,24 @@ Default fresh state:
 Supported environment variables:
 
 - `LINKEDIN_TOOLS_STATE_DIR`
-- `LINKEDIN_TOOLS_PLAYWRITER_BIN`
-- `LINKEDIN_TOOLS_NETWORK_SESSION`
-- `LINKEDIN_TOOLS_ANALYTICS_SESSION`
+- `LINKEDIN_TOOLS_ANALYTICS_SESSION` (analytics export only)
 - `LINKEDIN_TOOLS_ANALYTICS_ACCOUNT`
 - `LINKEDIN_TOOLS_ANALYTICS_DOWNLOAD_ROOTS`
+- `LINKEDIN_TOOLS_PLAYWRITER_BIN` (analytics export executable)
 
 Run the local-only prerequisite check first:
 
 ```sh
-bun run src/cli.ts --json doctor \
-  --network-session 7 \
-  --analytics-session 8
+bun run src/cli.ts --json doctor
 ```
 
-Doctor checks Bun, the configured Playwriter executable and version, configured session IDs, active
-session listing, state-directory writability, and SQLite migrations. It does not navigate to or open
-LinkedIn.
+Doctor checks the Bun runtime, state-directory writability, SQLite migrations, and incident gate.
+It reports the caller-owned Codex Chrome boundary and does not navigate to or open LinkedIn.
 
 ## Commands
 
 ```sh
 linkedin-tools --json doctor
-linkedin-tools --json network status
-linkedin-tools --json network report
-linkedin-tools --json network tick --allow-send --batch-size 5 \
-  --target 30 --max-real-sends 30 --session auto
-linkedin-tools --json network reconcile --session auto
 linkedin-tools --json network incident-status
 linkedin-tools --json network incident-clear \
   --account-access-confirmed --warning-cleared-confirmed \
@@ -98,23 +73,8 @@ linkedin-tools --json analytics export \
   --out '/absolute/path/content-{startDate}-{endDate}.xlsx'
 
 linkedin-tools --json migration dry-run \
-  --source-root '/Users/hanifcarroll/Library/Application Support/linkedin-tools/network-automation'
+  --source-root '/absolute/path/to/requested/source-state'
 ```
-
-`network tick` refuses to dispatch without the exact `--allow-send` flag. One invocation continues
-serially until the run is Done or returns a typed checkpoint or terminal blocker. `--batch-size` is
-capped at five, the target is fixed at 30, and `--max-real-sends` cannot exceed 30. The controller
-walks each saved-search list in order: it opens the list, scrolls to load every row, sends a
-connection request to each connectable person (5s pacing between sends), and paginates until the
-source's share or the daily target is met, then moves to the next list. After the send phase it
-waits 60 seconds for invitations to settle, audits the sent-invitations page, and confirms which
-sends appear. Unconfirmed sends after the settle wait are marked proven-no-send, and the tick sends
-more to top up until 30 are confirmed on the sent page, then finishes. Audits cannot be disabled.
-
-When a new local day starts, the controller checks older active runs first. It parks an older run as
-missed only when it has no planned or possible sends, then starts the new day. If an older run still
-has a planned or possible send, the controller returns `NETWORK_PRIOR_DAY_NEEDS_AUDIT` before any
-browser session is created; reconcile that exact earlier date before sending on the new day.
 
 `analytics export` accepts either `--period previous-7-days` or exact `--start-date` and
 `--end-date`, never both. The range must contain exactly seven inclusive days. Repeat
@@ -124,7 +84,7 @@ browser session is created; reconcile that exact earlier date before sending on 
 `migration dry-run` is proposal-only. It reads legacy state and exposes no apply/import command.
 
 Unknown, duplicate, conflicting, malformed, or out-of-range flags fail before an operation runs.
-Paths for state, exports, downloads, receipts, recovery state, Playwriter, and legacy sources must
+Paths for state, exports, downloads, receipts, recovery state, and legacy sources must
 be absolute.
 
 A shared incident gate guards every browser operation. Fatal account signals (weekly limit, rate
@@ -133,18 +93,11 @@ limit, unusual activity, checkpoint or security-verification walls, login walls)
 `INCIDENT_ACTIVE` (exit 7) until a human clears it. Clearing requires both confirmation flags and a
 reason; partial clears fail with exit 2. `doctor` reports an active incident as a failing check.
 
-For browser-capable commands, `--session auto` uses the exact workflow binding in
-`sessions/network.json` or `sessions/analytics.json`. It reuses the bound ID only while Playwriter
-reports it active. A missing or stale binding creates and verifies a new persistent session through
-Playwriter's supported client API, then writes the binding atomically. Auto mode never adopts an
-unbound active session or shares one session between workflows. Numeric session IDs remain
-supported for explicit operator control. Tests fake this boundary and never create a live session.
-
 ## Jobs and review queue
 
 Jobs capture uses the caller's already logged-in Codex Chrome tab to observe
 `voyagerJobsDashJobCards` responses and stores raw JSON durably in SQLite. The capture commands
-need no Playwriter binary or browser session: start a run with `jobs capture-start`, pipe each
+need no separate browser session: start a run with `jobs capture-start`, pipe each
 helper `rawBody` directly to `jobs capture-ingest --payload -`, and use the saved page/cursor
 checkpoint to resume. No per-page artifact is required (a file is diagnostic-only). The helper can
 pipe and parse the CLI's stable JSON envelope with `captureAndIngestJobsPage`. Run
@@ -159,14 +112,13 @@ flagship-web components, parses their bodies locally, then verifies with two sta
 fills missing or empty component fields; only `fit=kept` jobs are eligible. Raw scoped bodies and provenance
 are stored in SQLite, with bounded size/count validation. A no-team result requires stable DOM plus an
 observed (possibly empty) `peopleWhoCanHelp` response; otherwise the job remains `retry_required`.
-Live-job checks, networking, and analytics remain on their existing paths. Jobs sending uses the
-caller-owned Chrome handoff described below;
+Jobs sending uses caller-owned handoff helpers. `jobs check` and analytics export use Playwriter.
 triage prioritizes opportunities but never automatically pursues or rejects them.
 Before human review, `jobs triage-next` hands one eligible kept job to an agent. `jobs triage-record`
 stores an evidence-backed `strong`, `possible`, or `weak` fit brief under policy
 `jobs-triage-v1-20260819`; it never rejects a job or changes review, and weak jobs remain visible.
 Pending review shows only triaged kept jobs with hiring-team people, ordered Strong, Possible, Weak.
-Previously decided or sent history remains visible after the migration.
+Decided and sent records remain visible.
 `jobs classify` stores the two brief review phrases (`--work-focus`, `--product-system`) and
 two longer summaries (`--work-summary`, `--product-summary`) shown in the viewer.
 
@@ -190,7 +142,7 @@ Approved, and Rejected decisions plus matched term, filter reason, employment/po
 links, and evidence gaps. Approval does not require a draft; sending remains guarded by drafted +
 approved + `--allow-send`, and rejection persists across sibling jobs.
 
-Every hiring-team job gets a draft — there is no pre-draft qualification. Draft once per
+Only draft when the requested workflow authorizes it and the opportunity is kept, triaged and approved. Draft once per
 recipient: when several postings list the same person, draft the best-fitting role; the other
 roles are context, not separate messages, and at most one approved/sent message holds per
 person. `jobs draft-next` is a deterministic, read-only companion handoff for one person and
@@ -251,9 +203,9 @@ or before submit. It is not a form filler and never submits.
 Review happens in the local queue, not through the CLI:
 
 ```sh
-bun run view   # SvelteKit production server at http://127.0.0.1:4567
-# For development with component reload:
-bun run view:dev   # set PORT=... to override 4567
+bun run view   # SvelteKit development server at http://127.0.0.1:4567
+bun run view:prod   # Build and start the production server
+# Set PORT=... to override 4567
 ```
 
 The SvelteKit viewer (built for Bun with `svelte-adapter-bun`) is the intake queue. The queue splits people into top-level sections with person counts: **All outreach**, **Direct
@@ -281,8 +233,7 @@ browser mutation; writes go through tight same-origin local JSON endpoints that 
 
 After approval, `jobs hubspot-next` prepares or resumes one person-centred import. It returns the
 company, contact, deal, association, and Day 1 task mapping plus any HubSpot IDs already recorded.
-An authorized agent performs each lookup-before-create action through the official HubSpot
-connection. The CLI stores only durable receipts; it has no HubSpot token and performs no network
+For an explicitly authorized import, confirm an authenticated HubSpot tool is available, verify the portal against the handoff packet, and perform each lookup-before-create action. If the connection is unavailable, report the blocker. The CLI stores only durable receipts; it has no HubSpot token and performs no network
 request itself.
 
 ```sh
@@ -305,8 +256,7 @@ association receipts. This stage creates a task only; it never sends outreach.
 ### Instantly email handoff
 
 `jobs instantly-next` emits a read-only official Instantly API v2 packet only for an approved,
-kept contract-outreach prospect whose HubSpot receipt is complete. An authorized agent performs
-first verifies `GET /api/v2/campaigns/{id}` returns `stop_on_reply:true`, then performs
+kept contract-outreach prospect whose HubSpot receipt is complete. For explicitly authorized enrichment and enrollment, an agent first verifies `GET /api/v2/campaigns/{id}` returns `stop_on_reply:true`, then performs
 SuperSearch work-email enrichment, records its async enrichment receipt, and accepts either exactly
 one work email or explicit no-email. It enrolls the email with `POST /api/v2/leads` and records
 explicit campaign, lead/enrichment, and `campaignStopOnReply:true` fields with `jobs instantly-record`.
@@ -332,9 +282,7 @@ The helper records `possible` immediately before the visible Send action, then p
 evidence to `jobs send-record --payload -`. DM and InMail have separate exact
 allowlists; HTTP success alone is never enough. The composer must be gone and the message visible
 in the matching recipient's thread. A prepared or unresolved `possible` receipt keeps the draft unsent but blocks blind retry;
-`proven_no_send` safely releases the reservation, and only `confirmed` marks it sent. Replaying the same attempt is a no-op. A live spike is still
-needed to populate the exact DM and InMail endpoint patterns and any observable recipient URN
-binding in the caller's LinkedIn account.
+`proven_no_send` safely releases the reservation, and only `confirmed` marks it sent. Replaying the same attempt is a no-op. The default CLI provides no DM/InMail endpoint allowlists, so confirmed DM/InMail recording fails closed. Check `src/jobs/chrome-send.ts` and its caller before acting; establishing an endpoint contract requires separate explicit authority.
 
 `jobs contract-outreach-prepare --allow-send [--id JOB_ID]` is the separate connection-request
 path for an approved prospect. Direct jobs are eligible immediately; application-followup jobs
@@ -344,9 +292,7 @@ UI and confirms that the recipient-bound request returned 2xx and the invitation
 never replays that request. `contract-outreach-record` requires the same bounded evidence; unresolved possible
 attempts block retry and `proven_no_send` is the only release. This invitation is not the final
 DM/InMail/email and does not mark the job sent. The separately reviewed connection note is bound to
-the invitation receipt and cannot be replaced by the follow-up message. The production invitation
-endpoint was learned from the approved 2026-08-20 caller-owned Chrome spike and is enforced as an
-exact URL. Confirmation still fails closed unless the response is recipient-bound and the visible
+the invitation receipt and cannot be replaced by the follow-up message. The invitation endpoint is enforced as an exact URL in `src/jobs/contract-outreach.ts`. Confirmation still fails closed unless the response is recipient-bound and the visible
 invitation dialog closes after the request.
 
 ## JSON contract
@@ -354,28 +300,21 @@ invitation dialog closes after the request.
 With `--json`, stdout contains exactly one envelope and diagnostics use stable error codes.
 
 ```json
-{"ok":true,"data":{"command":"network status","state":"not_started"}}
-```
-
-```json
-{"ok":false,"error":{"code":"SEND_NOT_AUTHORIZED","message":"network tick requires the explicit --allow-send flag"}}
+{"ok":true,"data":{"command":"network incident-status","active":false}}
 ```
 
 ## Scheduling templates
 
 Uninstalled templates are in `launchd/`:
 
-- `com.hanif.linkedin-tools.network.plist`: one completion-capable daily run at 09:05.
 - `com.hanif.linkedin-tools.analytics.plist`: Sunday at 06:15.
 
-Both templates are configuration-complete and use `--session auto`; they contain no replacement
-tokens. They use distinct windows and log files, an explicit working directory and PATH, and no
-`KeepAlive` or lease. This repository does not install or load them.
+The analytics template contains no replacement tokens, uses an explicit working directory and
+PATH, and has no `KeepAlive` or lease. This repository does not install or load it.
 
 ## Safety
 
-Tests and `bun run smoke` use dependency injection, temporary state, and fake commands. They do not
-exercise a live browser, LinkedIn, launchd, the old Python repository, or legacy state.
+Bounded checks and `bun run smoke` use dependency injection, temporary state and fake commands. They do not exercise a live browser, LinkedIn, scheduler installation or migration writes.
 
 ### Sales Navigator staffing intake
 
@@ -397,11 +336,9 @@ linkedin-tools salesnav staffing status --run-id ID
 
 Use `--json` for the stable `{ "ok": true, "data": ... }` or
 `{ "ok": false, "error": ... }` boundary. The handoff helper is
-`scripts/linkedin-salesnav-chrome-helper.mjs`. Account capture uses
-`scripts/linkedin-salesnav-account-chrome-helper.mjs` and the additive migration
-19 tables; qualification decisions are organization-scoped across runs.
+`scripts/linkedin-salesnav-chrome-helper.mjs`. Account capture uses `scripts/linkedin-salesnav-account-chrome-helper.mjs`; qualification decisions are organization-scoped across runs.
 
-Staffing intake now begins with the account search. The supported contract is United States,
+Staffing intake begins with the account search. The supported contract is United States,
 Staffing and Recruiting, 11–50 and 51–200 employees, with a non-empty, run-bound keyword query.
 Open Sales Navigator at `/sales/home`, then open the account search through its filters or saved
 searches. The helper is armed before the visible action that loads the results. The captured account
@@ -435,9 +372,7 @@ Review the firm's account evidence, LinkedIn company page, and website before re
 qualification. People capture is only allowed for a kept account and only accepts a company-scoped
 lead-search response. Selection uses fixed lane role order and stable tie-breaking, returning one
 primary and at most one backup. Local review is approve/reject only; it does not draft, send, or call
-HubSpot. A future dry CRM handoff must lookup-before-create the organization by LinkedIn company URL,
-the person by normalized LinkedIn profile URL, and record the company-contact association;
-no CRM identifiers or writes are implemented here.
+HubSpot. This account-intake workflow does not implement CRM identifiers or writes.
 
 ### Sales Navigator studio lane
 

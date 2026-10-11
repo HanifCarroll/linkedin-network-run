@@ -5,7 +5,7 @@ import { PlaywriterClient } from "../playwriter/client.ts";
 import type { SessionInfo } from "../playwriter/types.ts";
 import type { PlaywriterSessionSelection } from "./types.ts";
 
-export type SessionWorkflow = "network" | "analytics" | "jobs";
+export type SessionWorkflow = "analytics" | "jobs";
 
 export type SessionClient = {
   readonly listSessions: () => Promise<readonly SessionInfo[]>;
@@ -52,7 +52,7 @@ export async function resolvePlaywriterSession(
         `Playwriter session ${request.selection} is not active (${active.length} session(s) available); use --session auto or run session new`,
         {
           details: { workflow: request.workflow, activeSessionIds: active.map((s) => s.id) },
-          exitCode: request.workflow === "network" ? 4 : 5,
+          exitCode: 5,
         },
       );
     }
@@ -109,7 +109,7 @@ export async function resolvePlaywriterSession(
     throw new CliError(
       "PLAYWRITER_SESSION_RESOLUTION_FAILED",
       error instanceof Error ? error.message : String(error),
-      { details: { workflow: request.workflow }, exitCode: request.workflow === "network" ? 4 : 5 },
+      { details: { workflow: request.workflow }, exitCode: 5 },
     );
   }
 }
@@ -207,7 +207,7 @@ function assertSessionId(value: unknown): asserts value is number {
 }
 
 function otherWorkflows(workflow: SessionWorkflow): readonly SessionWorkflow[] {
-  return (["network", "analytics", "jobs"] as const).filter((candidate) => candidate !== workflow);
+  return (["analytics", "jobs"] as const).filter((candidate) => candidate !== workflow);
 }
 
 function readBindingNullable(

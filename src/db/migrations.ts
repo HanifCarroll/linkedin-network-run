@@ -933,6 +933,14 @@ const migrations: readonly Migration[] = [
       ALTER TABLE jobs ADD COLUMN connection_note TEXT NOT NULL DEFAULT '';
     `,
   },
+  {
+    id: 30,
+    name: "network_campaign",
+    sql: `
+      ALTER TABLE daily_runs ADD COLUMN campaign TEXT NOT NULL DEFAULT 'default';
+      CREATE INDEX daily_runs_campaign_date_idx ON daily_runs(campaign, local_date);
+    `,
+  },
 ];
 
 export type MigrationResult = {

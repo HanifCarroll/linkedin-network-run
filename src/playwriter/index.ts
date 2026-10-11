@@ -1,6 +1,5 @@
 export * from "./blockers.ts";
 export * from "./client.ts";
-export * from "./network.ts";
 export * from "./scripts.ts";
 export * from "./send.ts";
 export * from "./source-capture.ts";
