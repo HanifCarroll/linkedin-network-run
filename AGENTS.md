@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Current hold — October 16, 2026
+
+Hanif paused all job-search and LinkedIn work until he supplies a new plan. Do not send invitations or notes, send messages, export/import analytics, discover/replenish targets, draft/review outreach, apply, or advance any campaign. Read-only inspection to explain this hold is permitted. Earlier run targets and authorizations below are historical configuration while this hold applies; no automatic resumption. Scheduler status is separate and must be changed only through supported scheduler tools. The contract-outreach CLI additionally enforces the live `campaign-pause.json` execution hold before opening its ledger.
+
+
 ## Scope
 
 This is the Bun/TypeScript `linkedin-tools` repository. Its workflows are content analytics export, interactive Jobs intake/outreach, and Sales Navigator research/account capture. Jobs and Sales Navigator use caller-owned Codex Chrome handoffs; the CLI stores bounded evidence and guarded decisions in SQLite. Analytics export and `jobs check` use Playwriter. Generic invitation campaigns belong to `contract-outreach` and its policy.
